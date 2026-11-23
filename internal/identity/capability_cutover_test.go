@@ -3,82 +3,112 @@ package identity
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	_ "github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-func TestImageAuthorityEmptyDeviceAndImmutableExpiry(t *testing.T) {
+type cutoverMembers struct{ db *sql.DB }
+
+func (m cutoverMembers) ActiveUser(ctx context.Context, id int64) (*core.Viewer, error) {
+	var active int
+	if err := m.db.QueryRowContext(ctx, `SELECT active FROM auth_users WHERE id=?`, id).Scan(&active); err != nil || active != 1 {
+		return nil, core.ErrUnauthorized
+	}
+	return &core.Viewer{ID: id}, nil
+}
+
+type cutoverImageBytes struct{}
+
+func (cutoverImageBytes) Get(context.Context, string, int) ([]byte, string, error) {
+	return []byte("image"), "image/jpeg", nil
+}
+
+func newCutoverImageService(t *testing.T, db *sql.DB, surface frontend.Protocol, now func() time.Time) (*ImageGrantService, string) {
+	t.Helper()
+	grants, err := NewGrants(db, cutoverMembers{db}, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := grants.Issue(context.Background(), 1, nil, string(surface), core.Device{ID: "tv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"}
+	exp := frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{ImagesAuthoritative: true, Images: []frontend.Image{img}}, nil
+	}}
+	svc, err := NewImageGrantService(db, surface, grants, func() frontend.Experience { return exp }, cutoverImageBytes{}, time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetImageKey([]byte("cutover-test-image-key"))
+	return svc, credential
+}
+
+func TestStatelessImageGrantsRetireDatabaseTables(t *testing.T) {
 	db := store.OpenTest(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,1,0,0)`); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().Truncate(time.Millisecond)
-	service, credential := imageAdapterService(t, db, "jellyfin", func() time.Time { return now })
-	token, err := service.Issue(ctx, frontend.ImageGrantRequest{Credential: credential, Item: core.MovieKey(1), Image: frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"}})
+	var version int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations WHERE component='frontend_image_grants'`).Scan(&version); err != nil || version != 8 {
+		t.Fatalf("frontend_image_grants version=%d err=%v", version, err)
+	}
+	if _, err := db.Exec(`SELECT 1 FROM frontend_image_grants`); err == nil {
+		t.Fatal("retired frontend_image_grants table still exists")
+	}
+	service, credential := newCutoverImageService(t, db, "jellyfin", nil)
+	token, err := service.Issue(ctx, frontend.ImageGrantRequest{
+		Credential: credential,
+		Item:       core.MovieKey(1),
+		Image:      frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256([]byte(token))
-	digest := hex.EncodeToString(sum[:])
-	var device string
-	if err = db.QueryRow(`SELECT device_id FROM capability_headers WHERE namespace='image' AND digest=?`, digest).Scan(&device); err != nil || device != "" {
-		t.Fatal(device, err)
-	}
-	for _, query := range []string{`UPDATE frontend_image_grants SET expires=expires+60000 WHERE hash=?`, `UPDATE capability_headers SET expires=expires+60000 WHERE digest=?`, `INSERT INTO frontend_image_grants SELECT 'unadmitted',source_hash,viewer_id,surface,item,device,image_kind,image_path,image_tag,expires,revoked,channel,image_subject FROM frontend_image_grants WHERE hash=?`} {
-		if _, err = db.Exec(query, digest); err == nil {
-			t.Fatalf("writer bypass: %s", query)
-		}
-	}
-	wrongShard := fmt.Sprintf("%064x", 77)
-	if _, err = db.Exec(`INSERT INTO capability_headers SELECT namespace,?,-1,viewer_id,surface,device_id,expires FROM capability_headers WHERE namespace='image' AND digest=?`, wrongShard, digest); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(`INSERT INTO frontend_image_grants SELECT ?,source_hash,viewer_id,surface,item,device,image_kind,image_path,image_tag,expires,revoked,channel,image_subject FROM frontend_image_grants WHERE hash=?`, wrongShard, digest); err == nil {
-		t.Fatal("wrong-shard reservation accepted")
+	var headerCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&headerCount); err != nil || headerCount != 0 {
+		t.Fatalf("capability_headers image rows=%d err=%v", headerCount, err)
 	}
 	w := httptest.NewRecorder()
 	service.Serve(w, httptest.NewRequest("GET", "/", nil), token)
 	if w.Code != 200 || w.Body.String() != "image" {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if _, err = db.Exec(`DELETE FROM capability_headers WHERE namespace='image' AND digest=?`, digest); err != nil {
-		t.Fatal(err)
-	}
-	w = httptest.NewRecorder()
-	service.Serve(w, httptest.NewRequest("GET", "/", nil), token)
-	if w.Code != 404 {
-		t.Fatal("headerless fallback", w.Code)
-	}
 }
 
-// Reconstruct the pre-cutover tables, with actual issued payloads, then migrate.
-// Every field and token remains usable; no second authority survives.
+// Reconstruct pre-v8 image grant state and pre-v3 ticket state, then migrate.
+// Migration 8 drops frontend_image_grants and purges image capability headers
+// while ticket cutover continues cleanly.
 func TestCapabilityExistingStateCutover(t *testing.T) {
 	db := store.OpenTest(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,1,0,0)`); err != nil {
 		t.Fatal(err)
 	}
-	service, credential := imageAdapterService(t, db, "jellyfin", nil)
-	token, err := service.Issue(ctx, frontend.ImageGrantRequest{Credential: credential, Item: core.MovieKey(1), Image: frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"}})
+	service, credential := newCutoverImageService(t, db, "jellyfin", nil)
+	token, err := service.Issue(ctx, frontend.ImageGrantRequest{
+		Credential: credential,
+		Item:       core.MovieKey(1),
+		Image:      frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// DDL below is the old frontend ticket migration, not an emulated new issuer.
-	for _, name := range []string{"image_admitted_insert", "image_immutable", "image_header_immutable", "image_header_delete", "ticket_admitted_insert", "ticket_immutable", "ticket_header_immutable"} {
-		table := "frontend_image_grants"
-		if name == "ticket_admitted_insert" || name == "ticket_immutable" {
-			table = "capability_tickets"
-		}
-		if name == "image_header_immutable" || name == "ticket_header_immutable" || name == "image_header_delete" {
+	for _, name := range []string{"ticket_admitted_insert", "ticket_immutable", "ticket_header_immutable"} {
+		table := "capability_tickets"
+		if name == "ticket_header_immutable" {
 			table = "capability_headers"
 		}
 		query := "DROP TRIGGER " + name
@@ -94,21 +124,33 @@ func TestCapabilityExistingStateCutover(t *testing.T) {
 			}
 		}
 	}
-	statements := []string{`ALTER TABLE capability_tickets ADD COLUMN legacy_mirror INTEGER NOT NULL DEFAULT 0`, `CREATE TABLE frontend_tickets(hash TEXT PRIMARY KEY,surface TEXT NOT NULL,purpose TEXT NOT NULL,viewer_id BIGINT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,source_hash TEXT NOT NULL REFERENCES identity_grants(hash) ON DELETE CASCADE,device TEXT NOT NULL,expires BIGINT NOT NULL)`, `DELETE FROM capability_headers WHERE namespace IN ('image','ticket')`, `DELETE FROM schema_migrations WHERE (component='frontend_image_grants' AND version=7) OR (component='frontend_tickets' AND version=3)`}
+	source, _ := grantHash(credential)
+	statements := []string{
+		`CREATE TABLE frontend_image_grants (hash TEXT PRIMARY KEY, source_hash TEXT NOT NULL REFERENCES identity_grants(hash) ON DELETE CASCADE, viewer_id BIGINT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE, surface TEXT NOT NULL, item BIGINT NOT NULL, device TEXT NOT NULL, image_kind TEXT NOT NULL, image_path TEXT NOT NULL, image_tag TEXT NOT NULL, expires BIGINT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, channel TEXT NOT NULL DEFAULT '', image_subject TEXT NOT NULL DEFAULT '')`,
+		`ALTER TABLE capability_tickets ADD COLUMN legacy_mirror INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE frontend_tickets(hash TEXT PRIMARY KEY,surface TEXT NOT NULL,purpose TEXT NOT NULL,viewer_id BIGINT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,source_hash TEXT NOT NULL REFERENCES identity_grants(hash) ON DELETE CASCADE,device TEXT NOT NULL,expires BIGINT NOT NULL)`,
+		`DELETE FROM capability_headers WHERE namespace IN ('image','ticket')`,
+		`DELETE FROM schema_migrations WHERE (component='frontend_image_grants' AND version=8) OR (component='frontend_tickets' AND version=3)`,
+	}
 	for _, query := range statements {
 		if _, err = db.Exec(query); err != nil {
 			t.Fatal(err)
 		}
 	}
+	imgDigest := fmt.Sprintf("%064x", 42)
+	expMillis := time.Now().Add(time.Minute).UnixMilli()
+	if _, err = db.Exec(`INSERT INTO capability_headers VALUES('image',?,1,1,'jellyfin','tv',?)`, imgDigest, expMillis); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO frontend_image_grants VALUES(?,?,1,'jellyfin',1,'{"ID":"tv"}','poster','opaque-poster','v1',?,0,'','tmdb:1')`, imgDigest, source, expMillis); err != nil {
+		t.Fatal(err)
+	}
 	ticketToken := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	sum := sha256.Sum256([]byte(ticketToken))
 	digest := hex.EncodeToString(sum[:])
-	source, _ := grantHash(credential)
 	if _, err = db.Exec(`INSERT INTO frontend_tickets VALUES(?,'jellyfin','events-ws',1,?,'{"ID":"tv"}',?)`, digest, source, time.Now().Add(30*time.Second).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	// Old consumers could remove a frontend ticket and leave its mirror charged.
-	// Such a stale mirror must not become a newly usable ticket at cutover.
 	stale := fmt.Sprintf("%064x", 99)
 	if _, err = db.Exec(`INSERT INTO capability_headers VALUES('ticket',?,1,1,'jellyfin','tv',?)`, stale, time.Now().Add(time.Minute).UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -116,22 +158,15 @@ func TestCapabilityExistingStateCutover(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO capability_tickets(namespace,digest,purpose,source_hash,device,legacy_mirror) VALUES('ticket',?,'events-ws',?,'{"ID":"tv"}',1)`, stale, source); err != nil {
 		t.Fatal(err)
 	}
-	// A malformed historical payload must fail transactionally, never partially cut over.
-	if _, err = db.Exec(`INSERT INTO frontend_image_grants SELECT 'bad',source_hash,viewer_id,surface,item,'{',image_kind,image_path,image_tag,expires,revoked,channel,image_subject FROM frontend_image_grants LIMIT 1`); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.Migrate(ctx, db); err == nil {
-		t.Fatal("malformed historical payload migrated")
-	}
-	var preserved int
-	if err = db.QueryRow(`SELECT COUNT(*) FROM frontend_tickets WHERE hash=?`, digest).Scan(&preserved); err != nil || preserved != 1 {
-		t.Fatal("failed migration lost ticket", preserved, err)
-	}
-	if _, err = db.Exec(`DELETE FROM frontend_image_grants WHERE hash='bad'`); err != nil {
-		t.Fatal(err)
-	}
 	if err = store.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = db.Exec(`SELECT 1 FROM frontend_image_grants`); err == nil {
+		t.Fatal("frontend_image_grants survived v8 migration")
+	}
+	var imageHeaders int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&imageHeaders); err != nil || imageHeaders != 0 {
+		t.Fatalf("stale image headers survived v8 migration: count=%d err=%v", imageHeaders, err)
 	}
 	var staleCount int
 	if err = db.QueryRow(`SELECT COUNT(*) FROM capability_headers WHERE namespace='ticket' AND digest=?`, stale).Scan(&staleCount); err != nil || staleCount != 0 {
@@ -152,64 +187,5 @@ func TestCapabilityExistingStateCutover(t *testing.T) {
 	}
 	if _, err = db.Exec(`INSERT INTO frontend_tickets VALUES('old','jellyfin','events-ws',1,?,'{}',1)`, source); err == nil {
 		t.Fatal("old writer survived")
-	}
-}
-
-func TestImageBatchAdmissionRollback(t *testing.T) {
-	db := store.OpenTest(t)
-	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,1,0,0)`); err != nil {
-		t.Fatal(err)
-	}
-	service, credential := imageAdapterService(t, db, "jellyfin", nil)
-	service.admission.perScope = 40
-	service.admission.perShard = 40
-	keys := make([]core.RatingKey, 41)
-	for i := range keys {
-		keys[i] = core.MovieKey(int64(i + 1))
-	}
-	if _, err := service.IssueBatch(context.Background(), frontend.ImageBatchRequest{Credential: credential, Items: keys}); err == nil {
-		t.Fatal("over-capacity batch accepted")
-	}
-	for _, table := range []string{"frontend_image_grants", "capability_headers"} {
-		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil || n != 0 {
-			t.Fatal(table, n, err)
-		}
-	}
-}
-
-func TestImageShardCleanupBoundedAndLive(t *testing.T) {
-	db := store.OpenTest(t)
-	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,1,0,0)`); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().Truncate(time.Millisecond)
-	service, credential := imageAdapterService(t, db, "jellyfin", func() time.Time { return now })
-	req := frontend.ImageGrantRequest{Credential: credential, Item: core.MovieKey(1), Image: frontend.Image{Kind: frontend.ImagePoster, Path: "opaque-poster", Tag: "v1", Subject: "tmdb:1"}}
-	for i := 0; i < 45; i++ {
-		if _, err := service.Issue(ctx, req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	now = now.Add(30 * time.Second)
-	token, err := service.Issue(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(30 * time.Second)
-	for _, want := range []int{6, 1} {
-		if _, err = PruneImageGrantShard(ctx, db, now, 1); err != nil {
-			t.Fatal(err)
-		}
-		var n int
-		if err = db.QueryRow(`SELECT COUNT(*) FROM frontend_image_grants`).Scan(&n); err != nil || n != want {
-			t.Fatal(n, want, err)
-		}
-	}
-	w := httptest.NewRecorder()
-	service.Serve(w, httptest.NewRequest("GET", "/", nil), token)
-	if w.Code != 200 {
-		t.Fatal("live image evicted", w.Code)
 	}
 }

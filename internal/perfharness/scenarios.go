@@ -119,7 +119,7 @@ const infuseFields = "DateCreated%2CEtag%2CGenres%2CMediaSources%2CAlternateMedi
 // Clients is every replayed client, in report order.
 func Clients() []Client {
 	return []Client{plexClient("plex-appletv", "Plex for Apple TV", "tvOS", "Apple TV"), plexSecondDevice(), plexClient("plex-android", "Plex for Android (TV)", "Android", "BRAVIA 4K VH21"), plexClient("plex-web", "Plex Web", "Chrome", "Windows"), plexPlayback(),
-		infuseJellyfin(), swiftfin(), embySDK(), infuseEmby(), moonfin(), siloAppleTV(), stremio(), console(), xtream(), mcpClient()}
+		infuseJellyfin(), swiftfin(), embySDK(), infuseEmby(), moonfin(), siloAppleTV(), vela(), stremio(), console(), xtream(), mcpClient()}
 }
 
 func plexHeaders(product, platform, device string) func(*session) http.Header {
@@ -178,10 +178,12 @@ func plexClient(name, product, platform, device string) Client {
 		{Name: "/library/onDeck", Class: classHome, Path: "/library/onDeck"},
 		{Name: "/hubs/sections/movies", Class: classHome, Path: "/hubs/sections/{movieSection}?count=12&includeMeta=1&excludeFields=summary&includeLibraryPlaylists=1", Discover: discoverPlexHubMore},
 		{Name: "/hubs/sections/shows", Class: classHome, Path: "/hubs/sections/{showSection}?count=12&includeMeta=1&excludeFields=summary"},
-		{Name: "movies all titleSort p1", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: discoverPlexItem("movieKey", "movie")},
+		{Name: "movies all titleSort p1", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: combineDiscover(discoverPlexItem("movieKey", "movie"), discoverPlexItemBatch("movieBatch100", "movie", 100))},
 		{Name: "movies all titleSort deep", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=titleSort&X-Plex-Container-Start=6000" + page},
-		{Name: "movies all addedAt", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=addedAt:desc&X-Plex-Container-Start=0" + page},
-		{Name: "movies all rating", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=rating:desc&X-Plex-Container-Start=0" + page},
+		{Name: "movies all addedAt", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=addedAt:desc&X-Plex-Container-Start=0" + page, Discover: discoverPlexItemBatch("movieBatch100", "movie", 100)},
+		{Name: "movies all rating", Class: classBrowse, Path: "/library/sections/{movieSection}/all?type=1&sort=rating:desc&X-Plex-Container-Start=0" + page, Discover: discoverPlexItemBatch("movieBatch100", "movie", 100)},
+		{Name: "metadata batch 100", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/library/metadata/{movieBatch100}"},
+		{Name: "metadata batch 100 excludeMedia", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/library/metadata/{movieBatch100}?excludeElements=Media,Role,Director,Writer,Producer,Country,Guid,Rating,Image,UltraBlurColors,Location,Similar,Field&excludeFields=summary,tagline"},
 		{Name: "movies genre filter list", Class: classBrowse, Path: "/library/sections/{movieSection}/genre?type=1"},
 		{Name: "movies jump bar", Class: classBrowse, Path: "/library/sections/{movieSection}/firstCharacter?type=1"},
 		{Name: "shows all titleSort p1", Class: classBrowse, Path: "/library/sections/{showSection}/all?type=2&sort=titleSort&X-Plex-Container-Start=0" + page, Discover: discoverPlexItem("showKey", "show")},
@@ -259,6 +261,95 @@ func setOnce(vars map[string]string, k, v string) {
 	}
 }
 
+func combineDiscover(fns ...func(map[string]string, []byte)) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		for _, fn := range fns {
+			if fn != nil {
+				fn(vars, body)
+			}
+		}
+	}
+}
+
+func appendUniqueBatch(vars map[string]string, name string, values []string, limit int) {
+	if limit <= 0 || len(values) == 0 {
+		return
+	}
+	var cur []string
+	seen := map[string]bool{}
+	if existing := vars[name]; existing != "" {
+		for _, p := range strings.Split(existing, ",") {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				cur = append(cur, p)
+			}
+		}
+	}
+	for _, v := range values {
+		if len(cur) >= limit {
+			break
+		}
+		if v != "" && !seen[v] {
+			seen[v] = true
+			cur = append(cur, v)
+		}
+	}
+	if len(cur) > 0 {
+		vars[name] = strings.Join(cur, ",")
+	}
+}
+
+func discoverPlexItemBatch(name, typ string, limit int) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		var c struct {
+			MediaContainer struct {
+				Metadata []struct {
+					RatingKey string `json:"ratingKey"`
+					Type      string `json:"type"`
+				} `json:"Metadata"`
+			} `json:"MediaContainer"`
+		}
+		if json.Unmarshal(body, &c) != nil {
+			return
+		}
+		keys := make([]string, 0, len(c.MediaContainer.Metadata))
+		for _, m := range c.MediaContainer.Metadata {
+			if (typ == "" || m.Type == typ) && m.RatingKey != "" {
+				keys = append(keys, m.RatingKey)
+			}
+		}
+		appendUniqueBatch(vars, name, keys, limit)
+	}
+}
+
+func discoverMBItemBatch(name, typ string, limit int) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		var r struct {
+			Items []struct {
+				ID   string `json:"Id"`
+				Type string `json:"Type"`
+			} `json:"Items"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			var list []struct {
+				ID   string `json:"Id"`
+				Type string `json:"Type"`
+			}
+			if json.Unmarshal(body, &list) != nil {
+				return
+			}
+			r.Items = list
+		}
+		ids := make([]string, 0, len(r.Items))
+		for _, it := range r.Items {
+			if (typ == "" || it.Type == typ) && it.ID != "" {
+				ids = append(ids, it.ID)
+			}
+		}
+		appendUniqueBatch(vars, name, ids, limit)
+	}
+}
+
 func mediaBrowserHeaders(app, version, device string, emby bool) func(*session) http.Header {
 	return func(s *session) http.Header {
 		h := http.Header{}
@@ -319,7 +410,8 @@ func discoverViews(vars map[string]string, body []byte) {
 		// Libraries beyond the builtins 1 and 2 are plugin (or filter)
 		// libraries; record the first so a browse step covers it when one
 		// is installed.
-		if err == nil && n > 2 {
+		// The Collections (boxsets) folder has its own steps.
+		if err == nil && n > 2 && it.CollectionType != "boxsets" {
 			setOnce(vars, "pluginView", it.ID)
 		}
 		switch it.CollectionType {
@@ -373,7 +465,7 @@ func infuseJellyfin() Client {
 		{Name: "/UserViews/GroupingOptions", Class: classStatic, Path: "/UserViews/GroupingOptions?userId={userId}"},
 		{Name: "/Library/VirtualFolders", Class: classStatic, Path: "/Library/VirtualFolders?userId={userId}"},
 		{Name: "/DisplayPreferences/usersettings", Class: classStatic, Path: "/DisplayPreferences/usersettings?client=emby&userId={userId}"},
-		{Name: "movies p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: discoverMBItem("movieId", "Movie")},
+		{Name: "movies p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: combineDiscover(discoverMBItem("movieId", "Movie"), discoverMBItemBatch("movieIds100", "Movie", 100))},
 		{Name: "movies deep SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=6000&userId={userId}"},
 		{Name: "movies p1 DateCreated", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Movie&limit=50&parentId={moviesView}&recursive=true&sortBy=DateCreated%2CSortName&sortOrder=Descending&startIndex=0&userId={userId}"},
 		{Name: "series p1 SortName", Class: classBrowse, Path: "/Items?excludeLocationTypes=Virtual&fields=" + f + "&includeItemTypes=Series&limit=50&parentId={showsView}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}", Discover: discoverMBItem("seriesId", "Series")},
@@ -597,6 +689,81 @@ func siloAppleTV() Client {
 			{Name: "series season 1 episodes", Class: classDetail, Path: "/api/v2/catalog/series/{seriesId}/seasons/1/episodes?still_width=720"},
 			{Name: "search people", Class: classSearch, Path: "/api/v2/catalog/people?limit=20&media_scope=video_with_episodes&q=star"},
 		}, siloLibrarySteps()...)}
+}
+
+func velaHeaders(s *session) http.Header {
+	h := http.Header{}
+	h.Set("Accept", "application/json")
+	h.Set("X-Vela-Device-Id", "etherperf-vela-"+s.Viewer.Username)
+	h.Set("X-Vela-Device-Name", "etherperf")
+	h.Set("X-Vela-Platform", "web")
+	if tok := s.vars["token"]; tok != "" {
+		h.Set("Authorization", "Bearer "+tok)
+	}
+	return h
+}
+
+func discoverVelaLibraries(vars map[string]string, body []byte) {
+	var r struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return
+	}
+	for _, it := range r.Items {
+		switch it.Kind {
+		case "movies":
+			if vars["movieLibrary"] == "" {
+				vars["movieLibrary"] = it.ID
+			}
+		case "shows":
+			if vars["seriesLibrary"] == "" {
+				vars["seriesLibrary"] = it.ID
+			}
+		}
+	}
+}
+
+func discoverVelaCollectionsCursor(vars map[string]string, body []byte) {
+	var r struct {
+		NextCursor string `json:"nextCursor"`
+	}
+	if json.Unmarshal(body, &r) == nil && r.NextCursor != "" {
+		vars["collectionsCursor"] = url.QueryEscape(r.NextCursor)
+	}
+}
+
+func vela() Client {
+	return Client{
+		Name:    "vela",
+		Surface: "vela",
+		Prefix:  "/vela/v0",
+		Headers: velaHeaders,
+		SignIn: &Step{
+			Name:   "auth/sign-in",
+			Class:  classSignIn,
+			Method: http.MethodPost,
+			Path:   "/auth/sign-in",
+			Body:   `{"idempotencyKey":"etherperf-vela-{username}","username":"{username}","password":"{password}","device":{"id":"etherperf-vela-{username}","name":"etherperf","platform":"web"}}`,
+			Discover: func(vars map[string]string, body []byte) {
+				var r struct {
+					AccessToken string `json:"accessToken"`
+				}
+				if json.Unmarshal(body, &r) == nil {
+					vars["token"] = r.AccessToken
+				}
+			},
+		},
+		Steps: []Step{
+			{Name: "libraries", Class: classHome, Path: "/libraries", Discover: discoverVelaLibraries},
+			{Name: "library movies collections", Class: classBrowse, Path: "/libraries/{movieLibrary}/collections?limit=100", Discover: discoverVelaCollectionsCursor},
+			{Name: "library movies collections p2", Class: classBrowse, Path: "/libraries/{movieLibrary}/collections?limit=100&cursor={collectionsCursor}"},
+			{Name: "library shows collections", Class: classBrowse, Path: "/libraries/{seriesLibrary}/collections?limit=100"},
+		},
+	}
 }
 
 var stremioMetaID = regexp.MustCompile(`"id"\s*:\s*"((?:tmdb:|tt)[^"]+)"`)

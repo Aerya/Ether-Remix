@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/collections"
 	"github.com/braedonsaunders/ether/internal/config"
@@ -129,6 +130,7 @@ func TestExternalListSources(t *testing.T) {
 }
 
 func TestMDBListPaginationAndPartialErrors(t *testing.T) {
+	var rateLimitedCalls int
 	ext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		offset := q.Get("offset")
@@ -159,12 +161,38 @@ func TestMDBListPaginationAndPartialErrors(t *testing.T) {
 				return
 			}
 			http.Error(w, "upstream gateway error", http.StatusBadGateway)
+		case "/lists/bob/ratelimited/json":
+			rateLimitedCalls++
+			if offset == "0" {
+				fmt.Fprint(w, `[{"id":101,"title":"Space Saga","mediatype":"movie","release_year":1977},
+					{"id":104,"title":"Cyborg Hunter","mediatype":"movie","release_year":1982}]`)
+				return
+			}
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(2*time.Minute).Unix()))
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+		case "/lists/bob/exact/json":
+			// 24 items at pageSize=2 takes 12 full pages + 1 empty probe (> old 10-page cap)
+			// and matches MDBListMaxItems=24 exactly with no incomplete warning.
+			var off int
+			fmt.Sscanf(offset, "%d", &off)
+			if off >= 24 {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			if off == 22 {
+				fmt.Fprint(w, `[{"id":108,"title":"Knight Returns","mediatype":"movie","release_year":2008},{"id":509,"title":"Space Show","mediatype":"show","release_year":2013}]`)
+				return
+			}
+			id1 := 10000 + off + 1
+			id2 := 10000 + off + 2
+			fmt.Fprintf(w, `[{"id":%d,"title":"Film %d","mediatype":"movie","release_year":2000},{"id":%d,"title":"Film %d","mediatype":"movie","release_year":2000}]`,
+				id1, id1, id2, id2)
 		case "/lists/bob/overflow/json":
-			// Returns 2 new items on every page beyond the 10-page safety cap.
-			var page int
-			fmt.Sscanf(offset, "%d", &page)
-			id1 := 100 + page + 1
-			id2 := 100 + page + 2
+			// Returns 2 new items on every page beyond MDBListMaxItems=24.
+			var off int
+			fmt.Sscanf(offset, "%d", &off)
+			id1 := 20000 + off + 1
+			id2 := 20000 + off + 2
 			fmt.Fprintf(w, `[{"id":%d,"title":"Film %d","mediatype":"movie","release_year":2000},{"id":%d,"title":"Film %d","mediatype":"movie","release_year":2000}]`,
 				id1, id1, id2, id2)
 		default:
@@ -173,7 +201,7 @@ func TestMDBListPaginationAndPartialErrors(t *testing.T) {
 	}))
 	defer ext.Close()
 
-	bases := collections.ExternalBases{MDBList: ext.URL, MDBListPageSize: 2}
+	bases := collections.ExternalBases{MDBList: ext.URL, MDBListPageSize: 2, MDBListMaxItems: 24}
 	e := newEnv(t, withOpts(collections.WithExternalBases(bases), collections.WithUserAgent("Ether/test")))
 	preview := func(listURL string) *core.CollectionPreview {
 		t.Helper()
@@ -213,10 +241,93 @@ func TestMDBListPaginationAndPartialErrors(t *testing.T) {
 		t.Fatalf("flaky mdblist should report page 2 failure warning, got %v", flaky.Warnings)
 	}
 
-	// 4. Exceeding maxExternalPages reports explicit incomplete warning.
+	// 4. Exact-cap list spanning >10 pages completes without an incomplete warning.
+	exact := preview("https://mdblist.com/lists/bob/exact")
+	if got := strings.Join(titlesOf(exact), ","); got != "Knight Returns,Space Show" {
+		t.Fatalf("exact-cap mdblist items: got %q, warnings=%v", got, exact.Warnings)
+	}
+	if strings.Contains(strings.Join(exact.Warnings, " "), "incomplete") {
+		t.Fatalf("exact-cap mdblist should not report incomplete warning, got %v", exact.Warnings)
+	}
+
+	// 5. Exceeding the item cap reports an explicit incomplete warning.
 	overflow := preview("https://mdblist.com/lists/bob/overflow")
-	if !strings.Contains(strings.Join(overflow.Warnings, " "), "exceeds 10 pages") {
-		t.Fatalf("overflow mdblist should report page cap warning, got %v", overflow.Warnings)
+	if !strings.Contains(strings.Join(overflow.Warnings, " "), "exceeds 24 items") {
+		t.Fatalf("overflow mdblist should report item cap warning, got %v", overflow.Warnings)
+	}
+
+	// 6. Rate limit (HTTP 429) on page > 1 stops paging and retains earlier items.
+	limited := preview("https://mdblist.com/lists/bob/ratelimited")
+	if got := strings.Join(titlesOf(limited), ","); got != "Space Saga,Cyborg Hunter" {
+		t.Fatalf("rate-limited mdblist items: got %q", got)
+	}
+	if !strings.Contains(strings.Join(limited.Warnings, " "), "rate limited") {
+		t.Fatalf("rate-limited mdblist should report rate-limit warning, got %v", limited.Warnings)
+	}
+	if rateLimitedCalls != 2 {
+		t.Fatalf("rate-limited mdblist made %d requests, want 2 (stop immediately on 429)", rateLimitedCalls)
+	}
+}
+
+func TestMDBListDefaultPageSizeOver1000Items(t *testing.T) {
+	var requests []string
+	ext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		requests = append(requests, q.Get("limit")+":"+q.Get("offset"))
+		if r.URL.Path != "/lists/bob/large/json" {
+			http.NotFound(w, r)
+			return
+		}
+		var off, lim int
+		fmt.Sscanf(q.Get("offset"), "%d", &off)
+		fmt.Sscanf(q.Get("limit"), "%d", &lim)
+		const total = 1617
+		if off >= total {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		end := off + lim
+		if end > total {
+			end = total
+		}
+		var b strings.Builder
+		b.WriteByte('[')
+		for i := off; i < end; i++ {
+			if i > off {
+				b.WriteByte(',')
+			}
+			switch i {
+			case 0:
+				b.WriteString(`{"id":101,"title":"Space Saga","mediatype":"movie","release_year":1977}`)
+			case total - 1:
+				b.WriteString(`{"id":108,"title":"Knight Returns","mediatype":"movie","release_year":2008}`)
+			default:
+				fmt.Fprintf(&b, `{"id":%d,"title":"Film %d","mediatype":"movie","release_year":2000}`, 50000+i, i)
+			}
+		}
+		b.WriteByte(']')
+		fmt.Fprint(w, b.String())
+	}))
+	defer ext.Close()
+
+	e := newEnv(t, withOpts(
+		collections.WithExternalBases(collections.ExternalBases{MDBList: ext.URL}),
+		collections.WithUserAgent("Ether/test"),
+	))
+	sp := spec("mdblist-large", "mixed", []core.CollectionSource{{Kind: "mdblist", URL: "https://mdblist.com/lists/bob/large"}})
+	sp.Sort, sp.SortDesc = "source", false
+	p, err := e.svc.Preview(e.ctx, sp, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(p.Warnings, " "), "incomplete") {
+		t.Fatalf("1617-item mdblist unexpected incomplete warning: %v", p.Warnings)
+	}
+	if got := strings.Join(titlesOf(p), ","); got != "Space Saga,Knight Returns" {
+		t.Fatalf("1617-item mdblist matched titles = %q, want both first and last page matches", got)
+	}
+	if got := strings.Join(requests, ","); got != "1000:0,1000:1000" {
+		t.Fatalf("1617-item mdblist requests = %q, want 1000:0,1000:1000", got)
 	}
 }
 

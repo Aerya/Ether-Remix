@@ -23,7 +23,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
-	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/perfharness"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -291,9 +290,8 @@ func TestCPUBaselineAndLoadLevels(t *testing.T) {
 				_, _ = a2.plexWatch.DeliverOnce(ctx)
 			}
 		}),
-		measureWorker("housekeeping shard sweep (ImageGrant+Receipt DELETE)", "5s", 5*time.Second, 50, func() {
+		measureWorker("housekeeping shard sweep (Receipt DELETE)", "5s", 5*time.Second, 50, func() {
 			now := time.Now()
-			_, _ = identity.PruneImageGrantShard(ctx, a2.db, now, shard%64)
 			_, _ = experience.PruneReceiptShard(ctx, a2.db, now, shard%64)
 			shard++
 		}),
@@ -326,7 +324,6 @@ func TestCPUBaselineAndLoadLevels(t *testing.T) {
 			fn: func() {
 				now := time.Now()
 				for s := int64(0); s < 64; s++ {
-					_, _ = identity.PruneImageGrantShard(ctx, a2.db, now, s)
 					_, _ = experience.PruneReceiptShard(ctx, a2.db, now, s)
 				}
 				_, _ = capability.PruneExpired(ctx, a2.db, now)

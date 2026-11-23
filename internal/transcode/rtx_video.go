@@ -171,6 +171,9 @@ func (m *Manager) enhanceDecision(info core.MediaInfo, caps core.ClientCaps, opt
 	if invalid != "" {
 		return reject("unavailable", invalid)
 	}
+	if cfg.VideoTranscodingOff() || caps.NoVideoTranscode {
+		return reject("off", "video transcoding is off")
+	}
 	if c.Mode == "off" {
 		return reject("off", "disabled by owner")
 	}
@@ -307,13 +310,18 @@ func rtxSourceReason(info core.MediaInfo, d core.Decision) string {
 	return ""
 }
 
-// decisionOutputSize is used only for manifest metadata. Ordinary FFmpeg
-// outputSize retains its no-upscale policy.
-func decisionOutputSize(v *core.StreamInfo, d core.Decision) (int, int) {
+// DecisionOutputSize is the encoded (square-pixel) picture size a
+// decision produces from v, for manifest and client metadata. It matches
+// planPicture: an anamorphic source is sized by its display aspect.
+func DecisionOutputSize(v *core.StreamInfo, d core.Decision) (int, int) {
 	if enhancementSelected(d) || d.Enhancement.Backend == rtxBackend && d.Enhancement.State == "stopped" && d.Enhancement.Width > 0 {
 		return d.Enhancement.Width, d.Enhancement.Height
 	}
-	return outputSize(v.Width, v.Height, d.MaxHeight)
+	return displayOutputSize(v, d.MaxHeight)
+}
+
+func decisionOutputSize(v *core.StreamInfo, d core.Decision) (int, int) {
+	return DecisionOutputSize(v, d)
 }
 
 func minRTXVideoKbps(height int) int {

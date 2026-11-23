@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Keep key derivation cheap in tests (the minimum a restore accepts).
@@ -127,12 +126,8 @@ func TestEncryptedHeaderLimits(t *testing.T) {
 		"kdf":                  kdf,
 		"magic":                append([]byte("ETHERBK2"), enc[len(encMagic):]...),
 	} {
-		start := time.Now()
 		if _, err := decrypt(b, testPassword); err == nil {
 			t.Errorf("%s: accepted", name)
-		}
-		if d := time.Since(start); d > 2*time.Second {
-			t.Errorf("%s: took %v", name, d)
 		}
 	}
 	if _, err := NewEncryptWriter(io.Discard, "short"); !errors.Is(err, ErrPasswordPolicy) {

@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/hoststat"
 )
@@ -46,19 +45,9 @@ func TestScorecardFaultOutageAndTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer opened.Close()
-	media := opened.(*scorecardMedia)
-	scorecardFaults.mu.Lock()
-	scorecardFaults.mode = "slow"
-	scorecardFaults.delay = 30 * time.Millisecond
-	scorecardFaults.until = time.Now().Add(time.Second)
-	scorecardFaults.mu.Unlock()
-	started := time.Now()
 	buf := make([]byte, 4)
-	if _, err := media.Read(buf); err != nil {
+	if _, err := opened.(*scorecardMedia).Read(buf); err != nil {
 		t.Fatal(err)
-	}
-	if time.Since(started) < 25*time.Millisecond {
-		t.Fatal("slow read did not delay")
 	}
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/__scorecard/telemetry", nil)

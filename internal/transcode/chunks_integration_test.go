@@ -723,3 +723,118 @@ func TestIntegrationUnindexedTSCopyWithFastStartIsContinuous(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrationFMP4CopyVideoEncodedEAC3MidTitleRestart(t *testing.T) {
+	e := newRealEnv(t, WithoutHWDetection(), WithBuffering(2*time.Second, 0, 0))
+	// 23.976 fps HEVC with 4 B-frames + 5.1 DTS: keyframes at 3.003s/4.004s
+	// have DTS < 4.000s, which previously cut chunk 0 before accurate_seek
+	// delivered any decoded audio to eac3 ("Cannot write moov atom before EAC3 packets parsed").
+	const fx = "hevc-dts-23976.mkv"
+	e.gen(t, fx, 12,
+		"-vf", "fps=24000/1001",
+		"-c:v", "libx265", "-preset", "ultrafast",
+		"-x265-params", "keyint=24:min-keyint=24:scenecut=0:open-gop=0:bframes=4:log-level=error",
+		"-c:a", "dca", "-strict", "-2", "-ac", "6", "-b:a", "768k",
+	)
+	info, err := e.m.Probe(t.Context(), e.url(fx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Keyframes = e.keyframeIndex(t, fx)
+	d := core.Decision{
+		Kind:            core.DecisionTranscode,
+		Container:       ContainerFMP4,
+		VideoCopy:       true,
+		AudioCodec:      "eac3",
+		AudioChannels:   6,
+		AudioSampleRate: 48000,
+		AudioStream:     1,
+		SubtitleStream:  -1,
+	}
+
+	assertCompleteEAC3Init := func(t *testing.T, initBytes []byte, label string) {
+		t.Helper()
+		top, err := readBoxes(initBytes, 0, len(initBytes))
+		if err != nil {
+			t.Fatalf("%s init boxes: %v", label, err)
+		}
+		hasMoov := false
+		for _, b := range top {
+			if b.typ == "moov" {
+				hasMoov = true
+				if !isCompleteFMP4Moov(initBytes[b.start:b.end]) {
+					t.Fatalf("%s init moov is incomplete (missing mvex or dec3)", label)
+				}
+			}
+		}
+		if !hasMoov {
+			t.Fatalf("%s init has no moov", label)
+		}
+	}
+
+	assertAudioDecodes := func(t *testing.T, initBytes, segBytes []byte, label string) {
+		t.Helper()
+		file := e.writeTemp(t, label+"-audio.m4s", append(append([]byte(nil), initBytes...), segBytes...))
+		var stderr bytes.Buffer
+		cmd := mediaproc.CommandContext(t.Context(), 2*time.Minute, e.ffprobe,
+			"-v", "error", "-select_streams", "a:0", "-show_entries", "frame=nb_samples", "-of", "csv=p=0", file)
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil || stderr.Len() > 0 || len(strings.Fields(string(out))) == 0 {
+			t.Fatalf("%s audio decode failed: err=%v frames=%q stderr=%s", label, err, string(out), stderr.String())
+		}
+	}
+
+	// 1. Mid-session restart onto the retained initial clock.
+	hs, err := e.m.StartHLS(context.Background(), core.HLSRequest{
+		SessionID: "eac3-restart",
+		InputURL:  e.url(fx),
+		Info:      *info,
+		Decision:  d,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	sess := hs.(*Session)
+	starts := planStarts(t, hs, 0)
+	total := len(starts) - 1
+	init0 := fetch(t, hs, InitSegment)
+	assertCompleteEAC3Init(t, init0, "initial")
+	e.checkSegmentsWith(t, hs, ContainerFMP4, init0, starts, 0, 1, "eac3-first")
+
+	mid := 2 // ~4.0s
+	sess.mu.Lock()
+	for n := range sess.done[0] {
+		if n >= mid-1 {
+			delete(sess.done[0], n)
+		}
+	}
+	err = sess.startRunLocked(mid, false)
+	sess.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.checkSegmentsWith(t, hs, ContainerFMP4, init0, starts, mid, total, "eac3-restart")
+	assertAudioDecodes(t, init0, fetch(t, hs, mid), "eac3-restart-seg")
+
+	// 2. Fresh start mid-GOP (StartOffset > 0), where the restarted run's own
+	// init is published directly as EXT-X-MAP.
+	offset := 2950 * time.Millisecond
+	hsOff, err := e.m.StartHLS(context.Background(), core.HLSRequest{
+		SessionID:   "eac3-offset",
+		InputURL:    e.url(fx),
+		Info:        *info,
+		Decision:    d,
+		StartOffset: offset,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hsOff.Close()
+	startsOff := planStarts(t, hsOff, offset)
+	initOff := fetch(t, hsOff, InitSegment)
+	assertCompleteEAC3Init(t, initOff, "offset")
+	e.checkSegmentsWith(t, hsOff, ContainerFMP4, initOff, startsOff, 0, len(startsOff)-1, "eac3-offset")
+	assertAudioDecodes(t, initOff, fetch(t, hsOff, 0), "eac3-offset-seg0")
+}

@@ -306,6 +306,7 @@ func (p *pool) runBodyBatch(c *Conn, batch []*bodyFlight, prio core.Priority) {
 		p.bodyMu.Unlock()
 	}, func(i int, part *yenc.Part, err error) {
 		f := batch[i]
+		bodyStarted := c.bodyStarted
 		if err != nil {
 			p.bodyMu.Lock()
 			f.started = false
@@ -329,7 +330,7 @@ func (p *pool) runBodyBatch(c *Conn, batch []*bodyFlight, prio core.Priority) {
 			if !network || !networkRecorded {
 				// A mid-body drop says nothing about idle siblings. Only the
 				// first reply on a reused socket can expose a stale idle pool.
-				err = p.failed(err, reused && i == 0 && !c.bodyStarted, ctx)
+				err = p.failed(err, reused && i == 0 && !bodyStarted, ctx)
 				if network {
 					networkRecorded = true
 				}
@@ -348,6 +349,7 @@ func (p *pool) runBodyBatch(c *Conn, batch []*bodyFlight, prio core.Priority) {
 			p.fetching.add(time.Since(start))
 			p.latMu.Unlock()
 		}
+		p.statTrust.noteBodyResult(f.key.id, err, bodyStarted, f.ctx)
 		if f.ctx.Err() != nil {
 			err = f.ctx.Err()
 			part = nil

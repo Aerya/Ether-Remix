@@ -114,25 +114,25 @@ func updateReleaseNames(ctx context.Context, tx *sql.Tx, key int64, typ core.Med
 	if typ != core.TypeMovie && typ != core.TypeShow {
 		return nil
 	}
-	var title, original string
-	if err := tx.QueryRowContext(ctx, `SELECT title,original_title FROM catalog_titles WHERE key=?`, key).Scan(&title, &original); err != nil {
+	var title, original, english string
+	if err := tx.QueryRowContext(ctx, `SELECT title,original_title,english_title FROM catalog_titles WHERE key=?`, key).Scan(&title, &original, &english); err != nil {
 		return err
 	}
-	return replaceReleaseNames(ctx, tx, key, title, original)
+	return replaceReleaseNames(ctx, tx, key, title, original, english)
 }
 
 // insertFreshReleaseNames indexes a row this transaction just inserted with
-// title and original: it has no names yet, and those are its stored names.
-func insertFreshReleaseNames(ctx context.Context, tx *sql.Tx, key int64, typ core.MediaType, title, original string) error {
+// title, original and english: it has no names yet, and those are its stored names.
+func insertFreshReleaseNames(ctx context.Context, tx *sql.Tx, key int64, typ core.MediaType, names ...string) error {
 	if typ != core.TypeMovie && typ != core.TypeShow {
 		return nil
 	}
-	return insertReleaseNames(ctx, tx, key, title, original)
+	return insertReleaseNames(ctx, tx, key, names...)
 }
 
-func replaceReleaseNames(ctx context.Context, tx *sql.Tx, key int64, title, original string) error {
+func replaceReleaseNames(ctx context.Context, tx *sql.Tx, key int64, names ...string) error {
 	want := map[string]bool{}
-	for _, name := range []string{title, original} {
+	for _, name := range names {
 		if name = releaseparse.NormalizeTitle(name); name != "" {
 			want[name] = true
 		}
@@ -160,5 +160,5 @@ func replaceReleaseNames(ctx context.Context, tx *sql.Tx, key int64, title, orig
 	if _, err = tx.ExecContext(ctx, `DELETE FROM catalog_release_names WHERE key=?`, key); err != nil {
 		return err
 	}
-	return insertReleaseNames(ctx, tx, key, title, original)
+	return insertReleaseNames(ctx, tx, key, names...)
 }

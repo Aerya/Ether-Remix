@@ -679,3 +679,281 @@ func TestChunkedPauseMidBatchPublishesConsumedSegments(t *testing.T) {
 		t.Fatalf("unpublished segments in 0..%d: %v", maxDone, missing)
 	}
 }
+
+func TestCollectChunksFMP4ReinitAndInBandMoov(t *testing.T) {
+	ftyp := mkBox("ftyp", []byte("iso5"), u32(512), []byte("iso5iso6mp41"))
+	makeTrak := func(id, scale uint32, handler string, entry []byte) []byte {
+		tkhd := mkFullBox("tkhd", 0, 3, u32(0), u32(0), u32(id), u32(0), u32(0), make([]byte, 60))
+		mdhd := mkFullBox("mdhd", 0, 0, u32(0), u32(0), u32(scale), u32(0), u16(0x55c4), u16(0))
+		hdlr := mkFullBox("hdlr", 0, 0, u32(0), []byte(handler), make([]byte, 12), []byte("Handler\x00"))
+		stbl := mkBox("stbl", mkFullBox("stsd", 0, 0, u32(1), entry))
+		return mkBox("trak", tkhd, mkBox("mdia", mdhd, hdlr, mkBox("minf", stbl)))
+	}
+	mvhd := mkFullBox("mvhd", 0, 0, u32(0), u32(0), u32(1000), u32(0), make([]byte, 80))
+	vTrak1080 := makeTrak(1, 90000, "vide", avc1Entry(1920, 1080, 0x64, 0x00, 0x28))
+	vTrak720 := makeTrak(1, 90000, "vide", avc1Entry(1280, 720, 0x64, 0x00, 0x28))
+	ec3Incomplete := makeTrak(2, 48000, "soun", audioEntry("ec-3", 6, 48000))
+	ec3Complete := makeTrak(2, 48000, "soun", audioEntry("ec-3", 6, 48000, mkBox("dec3", []byte{0x0c, 0x00, 0x20, 0x0f, 0x00})))
+	mvexDual := mkBox("mvex",
+		mkFullBox("trex", 0, 0, u32(1), u32(1), u32(0), u32(0), u32(0)),
+		mkFullBox("trex", 0, 0, u32(2), u32(1), u32(0), u32(0), u32(0)),
+	)
+	mvexSingle := mkBox("mvex", mkFullBox("trex", 0, 0, u32(1), u32(1), u32(0), u32(0), u32(0)))
+
+	// Unclosed moov (size 0, no mvex, ec-3 without dec3), matching FFmpeg's
+	// aborted mov_write_moov_tag before EAC3 packets are parsed.
+	unclosedMoovBody := bytes.Join([][]byte{mvhd, vTrak1080, ec3Incomplete}, nil)
+	unclosedMoov := append(append(u32(0), "moov"...), unclosedMoovBody...)
+	completeDualMoov := mkBox("moov", mvhd, vTrak1080, ec3Complete, mvexDual)
+
+	newChunkSession := func(t *testing.T, startAt time.Duration, startSeg, total int) (*Session, *run, string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		chunks := filepath.Join(dir, "c-1")
+		if err := os.MkdirAll(chunks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := &blockedProc{done: make(chan struct{})}
+		t.Cleanup(p.Stop)
+		initPath := filepath.Join(dir, "init-1.mp4")
+		r := &run{
+			seq:      1,
+			startSeg: startSeg,
+			proc:     p,
+			maxDone:  -1,
+			stderr:   newTailBuffer(10),
+			spec:     runSpec{Dir: dir, Playlist: "run-1.m3u8", InitName: "init-1.mp4", Start: startAt, StartSeg: startSeg},
+			chunks: &chunkRun{
+				dir:       chunks,
+				container: ContainerFMP4,
+				initPath:  initPath,
+				startAt:   startAt,
+				sl:        newSlotter(0, 4*time.Second, total, startSeg),
+			},
+		}
+		s := &Session{
+			m:         &Manager{},
+			dir:       dir,
+			container: ContainerFMP4,
+			segDur:    4 * time.Second,
+			total:     total,
+			log:       testLogger(t),
+			sessionEncoding: sessionEncoding{
+				cur:    r,
+				endSeg: -1,
+			},
+			sessionDelivery: sessionDelivery{
+				done:    []map[int]bool{{}},
+				changed: make(chan struct{}),
+			},
+		}
+		return s, r, dir, chunks
+	}
+
+	t.Run("moov_without_moof_then_moov_with_moof", func(t *testing.T) {
+		// Run restarted at segment 1 (4s). Chunk 0 is an aborted moov-only cut;
+		// chunk 1 holds the complete moov plus buffered samples [2s..6s] with a
+		// 2s EXTINF that would falsely look like preroll (2s+2s <= 4s) without
+		// reading the chunk's real sample end; chunk 2 closes segment 1 at 8s.
+		s, r, dir, chunks := newChunkSession(t, 4*time.Second, 1, 3)
+		if err := os.WriteFile(filepath.Join(dir, "init-1.mp4"), append(append([]byte(nil), ftyp...), unclosedMoov...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		styp := mkBox("styp", []byte("msdh"), u32(0), []byte("msdhmsix"))
+		c0 := bytes.Join([][]byte{styp, ftyp, unclosedMoov}, nil)
+		// Strip styp/sidx from testChunk so we can place ftyp+completeDualMoov before moof.
+		raw1 := testChunk(1, 2*90000, 90000, 4, []byte("gop0gop1"))
+		top1, err := readBoxes(raw1, 0, len(raw1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frag1 [][]byte
+		frag1 = append(frag1, styp, ftyp, completeDualMoov)
+		for _, b := range top1 {
+			if b.typ == "moof" || b.typ == "mdat" {
+				frag1 = append(frag1, raw1[b.start:b.end])
+			}
+		}
+		c1 := bytes.Join(frag1, nil)
+		c2 := testChunk(2, 8*90000, 90000, 4, []byte("gop2"))
+
+		for name, data := range map[string][]byte{
+			filepath.Join(chunks, "00000.m4s"): c0,
+			filepath.Join(chunks, "00001.m4s"): c1,
+			filepath.Join(chunks, "00002.m4s"): c2,
+			filepath.Join(dir, "run-1.m3u8"):   []byte("#EXTM3U\n#EXTINF:2.0,\n00000.m4s\n#EXTINF:2.0,\n00001.m4s\n#EXTINF:4.0,\n00002.m4s\n"),
+		} {
+			if err := os.WriteFile(name, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		s.collectChunks(r, false)
+		if r.chunks.failed {
+			t.Fatalf("run failed unexpectedly: %v", r.proc.Err())
+		}
+		if !s.done[0][1] {
+			t.Fatalf("segment 1 not published: done=%v next=%d", s.done[0], r.chunks.next)
+		}
+		if _, err := os.Stat(filepath.Join(chunks, "00000.m4s")); !os.IsNotExist(err) {
+			t.Errorf("skipped re-init chunk 00000.m4s still on disk: %v", err)
+		}
+		initBytes, err := os.ReadFile(filepath.Join(dir, "init-1.mp4"))
+		if err != nil || !fmp4InitFileComplete(filepath.Join(dir, "init-1.mp4")) {
+			t.Fatalf("rebuilt init-1.mp4 not complete: err=%v len=%d", err, len(initBytes))
+		}
+		tracks, err := parseInitTracks(initBytes)
+		if err != nil || len(tracks) != 2 || tracks[1].Codecs != "ec-3" {
+			t.Fatalf("rebuilt init tracks = %+v, err=%v", tracks, err)
+		}
+		segBytes, err := os.ReadFile(s.trackSegPath(0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		boxes, err := readBoxes(segBytes, 0, len(segBytes))
+		if err != nil {
+			t.Fatalf("read published segment boxes: %v", err)
+		}
+		for _, b := range boxes {
+			if b.typ == "ftyp" || b.typ == "moov" {
+				t.Errorf("published segment 1 retained in-band %s box", b.typ)
+			}
+		}
+	})
+
+	t.Run("takes_first_complete_moov_and_skips_reinit_chunks", func(t *testing.T) {
+		s, r, dir, chunks := newChunkSession(t, 0, 0, 2)
+		noMvexInit := append(append([]byte(nil), ftyp...), mkBox("moov", mvhd, vTrak720)...)
+		if err := os.WriteFile(filepath.Join(dir, "init-1.mp4"), noMvexInit, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		firstComplete := mkBox("moov", mvhd, vTrak1080, mvexSingle)
+		secondComplete := mkBox("moov", mvhd, vTrak720, mvexSingle)
+		for name, data := range map[string][]byte{
+			filepath.Join(chunks, "00000.m4s"): noMvexInit,
+			filepath.Join(chunks, "00001.m4s"): append(append([]byte(nil), ftyp...), firstComplete...),
+			filepath.Join(chunks, "00002.m4s"): append(append([]byte(nil), ftyp...), secondComplete...),
+			filepath.Join(chunks, "00003.m4s"): testChunk(1, 0, 90000, 4, []byte("seg0")),
+			filepath.Join(chunks, "00004.m4s"): testChunk(2, 4*90000, 90000, 4, []byte("seg1")),
+			filepath.Join(dir, "run-1.m3u8"):   []byte("#EXTM3U\n#EXTINF:0,\n00000.m4s\n#EXTINF:0,\n00001.m4s\n#EXTINF:0,\n00002.m4s\n#EXTINF:4.0,\n00003.m4s\n#EXTINF:4.0,\n00004.m4s\n"),
+		} {
+			if err := os.WriteFile(name, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		s.collectChunks(r, false)
+		if r.chunks.failed || !s.done[0][0] {
+			t.Fatalf("failed=%v done=%v", r.chunks.failed, s.done[0])
+		}
+		initBytes, err := os.ReadFile(filepath.Join(dir, "init-1.mp4"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ti, err := parseInit(initBytes)
+		if err != nil || ti.Width != 1920 || ti.Height != 1080 {
+			t.Fatalf("init track = %+v (err=%v), want 1920x1080 from first complete moov", ti, err)
+		}
+	})
+}
+
+func TestCollectChunksBoundsLiveParseRetries(t *testing.T) {
+	newLiveSession := func(t *testing.T) (*Session, *run, *blockedProc, string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		chunks := filepath.Join(dir, "c-0")
+		if err := os.MkdirAll(chunks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "init-0.mp4"), testVideoInit(1280, 720), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := &blockedProc{done: make(chan struct{})}
+		t.Cleanup(p.Stop)
+		r := &run{
+			proc:    p,
+			maxDone: -1,
+			stderr:  newTailBuffer(10),
+			spec:    runSpec{Dir: dir, Playlist: "run-0.m3u8", InitName: "init-0.mp4"},
+			chunks: &chunkRun{
+				dir:       chunks,
+				container: ContainerFMP4,
+				initPath:  filepath.Join(dir, "init-0.mp4"),
+				sl:        newSlotter(0, 4*time.Second, 2, 0),
+			},
+		}
+		s := &Session{
+			m:         &Manager{},
+			dir:       dir,
+			container: ContainerFMP4,
+			segDur:    4 * time.Second,
+			total:     2,
+			log:       testLogger(t),
+			sessionEncoding: sessionEncoding{
+				cur:    r,
+				endSeg: -1,
+			},
+			sessionDelivery: sessionDelivery{
+				done:    []map[int]bool{{}},
+				changed: make(chan struct{}),
+			},
+		}
+		return s, r, p, dir, chunks
+	}
+
+	t.Run("transient_error_recovers", func(t *testing.T) {
+		s, r, _, dir, chunks := newLiveSession(t)
+		c0 := filepath.Join(chunks, "00000.m4s")
+		if err := os.WriteFile(c0, []byte("partial"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "run-0.m3u8"), []byte("#EXTM3U\n#EXTINF:4.0,\n00000.m4s\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s.collectChunks(r, false)
+		if r.chunks.failed || r.chunks.next != 0 {
+			t.Fatalf("after 1 transient poll: failed=%v next=%d", r.chunks.failed, r.chunks.next)
+		}
+		if err := os.WriteFile(c0, testChunk(1, 0, 90000, 4, []byte("ok0")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(chunks, "00001.m4s"), testChunk(2, 4*90000, 90000, 4, []byte("ok1")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "run-0.m3u8"), []byte("#EXTM3U\n#EXTINF:4.0,\n00000.m4s\n#EXTINF:4.0,\n00001.m4s\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s.collectChunks(r, false)
+		if r.chunks.failed || !s.done[0][0] {
+			t.Fatalf("after recovery: failed=%v done=%v", r.chunks.failed, s.done[0])
+		}
+	})
+
+	t.Run("persistent_error_fails_live_run", func(t *testing.T) {
+		s, r, p, dir, chunks := newLiveSession(t)
+		if err := os.WriteFile(filepath.Join(chunks, "00000.m4s"), []byte("styp-only-broken"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "run-0.m3u8"), []byte("#EXTM3U\n#EXTINF:4.0,\n00000.m4s\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for i := 1; i < maxChunkParseRetries; i++ {
+			s.collectChunks(r, false)
+			if r.chunks.failed {
+				t.Fatalf("run failed early at poll %d/%d", i, maxChunkParseRetries)
+			}
+		}
+		s.collectChunks(r, false)
+		if !r.chunks.failed {
+			t.Fatal("run did not fail after reaching maxChunkParseRetries")
+		}
+		select {
+		case <-p.Done():
+		default:
+			t.Fatal("failChunkRun did not stop live producer")
+		}
+		if err := r.proc.Err(); err == nil {
+			t.Fatal("failed run proc returned nil error")
+		}
+	})
+}

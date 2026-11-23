@@ -59,11 +59,13 @@ const defaultBaseURL = "https://api.opensubtitles.com/api/v1"
 type Options struct {
 	Config           config.OpenSubtitles
 	SubDL            config.SubDL
+	SubSource        config.SubSource
 	Providers        []config.SubtitleProvider
 	CacheDir         string // data dir subfolder for downloaded subtitles
 	BaseURL          string // override for tests
 	SubDLURL         string // override for tests
 	SubDLDownloadURL string // override for tests
+	SubSourceURL     string // override for tests
 	HTTPClient       *http.Client
 	Logger           *slog.Logger
 	UserAgent        string // OpenSubtitles requires an app User-Agent
@@ -86,12 +88,14 @@ type Options struct {
 type Service struct {
 	cfg             config.OpenSubtitles
 	subdl           config.SubDL
+	subsource       config.SubSource
 	providers       []config.SubtitleProvider
 	pluginProviders map[string]PluginProvider
 	dir             string
 	base            string
 	subdlBase       string
 	subdlDownload   string
+	subsourceBase   string
 	http            *http.Client
 	log             *slog.Logger
 	agent           string
@@ -99,17 +103,28 @@ type Service struct {
 	maxWait         time.Duration
 	now             func() time.Time
 
-	mu          sync.Mutex
-	token       string // login token, cached
-	flights     flight.Group[string, string]
-	negative    map[string]time.Time // title+lang -> when nothing was found
-	quotaTill   time.Time            // downloads refused until then
-	videoHashes map[videoHashKey]videoHashEntry
+	mu                    sync.Mutex
+	token                 string // login token, cached
+	flights               flight.Group[string, string]
+	negative              map[string]time.Time // title+lang -> when nothing was found
+	subsourceMovies       map[string]subsourceMovieCacheEntry
+	subsourceBlockedUntil time.Time
+	quotaTill             time.Time // downloads refused until then
+	videoHashes           map[videoHashKey]videoHashEntry
 
 	// pickMu serialises writes of a title's picked subtitle: concurrent
 	// picks of one file rename onto the same path, which Windows refuses
 	// while another rename of it is in progress.
 	pickMu sync.Mutex
+
+	// indexMu guards the lazy in-memory map of <dir>/index filenames by
+	// RatingKey so listing cached sidecars is O(1) instead of scanning the
+	// entire index directory via filepath.Glob on every request.
+	indexMu      sync.RWMutex
+	indexLoaded  bool
+	indexDirMod  time.Time
+	indexDirSize int64
+	indexByKey   map[core.RatingKey][]string
 
 	alignLanguages []string
 	aligner        *Aligner
@@ -134,6 +149,9 @@ func New(opts Options) *Service {
 	}
 	if opts.SubDLDownloadURL == "" {
 		opts.SubDLDownloadURL = subdlDownloadURL
+	}
+	if opts.SubSourceURL == "" {
+		opts.SubSourceURL = subsourceBaseURL
 	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = egress.Client(egress.CapMetadata, 30*time.Second)
@@ -170,20 +188,23 @@ func New(opts Options) *Service {
 	return &Service{
 		cfg:           opts.Config,
 		subdl:         opts.SubDL,
+		subsource:     opts.SubSource,
 		providers:     append([]config.SubtitleProvider(nil), opts.Providers...),
 		dir:           opts.CacheDir,
 		base:          strings.TrimSuffix(opts.BaseURL, "/"),
 		subdlBase:     strings.TrimSuffix(opts.SubDLURL, "/"),
 		subdlDownload: strings.TrimSuffix(opts.SubDLDownloadURL, "/"),
+		subsourceBase: strings.TrimSuffix(opts.SubSourceURL, "/"),
 		http:          opts.HTTPClient, log: opts.Logger, agent: opts.UserAgent,
-		negative:       map[string]time.Time{},
-		negTTL:         opts.NegativeTTL,
-		maxWait:        opts.MaxRetryAfter,
-		now:            opts.Now,
-		videoHashes:    map[videoHashKey]videoHashEntry{},
-		alignLanguages: alignLangs,
-		speechSem:      make(chan struct{}, 2),
-		ffmpeg:         opts.FFmpeg,
+		negative:        map[string]time.Time{},
+		subsourceMovies: map[string]subsourceMovieCacheEntry{},
+		negTTL:          opts.NegativeTTL,
+		maxWait:         opts.MaxRetryAfter,
+		now:             opts.Now,
+		videoHashes:     map[videoHashKey]videoHashEntry{},
+		alignLanguages:  alignLangs,
+		speechSem:       make(chan struct{}, 2),
+		ffmpeg:          opts.FFmpeg,
 	}
 }
 
@@ -240,6 +261,16 @@ func (s *Service) UpdateSubDL(cfg config.SubDL) {
 	s.mu.Unlock()
 }
 
+// UpdateSubSource swaps the SubSource settings (e.g. from config.Store.Subscribe).
+func (s *Service) UpdateSubSource(cfg config.SubSource) {
+	s.mu.Lock()
+	if strings.TrimSpace(cfg.APIKey) != strings.TrimSpace(s.subsource.APIKey) {
+		s.subsourceBlockedUntil = time.Time{}
+	}
+	s.subsource = cfg
+	s.mu.Unlock()
+}
+
 func (s *Service) openSubtitlesEnabled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -259,6 +290,7 @@ type Candidate struct {
 	Language      string
 	Releases      []string // provider-declared compatible releases
 	Release       string
+	FPS           float64
 	DownloadCount int
 	Ratings       float64
 	Uploader      string
@@ -291,6 +323,7 @@ type searchResponse struct {
 			Language      string  `json:"language"`
 			DownloadCount int     `json:"download_count"`
 			Ratings       float64 `json:"ratings"`
+			FPS           float64 `json:"fps"`
 			Release       string  `json:"release"`
 			HearingImp    bool    `json:"hearing_impaired"`
 			AITranslated  bool    `json:"ai_translated"`
@@ -443,7 +476,7 @@ func (s *Service) searchWithHashAndSize(ctx context.Context, title *core.Title, 
 		}
 		out = append(out, Candidate{
 			HashMatch: a.HashMatch, FileID: a.Files[0].FileID, FileName: a.Files[0].FileName, Language: a.Language,
-			Release: a.Release, DownloadCount: a.DownloadCount, Ratings: a.Ratings,
+			Release: a.Release, FPS: a.FPS, DownloadCount: a.DownloadCount, Ratings: a.Ratings,
 			Uploader: a.Uploader.Name, UploaderRank: a.Uploader.Rank,
 			HearingImp: a.HearingImp, AITranslated: a.AITranslated, Forced: a.ForeignOnly && !a.HearingImp,
 		})
@@ -741,6 +774,16 @@ func (s *Service) download(ctx context.Context, c Candidate) ([]byte, error) {
 		}
 		return s.downloadSubDL(ctx, c)
 	}
+	if c.ProviderID == config.SubtitleProviderSubSource {
+		if parsed, err := url.Parse(c.DownloadURL); err == nil && parsed.Host != "" {
+			release, err := acquireDownloadHost(ctx, strings.ToLower(parsed.Host))
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+		}
+		return s.downloadSubSource(ctx, c)
+	}
 	link, err := s.requestLink(ctx, c)
 	if err != nil {
 		return nil, err
@@ -1002,6 +1045,24 @@ func (s *Service) cached(id, format string) bool {
 	return err == nil
 }
 
+var rawHeaderFPSRe = regexp.MustCompile(`(?i)^(?:fps\s*[:=]?\s*)?(23[.,]976|23[.,]98|24[.,]0{1,3}|25[.,]0{1,3})$`)
+
+func detectCueHeaderFPS(srt string) float64 {
+	cues, err := ParseCues(srt)
+	if err != nil || len(cues) == 0 || cues[0].Start > 2*time.Second {
+		return 0
+	}
+	m := rawHeaderFPSRe.FindStringSubmatch(strings.TrimSpace(cues[0].Text))
+	if len(m) != 2 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", "."), 64)
+	if err != nil {
+		return 0
+	}
+	return canonicalFPS(v)
+}
+
 // fetchAndCache downloads + normalises a candidate, single-flighted per id.
 // Downloads count against the account's quota, so the work stays with the
 // caller that started it.
@@ -1022,7 +1083,30 @@ func (s *Service) fetchAndCache(ctx context.Context, id string, c Candidate, key
 			if err := os.MkdirAll(s.dir, 0o755); err != nil {
 				return "", err
 			}
-			meta, _ := json.Marshal(map[string]any{"titleKey": key.String(), "fileId": c.FileID, "language": c.Language, "release": c.Release, "fetchedAt": s.now().UTC()})
+			fps := c.FPS
+			if fps == 0 {
+				fps = detectCueHeaderFPS(srt)
+			}
+			metaMap := map[string]any{
+				"titleKey":  key.String(),
+				"fileId":    c.FileID,
+				"language":  c.Language,
+				"release":   c.Release,
+				"fetchedAt": s.now().UTC(),
+			}
+			if c.FileName != "" {
+				metaMap["fileName"] = c.FileName
+			}
+			if len(c.Releases) > 0 {
+				metaMap["releases"] = c.Releases
+			}
+			if fps > 0 {
+				metaMap["fps"] = fps
+			}
+			if c.HashMatch {
+				metaMap["hashMatch"] = true
+			}
+			meta, _ := json.Marshal(metaMap)
 			// .json first and .srt last: cached() checks srt+vtt, so a crash
 			// mid-write never leaves a half-visible entry.
 			for _, w := range []struct{ name, data string }{{id + ".json", string(meta)}, {id + ".vtt", vtt}, {id + ".srt", srt}} {
@@ -1130,7 +1214,7 @@ func missingForPreferences(user *core.User, embedded []core.StreamInfo, p Prefer
 	for _, st := range embedded {
 		title := strings.ToLower(st.Title)
 		hi := strings.Contains(title, "sdh") || strings.Contains(title, "hearing impaired") || strings.Contains(title, "[cc]") || title == "cc"
-		if selectionSatisfies(selection{Forced: st.Forced, SDH: hi}, p) {
+		if selectionSatisfies(selection{Forced: st.Forced || langtag.ForcedSubtitleTitle(st.Title), SDH: hi}, p) {
 			suitable = append(suitable, st)
 		}
 	}
@@ -1294,8 +1378,9 @@ func (s *Service) OpenFormat(id, format string) (io.ReadCloser, string, error) {
 	return s.OpenFormatFrom(id, format, "")
 }
 
-// OpenFormatFrom is OpenFormat applying a cached fit only for this
-// release/source. An empty source serves the original sidecar.
+// OpenFormatFrom is OpenFormat applying a cached fit for this release/source
+// (or the default cached fit when source is empty). A different explicit
+// release without its own fit serves the original sidecar.
 func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, string, error) {
 	id = strings.TrimPrefix(id, URLPrefix)
 	format = strings.ToLower(strings.TrimPrefix(format, "."))
@@ -1316,10 +1401,13 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 		return nil, "", err
 	}
 	source = SourceKey(source)
-	if source == "" {
-		return f, format, nil
-	}
-	apply := func(corr correction) (io.ReadCloser, string, error) {
+	serveApplied := func(corr correction, appliedKey string) (io.ReadCloser, string, error) {
+		if p := s.correctionFilePath(id, appliedKey, format); p != "" {
+			if cf, cerr := os.Open(p); cerr == nil {
+				f.Close()
+				return serveStoredSubtitle(cf, format)
+			}
+		}
 		raw, err := io.ReadAll(io.LimitReader(f, 32<<20))
 		f.Close()
 		if err != nil {
@@ -1336,18 +1424,55 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 		}
 		return io.NopCloser(strings.NewReader(text)), format, nil
 	}
-	// The first fetch after a pick is uncorrected unless a measurement
-	// already finished. If one is in flight and completes within ~2s,
-	// serve the corrected file.
-	if corr, ok := s.loadApplied(id, source); ok {
-		return apply(corr)
+	if corr, appliedKey, ok := s.loadApplied(id, source); ok {
+		return serveApplied(corr, appliedKey)
 	}
-	if s.correctFlights.wait(id+"\x00"+source, correctServeWait) {
-		if corr, ok := s.loadApplied(id, source); ok {
-			return apply(corr)
+	waited := false
+	if source != "" {
+		waited = s.correctFlights.wait(id+"\x00"+source, correctServeWait)
+	} else {
+		waited = s.correctFlights.waitPrefix(id+"\x00", correctServeWait)
+	}
+	if waited {
+		if corr, appliedKey, ok := s.loadApplied(id, source); ok {
+			return serveApplied(corr, appliedKey)
 		}
 	}
-	return f, format, nil
+	return serveStoredSubtitle(f, format)
+}
+
+// serveStoredSubtitle serves a cached normalised file as stored, unless
+// it still carries markup its format must not be served with — WebVTT
+// <c.…>/<v …>/<lang …> spans from files normalised before cue text was
+// cleaned at parse time (#616). Those are parsed and re-rendered on
+// read; the stored file is left untouched, so no migration is needed
+// and a clean file is served byte for byte as written.
+func serveStoredSubtitle(f *os.File, format string) (io.ReadCloser, string, error) {
+	raw, err := io.ReadAll(io.LimitReader(f, 32<<20))
+	if err != nil {
+		f.Close()
+		return nil, "", err
+	}
+	rewound := func() (io.ReadCloser, string, error) {
+		if _, err := f.Seek(0, io.SeekStart); err == nil {
+			return f, format, nil
+		}
+		f.Close()
+		return io.NopCloser(strings.NewReader(string(raw))), format, nil
+	}
+	if len(raw) >= 32<<20 || !storedHasForeignTags(string(raw), format) {
+		return rewound()
+	}
+	cues, err := ParseCues(string(raw))
+	if err != nil {
+		return rewound()
+	}
+	f.Close()
+	text := RenderSRT(cues)
+	if format == "vtt" {
+		text = RenderVTT(cues)
+	}
+	return io.NopCloser(strings.NewReader(text)), format, nil
 }
 
 func truncate(s string, n int) string {

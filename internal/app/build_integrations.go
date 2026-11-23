@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
@@ -50,6 +51,7 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	a.buildInsights()
 	a.buildDiscovery()
 	a.episodeorder = episodeorder.New(a.db, a.tmdb, a.catalog)
+	a.buildUploadBudget()
 	if err := a.buildLiveTV(); err != nil {
 		return fmt.Errorf("live TV: %w", err)
 	}
@@ -102,19 +104,103 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	}
 	a.closers = append(a.closers, a.frontends.close)
 	a.cfg.Subscribe(a.frontends.reconcile)
+	consoleMux := http.NewServeMux()
+	consoleMux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	a.mountExtensibility(consoleMux)
+	consoleRedirect := lanOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ether/", http.StatusFound)
+	}), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)
+	consoleMux.Handle("/ether", consoleRedirect)
+	consoleMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			consoleRedirect.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	a.consoleHandler = consoleMux
+
 	mux := http.NewServeMux()
 	a.mountAdapterMedia(mux)
-	mux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
-	a.mountExtensibility(mux)
+	gateConsole := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !a.consoleOnMain() {
+				http.NotFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/ether/", gateConsole(consoleMux))
+	mux.Handle("/ether", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-protected-resource", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-protected-resource/ether/mcp", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-authorization-server", gateConsole(consoleMux))
+	mux.Handle("/", browserRootRedirectWhen(a.consoleOnMain, a.frontends.plexHandler()))
 	if s := pseRuntimeOf(a).seerr; s != nil {
 		mux.Handle("/api/integrations/seerrcatalog/v1/events", s)
 		mux.Handle("/api/integrations/seerrcatalog/v1/search", s)
 	}
-	a.mountPSEMusic(mux) // PSE-HOOK: API Subsonic (musique) — voir docs/pse/FORK.fr.md
-	mux.HandleFunc("/ether", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ether/", http.StatusFound)
-	})
-	mux.Handle("/", a.frontends.plexHandler())
+	a.mountPSEMusic(mux) // PSE-HOOK: musique
 	a.handler = mux
 	return nil
+}
+
+// consoleOnMain reports whether /ether and its console APIs are currently
+// served on Ether's main (Plex) port. Always true unless a dedicated console
+// listener is bound and DisableConsoleOnMainPort is enabled.
+func (a *App) consoleOnMain() bool {
+	if f := a.front.Load(); f != nil {
+		return f.consoleOnMain.Load()
+	}
+	return true
+}
+
+func (a *App) consoleListenerStatus() admin.ConsoleListenerStatus {
+	if f := a.front.Load(); f != nil {
+		return f.consoleStatus()
+	}
+	cfg := a.cfg.Get()
+	return admin.ConsoleListenerStatus{
+		ConfiguredPort: cfg.Server.ConsolePort,
+		ActivePort:     0,
+		MainPort:       cfg.Server.Port,
+		OnMainPort:     true,
+	}
+}
+
+// browserRootRedirect sends a person who types the server's address into a
+// browser to the console instead of Plex's 401. Only a bare GET or HEAD of
+// "/" that asks for HTML and carries nothing of Plex's (no X-Plex-* header,
+// no query) is redirected; every client request reaches Plex unchanged.
+func browserRootRedirect(next http.Handler) http.Handler {
+	return browserRootRedirectWhen(nil, next)
+}
+
+func browserRootRedirectWhen(allow func() bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (allow == nil || allow()) && isBrowserRootRequest(r) {
+			http.Redirect(w, r, "/ether/", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isBrowserRootRequest(r *http.Request) bool {
+	if r.URL.Path != "/" || r.URL.RawQuery != "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return false
+	}
+	for k := range r.Header {
+		if len(k) >= len("X-Plex-") && strings.EqualFold(k[:len("X-Plex-")], "X-Plex-") {
+			return false
+		}
+	}
+	for _, part := range strings.Split(strings.Join(r.Header.Values("Accept"), ","), ",") {
+		mt, _, _ := strings.Cut(part, ";")
+		if strings.EqualFold(strings.TrimSpace(mt), "text/html") {
+			return true
+		}
+	}
+	return false
 }

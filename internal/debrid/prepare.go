@@ -30,12 +30,20 @@ func (x *Indexer) PrepareSources(ctx context.Context, releases []core.Release) [
 				}
 				if p, ok := x.svc.reusablePayload(dctx, out[i]); ok {
 					out[i].InfoHash = p.InfoHash
+					out[i].Private = out[i].Private || p.Private
+					if out[i].Private {
+						out[i].MagnetURL = bareMagnet(out[i].InfoHash)
+					}
 					continue
 				}
 				if resolves && dctx.Err() == nil {
 					if resolved, err := tr.ResolveTorrent(dctx, out[i]); err == nil {
 						// Keep ranking, identity and episode target unchanged.
 						out[i].InfoHash, out[i].MagnetURL = resolved.InfoHash, resolved.MagnetURL
+						out[i].Private = out[i].Private || resolved.Private
+						if out[i].Private {
+							out[i].MagnetURL = bareMagnet(out[i].InfoHash)
+						}
 					}
 				}
 			}

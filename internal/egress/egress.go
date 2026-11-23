@@ -44,9 +44,12 @@ const (
 	// plugin calls and plugin http.fetch. It follows the Stremio route
 	// decision, so a source proxy carries it with add-on traffic.
 	CapPlugins
-	// CapLiveTV is IPTV playlists, guide data and provider streams. It
-	// follows the Stremio source route, including Xtream movies and series.
+	// CapLiveTV is IPTV playlists, guide data and provider streams,
+	// including Xtream movies and series. It has its own route switch.
 	CapLiveTV
+	// CapExtras is trailers, extras and theme music (yt-dlp, ffmpeg and
+	// direct trailer fetches). It stays direct unless the owner opts in.
+	CapExtras
 )
 
 // Policy is the live routing decision. Proxy is nil when there is nothing
@@ -57,9 +60,11 @@ type Policy struct {
 	Proxy     *url.URL
 	Indexers  bool
 	Stremio   bool
+	LiveTV    bool
 	Debrid    bool
 	Usenet    bool
 	Metadata  bool
+	Extras    bool
 	Bypass    []string
 }
 
@@ -111,9 +116,11 @@ func PolicyFrom(o config.Outbound) Policy {
 		Enabled:   o.Enabled,
 		Indexers:  o.Indexers,
 		Stremio:   o.Stremio,
+		LiveTV:    o.LiveTV,
 		Debrid:    o.Debrid,
 		Usenet:    o.Usenet,
 		Metadata:  o.Metadata,
+		Extras:    o.Extras,
 		Bypass:    append([]string(nil), o.Bypass...),
 	}
 	if !o.Enabled {
@@ -139,6 +146,55 @@ func ProxyFunc(cap Capability) func(*http.Request) (*url.URL, error) {
 		}
 		return Current().selectProxy(req, cap)
 	}
+}
+
+// ProxyURL resolves the outbound proxy for cap and targetURL (which may be
+// empty when a tool has no single destination host, such as a search query).
+// It follows the same fail-closed and bypass rules as Client: returning
+// ErrNotConfigured when cap is routed with no usable proxy, and (nil, nil)
+// when direct or bypassed. Callers must never log the returned URL.
+func ProxyURL(cap Capability, targetURL string) (*url.URL, error) {
+	return Current().ProxyURL(cap, targetURL)
+}
+
+// ProxyURL resolves the outbound proxy for cap and targetURL against p.
+func (p Policy) ProxyURL(cap Capability, targetURL string) (*url.URL, error) {
+	if !p.Enabled || !p.routes(cap) {
+		return nil, nil
+	}
+	if targetURL != "" {
+		if u, err := url.Parse(targetURL); err == nil && bypass(u.Hostname(), p.Bypass) {
+			return nil, nil
+		}
+	}
+	if p.Proxy == nil || p.Proxy.Hostname() == "" {
+		return nil, ErrNotConfigured
+	}
+	return cloneURL(p.Proxy), nil
+}
+
+// ScrubProxy replaces proxy URL credentials in s so subprocess stderr or
+// transport errors never expose a proxy password in logs or responses.
+func ScrubProxy(s string, proxy *url.URL) string {
+	if s == "" || proxy == nil {
+		return s
+	}
+	redacted := proxy.Redacted()
+	if full := proxy.String(); full != "" && full != redacted {
+		s = strings.ReplaceAll(s, full, redacted)
+	}
+	if proxy.User != nil {
+		if uinfo := proxy.User.String(); uinfo != "" {
+			s = strings.ReplaceAll(s, uinfo+"@", proxy.User.Username()+":xxxxx@")
+		}
+		if pass, ok := proxy.User.Password(); ok && pass != "" {
+			s = strings.ReplaceAll(s, pass, "xxxxx")
+			if enc := url.QueryEscape(pass); enc != pass {
+				s = strings.ReplaceAll(s, enc, "xxxxx")
+			}
+		}
+	}
+	return s
 }
 
 // Transport is a default-like transport whose proxy selector follows cap.
@@ -201,16 +257,20 @@ func (p Policy) routes(cap Capability) bool {
 	switch cap {
 	case CapIndexers:
 		return p.Indexers
-	case CapStremio, CapPlugins, CapLiveTV:
+	case CapStremio, CapPlugins:
 		return p.Stremio
+	case CapLiveTV:
+		return p.LiveTV
 	case CapDebrid:
 		return p.Debrid
 	case CapUsenet:
 		return p.Usenet
 	case CapMetadata:
 		return p.Metadata
+	case CapExtras:
+		return p.Extras
 	case CapProbe:
-		return p.Indexers || p.Stremio || p.Debrid || p.Usenet
+		return p.Indexers || p.Stremio || p.LiveTV || p.Debrid || p.Usenet
 	default:
 		return false
 	}

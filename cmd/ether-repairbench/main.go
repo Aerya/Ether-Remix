@@ -143,7 +143,7 @@ func run(ctx context.Context, args []string) error {
 	if len(indexers) == 0 {
 		return errors.New("no enabled indexers")
 	}
-	idx := newznab.NewManager(db, indexers, newznab.Options{Logger: log, NZBDir: filepath.Join(*dir, "nzb-cache"), MaxParallel: 2})
+	idx := newznab.NewManager(db, indexers, newznab.Options{Logger: log, MaxParallel: 2})
 	client := tmdb.NewFromConfig(cfg.Catalog, log)
 	rng := rand.New(rand.NewSource(*seed))
 	var total int64

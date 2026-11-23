@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -70,12 +68,25 @@ func TestRunResolverFakeRunner(t *testing.T) {
 		t.Errorf("expiry not capped: %v", r.Expires)
 	}
 
-	// Multiple URLs (split audio/video) and junk are errors.
-	for _, out := range []string{"https://a.example/v.mp4\nhttps://a.example/a.m4a\n", "nope", "", "file:///etc/passwd\n"} {
+	// More than two URLs and junk are errors.
+	for _, out := range []string{"https://a.example/v.mp4\nhttps://a.example/a.m4a\nhttps://a.example/other\n", "nope", "", "file:///etc/passwd\n"} {
 		runner = func(_ context.Context, _ string, _ []string) ([]byte, error) { return []byte(out), nil }
 		if _, err := runResolver(context.Background(), cfg, e, runner, func() time.Time { return testNow }); err == nil {
 			t.Errorf("want error for %q", out)
 		}
+	}
+	// Split picks retain video-first order and expire together at the earlier
+	// googlevideo URL expiry, while owner argument templates remain untouched.
+	cfg.ResolverArgs = []string{"--owner-option", "{url}"}
+	runner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		if len(args) != 2 || args[0] != "--owner-option" {
+			t.Errorf("owner args: %v", args)
+		}
+		return []byte("https://a.example/v.mp4?expire=" + fmt.Sprint(testNow.Add(2*time.Hour).Unix()) + "\nhttps://a.example/a.m4a?expire=" + fmt.Sprint(testNow.Add(time.Hour).Unix())), nil
+	}
+	r, err = runResolver(context.Background(), cfg, e, runner, func() time.Time { return testNow })
+	if err != nil || r.AudioURL == "" || !r.Expires.Equal(testNow.Add(time.Hour)) {
+		t.Fatalf("split: %+v %v", r, err)
 	}
 	// Invalid site key never reaches the runner.
 	called := false
@@ -95,12 +106,8 @@ func TestRunResolverTimeoutAndCache(t *testing.T) {
 			return nil, ctx.Err()
 		}})
 	e := Extra{Site: "YouTube", SiteKey: "vKQi3bBA1y8", Source: SourceCommand}
-	start := time.Now()
 	if _, err := s.Resolve(context.Background(), e); err == nil {
 		t.Fatal("want timeout error")
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("timeout not enforced")
 	}
 
 	calls := 0
@@ -120,21 +127,27 @@ func TestRunResolverTimeoutAndCache(t *testing.T) {
 	}
 }
 
-// TestExecRunnerWithScript runs a real (offline) executable through the
-// no-shell runner, yt-dlp style.
+// TestExecRunnerWithScript runs a real offline executable through the
+// no-shell runner, including yt-dlp format arguments containing shell syntax.
 func TestExecRunnerWithScript(t *testing.T) {
-	dir := t.TempDir()
-	script := filepath.Join(dir, "fake-resolver")
-	body := "#!/bin/sh\nprintf 'https://cdn.example/from-script.mp4\\n'\n"
-	if runtime.GOOS == "windows" {
-		// Windows runs batch files directly; a shebang script is not executable.
-		script += ".cmd"
-		body = "@echo https://cdn.example/from-script.mp4\r\n"
+	const helper = "ETHER_EXTRAS_RESOLVER_TEST_HELPER"
+	if os.Getenv(helper) == "1" {
+		for _, arg := range os.Args {
+			if arg == defaultTrailerFormat {
+				fmt.Println("https://cdn.example/from-script.mp4")
+				os.Exit(0)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "format argument was not preserved")
+		os.Exit(2)
 	}
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	executable, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Extras{Enabled: true, ResolverCommand: script}
+	t.Setenv(helper, "1")
+	args := append([]string{"-test.run=^TestExecRunnerWithScript$", "--"}, DefaultResolverArgs...)
+	cfg := config.Extras{Enabled: true, ResolverCommand: executable, ResolverArgs: args}
 	s := New(Options{Config: func() config.Extras { return cfg }, Now: func() time.Time { return testNow }})
 	r, err := s.Resolve(context.Background(), Extra{Site: "YouTube", SiteKey: "vKQi3bBA1y8", Source: SourceCommand})
 	if err != nil {

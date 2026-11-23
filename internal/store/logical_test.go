@@ -252,3 +252,47 @@ func TestLogicalRestoresAcrossDropsAndRenames(t *testing.T) {
 		t.Fatalf("failed restoring with retired table: %v", err)
 	}
 }
+
+// A column that exists on only one engine (PostgreSQL's plugin_items.search_tsv)
+// rides along in that engine's dumps. A restore onto a server without it skips
+// the column once registered; a server that has the column still loads it.
+func TestLogicalSkipsEngineLocalColumn(t *testing.T) {
+	ctx := context.Background()
+	src := openSQLiteMemory(t)
+	seedLogical(t, src)
+	if _, err := src.ExecContext(ctx, `ALTER TABLE storetest_links ADD COLUMN storetest_engine_only TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.ExecContext(ctx, `UPDATE storetest_links SET storetest_engine_only='local' WHERE id=5`); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := ExportLogical(ctx, src, &buf); err != nil {
+		t.Fatal(err)
+	}
+	dump := buf.Bytes()
+
+	err := ImportLogical(ctx, openSQLiteMemory(t), bytes.NewReader(dump))
+	if err == nil || !strings.Contains(err.Error(), "storetest_engine_only") {
+		t.Fatalf("unregistered engine-local column: err = %v", err)
+	}
+
+	RegisterLocalColumn("storetest_links", "storetest_engine_only")
+	dst := openSQLiteMemory(t)
+	if err := ImportLogical(ctx, dst, bytes.NewReader(dump)); err != nil {
+		t.Fatalf("restore without the engine-local column: %v", err)
+	}
+	checkLogical(t, dst)
+
+	same := openSQLiteMemory(t)
+	if _, err := same.ExecContext(ctx, `ALTER TABLE storetest_links ADD COLUMN storetest_engine_only TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportLogical(ctx, same, bytes.NewReader(dump)); err != nil {
+		t.Fatalf("restore with the engine-local column: %v", err)
+	}
+	var v string
+	if err := same.QueryRowContext(ctx, `SELECT storetest_engine_only FROM storetest_links WHERE id=5`).Scan(&v); err != nil || v != "local" {
+		t.Fatalf("engine-local column = %q err=%v", v, err)
+	}
+}

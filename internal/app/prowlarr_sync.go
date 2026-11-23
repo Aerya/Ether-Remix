@@ -234,10 +234,9 @@ func applyProwlarrSync(c *config.Config, cfg config.Prowlarr, found []config.Ind
 // priority or enabled state that differs from what the previous sync wrote
 // (old.ProwlarrImport) is the owner's and is kept; a value the owner never
 // touched follows Prowlarr. With no record of the previous sync (an indexer
-// imported before it was kept), every stored value is kept. Prowlarr does
-// not know the owner's per-indexer client identity, so that is kept too.
+// imported before it was kept), every stored value is kept. Request identity
+// rules match by indexer ID and survive sync automatically.
 func mergeProwlarrIndexer(old, fresh config.Indexer) config.Indexer {
-	fresh.ClientIdentity = old.ClientIdentity
 	prev := old.ProwlarrImport
 	if prev == nil || old.DailyLimit != prev.DailyLimit {
 		fresh.DailyLimit = old.DailyLimit

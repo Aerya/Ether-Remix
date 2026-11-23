@@ -57,7 +57,11 @@ type ReceiptOptions struct {
 	// Prefetch, when set, loads the titles a batch's subjects name in one
 	// read before Allowed checks them one by one, so a row of cards costs
 	// one catalogue read, not one per card.
-	Prefetch      func(context.Context, []core.RatingKey)
+	Prefetch func(context.Context, []core.RatingKey)
+	// PrepareBatch, when set, runs fresh at the start of each IssueBatch
+	// policy pass (including retries) to batch collection and playlist checks
+	// across the subjects in that pass.
+	PrepareBatch  func(context.Context, *core.User, []ReceiptSubject) context.Context
 	AllowedAction func(context.Context, *core.User, core.Device, core.Protocol, ReceiptSubject, frontend.RowInteractionKind) bool
 	Record        func(context.Context, *core.User, core.Device, core.Protocol, ReceiptSubject, frontend.RowInteractionKind) error
 	Now           func() time.Time

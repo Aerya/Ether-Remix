@@ -2,11 +2,20 @@ package frontend
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 func TestSettingsSchemasValidate(t *testing.T) {
 	jf := MediaBrowserSchema(true)
+	vela := SettingsSchema{
+		SignInHelp: true,
+		Sections: []SettingsSection{{Key: "appearance", Fields: []SettingsField{
+			{Key: "defaultSkinId", Kind: "string"},
+			{Key: "appName", Kind: "string", Max: Int(40)},
+			{Key: "wordmark", Kind: "wordmark"},
+		}}},
+	}
 	for name, tc := range map[string]struct {
 		schema SettingsSchema
 		in     Settings
@@ -28,6 +37,11 @@ func TestSettingsSchemasValidate(t *testing.T) {
 		"account setting":      {AccountSchema("addon"), Settings{"port": 1.0}, false},
 		"plex port":            {PortSchema(), Settings{"port": 32400.0}, true},
 		"plex other":           {PortSchema(), Settings{"discovery": true}, false},
+		"vela branding":        {vela, Settings{"appName": "  Northlight  ", "wordmark": map[string]any{"url": "/vela/v0/branding/x.svg", "width": 320.0, "height": 64.0, "dark": "/vela/v0/branding/y.svg"}}, true},
+		"vela name max 40":     {vela, Settings{"appName": "  " + strings.Repeat("é", 40) + "  "}, true},
+		"vela name over 40":    {vela, Settings{"appName": strings.Repeat("a", 41)}, false},
+		"vela wordmark bounds": {vela, Settings{"wordmark": map[string]any{"url": "/vela/v0/branding/x.png", "width": 1025.0, "height": 64.0}}, false},
+		"vela wordmark extra":  {vela, Settings{"wordmark": map[string]any{"url": "/vela/v0/branding/x.png", "width": 100.0, "height": 40.0, "bad": true}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := tc.schema.validate(tc.in)

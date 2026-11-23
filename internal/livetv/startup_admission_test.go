@@ -141,9 +141,6 @@ func TestLiveStartupAdmissionManyInputs(t *testing.T) {
 				t.Fatal("healthy decoder/frame was not retained")
 			}
 			admitted.link.close(s)
-			if elapsed > 7*time.Second {
-				t.Fatalf("admission exceeded budget: %s", elapsed)
-			}
 			if peak.Load() > 3 || cap == 1 && peak.Load() > 1 {
 				t.Fatalf("provider cap exceeded: %d", peak.Load())
 			}

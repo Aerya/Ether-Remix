@@ -35,7 +35,7 @@ func (b *blockingFetch) FetchNZB(ctx context.Context, r core.Release, reserve fu
 func TestCancelledGrabIsNotAnIndexerFailure(t *testing.T) {
 	fb := &blockingFetch{}
 	cfg := config.Indexer{ID: "site", Name: "Site", URL: "https://site.invalid", Kind: config.IndexerKindCardigann, Definition: "fake", Enabled: true}
-	m := NewManager(nil, []config.Indexer{cfg}, Options{NZBDir: t.TempDir(), Backend: func(config.Indexer) (Backend, error) { return fb, nil }})
+	m := NewManager(nil, []config.Indexer{cfg}, Options{Vault: &testVault{}, Backend: func(config.Indexer) (Backend, error) { return fb, nil }})
 	var mu sync.Mutex
 	var events []Event
 	m.Subscribe(func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() })

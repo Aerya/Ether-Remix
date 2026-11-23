@@ -41,11 +41,13 @@ func readNodeFacts(dataDir string, getenv func(string) string) nodeFacts {
 	var doc struct {
 		SetupComplete bool `json:"setupComplete"`
 		Server        struct {
-			Port               int      `json:"port"`
-			BindAddress        *string  `json:"bindAddress"`
-			FriendlyName       string   `json:"friendlyName"`
-			TrustedProxyCIDRs  []string `json:"trustedProxyCIDRs"`
-			AllowRemoteConsole bool     `json:"allowRemoteConsole"`
+			Port                     int      `json:"port"`
+			ConsolePort              int      `json:"consolePort"`
+			DisableConsoleOnMainPort bool     `json:"disableConsoleOnMainPort"`
+			BindAddress              *string  `json:"bindAddress"`
+			FriendlyName             string   `json:"friendlyName"`
+			TrustedProxyCIDRs        []string `json:"trustedProxyCIDRs"`
+			AllowRemoteConsole       bool     `json:"allowRemoteConsole"`
 		} `json:"server"`
 		Plex struct {
 			OwnerPlexID      int64  `json:"ownerPlexId"`
@@ -67,6 +69,10 @@ func readNodeFacts(dataDir string, getenv func(string) string) nodeFacts {
 		if doc.Server.Port > 0 {
 			f.Server.Port = doc.Server.Port
 		}
+		if doc.Server.ConsolePort > 0 && doc.Server.ConsolePort <= 65535 {
+			f.Server.ConsolePort = doc.Server.ConsolePort
+		}
+		f.Server.DisableConsoleOnMainPort = doc.Server.DisableConsoleOnMainPort
 		if doc.Server.BindAddress != nil {
 			f.Server.BindAddress = *doc.Server.BindAddress
 		}

@@ -130,7 +130,7 @@ func TestLiveTuneStartup(t *testing.T) {
 				ready := make(chan time.Duration, 1)
 				if optimized {
 					go func() {
-						awaitBroadcastCushion(t.Context(), &broadcastLease{broadcast: b, rendition: "main"}, false)
+						_ = awaitBroadcastCushion(t.Context(), &broadcastLease{broadcast: b, rendition: "main"}, false)
 						ready <- time.Since(origin)
 					}()
 				}

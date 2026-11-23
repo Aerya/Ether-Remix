@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ProwlarrImport } from "../components/ProwlarrImport";
+import { ProwlarrImport, ProwlarrImportDrawer } from "../components/ProwlarrImport";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -30,6 +30,8 @@ describe("Prowlarr import limits", () => {
     render(<ProwlarrImport />);
     expect(screen.queryByLabelText(/Daily searches/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Daily downloads/)).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enabled" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Indexer tags" })).toHaveTextContent("All tags");
     fireEvent.change(screen.getByLabelText("Prowlarr URL"), {
       target: { value: "http://prowlarr.test:9696" },
     });
@@ -78,6 +80,25 @@ describe("Prowlarr import limits", () => {
         import: true,
       },
     ]);
+  });
+
+  it("renders Cancel, Preview indexers, and Import indexers in the sticky drawer footer", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ config: {} }));
+    vi.stubGlobal("fetch", fetch);
+    const onClose = vi.fn();
+    render(<ProwlarrImportDrawer open onClose={onClose} />);
+    const dialog = await screen.findByRole("dialog", { name: "Import from Prowlarr" });
+    expect(within(dialog).getByRole("switch", { name: "Enabled" })).toBeChecked();
+    expect(within(dialog).getByRole("button", { name: "Indexer tags" })).toHaveTextContent(
+      "All tags",
+    );
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const preview = within(dialog).getByRole("button", { name: "Preview indexers" });
+    const imp = within(dialog).getByRole("button", { name: "Import indexers" });
+    expect(cancel.parentElement).toBe(preview.parentElement);
+    expect(preview.parentElement).toBe(imp.parentElement);
+    fireEvent.click(cancel);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("sends chosen tags and shows the last indexers when Prowlarr is unreachable", async () => {

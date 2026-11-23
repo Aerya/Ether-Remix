@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
+	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
-	"strings"
-	"testing"
 )
 
 func TestChannelBatchAtomicAndPreservesFields(t *testing.T) {
@@ -251,5 +252,132 @@ func TestChannelBatchMultiSourceLockOrderPostgres(t *testing.T) {
 	cs, _ = s.Channels(ctx)
 	if cs[0].Group != cs[1].Group {
 		t.Fatal("batch split across sources")
+	}
+}
+
+func TestChannelBatchNumbersAtomicRefreshAndOrder(t *testing.T) {
+	s := testService(t, Options{Picker: personalTestPicker{}})
+	ctx := context.Background()
+
+	// Create a virtual channel (#1), a personal channel (#2), and two IPTV
+	// provider channels (#100, #101) with explicit provider numbers.
+	virt := testChannel()
+	virt.ID, virt.Name, virt.Number = "virt-1", "Movie Night", "1"
+	if _, err := s.SaveChannel(ctx, virt); err != nil {
+		t.Fatal(err)
+	}
+	pers := testChannel()
+	pers.ID, pers.Name, pers.Number = "pers-2", "Personal TV", "2"
+	pers.Personal = &PersonalRecipe{
+		NameFormat:  "{viewer} TV",
+		Ingredients: []PersonalIngredient{{Kind: "picked", Share: 100, Enabled: true}},
+	}
+	if _, err := s.SaveChannel(ctx, pers); err != nil {
+		t.Fatal(err)
+	}
+	src := Source{
+		ID:   "provider",
+		Name: "Provider",
+		Playlist: "#EXTM3U\n" +
+			"#EXTINF:-1 tvg-id=\"news\" tvg-chno=\"100\",News 24\nhttps://provider.invalid/news.ts\n" +
+			"#EXTINF:-1 tvg-id=\"sports\" tvg-chno=\"101\",Sports HD\nhttps://provider.invalid/sports.ts\n",
+	}
+	if _, err := s.ImportSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Channels(ctx)
+	if err != nil || len(all) != 4 {
+		t.Fatalf("initial channels: %d %v", len(all), err)
+	}
+	var newsID, sportsID string
+	for _, c := range all {
+		if c.Name == "News 24" {
+			newsID = c.ID
+		}
+		if c.Name == "Sports HD" {
+			sportsID = c.ID
+		}
+	}
+	if newsID == "" || sportsID == "" {
+		t.Fatalf("missing provider channels: %+v", all)
+	}
+
+	// Atomicity: a missing channel ID rolls back every number update.
+	if _, err := s.UpdateChannels(ctx, ChannelBatch{
+		Numbers: map[string]string{newsID: "2", pers.ID: "3", "missing-id": "4"},
+	}); err == nil {
+		t.Fatal("accepted batch with missing id")
+	}
+	if got, _ := s.Channel(ctx, newsID); got.Number != "100" {
+		t.Fatalf("partial renumber committed: %+v", got)
+	}
+
+	// Validation: reject empty/too-long numbers and keys outside explicit IDs.
+	for _, bad := range []ChannelBatch{
+		{Numbers: map[string]string{newsID: "   "}},
+		{Numbers: map[string]string{newsID: strings.Repeat("9", 33)}},
+		{IDs: []string{virt.ID}, Numbers: map[string]string{newsID: "5"}},
+	} {
+		if _, err := s.UpdateChannels(ctx, bad); err == nil {
+			t.Fatalf("accepted invalid numbers batch: %+v", bad)
+		}
+	}
+
+	// Batch renumber over HTTP in one request & transaction: drag News 24 (#100)
+	// between Movie Night (#1) and Personal TV (#2), shifting Personal TV -> #3.
+	bumps := 0
+	s.SetOnChange(func() { bumps++ })
+	body := fmt.Sprintf(`{"ids":[%q,%q],"numbers":{%q:"2",%q:" 3 "}}`, newsID, pers.ID, newsID, pers.ID)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/channels/bulk", strings.NewReader(body)))
+	if rec.Code != http.StatusOK || bumps != 1 {
+		t.Fatalf("patch numbers: code=%d body=%s bumps=%d", rec.Code, rec.Body.String(), bumps)
+	}
+
+	// Channels, ChannelSummaries, and AllowedChannels must all agree on the
+	// new natural number order (1 Movie Night, 2 News 24, 3 Personal TV, 101 Sports HD).
+	wantIDs := []string{virt.ID, newsID, pers.ID, sportsID}
+	cs, err := s.Channels(ctx)
+	if err != nil || len(cs) != 4 {
+		t.Fatalf("channels after renumber: %d %v", len(cs), err)
+	}
+	for i, id := range wantIDs {
+		if cs[i].ID != id {
+			t.Fatalf("Channels[%d] = %s (%s), want %s", i, cs[i].ID, cs[i].Number, id)
+		}
+	}
+	summaries, err := s.ChannelSummaries(ctx)
+	if err != nil || len(summaries) != 4 {
+		t.Fatalf("summaries after renumber: %d %v", len(summaries), err)
+	}
+	for i, id := range wantIDs {
+		if summaries[i].ID != id {
+			t.Fatalf("ChannelSummaries[%d] = %s (%s), want %s", i, summaries[i].ID, summaries[i].Number, id)
+		}
+	}
+
+	// Per-viewer access & personal channel naming keep the renumbered order.
+	viewer := &core.User{ID: 7, Title: "Alex"}
+	if err := s.SavePolicy(ctx, Policy{
+		UserID:     viewer.ID,
+		Restricted: true,
+		Channels:   []string{pers.ID, newsID},
+		Personal:   &PersonalPolicy{Name: "Alex's Picks"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := s.AllowedChannels(ctx, viewer)
+	if err != nil || len(allowed) != 2 || allowed[0].ID != newsID || allowed[0].Number != "2" || allowed[1].ID != pers.ID || allowed[1].Number != "3" || allowed[1].Name != "Alex's Picks" {
+		t.Fatalf("viewer AllowedChannels: %+v %v", allowed, err)
+	}
+
+	// Renumbered provider channels keep ProviderNumber untouched so the owner's
+	// new number sticks across provider refreshes.
+	if _, err := s.ImportSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Channel(ctx, newsID)
+	if err != nil || after.Number != "2" || after.ProviderNumber != "100" {
+		t.Fatalf("number lost after refresh: %+v %v", after, err)
 	}
 }

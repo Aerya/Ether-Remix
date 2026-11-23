@@ -24,11 +24,12 @@ import (
 // The counters are what the performance gate asserts on: a request path
 // whose statement or row count grows with the library is O(library).
 type QueryStats struct {
-	queries  atomic.Int64
-	writes   atomic.Int64
-	rows     atomic.Int64
-	dbNanos  atomic.Int64
-	lockWait atomic.Int64
+	transactions atomic.Int64
+	queries      atomic.Int64
+	writes       atomic.Int64
+	rows         atomic.Int64
+	dbNanos      atomic.Int64
+	lockWait     atomic.Int64
 
 	mu    sync.Mutex
 	stmts map[string]*StatementStat
@@ -84,6 +85,7 @@ type recorder interface {
 	record(query string, rows int64, d time.Duration)
 	wrote()
 	waited(d time.Duration)
+	beganWrite()
 }
 
 type chainedStats struct{ inner, outer *QueryStats }
@@ -92,6 +94,8 @@ func (c *chainedStats) record(q string, rows int64, d time.Duration) {
 	c.inner.record(q, rows, d)
 	c.outer.record(q, rows, d)
 }
+
+func (c *chainedStats) beganWrite() { c.inner.beganWrite(); c.outer.beganWrite() }
 
 func (c *chainedStats) wrote() {
 	c.inner.wrote()
@@ -192,6 +196,11 @@ func (s *QueryStats) record(query string, rows int64, d time.Duration) {
 }
 
 func (s *QueryStats) waited(d time.Duration) { s.lockWait.Add(int64(d)) }
+
+func (s *QueryStats) beganWrite() { s.transactions.Add(1) }
+
+// WriteTransactions counts admitted write transactions, independently of rows.
+func (s *QueryStats) WriteTransactions() int64 { return s.transactions.Load() }
 
 func (s *QueryStats) wrote() { s.writes.Add(1) }
 

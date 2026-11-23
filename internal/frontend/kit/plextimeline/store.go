@@ -6,8 +6,29 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// resumeAfterSeconds is the owner's "keep a resume point from" setting. A Plex
+// timeline keeps a resume point once playback passes one minute; an owner
+// setting replaces that minute, as it replaces the default on other frontends.
+var resumeAfterSeconds atomic.Int64
+
+// SetResumeAfter sets the owner's threshold in seconds; 0 restores one minute.
+func SetResumeAfter(seconds int) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	resumeAfterSeconds.Store(int64(seconds))
+}
+
+func resumeFloor() time.Duration {
+	if n := resumeAfterSeconds.Load(); n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return time.Minute
+}
 
 // Writer binds a frontend-owned session cache to shared persistence.
 type Writer struct {
@@ -119,10 +140,10 @@ func (s Writer) StoreTimeline(ctx context.Context, user int64, key frontend.Rati
 		case play.progressed:
 			out.PlaybackState = "progress"
 		}
-		if mode == "" && !nearEnd && offset > time.Minute && offset != cur.ViewOffset {
+		if mode == "" && !nearEnd && offset > resumeFloor() && offset != cur.ViewOffset {
 			mode = "resume"
 			out.ViewOffset = offset
-		} else if mode == "" && !nearEnd && offset <= time.Minute && play.progressed && status != "stopped" && cur.ViewOffset != 0 {
+		} else if mode == "" && !nearEnd && offset <= resumeFloor() && play.progressed && status != "stopped" && cur.ViewOffset != 0 {
 			mode = "clear"
 			out.ViewOffset = 0
 		}

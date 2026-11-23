@@ -45,14 +45,15 @@ func (s *Service) confirmPlayback(ctx context.Context, u *core.User, remote bool
 			}
 		}
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		epoch, err := viewerpolicy.Read(ctx, s.db)
-		if err != nil {
-			return confirmFallback(restricted)
-		}
+	for attempt := 0; attempt < 8; attempt++ {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
-			return confirmFallback(restricted)
+			return confirmFallback(ctx, restricted)
+		}
+		var epoch int64
+		if err := tx.QueryRowContext(ctx, `SELECT generation FROM viewer_policy_epoch WHERE id=1`).Scan(&epoch); err != nil {
+			_ = tx.Rollback()
+			return confirmFallback(ctx, restricted)
 		}
 		started := time.Now()
 		err = viewerpolicy.Fence(ctx, s.db, tx, epoch)
@@ -62,7 +63,7 @@ func (s *Service) confirmPlayback(ctx context.Context, u *core.User, remote bool
 		}
 		if err != nil {
 			_ = tx.Rollback()
-			return confirmFallback(restricted)
+			return confirmFallback(ctx, restricted)
 		}
 		merged, policy, err := readFreshPlayback(ctx, tx, u)
 		if errors.Is(err, core.ErrUnauthorized) {
@@ -71,10 +72,10 @@ func (s *Service) confirmPlayback(ctx context.Context, u *core.User, remote bool
 		}
 		if err != nil {
 			_ = tx.Rollback()
-			return confirmFallback(restricted)
+			return confirmFallback(ctx, restricted)
 		}
 		if err := tx.Commit(); err != nil {
-			return confirmFallback(restricted)
+			return confirmFallback(ctx, restricted)
 		}
 		ended := time.Now()
 		if !CanPlayWithPolicy(merged, policy, remote, started) || !CanPlayWithPolicy(merged, policy, remote, ended) || !CanPlayWithPolicy(merged, policy, remote, now) {
@@ -90,7 +91,7 @@ func (s *Service) confirmPlayback(ctx context.Context, u *core.User, remote bool
 		}
 		return merged, nil
 	}
-	return confirmFallback(restricted)
+	return confirmFallback(ctx, restricted)
 }
 
 func (s *Service) cachedConfirm(id, epoch int64) (*core.User, Policy, bool) {
@@ -119,7 +120,10 @@ func (s *Service) storeConfirm(id, epoch int64, user *core.User, policy Policy) 
 	s.playbackEpoch[id] = playbackConfirm{epoch: epoch, user: stored, policy: policy}
 }
 
-func confirmFallback(restricted bool) (*core.User, error) {
+func confirmFallback(ctx context.Context, restricted bool) (*core.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if restricted {
 		return nil, core.ErrUnauthorized
 	}

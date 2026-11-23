@@ -133,6 +133,13 @@ func buildSet(k setKey, files []*File) *Set {
 			maxVol = v
 		}
 	}
+	// A WinZip .z01/.z02/... split set always closes with a plain .zip volume
+	// holding the Central Directory; flag it as missing when absent.
+	if zSplitTailVol >= 0 {
+		if tail := zSplitTailVol - minVol; tail > maxVol {
+			maxVol = tail
+		}
+	}
 	for v := 0; v <= maxVol; v++ {
 		f, ok := byVol[v]
 		if !ok {

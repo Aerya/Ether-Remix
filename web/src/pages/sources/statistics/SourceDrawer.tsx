@@ -11,12 +11,14 @@ import { getLocale, t, tn } from "../../../i18n";
 import { apiFetch, errorMessage } from "../../../lib/api";
 import {
   fixed,
+  formatCompactNumber,
   formatDateTime,
   formatNumber,
   formatPercent,
   formatThroughput,
   relativeTime,
 } from "../../../lib/format";
+import { usenetProblem } from "../../../lib/health";
 import { Fact } from "../../activity/ExperienceDrawer";
 import { ProviderAccountCard } from "../../livetv/SourceGroups";
 import { IndexerUsageDetails, USAGE_PERIODS, type UsagePeriod } from "../IndexerUsage";
@@ -63,17 +65,27 @@ function Block({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function LastError({ message, at }: { message?: string; at?: string }) {
-  if (!message) return null;
+function LastError({
+  message,
+  summary,
+  at,
+}: {
+  message?: string;
+  summary?: string | null;
+  at?: string;
+}) {
+  if (!message && !summary) return null;
   return (
     <p
       role="status"
       className="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm"
     >
       <span className="font-medium text-danger">
-        {at ? t("Last error {when}", { when: relativeTime(at) }) : t("Last error")}
+        {summary ?? (at ? t("Last error {when}", { when: relativeTime(at) }) : t("Last error"))}
       </span>
-      <span className="mt-0.5 block break-words text-fg">{message}</span>
+      {message && message !== summary ? (
+        <span className="mt-0.5 block break-words text-fg">{message}</span>
+      ) : null}
     </p>
   );
 }
@@ -204,6 +216,7 @@ function UsenetDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
   const days = windowDays(h);
   const provider = usenetProviders(data).find((x) => x.id === row.id);
   const p = provider?.sample;
+  const problem = p ? usenetProblem(p.state, p.lastError) : null;
   const all = h.providerDays ?? [];
   const mine = all.filter((d) => d.id === row.id);
   const bytes = sum(mine, (d) => d.bytes);
@@ -216,6 +229,9 @@ function UsenetDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
   const at = data.infra?.snapshots.providers?.at;
   return (
     <>
+      {p && p.state !== "ok" ? (
+        <LastError summary={problem} message={p.lastError} at={p.lastErrorAt} />
+      ) : null}
       <Totals
         h={h}
         since={life?.firstDay}
@@ -302,6 +318,7 @@ function UsenetDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
                 bLabel={t("Errors")}
                 height={140}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => ({
                   key: day,
                   label: dayLabel(day),
@@ -321,7 +338,7 @@ function UsenetDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
               : t("Right now")
           }
         >
-          <LastError message={p.lastError} at={p.lastErrorAt} />
+          {p.state === "ok" ? <LastError message={p.lastError} at={p.lastErrorAt} /> : null}
           <Facts>
             <Fact
               label={t("Connections")}
@@ -386,7 +403,19 @@ function IndexerDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: S
     : undefined;
   return (
     <>
-      {usage?.retryAt && usage.retryAt > Date.now() / 1000 ? (
+      {usage?.missingDefinition || row.healthLabel === t("Definition missing") ? (
+        <p className="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-fg">
+          {t(
+            "Definition missing · install this site's definition on the Indexers tab to search it.",
+          )}
+        </p>
+      ) : usage?.pausedUntil && usage.pausedUntil > Date.now() / 1000 ? (
+        <p className="rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-sm text-fg">
+          {t("Paused after repeated failures · retries automatically after {time}", {
+            time: new Date(usage.pausedUntil * 1000).toLocaleTimeString(getLocale()),
+          })}
+        </p>
+      ) : usage?.retryAt && usage.retryAt > Date.now() / 1000 ? (
         <p className="rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-sm text-fg">
           {t("Service limit reached · retries automatically after {time}", {
             time: new Date(usage.retryAt * 1000).toLocaleTimeString(getLocale()),
@@ -467,6 +496,7 @@ function IndexerDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: S
                 bLabel={t("Nothing found")}
                 height={140}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => {
                   const ok = daily(days, mine, (d) => d.successes)[i]!;
                   return {
@@ -487,6 +517,7 @@ function IndexerDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: S
                 ariaLabel={t("Average search response each day")}
                 height={120}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day) => {
                   const d = mine.filter((x) => x.day === day);
                   const n = sum(d, (x) => x.searches);
@@ -507,6 +538,7 @@ function IndexerDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: S
                 bLabel={t("Failed")}
                 height={120}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => {
                   const ok = daily(days, mine, (d) => d.grabSuccess)[i]!;
                   return {
@@ -527,6 +559,7 @@ function IndexerDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: S
             ariaLabel={t("API hits each day")}
             height={120}
             valueFormat={count}
+            tickFormat={formatCompactNumber}
             data={usage.days.map((d) => ({
               key: d.day,
               label: dayLabel(d.day),
@@ -643,6 +676,7 @@ function DebridDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
                 bLabel={t("Failed")}
                 height={120}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => {
                   const bad = daily(days, plays, (x) => x.failed)[i]!;
                   return {
@@ -663,6 +697,7 @@ function DebridDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
                 bLabel={t("Failed")}
                 height={120}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => {
                   const n = daily(days, mine, (d) => d.requests)[i]!;
                   const bad = daily(days, mine, (d) => d.failures)[i]!;
@@ -681,6 +716,7 @@ function DebridDetail({ row, data, h }: { row: SourceRow; data: StatsData; h: So
                 bLabel={t("Not cached")}
                 height={120}
                 valueFormat={count}
+                tickFormat={formatCompactNumber}
                 data={days.map((day, i) => ({
                   key: day,
                   label: dayLabel(day),
@@ -820,6 +856,7 @@ export function SourceDrawer({
       onClose={onClose}
       size="lg"
       title={row?.name ?? t("Source")}
+      documentTitle={row?.name ?? t("Source")}
       description={
         row
           ? row.detail && row.detail !== row.name

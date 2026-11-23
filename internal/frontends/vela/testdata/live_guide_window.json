@@ -1,0 +1,96 @@
+{
+  "from": "2026-11-18T18:00:00Z",
+  "until": "2026-11-18T21:00:00Z",
+  "revision": "rev-window-1",
+  "validUntil": "2026-11-18T18:01:00Z",
+  "channels": [
+    {
+      "channelId": "ch-news",
+      "state": "ready",
+      "programmes": [
+        {
+          "id": "ch-news-1795023000000",
+          "channelId": "ch-news",
+          "name": "Afternoon Edition",
+          "summary": "Live headlines before the evening hour.",
+          "start": "2026-11-18T17:30:00Z",
+          "end": "2026-11-18T18:30:00Z",
+          "episodeTitle": "",
+          "seasonNumber": 0,
+          "episodeNumber": 0,
+          "artwork": [
+            {
+              "id": "b11f35105f1b41bad099f13e6877ee6ec617f6506ae5bd28867dac6dd2e29bb6",
+              "kind": "still",
+              "tag": "epg",
+              "sizes": [
+                {
+                  "width": 0,
+                  "height": 0,
+                  "url": "/vela/v0/images/grant-news-card?w=0"
+                }
+              ]
+            }
+          ],
+          "rating": "TV-PG",
+          "genres": [
+            "News"
+          ]
+        },
+        {
+          "id": "ch-news-1795026600000",
+          "channelId": "ch-news",
+          "name": "World Tonight",
+          "summary": "International reporting.",
+          "start": "2026-11-18T18:30:00Z",
+          "end": "2026-11-18T20:00:00Z",
+          "episodeTitle": "Wednesday",
+          "seasonNumber": 12,
+          "episodeNumber": 4,
+          "artwork": [
+            {
+              "id": "b11f35105f1b41bad099f13e6877ee6ec617f6506ae5bd28867dac6dd2e29bb6",
+              "kind": "still",
+              "tag": "epg",
+              "sizes": [
+                {
+                  "width": 0,
+                  "height": 0,
+                  "url": "/vela/v0/images/grant-news-card?w=0"
+                }
+              ]
+            }
+          ],
+          "rating": "TV-PG",
+          "genres": [
+            "News",
+            "Documentary"
+          ]
+        },
+        {
+          "id": "ch-news-1795032000000",
+          "channelId": "ch-news",
+          "name": "Late Briefing",
+          "summary": "Overnight analysis.",
+          "start": "2026-11-18T20:00:00Z",
+          "end": "2026-11-18T21:30:00Z",
+          "episodeTitle": "",
+          "seasonNumber": 0,
+          "episodeNumber": 0,
+          "artwork": [],
+          "rating": "TV-14"
+        }
+      ]
+    },
+    {
+      "channelId": "ch-quiet",
+      "state": "ready",
+      "programmes": []
+    },
+    {
+      "channelId": "ch-down",
+      "state": "unavailable",
+      "programmes": []
+    }
+  ]
+}

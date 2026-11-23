@@ -10,8 +10,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/braedonsaunders/ether/internal/catalog"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 )
+
+// maxRemoteLookupsPerRun bounds uncached external-ID and detail lookups in a
+// single list resolution pass so multi-hundred-item cold lists resolve in
+// bounded batches across refreshes instead of timing out.
+const maxRemoteLookupsPerRun = 100
 
 // sourceResult is what one source contributed: titles in the source's own
 // order (full titles when they came from TMDB, so they can be joined to the
@@ -199,6 +206,8 @@ func (s *Service) gather(ctx context.Context, sp *core.CollectionSpec, src core.
 	g := &Gather{Ctx: ctx, Svc: s, Spec: sp, Src: src, Rules: rules, Want: wantFor(sp), Kinds: kinds}
 	if k, ok := s.kindRegistry().Lookup(src.Kind); ok {
 		k.Gather(g)
+	} else if strings.HasPrefix(src.Kind, "plugin:") {
+		g.Fail(fmt.Errorf("catalogue source %s is no longer available from its add-on", src.Kind))
 	}
 	return g.Res
 }
@@ -296,7 +305,7 @@ func (s *Service) discoverParams(ctx context.Context, kind string, params map[st
 // IMDb id, then (Letterboxd) a cached slug, an exact TMDB title+year
 // search, or the film page. It returns titles in list order, how many
 // could not be matched, and how many were deferred to a later refresh to
-// stay polite to Letterboxd.
+// stay polite to Letterboxd and TMDB.
 func (s *Service) resolveExternal(ctx context.Context, source string, refs []extRef) ([]core.Title, int, int) {
 	titles, unresolved, pending, _ := s.resolveExternalDetailed(ctx, source, refs)
 	return titles, unresolved, pending
@@ -310,6 +319,37 @@ func (s *Service) resolveExternalDetailed(ctx context.Context, source string, re
 	unresolved, pending := 0, 0
 	issues := map[string]int{}
 	filmPageBudget := 25
+	remoteBudget := maxRemoteLookupsPerRun
+	allowPage := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if filmPageBudget <= 0 {
+			return false
+		}
+		filmPageBudget--
+		return true
+	}
+	allowRemote := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if remoteBudget <= 0 {
+			return false
+		}
+		remoteBudget--
+		return true
+	}
+	reportIssue := func(err error) {
+		reason := "could not be resolved by the metadata provider"
+		if errors.Is(err, core.ErrMetadataIdentity) {
+			reason = "have no supported catalogue identity"
+		}
+		if errors.Is(err, core.ErrMetadataFiltered) {
+			reason = "are hidden by catalogue visibility rules"
+		}
+		mu.Lock()
+		issues[reason]++
+		mu.Unlock()
+	}
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for i := range refs {
@@ -320,26 +360,7 @@ func (s *Service) resolveExternalDetailed(ctx context.Context, source string, re
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			key, deferred := s.resolveRef(ctx, source, r, func() bool {
-				mu.Lock()
-				defer mu.Unlock()
-				if filmPageBudget <= 0 {
-					return false
-				}
-				filmPageBudget--
-				return true
-			}, func(err error) {
-				reason := "could not be resolved by the metadata provider"
-				if errors.Is(err, core.ErrMetadataIdentity) {
-					reason = "have no supported catalogue identity"
-				}
-				if errors.Is(err, core.ErrMetadataFiltered) {
-					reason = "are hidden by catalogue visibility rules"
-				}
-				mu.Lock()
-				issues[reason]++
-				mu.Unlock()
-			})
+			key, deferred := s.resolveRef(ctx, source, r, allowPage, allowRemote, reportIssue)
 			mu.Lock()
 			defer mu.Unlock()
 			if key == 0 {
@@ -364,9 +385,60 @@ func (s *Service) resolveExternalDetailed(ctx context.Context, source string, re
 			keys = append(keys, sl.key)
 		}
 	}
-	titles := s.titlesFor(ctx, keys)
-	if missing := len(keys) - len(titles); missing > 0 {
-		unresolved += missing
+	titles, deferredHydration := s.titlesForBounded(ctx, keys, allowRemote)
+	present := make(map[core.RatingKey]core.Title, len(titles))
+	for _, t := range titles {
+		present[t.Key] = t
+	}
+	// If an external item supplied an invalid TMDB ID alongside IMDb/TVDB/Title,
+	// recover through its secondary identifiers before counting it unresolved.
+	var retryKeys []core.RatingKey
+	for i, sl := range slots {
+		if sl.key == 0 {
+			continue
+		}
+		if _, ok := present[sl.key]; ok || deferredHydration[sl.key] {
+			continue
+		}
+		r := refs[i]
+		if r.TMDB <= 0 || r.MetadataProvider != "" || (r.IMDB == "" && r.TVDB <= 0 && r.Title == "") {
+			continue
+		}
+		fallback := r
+		fallback.TMDB = 0
+		if recovered, def := s.resolveRef(ctx, source, fallback, allowPage, allowRemote, nil); recovered != 0 {
+			slots[i].key = recovered
+			if _, ok := present[recovered]; !ok && !slicesContainsKey(retryKeys, recovered) {
+				retryKeys = append(retryKeys, recovered)
+			}
+		} else if def {
+			slots[i].key = 0
+			pending++
+		}
+	}
+	if len(retryKeys) > 0 {
+		extraTitles, extraDeferred := s.titlesForBounded(ctx, retryKeys, allowRemote)
+		for _, t := range extraTitles {
+			present[t.Key] = t
+		}
+		for k := range extraDeferred {
+			deferredHydration[k] = true
+		}
+	}
+	var ordered []core.Title
+	seenOut := map[core.RatingKey]bool{}
+	for _, sl := range slots {
+		if sl.key == 0 || seenOut[sl.key] {
+			continue
+		}
+		seenOut[sl.key] = true
+		if t, ok := present[sl.key]; ok {
+			ordered = append(ordered, t)
+		} else if deferredHydration[sl.key] {
+			pending++
+		} else {
+			unresolved++
+		}
 	}
 	var warnings []string
 	for _, reason := range []string{"have no supported catalogue identity", "are hidden by catalogue visibility rules", "could not be resolved by the metadata provider"} {
@@ -374,17 +446,117 @@ func (s *Service) resolveExternalDetailed(ctx context.Context, source string, re
 			warnings = append(warnings, fmt.Sprintf("%d items %s", count, reason))
 		}
 	}
-	return titles, unresolved, pending, warnings
+	return ordered, unresolved, pending, warnings
+}
+
+func slicesContainsKey(keys []core.RatingKey, target core.RatingKey) bool {
+	for _, k := range keys {
+		if k == target {
+			return true
+		}
+	}
+	return false
+}
+
+func tmdbRatingKey(id int64, typ string) core.RatingKey {
+	if id <= 0 {
+		return 0
+	}
+	switch typ {
+	case "show":
+		return core.ShowKey(id)
+	case "movie", "":
+		return core.MovieKey(id)
+	}
+	return 0
+}
+
+// localExternalKey resolves an IMDb or TVDB id from the local catalogue mirror
+// without spending any remote lookup budget.
+func (s *Service) localExternalKey(ctx context.Context, r extRef) core.RatingKey {
+	if cat, ok := s.cat.(interface {
+		LocalExternalKey(context.Context, string, int64, core.MediaType) core.RatingKey
+	}); ok {
+		return cat.LocalExternalKey(ctx, r.IMDB, r.TVDB, core.MediaType(r.Type))
+	}
+	return 0
+}
+
+func (s *Service) localFallbackTMDBKey(ctx context.Context, r extRef) core.RatingKey {
+	cand := tmdbRatingKey(r.FallbackID, r.Type)
+	if cand == 0 {
+		return 0
+	}
+	stored, ok := s.cat.(interface {
+		StoredTitle(context.Context, core.RatingKey) (*core.Title, error)
+	})
+	if !ok {
+		return 0
+	}
+	t, err := stored.StoredTitle(ctx, cand)
+	if err != nil || t == nil {
+		return 0
+	}
+	if (r.IMDB != "" && t.IDs.IMDB != "" && !strings.EqualFold(r.IMDB, t.IDs.IMDB)) || (r.TVDB > 0 && t.IDs.TVDB > 0 && r.TVDB != t.IDs.TVDB) {
+		return 0
+	}
+	return cand
+}
+
+func (s *Service) lookupEpisodeShow(ctx context.Context, imdbID string) *core.Title {
+	if typed, ok := s.cat.(interface {
+		ByExternalIDForType(context.Context, string, string, core.MediaType) (*core.Title, error)
+	}); ok {
+		if show, err := typed.ByExternalIDForType(ctx, "imdb", imdbID, core.TypeShow); err == nil && show != nil {
+			return show
+		}
+		if ep, err := typed.ByExternalIDForType(ctx, "imdb", imdbID, core.TypeEpisode); err == nil && ep != nil && ep.ShowKey.Kind() == core.KindShow {
+			if show, gerr := s.cat.Get(ctx, ep.ShowKey); gerr == nil && show != nil {
+				return show
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) lookupExternal(ctx context.Context, source, id, wantType string) *core.Title {
+	if typed, ok := s.cat.(interface {
+		ByExternalIDForType(context.Context, string, string, core.MediaType) (*core.Title, error)
+	}); ok && (wantType == "movie" || wantType == "show") {
+		if t, err := typed.ByExternalIDForType(ctx, source, id, core.MediaType(wantType)); err == nil && t != nil {
+			return t
+		}
+		if source == "imdb" && wantType == "show" {
+			return s.lookupEpisodeShow(ctx, id)
+		}
+		return nil
+	}
+	if t, err := s.cat.ByExternalID(ctx, source, id); err == nil && t != nil && (t.Type == core.TypeMovie || t.Type == core.TypeShow) && (wantType == "" || string(t.Type) == wantType) {
+		return t
+	}
+	if source == "imdb" && (wantType == "show" || wantType == "") {
+		return s.lookupEpisodeShow(ctx, id)
+	}
+	return nil
 }
 
 // resolveRef maps one external item to a rating key. allowPage reserves a
-// Letterboxd film-page fetch; deferred reports that one was needed but the
-// budget was spent.
-func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allowPage func() bool, report func(error)) (core.RatingKey, bool) {
+// Letterboxd film-page fetch and allowRemote reserves an uncached network
+// lookup; deferred reports that one was needed but the budget was spent.
+func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allowPage func() bool, allowRemote func() bool, report func(error)) (core.RatingKey, bool) {
 	if r.MetadataProvider != "" && r.ProviderID != "" {
 		if cat, ok := s.cat.(interface {
 			MaterializeMetadata(context.Context, string, core.MetadataRequest) (*core.Title, error)
 		}); ok {
+			hasCached := false
+			if refCat, ok := s.cat.(interface {
+				HasMetadataRef(context.Context, string, core.MediaType, string) bool
+			}); ok {
+				hasCached = refCat.HasMetadataRef(ctx, r.MetadataProvider, core.MediaType(r.Type), r.ProviderID)
+			}
+			if !hasCached && allowRemote != nil && !allowRemote() {
+				return 0, true
+			}
 			title, err := cat.MaterializeMetadata(ctx, r.MetadataProvider, core.MetadataRequest{ID: r.ProviderID, Type: core.MediaType(r.Type), IDs: core.IDs{TMDB: r.TMDB, IMDB: r.IMDB, TVDB: r.TVDB}})
 			if err == nil && title != nil {
 				return title.Key, false
@@ -397,25 +569,29 @@ func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allow
 			return 0, false
 		}
 	}
-	if r.TMDB > 0 {
-		switch r.Type {
-		case "show":
-			return core.ShowKey(r.TMDB), false
-		case "movie", "":
-			return core.MovieKey(r.TMDB), false
-		}
+	if key := tmdbRatingKey(r.TMDB, r.Type); key != 0 {
+		return key, false
 	}
 	cacheSrc, cacheID := "", ""
 	switch {
 	case r.IMDB != "":
-		cacheSrc, cacheID = "imdb", r.IMDB
+		cacheSrc, cacheID = "imdb:"+r.Type, r.IMDB
+		if r.Type == "" {
+			cacheSrc = "imdb"
+		}
 	case r.TVDB > 0:
-		cacheSrc, cacheID = "tvdb", strconv.FormatInt(r.TVDB, 10)
+		cacheSrc, cacheID = "tvdb:"+r.Type, strconv.FormatInt(r.TVDB, 10)
+		if r.Type == "" {
+			cacheSrc = "tvdb"
+		}
 	case r.Slug != "":
 		cacheSrc, cacheID = "letterboxd", r.Slug
 	case r.Title != "":
 		cacheSrc, cacheID = "title:"+r.Type, strings.ToLower(r.Title)+"|"+strconv.Itoa(r.Year)
 	default:
+		if key := tmdbRatingKey(r.FallbackID, r.Type); key != 0 {
+			return key, false
+		}
 		return 0, false
 	}
 	var k int64
@@ -431,17 +607,43 @@ func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allow
 		}
 		return key
 	}
+	if key := s.localExternalKey(ctx, r); key != 0 {
+		return remember(key), false
+	}
+	if key := s.localFallbackTMDBKey(ctx, r); key != 0 {
+		return remember(key), false
+	}
+	remoteReserved := false
+	needRemote := func() bool {
+		if remoteReserved {
+			return true
+		}
+		if allowRemote != nil && !allowRemote() {
+			return false
+		}
+		remoteReserved = true
+		return true
+	}
 	if r.IMDB != "" {
-		if t, err := s.cat.ByExternalID(ctx, "imdb", r.IMDB); err == nil && t != nil && (t.Type == core.TypeMovie || t.Type == core.TypeShow) {
+		if !needRemote() {
+			return 0, true
+		}
+		if t := s.lookupExternal(ctx, "imdb", r.IMDB, r.Type); t != nil {
 			return remember(t.Key), false
 		}
 	}
 	if r.TVDB > 0 {
-		if t, err := s.cat.ByExternalID(ctx, "tvdb", strconv.FormatInt(r.TVDB, 10)); err == nil && t != nil && (t.Type == core.TypeMovie || t.Type == core.TypeShow) {
+		if !needRemote() {
+			return 0, true
+		}
+		if t := s.lookupExternal(ctx, "tvdb", strconv.FormatInt(r.TVDB, 10), r.Type); t != nil {
 			return remember(t.Key), false
 		}
 	}
 	if r.Title != "" && s.api != nil && s.api.c != nil {
+		if !needRemote() {
+			return 0, true
+		}
 		if key := s.searchExact(ctx, r); key != 0 {
 			return remember(key), false
 		}
@@ -457,6 +659,9 @@ func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allow
 			}
 			return remember(core.MovieKey(id)), false
 		}
+	}
+	if key := tmdbRatingKey(r.FallbackID, r.Type); key != 0 {
+		return key, false
 	}
 	return 0, false
 }
@@ -509,8 +714,23 @@ func (s *Service) searchExact(ctx context.Context, r extRef) core.RatingKey {
 // titlesFor returns catalogue titles for keys, from the index, the mirror,
 // or (for titles the mirror has never seen) an on-demand TMDB fetch.
 func (s *Service) titlesFor(ctx context.Context, keys []core.RatingKey) []core.Title {
+	var mu sync.Mutex
+	budget := maxRemoteLookupsPerRun
+	titles, _ := s.titlesForBounded(ctx, keys, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if budget <= 0 {
+			return false
+		}
+		budget--
+		return true
+	})
+	return titles
+}
+
+func (s *Service) titlesForBounded(ctx context.Context, keys []core.RatingKey, allowRemote func() bool) ([]core.Title, map[core.RatingKey]bool) {
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 	loaded, err := loadTitles(ctx, s.db, keys)
 	if err != nil {
@@ -520,17 +740,38 @@ func (s *Service) titlesFor(ctx context.Context, keys []core.RatingKey) []core.T
 	for _, t := range loaded {
 		have[t.Key] = t
 	}
-	var missing []core.RatingKey
+	digitalGate := s.catCfg != nil && s.catCfg().ReleaseMode == config.ModeDigital
+	now := s.now()
+	deferred := map[core.RatingKey]bool{}
+	var toFetch []core.RatingKey
+	var reloadDBKeys []core.RatingKey
 	for _, k := range keys {
-		if _, ok := have[k]; !ok {
-			missing = append(missing, k)
+		t, ok := have[k]
+		if !ok {
+			if allowRemote != nil && !allowRemote() {
+				deferred[k] = true
+				continue
+			}
+			toFetch = append(toFetch, k)
+			continue
+		}
+		// Summary rows missing release dates or digital home-release checks are
+		// hidden by visibleTitle/homeReleaseSQL in Plex even when present in
+		// catalog_titles. Hydrate their details once within the lookup budget.
+		needsRelease := t.Released.IsZero()
+		needsDigital := digitalGate && t.Type == core.TypeMovie && !t.HomeReleaseChecked && !catalog.HomeReleaseAgeAdmitted(&t, now)
+		if needsRelease || needsDigital {
+			if allowRemote == nil || allowRemote() {
+				toFetch = append(toFetch, k)
+				reloadDBKeys = append(reloadDBKeys, k)
+			}
 		}
 	}
-	if len(missing) > 0 {
+	if len(toFetch) > 0 {
 		var mu sync.Mutex
 		sem := make(chan struct{}, 4)
 		var wg sync.WaitGroup
-		for _, k := range missing {
+		for _, k := range toFetch {
 			k := k
 			wg.Add(1)
 			sem <- struct{}{}
@@ -547,6 +788,15 @@ func (s *Service) titlesFor(ctx context.Context, keys []core.RatingKey) []core.T
 			}()
 		}
 		wg.Wait()
+		if len(reloadDBKeys) > 0 {
+			if refreshed, rerr := loadTitles(ctx, s.db, reloadDBKeys); rerr == nil {
+				for _, t := range refreshed {
+					if _, ok := have[t.Key]; ok {
+						have[t.Key] = t
+					}
+				}
+			}
+		}
 	}
 	out := make([]core.Title, 0, len(keys))
 	seen := map[core.RatingKey]bool{}
@@ -556,5 +806,5 @@ func (s *Service) titlesFor(ctx context.Context, keys []core.RatingKey) []core.T
 			out = append(out, t)
 		}
 	}
-	return out
+	return out, deferred
 }

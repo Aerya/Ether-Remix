@@ -132,6 +132,12 @@ export const BUILTIN_FORMATS: BuiltinFormat[] = localized(() => [
     help: t("A foreign film or show released in the viewer's audio language or MULTi."),
   },
   {
+    id: `${BUILTIN_PREFIX}viewer-subtitles`,
+    kind: "streaming",
+    label: t("Viewer's subtitles"),
+    help: t("The indexer lists subtitles in the viewer's subtitle language."),
+  },
+  {
     id: `${BUILTIN_PREFIX}series-year-differs`,
     kind: "streaming",
     label: t("Series year differs"),

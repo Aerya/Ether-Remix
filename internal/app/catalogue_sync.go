@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-type catalogueForceKey struct{}
-
 func catalogueSyncTimeout() time.Duration {
 	seconds, err := strconv.Atoi(strings.TrimSpace(pseenv.Get("PSE_CATALOGUE_SYNC_TIMEOUT")))
 	if err != nil || seconds < 30 || seconds > 900 {

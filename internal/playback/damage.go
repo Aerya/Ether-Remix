@@ -69,6 +69,9 @@ func (m *Manager) noteDamage(g *generation, offset, length int64) bool {
 }
 
 func (m *Manager) prepareDamageAlternate(g *generation) {
+	if g.sess.isKind() {
+		return
+	}
 	d := &g.damage
 	d.mu.Lock()
 	if d.preparing {

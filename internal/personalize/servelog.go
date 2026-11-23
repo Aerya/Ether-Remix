@@ -382,7 +382,7 @@ func (e *Engine) surfaceOf(hc core.HubContext, hubs []core.Hub) string {
 	if hc.SectionID <= 0 {
 		return "home"
 	}
-	if t, ok := e.opts.Sections[hc.SectionID]; ok {
+	if t, ok := e.sectionMediaType(e.ctx, hc.SectionID); ok {
 		return sectionName(t)
 	}
 	for _, h := range hubs {

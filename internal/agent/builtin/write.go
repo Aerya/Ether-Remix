@@ -313,7 +313,7 @@ func writeTools(d Deps) []tools.Tool {
 				return propose("Change custom format scores",
 					fmt.Sprintf("Change custom format scores on the %s profile.", profile.Name),
 					details,
-					map[string]any{"profile": profile.Name, "scores": scores},
+					map[string]any{"profile": profile.Name, "media": profile.Media, "scores": scores},
 					func(ctx context.Context) (tools.Result, error) {
 						if err := d.Profiles.SetFormatScores(ctx, profile.Name, profile.Media, scores); err != nil {
 							return tools.Result{}, err
@@ -390,9 +390,18 @@ func writeTools(d Deps) []tools.Tool {
 				labels := make([]string, 0, len(conditions))
 				for _, c := range conditions {
 					labels = append(labels, strings.TrimSpace(c.Field+" "+c.Operator+" "+c.Value))
-					conds = append(conds, map[string]any{
-						"field": c.Field, "operator": c.Operator, "value": c.Value, "min": c.Min, "max": c.Max,
-					})
+					cond := map[string]any{"field": c.Field, "value": c.Value, "min": c.Min, "max": c.Max}
+					if c.Operator != "" {
+						// Omitted (not stored as ""): the operator enum schema has no "" member, so a
+						// stored "" fails re-validation when the approval is replayed on apply.
+						cond["operator"] = c.Operator
+					}
+					conds = append(conds, cond)
+				}
+				storedInput := map[string]any{"profile": profile.Name, "media": profile.Media, "name": name, "action": action, "disabled": disabled, "conditions": conds}
+				if match != "" {
+					// Same reason as operator above: "match" has no "" enum member.
+					storedInput["match"] = match
 				}
 				return propose("Add a release rule",
 					fmt.Sprintf("Add the rule %q (%s) to the %s profile.", name, action, profile.Name),
@@ -402,7 +411,7 @@ func writeTools(d Deps) []tools.Tool {
 						{Label: "Action", Value: action},
 						{Label: "When", Value: strings.Join(labels, "; ")},
 					},
-					map[string]any{"profile": profile.Name, "name": name, "action": action, "match": match, "disabled": disabled, "conditions": conds},
+					storedInput,
 					func(ctx context.Context) (tools.Result, error) {
 						if err := d.Profiles.AddRule(ctx, profile.Name, profile.Media, rule); err != nil {
 							return tools.Result{}, err

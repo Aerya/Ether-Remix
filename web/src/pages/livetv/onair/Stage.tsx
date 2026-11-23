@@ -5,37 +5,14 @@ import {
   releaseRenderer,
   loadOnAirFonts,
   loadSceneAssets,
+  styleBindings,
   type SceneBindings,
 } from "./scene-renderer";
 import { apiBlob } from "../../../lib/api";
 import type { SceneVideo, Style, StyleScene } from "./studio-model";
 import type { Bindings, Moment } from "./model";
 import { Canvas, type CanvasProps } from "./editor/Canvas";
-export function styleBindings(style: Style, bindings: Bindings = {}): SceneBindings {
-  const slots: Record<string, string> = {};
-  const flatten = (value: unknown, prefix = "") => {
-    if (value !== null && typeof value === "object")
-      Object.entries(value).forEach(([k, v]) => flatten(v, prefix ? `${prefix}.${k}` : k));
-    else if (value !== undefined) slots[prefix] = String(value ?? "");
-  };
-  flatten(bindings);
-  return {
-    tokens: {
-      bg: style.brand.palette.background,
-      accent: style.brand.palette.accent,
-      text: style.brand.palette.text,
-      glow: style.brand.palette.glow,
-      "type.display": style.brand.type.display,
-      "type.body": style.brand.type.body,
-      "brand.logo": style.brand.logo,
-      "words.tagline": style.brand.tagline,
-      energy: style.brand.energy,
-      ...Object.fromEntries(style.brand.textures.map((k) => [`textures.${k}`, 1])),
-      ...Object.fromEntries(style.controls.map((c) => [`control.${c.id}`, c.value])),
-    },
-    slots,
-  };
-}
+export { styleBindings } from "./scene-renderer";
 export function ScenePoster(p: { scene: StyleScene; bindings: SceneBindings; playing?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {

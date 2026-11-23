@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/collections"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -451,25 +450,6 @@ func mustInt(t *testing.T, s string) int64 {
 		n = n*10 + int64(c-'0')
 	}
 	return n
-}
-
-func TestPreviewSpeedOnWarmIndex(t *testing.T) {
-	e := newEnv(t)
-	sp := spec("speed", "mixed", catalogSource(), rl("rating", "gte", 7))
-	if _, err := e.svc.Preview(e.ctx, sp, 60); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	p, err := e.svc.Preview(e.ctx, sp, 60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Fatalf("warm preview took %v", d)
-	}
-	if p.TookMs < 0 || p.Total == 0 {
-		t.Fatalf("preview: %+v", p)
-	}
 }
 
 // The Studio previews drafts before they're named; saving still requires

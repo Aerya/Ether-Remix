@@ -1,0 +1,128 @@
+{
+  "id": "org.ether.english-dubs",
+  "name": "English dubbed anime",
+  "version": "1.0.0",
+  "description": "List anime series and films with an English dub using the community MAL-Dubs index and runtime MyAnimeList to TMDB mapping.",
+  "types": [
+    "series",
+    "movie"
+  ],
+  "resources": [
+    "catalog"
+  ],
+  "idPrefixes": [
+    "tmdb:",
+    "tt",
+    "tvdb:"
+  ],
+  "catalogs": [
+    {
+      "type": "series",
+      "id": "dubbed",
+      "name": "Anime with an English dub",
+      "extra": [
+        {
+          "name": "skip"
+        }
+      ]
+    },
+    {
+      "type": "movie",
+      "id": "dubbed",
+      "name": "Anime with an English dub",
+      "extra": [
+        {
+          "name": "skip"
+        }
+      ]
+    },
+    {
+      "type": "series",
+      "id": "incomplete",
+      "name": "Dub in progress",
+      "extra": [
+        {
+          "name": "skip"
+        }
+      ]
+    },
+    {
+      "type": "movie",
+      "id": "incomplete",
+      "name": "Dub in progress",
+      "extra": [
+        {
+          "name": "skip"
+        }
+      ]
+    }
+  ],
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": [
+      "list_source",
+      "ui"
+    ],
+    "summary": "$t:summary",
+    "author": {
+      "name": "Ether",
+      "url": "https://github.com/braedonsaunders/ether"
+    },
+    "license": "MIT",
+    "repo": "https://github.com/braedonsaunders/ether",
+    "icon": "assets/icon.svg",
+    "runtime": {
+      "kind": "hosted",
+      "entry": "src/plugin.ts",
+      "limits": {
+        "memoryBytes": 134217728
+      }
+    },
+    "permissions": {
+      "network": [
+        "raw.githubusercontent.com"
+      ]
+    },
+    "settings": {
+      "$ref": "settings.schema.json"
+    },
+    "strings": {
+      "en": "i18n/en.json",
+      "fr": "i18n/fr.json"
+    },
+    "schedule": [
+      {
+        "every": "24h",
+        "call": "/ether/job/refresh"
+      }
+    ],
+    "contributes": {
+      "listSources": [
+        {
+          "key": "dubbed",
+          "label": "$t:list_dubbed_label",
+          "hint": "$t:list_dubbed_hint",
+          "catalog": "dubbed",
+          "maxItems": 2000,
+          "refresh": "24h"
+        },
+        {
+          "key": "incomplete",
+          "label": "$t:list_incomplete_label",
+          "hint": "$t:list_incomplete_hint",
+          "catalog": "incomplete",
+          "maxItems": 2000,
+          "refresh": "24h"
+        }
+      ],
+      "pages": [
+        {
+          "key": "status",
+          "label": "$t:page_label",
+          "route": "/ether/view/status"
+        }
+      ]
+    }
+  }
+}

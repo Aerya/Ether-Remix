@@ -118,9 +118,6 @@ func (s *Service) ExportStylePack(ctx context.Context, id string) ([]byte, []str
 	}
 	return buf.Bytes(), warnings, nil
 }
-func (s *Service) ImportStylePack(ctx context.Context, raw []byte) (Look, error) {
-	return s.importStylePack(ctx, raw, "")
-}
 func (s *Service) importStylePack(ctx context.Context, raw []byte, packID string) (Look, error) {
 	z, e := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 	if e != nil {
@@ -270,27 +267,6 @@ func (s *Service) StudioRoutes(r chi.Router) {
 			w.Header().Set("X-Ether-Pack-Warnings", strings.Join(warnings, " "))
 		}
 		_, _ = w.Write(b)
-	})
-	r.Post("/packs", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, packLimit)
-		if e := r.ParseMultipartForm(8 << 20); e != nil {
-			result(w, nil, e)
-			return
-		}
-		defer r.MultipartForm.RemoveAll()
-		f, _, e := r.FormFile("file")
-		if e != nil {
-			result(w, nil, e)
-			return
-		}
-		defer f.Close()
-		b, e := io.ReadAll(io.LimitReader(f, packLimit+1))
-		if e != nil {
-			result(w, nil, e)
-			return
-		}
-		l, e := s.ImportStylePack(r.Context(), b)
-		result(w, l, e)
 	})
 }
 

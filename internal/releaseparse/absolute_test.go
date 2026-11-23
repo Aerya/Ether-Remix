@@ -67,9 +67,20 @@ func TestSeasonDashEpisode(t *testing.T) {
 	if !reflect.DeepEqual(info.Seasons, []int{3}) || !reflect.DeepEqual(info.Episodes, []int{5}) || info.FullSeason || info.Title != "Kimetsu no Yaiba" {
 		t.Fatalf("S3 - 05: title=%q seasons=%v episodes=%v full=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason)
 	}
+	info = Parse("[Erai-raws] Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season - 01 [1080p CR WEB-DL AVC AAC][MultiSub]")
+	if !reflect.DeepEqual(info.Seasons, []int{3}) || !reflect.DeepEqual(info.Episodes, []int{1}) || info.FullSeason || len(info.AbsoluteEpisodes) != 0 || info.Title != "Tensei Kizoku, Kantei Skill de Nariagaru" {
+		t.Fatalf("3rd Season - 01: title=%q seasons=%v episodes=%v full=%v absolute=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason, info.AbsoluteEpisodes)
+	}
+	info = Parse("[Batch] Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season [1080p]")
+	if !reflect.DeepEqual(info.Seasons, []int{3}) || !info.FullSeason || len(info.Episodes) != 0 || info.Title != "Tensei Kizoku, Kantei Skill de Nariagaru" {
+		t.Fatalf("3rd Season pack: title=%q seasons=%v episodes=%v full=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason)
+	}
 	// A cour ("Part 2") between the season and the number is parsed with Cour=2.
 	if info = Parse("[G] Show S3 Part 2 - 03 (1080p)"); !reflect.DeepEqual(info.Seasons, []int{3}) || info.Cour != 2 || !reflect.DeepEqual(info.Episodes, []int{3}) || len(info.AbsoluteEpisodes) != 0 {
 		t.Fatalf("S3 Part 2 - 03: got seasons=%v cour=%d episodes=%v absolute=%v", info.Seasons, info.Cour, info.Episodes, info.AbsoluteEpisodes)
+	}
+	if info = Parse("[G] Show 2nd Season Part 2 - 03 (1080p)"); !reflect.DeepEqual(info.Seasons, []int{2}) || info.Cour != 2 || !reflect.DeepEqual(info.Episodes, []int{3}) || info.Title != "Show" {
+		t.Fatalf("2nd Season Part 2 - 03: title=%q seasons=%v cour=%d episodes=%v", info.Title, info.Seasons, info.Cour, info.Episodes)
 	}
 	// A season range is still a range.
 	info = Parse("Show Seasons 1 - 5 1080p BluRay")
@@ -96,6 +107,35 @@ func TestAnimeSearchEpisodeArcSeason(t *testing.T) {
 	} {
 		if got := AnimeSearchEpisode(tc.req); got != tc.want {
 			t.Errorf("%s: AnimeSearchEpisode=%d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A release naming a different absolute episode must not satisfy a request
+// through its season numbering (#613: S17E005 = absolute 633 was accepted
+// for One Piece absolute 583, whose group alias is S16E05).
+func TestEpisodeMatchesRequestRejectsDifferentAbsolute(t *testing.T) {
+	req := core.SearchRequest{Type: core.TypeEpisode, Title: "One Piece", Season: 15, Episode: 583, AbsoluteEpisode: 583, Anime: true,
+		ReleaseAliases: []core.EpisodeNumber{{Season: 16, Episode: 5}}}
+	cases := []struct {
+		info core.ReleaseInfo
+		want bool
+	}{
+		{core.ReleaseInfo{Seasons: []int{17}, Episodes: []int{5}, AbsoluteEpisodes: []int{633}}, false},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}, AbsoluteEpisodes: []int{633}}, false},
+		{core.ReleaseInfo{Seasons: []int{15}, Episodes: []int{583}, AbsoluteEpisodes: []int{1099}}, false},
+		{core.ReleaseInfo{AbsoluteEpisodes: []int{1099}}, false},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}, AbsoluteEpisodes: []int{583}}, true},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}}, true},
+		{core.ReleaseInfo{AbsoluteEpisodes: []int{583}}, true},
+		{core.ReleaseInfo{Seasons: []int{15}, Episodes: []int{583}}, true},
+	}
+	for _, tc := range cases {
+		if got := EpisodeMatchesRequest(tc.info, req); got != tc.want {
+			t.Errorf("info %+v: got %v want %v", tc.info, got, tc.want)
+		}
+		if tc.want == false && EpisodeMatchesNumbering(tc.info, 15, 583, 583) {
+			t.Errorf("info %+v: numbering matched a different absolute episode", tc.info)
 		}
 	}
 }

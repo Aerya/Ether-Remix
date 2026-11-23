@@ -4,6 +4,7 @@ import type { PluginDetail } from "../types";
 /** What a plugin can add to Ether's own surfaces, most visible first. */
 const CONTRIBUTIONS = [
   "livetv_channels",
+  "live_events",
   "list_source",
   "stream_source",
   "debrid_provider",
@@ -35,6 +36,8 @@ export function contributionTab(c: Contribution): string {
   switch (c) {
     case "livetv_channels":
       return t("Channels");
+    case "live_events":
+      return t("Live events");
     case "list_source":
       return t("Catalogues");
     case "debrid_provider":

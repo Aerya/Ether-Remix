@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -66,7 +67,7 @@ func validateChannelDraft(c livetv.Channel, links []string) error {
 }
 
 func channelBuilderTools(d Deps) []tools.Tool {
-	return []tools.Tool{tool(tools.Tool{Name: "livetv_channel_apply", OpenWorld: true, Title: "Apply channel", Description: `Propose creating or updating a virtual channel. Returns a reviewable before/after and never writes until owner approval. Submit channel programming fields (unrelated access and stream settings are preserved): id (empty for new), name, number, kind=virtual, enabled, items [{key,title,durationMs}], collection, filter, sources, blocks [{name,start,end,days,items,mode,collection,filter,sources}], mode (order,shuffle,random,marathon,newest), timezone, look. Catalogue and collection keys must be JSON numbers, not strings. Filters use {type:"movie"|"show",genres:["Comedy"],yearFrom:1980,yearTo:1989,minVotes:100,minRating:6}. Prefer bounded collection/filter sources over enumerating titles. Explicit item durations are milliseconds; fetch title_details for runtimeMinutes and multiply by 60000. No theme or branding: omit style and channel.look; do not call look_draft. Optional style is a complete validated On Air look from look_draft; it is saved only on Apply. commercialLinks holds at most 30 HTTPS YouTube/Vimeo video links, downloaded only on Apply, each limited to 120 seconds. Use web_search to find links from search terms first. Preserve all unrelated fields on updates.`, InputSchema: schema(map[string]any{"editorChannel": map[string]any{"type": "object", "additionalProperties": true, "description": "Host-provided unsaved channel; never set this yourself"}, "expectedRevision": pString("Opaque revision for approval replay; omit on first proposal", 64), "channel": map[string]any{"type": "object", "description": "Channel programming. For a new channel provide name and number. Optional fields may be omitted; no theme means omit look and style.", "additionalProperties": true, "properties": map[string]any{
+	return []tools.Tool{tool(tools.Tool{Name: "livetv_channel_apply", OpenWorld: true, Title: "Apply channel", Description: `Propose creating or updating a virtual channel. Returns a reviewable before/after and never writes until owner approval. Submit channel programming fields (unrelated access and stream settings are preserved): id (empty for new), name, number, kind=virtual, enabled, items [{key,title,durationMs}], collection, filter, sources, blocks [{name,start,end,days,items,mode,collection,filter,sources}], mode (order,shuffle,random,marathon,newest), timezone, look. Catalogue and collection keys must be JSON numbers, not strings. Filters use {type:"movie"|"show",genres:["Comedy"],yearFrom:1980,yearTo:1989,minVotes:100,minRating:6}. Prefer bounded collection/filter sources over enumerating titles. Explicit item durations are milliseconds; fetch title_details for runtimeMinutes and multiply by 60000. No theme or branding: omit style and channel.look; do not call look_draft. Optional style is a complete validated 9-role On Air look from look_draft (covering ident, upnext, tonight, break, back, offair, welcome, lowerthird, bug); complete all 9 roles before calling livetv_channel_apply. It is saved only on Apply. commercialLinks holds at most 30 HTTPS YouTube/Vimeo video links, downloaded only on Apply, each limited to 120 seconds. Use web_search to find links from search terms first. Preserve all unrelated fields on updates.`, InputSchema: schema(map[string]any{"editorChannel": map[string]any{"type": "object", "additionalProperties": true, "description": "Host-provided unsaved channel; never set this yourself"}, "expectedRevision": pString("Opaque revision for approval replay; omit on first proposal", 64), "channel": map[string]any{"type": "object", "description": "Channel programming. For a new channel provide name and number. Optional fields may be omitted; no theme means omit look and style.", "additionalProperties": true, "properties": map[string]any{
 		"id":   pString("Existing channel id; omit for a new channel", 128),
 		"name": pString("Channel name", 120), "number": pString("Channel number as a string, e.g. 101", 32),
 		"kind": pEnum("Channel kind", "virtual"), "enabled": pBool("Whether the channel is enabled"),
@@ -83,12 +84,20 @@ func channelBuilderTools(d Deps) []tools.Tool {
 			return tools.Result{}, tools.Userf("channel proposal too large")
 		}
 		var input struct {
-			Channel livetv.Channel `json:"channel"`
-			Style   *onair.Look    `json:"style"`
-			Links   []string       `json:"commercialLinks"`
+			Channel  livetv.Channel  `json:"channel"`
+			RawStyle json.RawMessage `json:"style"`
+			Links    []string        `json:"commercialLinks"`
 		}
 		if e = json.Unmarshal(b, &input); e != nil {
 			return tools.Result{}, tools.Userf("invalid channel proposal: %v", e)
+		}
+		var stylePtr *onair.Look
+		if rawStyle := bytes.TrimSpace(input.RawStyle); len(rawStyle) > 0 && string(rawStyle) != "null" {
+			parsed, err := onair.ParseLookDraft(rawStyle)
+			if err != nil {
+				return tools.Result{}, tools.Userf("invalid style: %v", err)
+			}
+			stylePtr = &parsed
 		}
 		c := input.Channel
 		var editor *livetv.Channel
@@ -149,15 +158,18 @@ func channelBuilderTools(d Deps) []tools.Tool {
 				return tools.Result{}, err
 			}
 		}
-		if input.Style != nil {
+		if stylePtr != nil {
 			if d.OnAir == nil {
 				return tools.Result{}, tools.Userf("On Air is unavailable")
 			}
-			l, err := d.OnAir.Draft(ctx, *input.Style)
+			l, err := d.OnAir.Draft(ctx, *stylePtr)
 			if err != nil {
 				return tools.Result{}, err
 			}
-			input.Style = &l
+			if missing := onair.MissingRoles(l); len(missing) > 0 {
+				return tools.Result{}, tools.Userf("style is missing required roles (%s); complete all 9 roles with look_draft before calling livetv_channel_apply", strings.Join(missing, ", "))
+			}
+			stylePtr = &l
 			in["style"] = l
 		}
 		commercials, ok := d.OnAir.(channelCommercials)
@@ -200,8 +212,8 @@ func channelBuilderTools(d Deps) []tools.Tool {
 			breaks = "Between programmes"
 		}
 		details = append(details, tools.ProposalDetail{Label: "Commercials", Value: breaks})
-		if input.Style != nil {
-			details = append(details, tools.ProposalDetail{Label: "Branding", Value: input.Style.Name})
+		if stylePtr != nil {
+			details = append(details, tools.ProposalDetail{Label: "Branding", Value: stylePtr.Name})
 		}
 		for _, link := range input.Links {
 			details = append(details, tools.ProposalDetail{Label: "Commercial", Value: link})
@@ -218,8 +230,8 @@ func channelBuilderTools(d Deps) []tools.Tool {
 					return tools.Result{}, tools.Userf("channel changed; review a fresh proposal")
 				}
 			}
-			if input.Style != nil {
-				style := *input.Style
+			if stylePtr != nil {
+				style := *stylePtr
 				style.ID = ""
 				style.ChannelIDs = nil
 				l, err := d.OnAir.SaveLook(ctx, style)
@@ -251,7 +263,7 @@ func channelBuilderTools(d Deps) []tools.Tool {
 			saved, err := w.SaveChannel(ctx, c)
 			return tools.Result{Data: map[string]any{"channel": saved}}, err
 		})
-		result.Data = map[string]any{"channel": c, "style": input.Style, "before": before, "status": "proposed"}
+		result.Data = map[string]any{"channel": c, "style": stylePtr, "before": before, "status": "proposed"}
 		return result, nil
 	}})}
 }

@@ -30,6 +30,7 @@ import { pagedTableLabels } from "../../i18n/appkit-labels";
 import { isActiveViewer, isPlexSource, LifecycleBadges, lifecycleOf } from "./lifecycle";
 import { AddViewerDrawer } from "./ManageViewers";
 import { ImportPlexViewersDrawer } from "./ImportPlexViewersDrawer";
+import { SignInLockouts } from "./sections/SignInLockouts";
 import { WatchlistAlerts } from "./sections/WatchlistDefaults";
 import { PlexAccessNote } from "./ViewerStatus";
 
@@ -80,6 +81,7 @@ export default function ViewersList() {
       <div className="space-y-6">
         <People key={version} />
         <WatchlistAlerts />
+        <SignInLockouts />
       </div>
       <AddViewerDrawer
         open={adding}
@@ -122,7 +124,7 @@ function People() {
   const users = useAsync(() => api.users().catch(() => [] as EtherUser[]), []);
   const byId = new Map((users.data ?? []).map((u) => [u.id, u]));
   const viewers = state.data ?? [];
-  const isPaused = (v: Viewer) => lifecycleOf(v).paused && !isPlexSource(lifecycleOf(v).source);
+  const isPaused = (v: Viewer) => lifecycleOf(v).paused;
   const fromPlex = (v: Viewer) => isPlexSource(lifecycleOf(v).source);
   const filtered = viewers.filter((v) =>
     status === "all"

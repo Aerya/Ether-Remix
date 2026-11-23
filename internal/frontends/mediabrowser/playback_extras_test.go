@@ -149,10 +149,30 @@ func TestLocalTrailersAndFeaturesFollowAuthorizedExtras(t *testing.T) {
 		}
 	}
 	dto := map[string]any{}
-	(&instance{protocol: "emby"}).embyItemDetailDTO(dto, frontend.ItemDetail{Extras: []frontend.Extra{{Kind: "trailer", Source: "YouTube", SourceID: "clip", Title: "Preview"}}})
+	(&instance{protocol: "emby"}).embyItemDetailDTO(dto, frontend.ItemDetail{
+		Extras: []frontend.Extra{
+			{Key: core.ExtraKey(4), ParentKey: movie, Kind: "trailer", Source: "YouTube", SourceID: "clip", Title: "Preview"},
+			{Key: core.ExtraKey(5), ParentKey: movie, Kind: "teaser", Title: "Teaser"},
+			{Kind: "trailer", Title: "Unplayable"},
+		},
+	})
 	remote, _ := dto["RemoteTrailers"].([]any)
 	if len(remote) != 1 || remote[0].(map[string]string)["Url"] != "https://www.youtube.com/watch?v=clip" {
 		t.Fatalf("remote trailers %#v", dto["RemoteTrailers"])
+	}
+	if dto["LocalTrailerCount"] != 2 {
+		t.Fatalf("emby LocalTrailerCount = %v, want 2", dto["LocalTrailerCount"])
+	}
+	jfDTO := map[string]any{}
+	(&instance{protocol: "jellyfin"}).jellyfinItemDetailDTO(frontend.ItemDetail{
+		Title: frontend.Title{Key: movie, Type: core.TypeMovie},
+		Extras: []frontend.Extra{
+			{Key: core.ExtraKey(4), ParentKey: movie, Kind: "trailer", Title: "Discover Trailer"},
+			{Key: core.ExtraKey(5), ParentKey: movie, Kind: "featurette", Title: "Featurette"},
+		},
+	}, jfDTO)
+	if jfDTO["LocalTrailerCount"] != 1 || jfDTO["SpecialFeatureCount"] != 1 {
+		t.Fatalf("jellyfin extra counts = trailer:%v feature:%v", jfDTO["LocalTrailerCount"], jfDTO["SpecialFeatureCount"])
 	}
 }
 

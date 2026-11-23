@@ -71,9 +71,17 @@ func (s *Session) resumeSession(n int) *Session {
 	if !s.resumeWarmUsed && n > s.resumeWarmAt+1 {
 		return nil
 	}
-	s.resumeWarmUsed = true
 	child.mu.Lock()
+	if child.closed {
+		// The idle reaper closes an unused warm resume session. Forget it so
+		// the playhead reaching that segment naturally is served by this
+		// session instead of a closed one answering 410 forever.
+		child.mu.Unlock()
+		s.resumeWarm = nil
+		return nil
+	}
 	child.speculative = false
 	child.mu.Unlock()
+	s.resumeWarmUsed = true
 	return child
 }

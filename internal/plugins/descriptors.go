@@ -63,6 +63,25 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindRuleField, rc.Key, textOf(id, rc.Label), map[string]any{
 			"operators": rc.Operators, "editor": rc.Editor})
 	}
+	if man.HasCapability(CapPosterBadges) {
+		for _, pb := range c.PosterBadges {
+			d := extend.Descriptor{
+				Kind:  extend.KindPosterBadge,
+				ID:    extend.PluginID(id, pb.Key),
+				Owner: id,
+				Label: textOf(id, pb.Label),
+				Group: man.Name,
+			}
+			if pb.Description != "" {
+				d.Hint = textOf(id, pb.Description)
+			}
+			out = append(out, d.WithMeta(map[string]any{
+				"key":        pb.Key,
+				"layerKey":   "plugin:" + id + ":" + pb.Key,
+				"pluginName": man.Name,
+			}))
+		}
+	}
 	for _, ls := range c.ListSources {
 		if !man.HasCapability(CapListSource) {
 			continue
@@ -164,6 +183,9 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.mu.Lock()
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
+	m.syncPosterBadgeSets(ctx, r)
+	m.syncLiveFeeds(ctx, r)
+	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
 		if r.Enabled {
@@ -286,8 +308,19 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Connects to the add-on it was made from")
 	}
 	p := man.Ether.Permissions
+	var localHosts []string
 	for _, h := range p.Network {
-		lines = append(lines, "Connects to "+h)
+		switch {
+		case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+			lines = append(lines, "Connects to addresses you approve")
+		case IsLocalNetworkHost(h):
+			localHosts = append(localHosts, h)
+		default:
+			lines = append(lines, "Connects to "+h)
+		}
+	}
+	if len(localHosts) > 0 {
+		lines = append(lines, "May reach on your network: "+strings.Join(localHosts, ", "))
 	}
 	if normLevel(p.Catalog) == "read" {
 		lines = append(lines, "Reads your catalogue")
@@ -311,11 +344,23 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Reads folders you choose")
 		needsFolders = true
 	}
-	switch normLevel(p.Sources) {
-	case "search":
-		lines = append(lines, "Searches your indexers for sources")
-	case "acquire":
+	if SourcesPermissionAllowsAcquire(p.Sources) {
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
+	} else if SourcesPermissionAllowsSearch(p.Sources) {
+		lines = append(lines, "Searches your indexers for sources")
+	}
+	if SourcesPermissionAllowsBackgroundCheck(p.Sources) {
+		lines = append(lines, "Checks Usenet releases in the background within a daily allowance")
+	}
+	switch normLevel(p.AI) {
+	case "complete":
+		lines = append(lines, "Uses your configured language model")
+	case "complete+search":
+		lines = append(lines, "Uses your configured language model")
+		lines = append(lines, "Uses your language model while a viewer searches")
+	}
+	if normLevel(p.Media) == "probe" {
+		lines = append(lines, "Probes media container metadata")
 	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
@@ -327,11 +372,33 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		}
 		lines = append(lines, "Adds a library: "+name)
 	}
+	for _, sc := range man.Ether.Contributes.Screens {
+		title := sc.Title
+		if strings.HasPrefix(title, "$t:") {
+			title = sc.ID
+		}
+		lines = append(lines, "Adds a screen: "+title)
+	}
 	for range p.Secrets {
 		lines = append(lines, "Stores an access token")
 	}
 	if man.HasCapability(CapEvents) {
-		lines = append(lines, "Gets play and new-release events")
+		ev := man.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			lines = append(lines, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			lines = append(lines, "Publishes custom events to Flows")
+		}
+	}
+	if man.HasCapability(CapFlowActions) {
+		lines = append(lines, "Adds actions to Flows")
+	}
+	if man.HasCapability(CapPosterBadges) {
+		lines = append(lines, "Adds badges to library posters")
+	}
+	if man.HasCapability(CapLiveEvents) {
+		lines = append(lines, "Provides live event feeds")
 	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
@@ -355,12 +422,23 @@ func PermissionDiff(cur, next Manifest) []string {
 	for _, h := range a.Network {
 		have[h] = true
 	}
+	var addedLocal []string
 	for _, h := range b.Network {
 		if !have[h] {
-			added = append(added, "Connects to "+h)
+			switch {
+			case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+				added = append(added, "Connects to addresses you approve")
+			case IsLocalNetworkHost(h):
+				addedLocal = append(addedLocal, h)
+			default:
+				added = append(added, "Connects to "+h)
+			}
 		}
 	}
-	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "all": 2}
+	if len(addedLocal) > 0 {
+		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
+	}
+	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "probe": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
 	if raised(a.Catalog, b.Catalog) {
 		added = append(added, "Reads your catalogue")
@@ -380,13 +458,37 @@ func PermissionDiff(cur, next Manifest) []string {
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
 	}
-	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
-	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {
-		if normLevel(b.Sources) == "acquire" {
+	if raised(a.Media, b.Media) {
+		added = append(added, "Probes media container metadata")
+	}
+	aiLevel := map[string]int{"none": 0, "complete": 1, "complete+search": 2}
+	if aiLevel[normLevel(b.AI)] > aiLevel[normLevel(a.AI)] {
+		if aiLevel[normLevel(a.AI)] == 0 {
+			added = append(added, "Uses your configured language model")
+		}
+		if normLevel(b.AI) == "complete+search" {
+			added = append(added, "Uses your language model while a viewer searches")
+		}
+	}
+	sourcesBase := func(l string) int {
+		switch {
+		case SourcesPermissionAllowsAcquire(l):
+			return 2
+		case SourcesPermissionAllowsSearch(l):
+			return 1
+		default:
+			return 0
+		}
+	}
+	if sourcesBase(b.Sources) > sourcesBase(a.Sources) {
+		if SourcesPermissionAllowsAcquire(b.Sources) {
 			added = append(added, "Searches your indexers and opens sources through your debrid accounts")
 		} else {
 			added = append(added, "Searches your indexers for sources")
 		}
+	}
+	if !SourcesPermissionAllowsBackgroundCheck(a.Sources) && SourcesPermissionAllowsBackgroundCheck(b.Sources) {
+		added = append(added, "Checks Usenet releases in the background within a daily allowance")
 	}
 	haveKindLib := map[string]bool{}
 	for _, k := range cur.Ether.Contributes.MediaKinds {
@@ -413,7 +515,28 @@ func PermissionDiff(cur, next Manifest) []string {
 		}
 	}
 	if !cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
-		added = append(added, "Gets play and new-release events")
+		ev := next.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			added = append(added, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	} else if cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
+		curPub := cur.Ether.Contributes.Events != nil && len(cur.Ether.Contributes.Events.Publish) > 0
+		nextPub := next.Ether.Contributes.Events != nil && len(next.Ether.Contributes.Events.Publish) > 0
+		if !curPub && nextPub {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	}
+	if !cur.HasCapability(CapFlowActions) && next.HasCapability(CapFlowActions) {
+		added = append(added, "Adds actions to Flows")
+	}
+	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
+		added = append(added, "Adds badges to library posters")
+	}
+	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
+		added = append(added, "Provides live event feeds")
 	}
 	return added
 }

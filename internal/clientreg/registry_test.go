@@ -72,6 +72,8 @@ func TestPolicyMatchesHistoricalFamilies(t *testing.T) {
 		{"htpc", Identity{Product: "HTPC"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 		{"kodi", Identity{Product: "Kodi"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 		{"infuse", Identity{Product: "Infuse"}, "HTPC", genericNote, []int{5, 7, 8}, image},
+		{"plezy", Identity{Product: "Plezy"}, "HTPC", genericNote, []int{5, 7, 8}, image},
+		{"vlc", Identity{Product: "VLC"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +112,7 @@ func TestPlaybackMatchesHistoricalProducts(t *testing.T) {
 		{"Plezy", "Android", "Pixel 8", "", true, false, false, 1080, true},
 		{"Plezy", "Android", "Android", "", true, false, false, 1080, true},
 		{"Plezy", "Android", "SHIELD Android TV", "", true, true, false, 2160, true},
+		{"VLC", "Linux", "standalone", "", true, true, false, 2160, true},
 		{"Plex for Android (TV)", "Android", "SHIELD Android TV", "", true, true, false, 2160, true},
 		{"Plex for Android (Mobile)", "Android", "Pixel 8", "", true, false, false, 1080, true},
 		{"Plex for Android", "Android", "AFTKA", "AFTKA", true, true, false, 2160, true},
@@ -205,6 +208,29 @@ func TestVersionMatchAndQuirks(t *testing.T) {
 	if !HasQuirk(phone, "plex-list-all-tracks") || !HasQuirk(tv, "plex-list-all-tracks") || HasQuirk(web, "plex-list-all-tracks") {
 		t.Fatal("track list quirk")
 	}
+	for _, id := range []Identity{
+		{Product: "Plex for LG", Platform: "webOS"},
+		{Product: "Plex for Samsung", Platform: "Tizen"},
+		{Product: "Plex for VIDAA", Platform: "VIDAA"},
+		{Product: "Plex for Vizio", Platform: "Generic"},
+		{Product: "Plex for Xbox", Platform: "Xbox"},
+		{Product: "Plex for PlayStation", Platform: "PlayStation"},
+		{Product: "Plex for Fire TV", Platform: "Generic"},
+	} {
+		if !HasQuirk(id, "plex-list-all-tracks") {
+			t.Fatalf("%+v missing plex-list-all-tracks quirk", id)
+		}
+	}
+	for _, id := range []Identity{
+		{Product: "Plex Web", Platform: "webOS"},
+		{Product: "Plex Web", Platform: "Chrome"},
+		{Product: "Plex for iOS", Platform: "iOS"},
+		{Product: "Plex for Apple TV", Platform: "tvOS"},
+	} {
+		if HasQuirk(id, "plex-list-all-tracks") {
+			t.Fatalf("%+v must remain selected-only", id)
+		}
+	}
 	if !HasQuirk(Identity{Platform: "iOS", Product: "Plex"}, "plex-native-live-tune") || HasQuirk(Identity{Product: "Plex Web", Platform: "Chrome"}, "plex-native-live-tune") {
 		t.Fatal("live tune quirk")
 	}
@@ -290,5 +316,71 @@ func TestStremioNativePlayers(t *testing.T) {
 	web := Identity{Product: "Stremio"}
 	if got := Playback(web, nil); got.ID != "generic" || HasQuirk(web, "native-player-dynamic-range") {
 		t.Errorf("Stremio Web must stay generic: %+v", got)
+	}
+}
+
+func TestEveryRegistryProductMatchHasAppsRow(t *testing.T) {
+	apps := Apps()
+	rules := ProductRules()
+	if len(rules) == 0 {
+		t.Fatal("expected product rules in registry")
+	}
+	for _, rule := range rules {
+		matched := false
+		for _, app := range apps {
+			for _, product := range app.AllProducts() {
+				if rule.MatchesProduct(product) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("registry product match %+v has no row in Apps()", rule)
+		}
+	}
+}
+
+func TestOverrideMatchesDeviceOrDeviceName(t *testing.T) {
+	on := true
+	id := Identity{
+		Product:    "PlxNative",
+		Platform:   "webOS",
+		Device:     "LG webOS TV",
+		DeviceName: "PlxNative (LG TV)",
+	}
+	overrides := []core.ClientCapabilityOverride{
+		{Product: "PlxNative", Device: "plxnative (lg tv)", MaxHeight: 2160, HDR10: &on, DolbyVision: &on, DolbyVisionProfiles: []int{5, 7, 8}},
+		{Product: "PlxNative", Device: "LG webOS", MaxHeight: 1080},
+		{Product: "PlxNative", Device: "Samsung", MaxHeight: 720},
+	}
+	if got := MatchingOverrides(id, overrides); !slices.Equal(got, []int{0, 1}) {
+		t.Fatalf("MatchingOverrides = %v, want [0 1]", got)
+	}
+	play := Playback(id, overrides[:1])
+	if play.MaxHeight != 2160 || !play.HDR10 || !play.DolbyVision || !slices.Equal(play.DolbyVisionProfiles, []int{5, 7, 8}) {
+		t.Fatalf("Playback missed DeviceName override: %+v", play)
+	}
+	pol := Policy(id, overrides[:1])
+	if !slices.Equal(pol.DolbyVisionProfiles, []int{5, 7, 8}) {
+		t.Fatalf("Policy missed DeviceName override: %+v", pol)
+	}
+
+	// Built-in rules must still classify using Device (not arbitrary friendly
+	// DeviceName) so a phone named "Living Room TV" does not trigger android-tv.
+	phoneNamedTV := Identity{
+		Product:    "Plex for Android (Mobile)",
+		Platform:   "Android",
+		Device:     "Pixel 8",
+		DeviceName: "Living Room TV",
+	}
+	if got := Policy(phoneNamedTV, nil); got.ID == "android-tv" {
+		t.Fatalf("friendly DeviceName triggered built-in android-tv rule: %+v", got)
+	}
+	if got := MatchingOverrides(phoneNamedTV, []core.ClientCapabilityOverride{{ID: "android-tv", MaxHeight: 1080}, {Device: "Living Room TV", MaxHeight: 720}}); !slices.Equal(got, []int{1}) {
+		t.Fatalf("MatchingOverrides for phone named TV = %v, want [1]", got)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -100,6 +101,90 @@ func TestVirtualChannelDASHPlaysThroughPlexWeb(t *testing.T) {
 	}
 	if len(service.ViewingSessions()) != 0 {
 		t.Fatal("live session leaked")
+	}
+}
+
+func TestLiveTVStopViaUniversalStopAndTimelineRatingKey(t *testing.T) {
+	webCaps := liveTuneCaps(frontend.ClientCaps{Product: "Plex Web", Platform: "Firefox"})
+	if len(webCaps.HLSContainers) != 1 || webCaps.HLSContainers[0] != "fmp4" {
+		t.Fatalf("Plex Web liveTuneCaps HLSContainers = %v, want [fmp4]", webCaps.HLSContainers)
+	}
+	iosCaps := liveTuneCaps(frontend.ClientCaps{Product: "Plezy", Platform: "iOS"})
+	if len(iosCaps.HLSContainers) != 0 {
+		t.Fatalf("iOS liveTuneCaps should not force fmp4: %v", iosCaps.HLSContainers)
+	}
+
+	f := newFixture()
+	t.Cleanup(func() { f.srv.Close() })
+	db, err := store.OpenMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	pb := newFakePlayback(core.MediaInfo{Duration: time.Hour, Streams: []core.StreamInfo{
+		{Index: 0, Type: "video", Codec: "h264", Width: 1280, Height: 720, BitrateKbps: 4000},
+		{Index: 1, Type: "audio", Codec: "aac", BitrateKbps: 128},
+	}})
+	tc := &trackedTranscoder{fakeTranscoder: newFakeTranscoder(core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, Container: "mpegts"})}
+	service, err := livetv.New(livetv.Options{Transcoder: tc, Playback: pb, DB: db})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { service.Close() })
+	channel := livetv.Channel{Name: "StopTest", Number: "9", Kind: "virtual", Enabled: true, Epoch: time.Unix(0, 0).UTC(), Items: []livetv.Item{
+		{Key: core.MovieKey(1), Title: "First", DurationMS: 60000, Rating: "G"},
+	}}
+	if _, err = service.SaveChannel(context.Background(), channel); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.setLiveTV(service.Frontend())
+	f.srv.setTestSubscription(true)
+
+	// 1. Authenticated start.mpd records client session alias for /universal/stop
+	//    without admitting unauthenticated start.mpd refetches.
+	tune := f.request(t, "POST", "/livetv/dvrs/1/channels/9/tune", map[string]string{"Accept": "application/json", "X-Plex-Product": "Plex Web"})
+	if tune.Code != 200 {
+		t.Fatalf("tune %d %s", tune.Code, tune.Body.String())
+	}
+	md := decodeJSON(t, tune)["Metadata"].([]any)[0].(map[string]any)
+	sessionPath := md["key"].(string)
+
+	mpd := f.request(t, "GET", "/video/:/transcode/universal/start.mpd?path="+url.QueryEscape(sessionPath)+"&session=plex-web-live-1&protocol=dash", map[string]string{"X-Plex-Product": "Plex Web"})
+	if mpd.Code != 200 {
+		t.Fatalf("start.mpd %d %s", mpd.Code, mpd.Body.String())
+	}
+	// Unauthenticated start.mpd must still be rejected.
+	if unauth := f.request(t, "GET", "/video/:/transcode/universal/start.mpd?path="+url.QueryEscape(sessionPath)+"&session=plex-web-live-1&protocol=dash", map[string]string{"X-Plex-Token": ""}); unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated start.mpd status = %d, want 401", unauth.Code)
+	}
+	// Another user must not be able to stop the owner's live session.
+	if otherStop := f.request(t, "GET", "/video/:/transcode/universal/stop?session=plex-web-live-1", map[string]string{"X-Plex-Token": friendToken}); otherStop.Code != http.StatusNotFound {
+		t.Fatalf("cross-user live stop status = %d, want 404", otherStop.Code)
+	}
+	if len(service.ViewingSessions()) != 1 {
+		t.Fatal("cross-user stop terminated live session")
+	}
+	// Authenticated owner stop terminates the live session cleanly.
+	if ownStop := f.request(t, "GET", "/video/:/transcode/universal/stop?session=plex-web-live-1", nil); ownStop.Code != http.StatusOK {
+		t.Fatalf("owner live universal/stop status = %d", ownStop.Code)
+	}
+	if len(service.ViewingSessions()) != 0 {
+		t.Fatal("live session remained active after universal/stop")
+	}
+
+	// 2. /:/timeline?ratingKey=<liveID>&state=stopped stops even without key=.
+	tune2 := f.request(t, "POST", "/livetv/dvrs/1/channels/9/tune", map[string]string{"Accept": "application/json", "X-Plex-Product": "Plezy"})
+	if tune2.Code != 200 {
+		t.Fatalf("tune2 %d %s", tune2.Code, tune2.Body.String())
+	}
+	md2 := decodeJSON(t, tune2)["Metadata"].([]any)[0].(map[string]any)
+	liveID2 := md2["ratingKey"].(string)
+	tlStop := f.request(t, "GET", "/:/timeline?ratingKey="+url.QueryEscape(liveID2)+"&state=stopped", nil)
+	if tlStop.Code != http.StatusOK {
+		t.Fatalf("timeline stop status = %d %s", tlStop.Code, tlStop.Body.String())
+	}
+	if len(service.ViewingSessions()) != 0 {
+		t.Fatal("live session remained active after timeline ratingKey stop")
 	}
 }
 

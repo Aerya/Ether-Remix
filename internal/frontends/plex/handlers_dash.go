@@ -14,7 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
-// MPEG-DASH playback for Plex Web, which asks for DASH (protocol=dash,
+// MPEG-DASH playback for Plex Web and TV apps asking for DASH (protocol=dash,
 // start.mpd) in Chromium and Firefox when it cannot direct play. The URL
 // layout is the one real PMS uses:
 //
@@ -27,6 +27,18 @@ import (
 
 // handleStartDASH is /video/:/transcode/universal/start.mpd.
 func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
+	if id, ok := manifestRefetchFrom(r.Context()); ok {
+		// A native player refetching the manifest it was just handed (see
+		// authenticateManifestRefetch): serve the running session's MPD only.
+		if hs, ok := s.plexHLSSession(id); ok && hs != nil {
+			if ds, isDASH := hs.(frontend.DASHSession); isDASH {
+				s.serveStreamManifest(w, r, id, ds.ServeManifest)
+				return
+			}
+		}
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
 	if s.refuseCapability(w, r) {
 		return
 	}
@@ -68,24 +80,34 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.protocol = frontend.ProtocolDASH
+	p.opts.Protocol = frontend.ProtocolDASH
 	if !s.transcodes.claim(p.sessionID, pr.User.ID, pr.ClientID, s.now()) {
 		writePlaybackStatus(w, http.StatusForbidden)
 		return
 	}
 	// A slow decision leaves acquisition running. Join that shared flight
 	// below; only a completed source failure should short-circuit start.
-	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) {
+	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) && !errors.Is(err, frontend.ErrJobsBusy) {
 		s.log.Info("start DASH playback failed", "key", p.key, "reason", playbackMessage(err), "err", err, "decision", "remembered")
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
+	priorEntry, _ := s.sessionEntryForStart(pr, p.sessionID, p.key)
+	startPR := mergeSessionProfile(pr, priorEntry)
 	entry, ok := s.transcodes.get(p.sessionID)
 	var ps *frontend.PlaySession
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
+		if ok && ps != nil {
+			if entry.info.Estimated && !ps.Info.Estimated {
+				ok = false
+			} else {
+				ps = sessionWithInfo(ps, entry.info)
+			}
+		}
 	}
-	if !ok || ps == nil || !p.sameSettings(entry.requested) {
-		if _, ps, _, err = s.prepare(ctx, pr, &p); err != nil {
+	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {
+		if _, ps, _, err = s.prepare(ctx, startPR, &p); err != nil {
 			if ctx.Err() != nil {
 				return // the player dropped this request; its preparation carries on
 			}
@@ -94,25 +116,34 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entry, _ = s.transcodes.get(p.sessionID)
-	} else if dec, err := s.publishBrokerPlayback(ctx, pr, replayPlay(p, entry), ps); err != nil {
+		startPR = mergeSessionProfile(pr, entry)
+	} else if dec, err := s.publishBrokerPlayback(ctx, startPR, replayPlay(p, entry), ps); err != nil {
 		s.writeStartErr(w, r, pr, err)
 		return
 	} else {
 		entry.decision = dec
+		startPR = mergeSessionProfile(pr, entry)
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	entry.playbackID = pr.SessionID
+	preserveStartIdentity(entry, pr, priorEntry)
 	s.transcodes.put(entry)
 
 	dec := entry.decision
 	if dec.Kind == frontend.DecisionDirectPlay {
-		// The client asked for DASH anyway: remux.
+		// The client asked for DASH anyway: remux unless the app override
+		// requires video encoding or the DASH target rejects the stream.
+		caps := entry.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
 		dec.Kind, dec.VideoCopy, dec.AudioCopy = frontend.DecisionRemux, true, true
-		if len(entry.caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec) {
+		videoOK := !(ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo()) && (dec.VideoCodec == "" || frontend.SegmentedVideoCopyOK(caps, dec.VideoCodec))
+		audioOK := len(caps.TranscodeAudioCodecs) == 0 || dec.AudioCodec == "" || slices.Contains(caps.TranscodeAudioCodecs, dec.AudioCodec)
+		if !videoOK || !audioOK {
 			opts := entry.opts
 			opts.DirectPlay = false
-			opts.DirectStream = true
-			dec = s.transcoder().Decide(ps.Info, entry.caps, opts)
+			opts.DirectStream = videoOK
+			dec = s.transcoder().Decide(ps.Info, caps, opts)
 		}
 	}
 	if existing, ok := s.plexHLSSession(p.sessionID); ok && existing != nil {
@@ -120,7 +151,10 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		// start for the same decision keeps the session (and its finished
 		// segments); a new decision request starts afresh.
 		if ds, isDASH := existing.(frontend.DASHSession); isDASH && entry.started {
+			dec = liveSessionDecision(existing, dec)
+			s.rebindSessionTranscode(entry)
 			s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
+			s.noteManifestServed(p.sessionID, pr)
 			unlockEncoder()
 			unlockOwner()
 			s.serveStreamManifest(w, r, p.sessionID, ds.ServeManifest)
@@ -128,16 +162,20 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		}
 		s.stopPlexHLS(p.sessionID)
 	}
+	firstSegmentAt := s.resumeStartHint(ctx, pr, p, entry, priorEntry)
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
-		SoftSubtitleStream:  sessionSoftSubtitle(entry, pr, dec),
-		TextSubtitleStreams: s.plexTextTracks(pr, ps.Info, dec),
+		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
+		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,
 		ReleaseID:           ps.SourceReleaseID(),
 		InputURL:            s.playback().InputURL(ps.ID),
+		NoVideoTranscode:    entry.caps.NoVideoTranscode,
 		Info:                ps.Info,
 		Decision:            dec,
 		StartOffset:         p.offset,
+		FirstSegmentAt:      firstSegmentAt,
 		Protocol:            frontend.ProtocolDASH,
+		PMSDASH:             !strings.EqualFold(strings.TrimSpace(startPR.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.writeStartErr(w, r, pr, err)
@@ -150,8 +188,10 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		writePlaybackStatus(w, http.StatusInternalServerError)
 		return
 	}
+	dec = liveSessionDecision(hs, dec)
 	s.bindTranscodeStarted(entry, dec, p.offset)
 	s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
+	s.noteManifestServed(p.sessionID, pr)
 	unlockEncoder()
 	unlockOwner()
 	s.serveStreamManifest(w, r, p.sessionID, ds.ServeManifest)

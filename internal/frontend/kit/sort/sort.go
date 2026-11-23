@@ -16,12 +16,19 @@ func Order(value string) (core.SortOrder, bool) {
 		return core.SortAdded, true
 	case "premieredate", "productionyear":
 		return core.SortReleased, true
-	case "communityrating":
+	case "communityrating", "criticrating":
+		// Ether keeps one rating per title; both rating sorts use it.
 		return core.SortRating, true
-	case "dateplayed", "lastplayed":
+	case "dateplayed", "lastplayed", "playcount":
+		// There is no play counter to order by; most recently played is the
+		// nearest order the viewer's history can answer.
 		return core.SortPlayed, true
 	case "popularity":
 		return core.SortPopularity, true
+	case "runtime":
+		return core.SortDuration, true
+	case "parentindexnumber", "indexnumber", "tracknumber":
+		return core.SortIndex, true
 	default:
 		return "", false
 	}

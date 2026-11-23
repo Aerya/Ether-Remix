@@ -116,8 +116,8 @@ func TestSourceTracksThroughAppBrokerWiring(t *testing.T) {
 	if a.frontends == nil || a.frontends.broker == nil {
 		t.Fatal("production app broker unavailable")
 	}
-	audio, subtitle, off := 0, 2, -1
-	req := frontend.PlanRequest{Viewer: viewer, Device: core.Device{ID: "track-wiring"}, Protocol: "silo", Item: title.Key, Caps: core.ClientCaps{ClientID: "track-wiring", Protocol: "silo", Containers: []string{"mkv"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}, SubtitleCodecs: []string{"srt"}}, Intent: frontend.PlayIntent{AudioOrdinal: &audio, SubtitleStreamIndex: &subtitle, Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1}}}
+	audio, subtitle, off := 0, 0, -1
+	req := frontend.PlanRequest{Viewer: viewer, Device: core.Device{ID: "track-wiring"}, Protocol: "silo", Item: title.Key, Caps: core.ClientCaps{ClientID: "track-wiring", Protocol: "silo", Containers: []string{"mkv"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}, SubtitleCodecs: []string{"srt"}}, Intent: frontend.PlayIntent{AudioOrdinal: &audio, SubtitleOrdinal: &subtitle, Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1}}}
 	cases := []struct {
 		name               string
 		audio, sub         *int
@@ -125,7 +125,7 @@ func TestSourceTracksThroughAppBrokerWiring(t *testing.T) {
 	}{{"explicit", &audio, &subtitle, 1, 2}, {"off", nil, &off, 3, -1}, {"saved", nil, nil, 3, 2}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req.Intent.AudioOrdinal, req.Intent.SubtitleStreamIndex = tc.audio, tc.sub
+			req.Intent.AudioOrdinal, req.Intent.SubtitleOrdinal = tc.audio, tc.sub
 			plan, err := a.frontends.broker.Plan(ctx, req)
 			if err != nil {
 				t.Fatalf("plan error=%v resolver=%v", err, scorecardResolverTraces(a.resolver.Traces()))

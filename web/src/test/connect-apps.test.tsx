@@ -39,6 +39,38 @@ it("mints a viewer-scoped secret once and can reveal its QR code", async () => {
   );
 });
 
+it("lists enabled plugin frontend adapters and shows their address and token", async () => {
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const body =
+      init?.method === "POST"
+        ? {
+            surface: "plugin:acme.reader:opds",
+            url: "https://ether.example/opds",
+            token: "ethg_plugin_secret",
+            qr: "data:image/png;base64,AA==",
+          }
+        : {
+            apps: ["plugin:acme.reader:opds"],
+            adapters: {
+              "plugin:acme.reader:opds": { name: "Reader OPDS", auth: "ether_token" },
+            },
+          };
+    return new Response(JSON.stringify(body), { status: 200 });
+  });
+  render(<ConnectApps base="/me" token="portal" />);
+  expect(await screen.findByText("Reader OPDS")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Create connection" }));
+  expect(await screen.findByDisplayValue("https://ether.example/opds")).toBeInTheDocument();
+  expect(screen.getByLabelText("Token")).toHaveValue("ethg_plugin_secret");
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    "/ether/api/me/apps/plugin%3Aacme.reader%3Aopds",
+    expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer portal", "X-Ether-Request": "1" }),
+    }),
+  );
+});
+
 it("explains how to enable HTTPS when Stremio has no secure address", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
     init?.method === "POST"

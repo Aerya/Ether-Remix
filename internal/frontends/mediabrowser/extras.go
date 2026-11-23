@@ -7,12 +7,15 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
@@ -56,6 +59,9 @@ func (i *instance) extraItem(parent frontend.ItemDetail, clip frontend.Extra) ma
 	item := map[string]any{
 		"Id": id, "Name": name, "Type": "Trailer", "MediaType": "Video", "IsFolder": false,
 		"ServerId": i.info.ID, "ParentId": ids.RatingKeyGUID(parentKey),
+		"UserData":          i.userDataDTO(id, frontend.WatchStatus{}),
+		"ImageTags":         map[string]string{},
+		"BackdropImageTags": []string{},
 	}
 	if clip.Duration > 0 {
 		item["RunTimeTicks"] = clip.Duration.Nanoseconds() / 100
@@ -182,7 +188,7 @@ func (i *instance) authorizedItem(w http.ResponseWriter, r *http.Request) (front
 		}
 		key = target.Item
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithColdDetail(i.identityContext(r), key), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
 	if err != nil {
 		http.NotFound(w, r)
 		return frontend.ItemDetail{}, false
@@ -253,17 +259,19 @@ func (i *instance) serveExtra(w http.ResponseWriter, r *http.Request, viewer *fr
 		return
 	}
 
-	if cached, ok := i.host.ExtraStreams.(frontend.CachedExtraStreams); ok && isTrailerExtra(clip) {
+	if cached, ok := i.host.ExtraStreams.(frontend.CachedExtraStreams); ok {
 		file, mime, err := cached.OpenCachedExtra(r.Context(), key)
 		if err == nil {
 			defer file.Close()
-			info, err := file.Stat()
-			if err != nil {
+			w.Header().Set("Content-Type", mime)
+			if err := rangefile.ServeFile(w, r, "trailer.mp4", "extra:"+key.String()+":"+filepath.Base(file.Name()), time.Time{}, file); err != nil {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", mime)
-			http.ServeContent(w, r, "trailer.mp4", info.ModTime(), file)
+			return
+		}
+		if !errors.Is(err, frontend.ErrNotAvailable) {
+			http.Error(w, "Playback unavailable", http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -364,10 +372,9 @@ func (i *instance) away(r *http.Request) bool {
 	}
 	ip, ok := i.host.ClientIP(r)
 	if !ok {
-		return false
+		return true
 	}
-	ip = ip.Unmap()
-	return !(ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
+	return !clientnet.LAN(ip)
 }
 
 // prerollPlayback answers PlaybackInfo for a pre-roll: a direct-play MP4.
@@ -408,5 +415,34 @@ func (i *instance) servePreroll(w http.ResponseWriter, r *http.Request, viewer *
 		i.host.Prerolls.Started(context.WithoutCancel(r.Context()), viewer, device(r), key)
 	}
 	w.Header().Set("Content-Type", "video/mp4")
-	http.ServeContent(w, r, "", modified, file)
+	rangefile.ServeSeeker(w, r, "", "preroll:"+key.String(), modified, file)
+}
+
+// writeExtraDetail answers an item request for a trailer or pre-roll. Jellyfin
+// Web reads each intro's item before playing it; the detail route answered 404
+// for these keys, which made the player give up on the feature too ("Unable to
+// find a valid media source").
+func (i *instance) writeExtraDetail(w http.ResponseWriter, r *http.Request, viewer *frontend.Viewer, key frontend.RatingKey) bool {
+	var clip frontend.Extra
+	var ok bool
+	switch {
+	case key.IsPreroll() && i.host.Prerolls != nil:
+		clip, ok = i.host.Prerolls.Lookup(r.Context(), key)
+	case key.Kind() == frontend.KindExtra && i.host.ExtraStreams != nil:
+		clip, ok = i.host.ExtraStreams.Lookup(key)
+	default:
+		return false
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return true
+	}
+	if clip.ParentKey != 0 && i.host.Experience != nil {
+		if _, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: clip.ParentKey}); err != nil {
+			http.NotFound(w, r)
+			return true
+		}
+	}
+	jsonReply(w, i.extraItem(frontend.ItemDetail{Title: frontend.Title{Key: clip.ParentKey}}, clip))
+	return true
 }

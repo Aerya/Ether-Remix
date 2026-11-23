@@ -10,6 +10,12 @@ func inputTimestampArgs(s runSpec) []string {
 	if s.HealTimestamps {
 		return nil
 	}
+	if s.Protocol == core.ProtocolHTTP && s.Info.Video() == nil {
+		// Progressive HTTP audio streams are played from zero by audio/video
+		// elements; retaining source PTS via -copyts shifts fragment timestamps
+		// on resumed/seeked audio offsets.
+		return nil
+	}
 	if s.Protocol != core.ProtocolDASH && s.Decision.Container == ContainerMatroska && !s.jellyfinMatroskaChunks() {
 		// The stream-segment muxer cuts in a run-relative clock. Preserve
 		// the title's clock in the inner Matroska muxer instead. Chunked

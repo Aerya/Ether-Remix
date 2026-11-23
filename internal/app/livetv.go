@@ -31,7 +31,26 @@ func (a *App) buildLiveTV() error {
 	if a.transcoder != nil {
 		ffmpeg = a.transcoder.FFmpegPath()
 	}
-	svc, err := livetv.New(livetv.Options{ActivityChanged: a.onair.SetEnabled, SessionsChanged: a.notifySessionsChanged, SourcesChanged: a.publishDashboard, VODChanged: func() {
+	svc, err := livetv.New(livetv.Options{ActivityChanged: a.onair.SetEnabled, SessionsChanged: a.notifySessionsChanged, SessionExpired: func(playID string) {
+		if playID == "" || a.frontends == nil || a.frontends.broker == nil {
+			return
+		}
+		broker := a.frontends.broker
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			broker.CleanupStoppedLive(ctx, playID)
+		}()
+	}, ObserveSession: func(p *core.PlaySession, ended bool, problem string) {
+		if a.stats == nil || p == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := a.stats.Record(ctx, p, ended, problem); err != nil {
+			a.log.Warn("record live tv stats", "err", err)
+		}
+	}, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
 			a.resolver.SourcesChanged(context.Background())
 		}
@@ -45,7 +64,7 @@ func (a *App) buildLiveTV() error {
 		return markers.BreakScanPolicy{DailyBytes: c.BreakScanDailyBytes, ReleaseBytes: c.BreakScanReleaseBytes, LargeReleaseBytes: c.BreakScanLargeReleaseBytes, AllowLarge: c.BreakScanAllowLarge}
 	}}, GuideAI: a.llm, Reels: a.onairReelSnapshot, Graphics: a.onair, InputUser: a.liveTVInputUser, StyleScreens: a.onair.StyleScreens, AudioTrack: a.liveTVAudioTrack, PersonalChanged: func(viewer int64) {
 		a.frontends.notifyLiveLineup(viewer)
-	}, Picker: a.personalize, Watchlist: a.watchlist, State: a.state, Users: a.users, Logger: a.log.With("component", "livetv"), GuideProvider: &guide.Client{DB: a.db, HTTPClient: egress.Client(egress.CapDirect, 20*time.Second), Token: func() string { return a.cfg.Read().Plex.Token }}, Now: parityClock(), Showcase: parityShowcase(), DB: a.db, Sealer: a.cfg, Catalog: a.catalog, Collections: a.collections, Playback: a.playback, Transcoder: tc, Availability: avail, CheckAvailability: func(ctx context.Context, key core.RatingKey) (bool, bool) {
+	}, Picker: a.personalize, Watchlist: a.watchlist, State: a.state, Users: a.users, Logger: a.log.With("component", "livetv"), Events: a.eventBus, GuideProvider: &guide.Client{DB: a.db, HTTPClient: egress.Client(egress.CapDirect, 20*time.Second), Token: func() string { return a.cfg.Read().Plex.Token }}, Now: parityClock(), Showcase: parityShowcase(), DB: a.db, Sealer: a.cfg, Catalog: a.catalog, Collections: a.collections, Playback: a.playback, Transcoder: tc, Availability: avail, CheckAvailability: func(ctx context.Context, key core.RatingKey) (bool, bool) {
 		if a.resolver == nil {
 			return false, false
 		}

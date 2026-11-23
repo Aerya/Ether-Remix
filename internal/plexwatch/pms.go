@@ -494,6 +494,48 @@ func (s *Servers) List(ctx context.Context) ([]PMSServer, error) {
 	return out, nil
 }
 
+// LinkedServer carries the read-only connection details for an already-linked
+// Plex Media Server (used by internal services such as the upload budget
+// coordinator to query /status/sessions without adding another URL/token
+// configuration surface).
+type LinkedServer struct {
+	MachineID string
+	Name      string
+	BaseURL   string
+	Token     string
+}
+
+// LinkedServers returns configured Plex Media Servers with their decrypted
+// owner tokens when server sync is enabled.
+func (s *Servers) LinkedServers(ctx context.Context) ([]LinkedServer, error) {
+	if s == nil || s.db == nil || !s.syncEnabled() {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name,base_url,token,machine_id FROM plexwatch_pms ORDER BY id LIMIT ?`, pmsMaxServers*2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LinkedServer
+	for rows.Next() {
+		var name, baseURL, sealed, machineID string
+		if err := rows.Scan(&name, &baseURL, &sealed, &machineID); err != nil {
+			return nil, err
+		}
+		tok, err := s.open(sealed, machineID)
+		if err != nil || tok == "" || baseURL == "" {
+			continue
+		}
+		out = append(out, LinkedServer{
+			MachineID: machineID,
+			Name:      name,
+			BaseURL:   strings.TrimRight(baseURL, "/"),
+			Token:     tok,
+		})
+	}
+	return out, rows.Err()
+}
+
 // Server returns one server and its mappings.
 func (s *Servers) Server(ctx context.Context, id int64) (PMSServer, error) {
 	var srv PMSServer
@@ -588,6 +630,49 @@ func (s *Servers) ViewerServers(ctx context.Context, userID int64) ([]PMSViewerM
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ForEachServerCredential visits each configured PMS server with its decrypted
+// owner token in a single query. Internal server-side use only (e.g. querying
+// plex.tv from internal/app); tokens must never reach admin/console layers or logs.
+func (s *Servers) ForEachServerCredential(ctx context.Context, fn func(id int64, machineID, owner, token string)) error {
+	if s == nil || s.db == nil || fn == nil {
+		return nil
+	}
+	type cred struct {
+		id        int64
+		machineID string
+		owner     string
+		token     string
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,machine_id,owner_name,token FROM plexwatch_pms ORDER BY id LIMIT ?`, pmsMaxServers*2)
+	if err != nil {
+		return err
+	}
+	var creds []cred
+	for rows.Next() {
+		var c cred
+		var sealed string
+		if err := rows.Scan(&c.id, &c.machineID, &c.owner, &sealed); err != nil {
+			rows.Close()
+			return err
+		}
+		tok, err := s.open(sealed, c.machineID)
+		if err != nil || tok == "" {
+			continue
+		}
+		c.token = tok
+		creds = append(creds, c)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, c := range creds {
+		fn(c.id, c.machineID, c.owner, c.token)
+	}
+	return nil
 }
 
 // Accounts lists the server's accounts live, with their current viewer.

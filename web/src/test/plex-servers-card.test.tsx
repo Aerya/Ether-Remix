@@ -91,7 +91,7 @@ it("opens one management drawer from the summary without a second Plex tab and l
   ).toBeInTheDocument();
   expect(await within(manager).findByRole("link", { name: "Alex Rivera" })).toHaveAttribute(
     "href",
-    "/viewers/1/limits",
+    "/viewers/1/sign-in?signin=sync",
   );
   fireEvent.click(add);
   const editor = await screen.findByRole("dialog", { name: "Add server" });

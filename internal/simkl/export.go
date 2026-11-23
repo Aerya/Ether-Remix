@@ -140,6 +140,9 @@ func (s Service) exportFailure(ctx context.Context, user int64, lease string, er
 		if e != nil {
 			return e
 		}
+		if s.OnTokenExpired != nil {
+			s.OnTokenExpired(user, api.Error())
+		}
 		return err
 	}
 	if errors.As(err, &api) && api.Status == 429 {

@@ -51,12 +51,12 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 	}
 	t.Cleanup(a.Close)
 
-	// 1. Verify all 37 built-in tools are registered in both the tool catalogue
+	// 1. Verify all 44 built-in tools are registered in both the tool catalogue
 	// and the descriptor registry (extend.KindTool). web_search and web_fetch
 	// are among them but stay invisible to MCP principals.
 	toolDescs := a.extendRT.registry.List(extend.KindTool)
-	if len(toolDescs) != 38 {
-		t.Fatalf("expected 38 extend.KindTool descriptors, got %d", len(toolDescs))
+	if len(toolDescs) != 44 {
+		t.Fatalf("expected 44 extend.KindTool descriptors, got %d", len(toolDescs))
 	}
 
 	// Route-to-tool coverage for the existing guide match endpoint. Both MCP

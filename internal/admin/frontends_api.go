@@ -2,16 +2,38 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/remote"
 )
 
 func (h *Handler) presentConnectURLs(r *http.Request, info FrontendInfo) FrontendInfo {
 	if h.deps.Config == nil {
 		return info
 	}
-	info.Status.ConnectURLs = consoleConnectURLs(r, string(info.Descriptor.ID), info.Status.ConnectURLs, h.deps.Config.Get(), h.proxyPrefixes())
+	cfg := h.deps.Config.Get()
+	id := string(info.Descriptor.ID)
+	info.Status.ConnectURLs = consoleConnectURLs(r, id, info.Status.ConnectURLs, cfg, h.proxyPrefixes())
+	if len(info.Status.PublishedAddresses) == 0 {
+		if consoleFrontendPolicy(id).MainListener {
+			for _, raw := range cfg.Plex.CustomURLs {
+				if c, err := remote.ParseCustomURL(strings.TrimSpace(raw)); err == nil {
+					info.Status.PublishedAddresses = append(info.Status.PublishedAddresses, strings.TrimRight(c.URI, "/"))
+				}
+			}
+		} else {
+			info.Status.PublishedAddresses = frontendPublishedURLs(cfg, id)
+		}
+	}
+	if info.PortalURL == "" {
+		info.PortalURL = h.publishedPortalURL()
+	}
 	return info
 }
 
@@ -26,6 +48,7 @@ type FrontendInfo struct {
 	Descriptor frontend.Descriptor `json:"descriptor"`
 	Enabled    bool                `json:"enabled"`
 	Status     frontend.Status     `json:"status"`
+	PortalURL  string              `json:"portalUrl,omitempty"`
 }
 
 func (h *Handler) frontendAvailable(w http.ResponseWriter) bool {
@@ -133,4 +156,74 @@ func (h *Handler) frontendHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, 404, "not_found", "Front end not found")
+}
+
+// FrontendAPIKeys manages Jellyfin/Emby API keys for the owner console.
+type FrontendAPIKeys interface {
+	List(ctx context.Context, surface string) ([]frontend.APIKeyInfo, error)
+	RevokeByID(ctx context.Context, surface string, id int64) error
+}
+
+type frontendAPIKeyItem struct {
+	ID        int64      `json:"id"`
+	AppName   string     `json:"appName"`
+	CreatedAt time.Time  `json:"createdAt"`
+	LastUsed  *time.Time `json:"lastUsed,omitempty"`
+}
+
+func (h *Handler) frontendAPIKeys(w http.ResponseWriter, r *http.Request) {
+	if h.deps.FrontendAPIKeys == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "API key management is unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if id != "jellyfin" && id != "emby" {
+		writeError(w, http.StatusNotFound, "not_found", "API keys are not supported for this front end")
+		return
+	}
+	keys, err := h.deps.FrontendAPIKeys.List(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_keys_error", "Could not list API keys")
+		return
+	}
+	out := make([]frontendAPIKeyItem, 0, len(keys))
+	for _, k := range keys {
+		item := frontendAPIKeyItem{
+			ID:        k.ID,
+			AppName:   k.AppName,
+			CreatedAt: k.CreatedAt,
+		}
+		if !k.LastUsed.IsZero() {
+			t := k.LastUsed
+			item.LastUsed = &t
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) frontendAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
+	if h.deps.FrontendAPIKeys == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "API key management is unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if id != "jellyfin" && id != "emby" {
+		writeError(w, http.StatusNotFound, "not_found", "API keys are not supported for this front end")
+		return
+	}
+	keyID, err := strconv.ParseInt(r.PathValue("keyId"), 10, 64)
+	if err != nil || keyID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "Invalid API key id")
+		return
+	}
+	if err := h.deps.FrontendAPIKeys.RevokeByID(r.Context(), id, keyID); err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "API key not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "api_keys_error", "Could not revoke API key")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -9,25 +9,26 @@ import (
 	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
-const libraryCols = `sources, id, key, name, source, media_type, plugin_id, kind_key, collection_id, rules, visibility_default, quality_profile, present, sort, hidden, created_at, updated_at`
+const libraryCols = `sources, id, key, name, source, media_type, plugin_id, kind_key, collection_id, rules, visibility_default, tabs, card_shape, quality_profile, present, present_overrides, sort, hidden, created_at, updated_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanLibrary(sc scanner) (core.Library, error) {
 	var lib core.Library
 	var id, sort, created, updated int64
-	var source, mediaType, rulesJSON, visDefault, presentJSON string
+	var source, mediaType, rulesJSON, visDefault, tabsJSON, presentJSON, overridesJSON string
 	var hidden int
 	var sourcesJSON string
 	if err := sc.Scan(&sourcesJSON, &id, &lib.Key, &lib.Name, &source, &mediaType, &lib.PluginID, &lib.KindKey,
-		&lib.CollectionID, &rulesJSON, &visDefault, &lib.QualityProfile, &presentJSON, &sort, &hidden, &created, &updated); err != nil {
+		&lib.CollectionID, &rulesJSON, &visDefault, &tabsJSON, &lib.CardShape, &lib.QualityProfile, &presentJSON, &overridesJSON, &sort, &hidden, &created, &updated); err != nil {
 		return core.Library{}, err
 	}
 	lib.ID = core.LibraryID(id)
 	lib.Source = core.LibrarySource(source)
-	lib.MediaType = core.MediaType(mediaType)
+	lib.MediaType = core.MediaType(core.NormalizeRuleMediaType(mediaType))
 	lib.VisibilityDefault = visDefault
 	lib.Sort = int(sort)
 	lib.Hidden = hidden != 0
@@ -40,14 +41,34 @@ func scanLibrary(sc scanner) (core.Library, error) {
 	if rulesJSON != "" && rulesJSON != "[]" {
 		var rules []core.LibraryExclusion
 		if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil {
-			return core.Library{}, err
+			lib.RulesBroken = true
+			rules = nil
+			lib.VisibilityDefault = "hide"
 		}
+		rules = core.NormalizeLibraryRules(rules)
 		if len(rules) > 0 {
 			lib.Rules = rules
 		}
 	}
+	if lib.Source != core.LibraryPlugin {
+		if _, err := libraryfilter.CompilePolicy(lib.Rules, lib.VisibilityDefault); err != nil {
+			lib.RulesBroken = true
+		}
+	}
+	if strings.TrimSpace(tabsJSON) != "" {
+		var tabs []core.LibraryTab
+		if err := json.Unmarshal([]byte(tabsJSON), &tabs); err == nil && len(tabs) > 0 {
+			lib.Tabs = tabs
+			lib.TabsCustomized = true
+		}
+	}
 	if presentJSON != "" {
 		if err := json.Unmarshal([]byte(presentJSON), &lib.Present); err != nil {
+			return core.Library{}, err
+		}
+	}
+	if overridesJSON != "" && overridesJSON != "{}" {
+		if err := json.Unmarshal([]byte(overridesJSON), &lib.PresentOverrides); err != nil {
 			return core.Library{}, err
 		}
 	}
@@ -71,9 +92,25 @@ func (s *Service) insert(ctx context.Context, tx *sql.Tx, lib core.Library) (cor
 		}
 		rulesJSON = string(b)
 	}
+	tabsJSON := ""
+	if lib.TabsCustomized && len(lib.Tabs) > 0 {
+		b, err := json.Marshal(lib.Tabs)
+		if err != nil {
+			return core.Library{}, err
+		}
+		tabsJSON = string(b)
+	}
 	presentJSON, err := json.Marshal(lib.Present)
 	if err != nil {
 		return core.Library{}, err
+	}
+	overridesJSON := "{}"
+	if !lib.PresentOverrides.IsEmpty() {
+		b, err := json.Marshal(lib.PresentOverrides)
+		if err != nil {
+			return core.Library{}, err
+		}
+		overridesJSON = string(b)
 	}
 	hidden := 0
 	if lib.Hidden {
@@ -81,9 +118,9 @@ func (s *Service) insert(ctx context.Context, tx *sql.Tx, lib core.Library) (cor
 	}
 	sourceData, _ := json.Marshal(defaultSources(lib))
 	lib.Sources = defaultSources(lib)
-	_, err = tx.ExecContext(ctx, `INSERT INTO libraries(`+libraryCols+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO libraries(`+libraryCols+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(sourceData), int64(lib.ID), lib.Key, lib.Name, string(lib.Source), string(lib.MediaType), lib.PluginID, lib.KindKey,
-		lib.CollectionID, rulesJSON, lib.VisibilityDefault, lib.QualityProfile, string(presentJSON), lib.Sort, hidden, lib.CreatedAt.Unix(), lib.UpdatedAt.Unix())
+		lib.CollectionID, rulesJSON, lib.VisibilityDefault, tabsJSON, lib.CardShape, lib.QualityProfile, string(presentJSON), overridesJSON, lib.Sort, hidden, lib.CreatedAt.Unix(), lib.UpdatedAt.Unix())
 	if err != nil {
 		return core.Library{}, err
 	}

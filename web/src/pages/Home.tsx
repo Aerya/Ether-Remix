@@ -46,6 +46,7 @@ import {
   channelLabel,
   countsOverall,
   hasExemptDiagnostic,
+  isPausedSession,
   type HealthItem,
   type NowPlaying,
 } from "../lib/health";
@@ -55,6 +56,7 @@ import { useStreamEvent } from "../lib/stream";
 import { useTitle } from "../lib/titles";
 import type { EtherConfig } from "../lib/types";
 import { useLocale } from "../i18n/react";
+import { PlayDrawer, usePlayParam } from "./activity/PlayDrawer";
 import { connectDevicePath } from "./setup/connect-path";
 
 const GETTING_STARTED_KEY = "ether.getting-started.dismissed";
@@ -214,9 +216,8 @@ function greeting(now = new Date()): string {
 }
 
 /**
- * The Overview is a cockpit: on a wide, tall enough window every panel is on
- * one screen with no page scroll (panels scroll inside); narrower windows
- * stack the panels and scroll the page.
+ * Overview lays out Now playing, Activity, Server, Health and Best rows at
+ * their natural heights so cards never clip rows inside short scrollboxes.
  */
 export default function Home() {
   useLiveDashboard();
@@ -231,7 +232,9 @@ export default function Home() {
     void activity.reload();
     void rows.reload();
   });
+  const [playId, openPlay] = usePlayParam();
   const sessions = live.data ?? [];
+  const activeSession = playId ? (sessions.find((s) => (s.id || s.key) === playId) ?? null) : null;
   const hw = dashboard?.sections.hwaccel as
     { hwaccel?: { name?: string }; ffmpeg?: string; error?: string } | undefined;
   const problems = health.filter((h) => !h.setupGap && (h.level === "error" || h.level === "warn"));
@@ -252,7 +255,7 @@ export default function Home() {
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
       <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
-        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 cockpit:h-full cockpit:max-w-none cockpit:min-h-0 cockpit:pb-5">
+        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 @5xl:max-w-none">
           <header className="flex shrink-0 flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-fg">{t("Overview")}</h1>
@@ -288,67 +291,65 @@ export default function Home() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 @3xl:grid-cols-2 cockpit:min-h-0 cockpit:flex-1 cockpit:grid-cols-12">
-            {/* Each cockpit column is its own stack: the upper panel sizes to
-                its content (up to a cap) and the lower one takes the rest. */}
-            <div className="flex min-w-0 flex-col gap-4 @3xl:col-span-2 cockpit:col-span-5 cockpit:min-h-0">
+          <div className="grid items-start gap-4 @3xl:grid-cols-2 @5xl:grid-cols-12">
+            <div className="flex min-w-0 flex-col gap-4 @3xl:col-span-2 @5xl:col-span-5">
               <NowPlayingPanel
                 loading={!live.data && !live.error}
                 error={live.data ? null : live.error}
                 onRetry={() => void live.reload()}
                 sessions={sessions}
-                className="shrink-0 cockpit:max-h-[58%]"
+                onSelect={openPlay}
               />
-              <ActivityPanel state={activity} className="cockpit:min-h-0 cockpit:flex-1" />
-              <MusicActivity className="shrink-0" /> {/* PSE-HOOK: voir docs/pse/FORK.fr.md */}
+              <ActivityPanel state={activity} />
+              <MusicActivity className="shrink-0" />
             </div>
-            <ServerPanel hwaccel={hw?.hwaccel?.name} className="cockpit:col-span-4" />
-            <div className="flex min-w-0 flex-col gap-4 cockpit:col-span-3 cockpit:min-h-0">
-              <HealthPanel
-                loading={!dashboard}
-                items={health}
-                className="shrink-0 cockpit:max-h-[68%]"
-              />
-              <RowsPanel state={rows} className="cockpit:min-h-0 cockpit:flex-1" />
+            <ServerPanel hwaccel={hw?.hwaccel?.name} className="@5xl:col-span-4" />
+            <div className="flex min-w-0 flex-col gap-4 @5xl:col-span-3">
+              <HealthPanel loading={!dashboard} items={health} />
+              <RowsPanel state={rows} />
             </div>
           </div>
           <PanelSlots slot="dashboard.panel" />
         </div>
       </div>
+      <PlayDrawer id={playId} session={activeSession} onClose={() => openPlay(null)} />
     </div>
   );
 }
-
-/** Lists inside a fixed cockpit cell scroll on their own. */
-const scrollBody = "cockpit:overflow-y-auto";
 
 function NowPlayingPanel({
   loading,
   error,
   onRetry,
   sessions,
+  onSelect,
   className,
 }: {
   loading: boolean;
   error: unknown;
   onRetry: () => void;
   sessions: NowPlaying[];
+  onSelect: (id: string) => void;
   className?: string;
 }) {
-  const total = sessions.reduce((n, s) => n + s.speedBps, 0);
+  const activeSessions = sessions.filter((s) => !isPausedSession(s));
+  const pausedCount = sessions.length - activeSessions.length;
+  const total = activeSessions.reduce((n, s) => n + s.speedBps, 0);
   return (
     <DashboardPanel
       title={t("Now playing")}
       icon={<PlayCircle size={16} />}
       className={className}
-      bodyClassName={scrollBody}
       actions={
         <span className="flex items-center gap-2">
-          {sessions.length ? (
+          {activeSessions.length ? (
             <Badge variant="info">
-              {tn(sessions.length, "{count} stream", "{count} streams")}
+              {tn(activeSessions.length, "{count} stream", "{count} streams")}
+              {pausedCount > 0 ? ` · ${t("{count} paused", { count: pausedCount })}` : ""}
               {total > 0 ? ` · ${formatRate(total)}` : ""}
             </Badge>
+          ) : pausedCount > 0 ? (
+            <Badge variant="warning">{t("{count} paused", { count: pausedCount })}</Badge>
           ) : null}
           <Link to="/activity/now" className="text-xs font-medium text-primary hover:underline">
             {t("Activity")}
@@ -370,7 +371,7 @@ function NowPlayingPanel({
       ) : (
         <ul className="space-y-3">
           {sessions.map((s) => (
-            <SessionCard key={s.id || s.key} s={s} />
+            <SessionCard key={s.id || s.key} s={s} onOpen={() => onSelect(s.id || s.key)} />
           ))}
         </ul>
       )}
@@ -378,10 +379,17 @@ function NowPlayingPanel({
   );
 }
 
-function SessionCard({ s }: { s: NowPlaying }) {
+function SessionCard({ s, onOpen }: { s: NowPlaying; onOpen: () => void }) {
   const title = useTitle(s.key);
+  const displayTitle = title?.title ?? s.title;
   return (
-    <li className="relative overflow-hidden rounded-lg border border-border">
+    <li
+      onClick={(e) => {
+        if ((e.target as Element | null)?.closest?.("button, a")) return;
+        onOpen();
+      }}
+      className="relative cursor-pointer overflow-hidden rounded-lg border border-border transition hover:border-primary/40 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
       <Artwork src={title?.backdrop} alt="" title="" className="absolute inset-0" icon={<span />} />
       <div className="scrim-left absolute inset-0" />
       <div className="relative flex gap-3 p-3">
@@ -392,8 +400,17 @@ function SessionCard({ s }: { s: NowPlaying }) {
           className="aspect-[2/3] w-14 shrink-0 rounded-md shadow-md sm:w-16"
         />
         <div className="min-w-0 flex-1 text-on-scrim">
-          <p className="truncate font-semibold">{title?.title ?? s.title}</p>
-          {channelLabel(s) && channelLabel(s) !== (title?.title ?? s.title) ? (
+          <p className="truncate font-semibold">
+            <button
+              type="button"
+              data-stream-open
+              onClick={onOpen}
+              className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+            >
+              {displayTitle}
+            </button>
+          </p>
+          {channelLabel(s) && channelLabel(s) !== displayTitle ? (
             <p className="truncate text-sm opacity-80">{channelLabel(s)}</p>
           ) : null}
           <p className="truncate text-sm opacity-80">
@@ -401,6 +418,7 @@ function SessionCard({ s }: { s: NowPlaying }) {
             {s.product && s.product !== s.device ? ` (${s.product})` : ""}
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {isPausedSession(s) ? <Badge variant="warning">{t("Paused")}</Badge> : null}
             <Badge
               variant={s.decision === "transcode" ? "warning" : "success"}
               title={s.decisionReason || undefined}
@@ -474,7 +492,7 @@ export function HealthPanel({
       title={t("Health")}
       icon={<HeartPulse size={16} />}
       className={className}
-      bodyClassName={cn("px-3 py-2", scrollBody)}
+      bodyClassName="px-3 py-2"
       actions={null}
     >
       {loading ? (
@@ -637,8 +655,8 @@ function ActivityPanel({
     <DashboardPanel
       title={t("Activity · last 30 days")}
       icon={<BarChart3 size={16} />}
-      className={className}
-      bodyClassName="flex min-h-0 flex-col gap-3"
+      className={cn(asTable && "overflow-clip", className)}
+      bodyClassName="flex flex-col gap-3"
       actions={
         <div className="flex items-center gap-1">
           <div
@@ -674,7 +692,7 @@ function ActivityPanel({
       }
     >
       {state.loading && !state.data ? (
-        <Skeleton className="h-full min-h-40 w-full" />
+        <Skeleton className="h-44 w-full" />
       ) : (
         <>
           <dl className="grid shrink-0 grid-cols-3 gap-3">
@@ -710,34 +728,32 @@ function ActivityPanel({
               className="py-6"
             />
           ) : asTable ? (
-            <div className="max-h-56 min-h-0 overflow-auto cockpit:max-h-none cockpit:flex-1">
-              <Table containerClassName="border-0 shadow-none">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("Day")}</TableHead>
-                    <TableHead className="text-right">{t("Plays")}</TableHead>
-                    <TableHead className="text-right">{t("Hours")}</TableHead>
-                    <TableHead className="text-right">{t("Viewers")}</TableHead>
+            <Table containerClassName="overflow-visible rounded-none border-0 shadow-none">
+              <TableHeader className="sticky top-0 z-10 bg-surface">
+                <TableRow>
+                  <TableHead>{t("Day")}</TableHead>
+                  <TableHead className="text-right">{t("Plays")}</TableHead>
+                  <TableHead className="text-right">{t("Hours")}</TableHead>
+                  <TableHead className="text-right">{t("Viewers")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[...days].reverse().map((d) => (
+                  <TableRow key={d.date}>
+                    <TableCell>{d.date}</TableCell>
+                    <TableCell className="text-right tabular-nums">{d.plays}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(d.hours, 1)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{d.uniqueViewers}</TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...days].reverse().map((d) => (
-                    <TableRow key={d.date}>
-                      <TableCell>{d.date}</TableCell>
-                      <TableCell className="text-right tabular-nums">{d.plays}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatNumber(d.hours, 1)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{d.uniqueViewers}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                ))}
+              </TableBody>
+            </Table>
           ) : (
             <TimeBars
-              fill
-              className="h-44 cockpit:h-auto cockpit:flex-1"
+              height={176}
+              className="h-44"
               data={data}
               ariaLabel={
                 metric === "plays"
@@ -753,6 +769,26 @@ function ActivityPanel({
   );
 }
 
+const DYNAMIC_KIND_TITLES: Record<string, string> = {
+  "genre-showcase": "Acclaimed by Genre",
+  "era-favourites": "Best by Decade",
+  "world-cinema": "World Cinema for You",
+  "top-rated-in-genre": "Top-Rated by Genre",
+  "taste-bridge": "Where Favourites Meet",
+  "more-from-studio": "More by Studio",
+  "more-from-network": "More by Network",
+};
+
+function cleanInsightTitle(r: RowInsight): string {
+  if (!r.title.includes("<")) return r.title;
+  return DYNAMIC_KIND_TITLES[r.hubId] ?? r.title.replace(/\s*<[^>]+>/g, "").trim();
+}
+
+function effectivePlayRate(r: RowInsight): number | null {
+  if (!(r.impressions7d > 0) || !Number.isFinite(r.playRate)) return null;
+  return Math.min(1, Math.max(0, r.playRate));
+}
+
 function RowsPanel({
   state,
   className,
@@ -760,14 +796,21 @@ function RowsPanel({
   state: ReturnType<typeof useAsync<RowInsight[]>>;
   className?: string;
 }) {
-  const rows = [...(state.data ?? [])].sort((a, b) => b.playRate - a.playRate).slice(0, 6);
-  const maxRate = Math.max(0.0001, ...rows.map((r) => r.playRate));
+  const rows = [...(state.data ?? [])]
+    .sort((a, b) => {
+      const ra = effectivePlayRate(a);
+      const rb = effectivePlayRate(b);
+      if ((ra !== null) !== (rb !== null)) return ra !== null ? -1 : 1;
+      if (ra !== null && rb !== null && rb !== ra) return rb - ra;
+      return b.plays7d - a.plays7d;
+    })
+    .slice(0, 6);
+  const maxRate = Math.max(0.0001, ...rows.map((r) => effectivePlayRate(r) ?? 0));
   return (
     <DashboardPanel
       title={t("Best rows")}
       icon={<TrendingUp size={16} />}
       className={className}
-      bodyClassName={scrollBody}
       actions={
         <Link to="/home" className="text-xs font-medium text-primary hover:underline">
           {t("Home")}
@@ -789,37 +832,40 @@ function RowsPanel({
         />
       ) : (
         <ol className="space-y-2.5">
-          {rows.map((r, i) => (
-            <li
-              key={r.hubId}
-              title={tn(
-                r.plays7d,
-                "{count} play from {impressions} impressions in 7 days",
-                "{count} plays from {impressions} impressions in 7 days",
-                { impressions: formatNumber(r.impressions7d, 0) },
-              )}
-            >
-              <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
-                <span className="min-w-0 truncate text-fg">
-                  <span className="mr-1.5 tabular-nums text-fg-subtle">{i + 1}</span>
-                  {r.title}
-                </span>
-                <span className="shrink-0 tabular-nums text-fg-muted">
-                  {formatPercent(r.playRate, 1)}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-bg-subtle">
-                <div
-                  className="h-full rounded-full bg-primary"
-                  style={{ width: `${(r.playRate / maxRate) * 100}%` }}
-                />
-              </div>
-              <p className="mt-0.5 text-[11px] text-fg-subtle">
-                {tn(r.plays7d, "{count} play", "{count} plays")} ·{" "}
-                {tn(r.impressions7d, "{count} impression", "{count} impressions")}
-              </p>
-            </li>
-          ))}
+          {rows.map((r, i) => {
+            const rate = effectivePlayRate(r);
+            return (
+              <li
+                key={r.hubId}
+                title={tn(
+                  r.plays7d,
+                  "{count} play from {impressions} impressions in 7 days",
+                  "{count} plays from {impressions} impressions in 7 days",
+                  { impressions: formatNumber(r.impressions7d, 0) },
+                )}
+              >
+                <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
+                  <span className="min-w-0 truncate text-fg">
+                    <span className="mr-1.5 tabular-nums text-fg-subtle">{i + 1}</span>
+                    {cleanInsightTitle(r)}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-fg-muted">
+                    {rate !== null ? formatPercent(rate, 1) : "—"}
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-bg-subtle">
+                  <div
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${rate !== null ? (rate / maxRate) * 100 : 0}%` }}
+                  />
+                </div>
+                <p className="mt-0.5 text-[11px] text-fg-subtle">
+                  {tn(r.plays7d, "{count} play", "{count} plays")} ·{" "}
+                  {tn(r.impressions7d, "{count} impression", "{count} impressions")}
+                </p>
+              </li>
+            );
+          })}
         </ol>
       )}
     </DashboardPanel>

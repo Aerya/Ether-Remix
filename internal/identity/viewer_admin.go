@@ -9,7 +9,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// CreateViewer atomically creates an owner-managed local viewer.
+// ErrUsernameExists indicates another viewer already uses the local username.
+var ErrUsernameExists = errors.New("identity: username already exists")
+
+// CreateViewer atomically creates an owner-managed local viewer with a password.
 func (l *Local) CreateViewer(ctx context.Context, username, password string) (int64, error) {
 	if !validUsername(username) {
 		return 0, errors.New("identity: invalid username")
@@ -18,11 +21,32 @@ func (l *Local) CreateViewer(ctx context.Context, username, password string) (in
 	if err != nil {
 		return 0, err
 	}
+	return l.insertLocalViewer(ctx, username, hash)
+}
+
+// CreateViewerPasswordless atomically creates an owner-managed local viewer
+// with no local password yet (e.g. Emby POST /Users/New followed by POST
+// /Users/{id}/Password). The viewer cannot sign in until a password is set.
+func (l *Local) CreateViewerPasswordless(ctx context.Context, username string) (int64, error) {
+	if !validUsername(username) {
+		return 0, errors.New("identity: invalid username")
+	}
+	return l.insertLocalViewer(ctx, username, "")
+}
+
+func (l *Local) insertLocalViewer(ctx context.Context, username, hash string) (int64, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM identity_links WHERE provider='local' AND LOWER(subject)=LOWER(?)`, username).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists > 0 {
+		return 0, ErrUsernameExists
+	}
 	now := time.Now().Unix()
 	var id int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO auth_users(plex_id,username,title,is_owner,active,origin,created_at,updated_at) VALUES(NULL,?,?,0,1,'local',?,?) RETURNING id`, username, username, now, now).Scan(&id)
@@ -36,6 +60,7 @@ func (l *Local) CreateViewer(ctx context.Context, username, password string) (in
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
+	l.emitViewerCreated(id, username, "local", "local")
 	return id, nil
 }
 

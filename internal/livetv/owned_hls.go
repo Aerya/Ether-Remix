@@ -52,10 +52,17 @@ type hlsVariant struct {
 	audio     string // AUDIO group ID
 }
 
+type hlsAudioRendition struct {
+	uri        string
+	isDefault  bool
+	autoselect bool
+}
+
 type masterPlaylist struct {
 	variants []hlsVariant
 	// demuxedAudio lists AUDIO group IDs whose renditions have their own URI.
 	demuxedAudio map[string]bool
+	audioGroups  map[string][]hlsAudioRendition
 }
 
 func isMasterPlaylist(body []byte) bool {
@@ -211,7 +218,10 @@ func parseMediaPlaylist(body []byte, base *url.URL) (mediaPlaylist, bool) {
 }
 
 func parseMasterPlaylist(body []byte, base *url.URL) masterPlaylist {
-	out := masterPlaylist{demuxedAudio: map[string]bool{}}
+	out := masterPlaylist{
+		demuxedAudio: map[string]bool{},
+		audioGroups:  map[string][]hlsAudioRendition{},
+	}
 	var pending *hlsVariant
 	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
@@ -230,7 +240,15 @@ func parseMasterPlaylist(body []byte, base *url.URL) masterPlaylist {
 		case strings.HasPrefix(line, "#EXT-X-MEDIA:"):
 			a := hlsAttrs(strings.TrimPrefix(line, "#EXT-X-MEDIA:"))
 			if strings.EqualFold(a["TYPE"], "AUDIO") && a["URI"] != "" {
-				out.demuxedAudio[a["GROUP-ID"]] = true
+				group := a["GROUP-ID"]
+				out.demuxedAudio[group] = true
+				if u, ok := resolveHLS(base, a["URI"]); ok {
+					out.audioGroups[group] = append(out.audioGroups[group], hlsAudioRendition{
+						uri:        u,
+						isDefault:  strings.EqualFold(a["DEFAULT"], "YES"),
+						autoselect: strings.EqualFold(a["AUTOSELECT"], "YES"),
+					})
+				}
 			}
 		case line == "" || strings.HasPrefix(line, "#"):
 		default:
@@ -243,6 +261,35 @@ func parseMasterPlaylist(body []byte, base *url.URL) masterPlaylist {
 			}
 			pending = nil
 		}
+	}
+	return out
+}
+
+// audioGroupURIs returns the separate audio rendition URIs for group ordered
+// with DEFAULT=YES first, then AUTOSELECT=YES, then playlist order.
+func (m masterPlaylist) audioGroupURIs(group, videoURI string) []string {
+	entries := m.audioGroups[group]
+	if len(entries) == 0 {
+		return nil
+	}
+	ordered := append([]hlsAudioRendition(nil), entries...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].isDefault != ordered[j].isDefault {
+			return ordered[i].isDefault
+		}
+		if ordered[i].autoselect != ordered[j].autoselect {
+			return ordered[i].autoselect
+		}
+		return false
+	})
+	seen := map[string]bool{videoURI: true}
+	out := make([]string, 0, len(ordered))
+	for _, r := range ordered {
+		if r.uri == "" || seen[r.uri] {
+			continue
+		}
+		seen[r.uri] = true
+		out = append(out, r.uri)
 	}
 	return out
 }

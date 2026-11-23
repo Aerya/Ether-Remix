@@ -52,7 +52,7 @@ func (f *fakePlayback) Prepare(_ context.Context, u *core.User, key core.RatingK
 		return nil, core.ErrStreamLimit
 	}
 	id := fmt.Sprintf("source-%d", f.prepares)
-	p := &core.PlaySession{ID: id, UserID: u.ID, ClientID: c.ClientID, Key: key, Info: core.MediaInfo{Container: "mp4", Streams: []core.StreamInfo{{Type: "subtitle", ExternalURL: "https://upstream.invalid/?token=account-credential-secret"}}}}
+	p := &core.PlaySession{ID: id, UserID: u.ID, ClientID: c.ClientID, Client: c, Key: key, Info: core.MediaInfo{Container: "mp4", Streams: []core.StreamInfo{{Type: "subtitle", ExternalURL: "https://upstream.invalid/?token=account-credential-secret"}}}}
 	f.sessions[id] = p
 	return p, nil
 }
@@ -798,5 +798,68 @@ func TestStoppedNotificationUsesProgressOrigin(t *testing.T) {
 		if calls != 1 {
 			t.Fatal("preview generated a stop")
 		}
+	}
+}
+
+func TestBrokerReportPrefersProbedDuration(t *testing.T) {
+	ctx := context.Background()
+	active := func(_ context.Context, id int64) (*core.Viewer, error) {
+		return &core.Viewer{ID: id, IsOwner: true}, nil
+	}
+	events := NewEventBus(nil, active)
+	defer events.Close()
+	pb := &fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 2}
+	progress := &fakeProgress{}
+	b, err := NewBroker(BrokerDeps{
+		SurfacePolicy: testSessionPolicy,
+		Events:        events,
+		Playback:      pb,
+		Transcoder:    fakeBrokerTranscoder{},
+		Progress:      progress,
+		ActiveViewer:  active,
+		CanPlay:       func(*core.Viewer, bool, time.Time) bool { return true },
+		BitrateLimit:  func(*core.Viewer) int { return 0 },
+		OnTimeline:    func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {},
+		Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
+			return &core.Title{Key: k, Type: core.TypeMovie}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+	dev := core.Device{ID: "jf-atv"}
+	access := frontend.SessionAccess{Viewer: viewer, Device: dev, Protocol: "jellyfin", Owner: true}
+	plan, err := b.Plan(ctx, frontend.PlanRequest{
+		Viewer:   viewer,
+		Device:   dev,
+		Protocol: "jellyfin",
+		Item:     core.MovieKey(42),
+		Caps:     core.ClientCaps{ClientID: "jf-atv"},
+		Intent:   frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := b.Open(ctx, frontend.OpenRequest{Viewer: viewer, Device: dev, Protocol: "jellyfin", PlanID: plan.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb.mu.Lock()
+	for _, ps := range pb.sessions {
+		ps.Info.Duration = 75 * time.Minute
+		ps.Info.Estimated = false
+	}
+	pb.mu.Unlock()
+	if err := b.Report(ctx, access, opened.ID, frontend.Timeline{
+		Position: 50 * time.Minute,
+		Duration: 45 * time.Minute, // stale pre-probe client RunTimeTicks
+		State:    "playing",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if progress.duration != 75*time.Minute || progress.position != 50*time.Minute {
+		t.Fatalf("expected probed duration 75m and position 50m, got dur=%v pos=%v", progress.duration, progress.position)
 	}
 }

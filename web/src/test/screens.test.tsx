@@ -89,6 +89,68 @@ describe("Overview", () => {
     expect(screen.getByRole("button", { name: /Server health/ })).toBeInTheDocument();
   });
 
+  it("guards Best rows engagement rates, resolves placeholder titles and renders Activity table with a sticky header", async () => {
+    renderApp("/", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        if (String(input).endsWith("/insights/rows")) {
+          return new Response(
+            JSON.stringify({
+              rows: [
+                {
+                  hubId: "continue-watching",
+                  title: "Continue Watching",
+                  impressions7d: 8,
+                  plays7d: 12,
+                  playRate: 1.5,
+                },
+                {
+                  hubId: "genre-showcase",
+                  title: "Acclaimed <Genre>",
+                  impressions7d: 5,
+                  plays7d: 1,
+                  playRate: 0.2,
+                },
+                {
+                  hubId: "popular-on-server",
+                  title: "Popular on This Server",
+                  impressions7d: 0,
+                  plays7d: 1,
+                  playRate: 0,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return original(input, init);
+      };
+    });
+    const bestRows = (await screen.findByRole("heading", { name: "Best rows" }, WAIT)).closest(
+      "section",
+    )!;
+    const cwItem = (await within(bestRows).findByText("Continue Watching", {}, WAIT)).closest(
+      "li",
+    )!;
+    expect(within(cwItem).getByText("100.0%")).toBeInTheDocument();
+    expect(within(bestRows).queryByText("150.0%")).toBeNull();
+
+    expect(within(bestRows).getByText("Acclaimed by Genre")).toBeInTheDocument();
+    expect(within(bestRows).queryByText(/Acclaimed <Genre>/)).toBeNull();
+
+    const popItem = within(bestRows).getByText("Popular on This Server").closest("li")!;
+    expect(within(popItem).getByText("—")).toBeInTheDocument();
+    expect(within(popItem).queryByText("0.0%")).toBeNull();
+
+    const activitySection = screen
+      .getByRole("heading", { name: "Activity · last 30 days" })
+      .closest("section")!;
+    fireEvent.click(within(activitySection).getByRole("button", { name: "Show as table" }));
+    const dayHeader = await within(activitySection).findByRole("columnheader", { name: "Day" });
+    expect(dayHeader.closest("thead")).toHaveClass("sticky");
+    expect(activitySection.querySelector(".max-h-56")).toBeNull();
+  });
+
   it("shows live server instruments: CPU, memory, network, GPU and Ether itself", async () => {
     const { fake } = renderApp("/");
     const server = (await screen.findByRole("heading", { name: "Server" }, WAIT)).closest(
@@ -177,6 +239,42 @@ describe("Updates settings", () => {
     expect(screen.getByLabelText("Maintenance window ends")).toHaveValue("06:00");
     expect(screen.getByLabelText("Update feed")).toHaveValue("");
     expect(screen.getByLabelText("Wait for playback to finish")).toHaveValue(null); // an empty duration amount
+  });
+
+  it("disables Check for updates and hides raw Go updater errors when the build lacks a release key", async () => {
+    renderApp("/maintenance/updates", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        if (String(input).endsWith("/updates/")) {
+          return new Response(
+            JSON.stringify({
+              enabled: false,
+              current: "0.3.14",
+              capability: "disabled",
+              disabledReason: "updater: no release public key configured",
+              state: "idle",
+              autoUpdate: true,
+              requested: false,
+              force: false,
+              window: { start: "03:00", end: "06:00", open: false },
+              activeSessions: 0,
+              quietPeriodSeconds: 60,
+              confirming: false,
+            }),
+            { status: 200 },
+          );
+        }
+        return original(input, init);
+      };
+    });
+    expect(
+      await screen.findByText("This build can't check for signed updates.", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/updater:/i)).toBeNull();
+    const toggle = await screen.findByRole("switch", { name: "Check for updates" }, WAIT);
+    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
   });
 });
 

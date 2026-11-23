@@ -146,6 +146,9 @@ func TestPlaylistRefreshPreservesBackupOrderAndChannelIdentity(t *testing.T) {
 	c.StreamSources[0].Priority = 1
 	c.StreamSources = append(c.StreamSources, StreamSource{ID: "owner-backup", URL: "https://backup.invalid/live", Name: "Preferred backup", Enabled: true})
 	c.Number, c.Favorite, c.GuideID = "99", true, "owner-guide"
+	c.Screens = &ChannelScreens{NoSignal: "error", OffAir: "bars"}
+	c.Look = &ChannelLook{LookID: "retro", Tagline: "Classic", Accent: "#ff0000"}
+	c.DVRMinutes = 60
 	if _, err := s.SaveChannel(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +161,12 @@ func TestPlaylistRefreshPreservesBackupOrderAndChannelIdentity(t *testing.T) {
 	saved, err := reopened.Channel(ctx, c.ID)
 	if err != nil || saved.Number != "99" || !saved.Favorite || saved.GuideID != "owner-guide" {
 		t.Fatalf("refresh changed channel identity/policy: %+v err=%v", saved, err)
+	}
+	if saved.Screens == nil || saved.Screens.NoSignal != "error" || saved.Screens.OffAir != "bars" || reopened.useBroadcast(saved) {
+		t.Fatalf("refresh lost screens override: %+v", saved.Screens)
+	}
+	if saved.Look == nil || saved.Look.LookID != "retro" || saved.Look.Tagline != "Classic" || saved.Look.Accent != "#ff0000" || saved.DVRMinutes != 60 {
+		t.Fatalf("refresh lost look/dvr overrides: look=%+v dvr=%d", saved.Look, saved.DVRMinutes)
 	}
 	if len(saved.StreamSources) != 2 || saved.StreamSources[0].ID != "owner-backup" || saved.StreamSources[1].ID != importID || saved.StreamSources[1].URL != "https://primary.invalid/new" || saved.StreamURL != "https://backup.invalid/live" {
 		t.Fatalf("refresh lost source ownership/order: %+v", saved.StreamSources)

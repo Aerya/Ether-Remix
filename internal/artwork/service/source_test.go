@@ -13,9 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/overlays"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
@@ -219,5 +223,138 @@ func TestNeutralArtworkParentLookupIsStoredOnly(t *testing.T) {
 	delete(catalog, show)
 	if _, _, err := source.List(context.Background(), req); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("missing inherited parent policy: %v", err)
+	}
+}
+
+func TestPluginLandscapeCardThumbAndBackdropFallback(t *testing.T) {
+	ctx := frontend.WithArtworkKinds(context.Background(), map[string]bool{
+		frontend.ImagePoster:   true,
+		frontend.ImageBackdrop: true,
+		frontend.ImageStill:    true,
+		frontend.ImageThumb:    true,
+	})
+	viewer := &core.User{ID: 1, IsOwner: true}
+	kThumb := core.PluginKey(101)
+	kBackdrop := core.PluginKey(102)
+	src := Source{
+		Catalog: storedArtwork{},
+		PluginItem: func(_ context.Context, _ *core.User, _ core.Device, k core.RatingKey) (*core.Title, []frontend.Image, error) {
+			switch k {
+			case kThumb:
+				title := core.Title{
+					Key:           kThumb,
+					Type:          core.TypeMovie,
+					LandscapeCard: true,
+					PosterPath:    "https://cdn.example/thumb-copied-to-poster.jpg",
+					ThumbPath:     "https://cdn.example/thumb.jpg",
+				}
+				return &title, []frontend.Image{{Kind: frontend.ImageThumb, Path: "https://cdn.example/thumb.jpg", Width: 1280, Height: 720}}, nil
+			case kBackdrop:
+				title := core.Title{
+					Key:           kBackdrop,
+					Type:          core.TypeEpisode,
+					LandscapeCard: true,
+					BackdropPath:  "https://cdn.example/backdrop.jpg",
+				}
+				return &title, []frontend.Image{{Kind: frontend.ImageBackdrop, Path: "https://cdn.example/backdrop.jpg", Width: 1920, Height: 1080}}, nil
+			default:
+				return nil, nil, core.ErrNotFound
+			}
+		},
+	}
+
+	imgs1, ok, err := src.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Item: kThumb})
+	if err != nil || !ok || len(imgs1) != 1 || imgs1[0].Kind != frontend.ImageThumb {
+		t.Fatalf("thumb-only landscape item = %+v (ok=%v err=%v), want single ImageThumb", imgs1, ok, err)
+	}
+
+	imgs2, ok, err := src.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Item: kBackdrop})
+	if err != nil || !ok {
+		t.Fatalf("backdrop landscape item err=%v ok=%v", err, ok)
+	}
+	hasThumb := false
+	for _, im := range imgs2 {
+		if im.Kind == frontend.ImageThumb {
+			hasThumb = true
+		}
+	}
+	if !hasThumb {
+		t.Fatalf("expected ImageThumb synthesized from backdrop on landscape item, got %+v", imgs2)
+	}
+}
+
+func TestPosterGenerationRollsSharedArtworkTags(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	key := core.MovieKey(550)
+	viewer := &core.User{ID: 7, IsOwner: true}
+	cfg := config.Posters{Version: 1, Source: "tmdb"}
+	imgs := artwork.NewImages(artwork.ImagesOptions{Posters: func() config.Posters { return cfg }})
+	ov := overlays.New(db, overlays.Options{Images: imgs})
+	src := Source{
+		PosterGen:  func() uint64 { return cfg.Generation },
+		Catalog:    storedArtwork{key: {Key: key, Type: core.TypeMovie, PosterPath: "/poster550.jpg", BackdropPath: "/back550.jpg", Released: time.Unix(1, 0)}},
+		Visibility: experience.Visibility{Policy: &artworkPolicy{viewer: viewer}},
+		Discovery:  (&discovery.Features{Overlays: ov}).Frontend(),
+	}
+
+	tags := func() (poster, backdrop string) {
+		list, _, err := src.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Item: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, im := range list {
+			if im.Kind == frontend.ImagePoster && poster == "" {
+				poster = im.Tag
+			}
+			if im.Kind == frontend.ImageBackdrop && backdrop == "" {
+				backdrop = im.Tag
+			}
+		}
+		return poster, backdrop
+	}
+
+	p0, b0 := tags()
+	if p0 == "" || b0 == "" {
+		t.Fatalf("missing baseline tags: poster=%q backdrop=%q", p0, b0)
+	}
+
+	// Enable provider.
+	cfg.Generation = 1
+	cfg.Source = "betterposters"
+	cfg.Accounts.BetterPosters = config.PosterAccount{Enabled: true}
+	p1, b1 := tags()
+	if p1 == p0 || b1 != b0 {
+		t.Fatalf("enable: p0=%q p1=%q b0=%q b1=%q", p0, p1, b0, b1)
+	}
+
+	// Re-save same provider settings.
+	cfg.Generation = 2
+	p2, _ := tags()
+	if p2 == p1 {
+		t.Fatalf("resave did not roll poster tag: %q", p2)
+	}
+
+	// Disable provider -> must NOT collide with baseline p0 or enabled p1/p2.
+	cfg.Generation = 3
+	cfg.Source = "tmdb"
+	cfg.Accounts.BetterPosters.Enabled = false
+	p3, _ := tags()
+	if p3 == p0 || p3 == p1 || p3 == p2 {
+		t.Fatalf("disable collided: p0=%q p1=%q p2=%q p3=%q", p0, p1, p2, p3)
+	}
+
+	// Re-enable same provider within the same 6-hour bucket -> fresh tag.
+	cfg.Generation = 4
+	cfg.Source = "betterposters"
+	cfg.Accounts.BetterPosters.Enabled = true
+	p4, _ := tags()
+	if p4 == p1 || p4 == p2 || p4 == p3 {
+		t.Fatalf("reenable collided: p1=%q p2=%q p3=%q p4=%q", p1, p2, p3, p4)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -17,6 +18,12 @@ var (
 
 func (a *App) initStreamSources(inner core.Indexer) *adapters.StreamSources {
 	ss := adapters.NewStreamSources(inner)
+	ss.SetClientIdentity(func() config.ClientIdentity {
+		if a.cfg == nil {
+			return config.ClientIdentity{}
+		}
+		return a.cfg.Get().ClientIdentity
+	})
 	streamSourcesMu.Lock()
 	appStreamSources[a] = ss
 	streamSourcesMu.Unlock()

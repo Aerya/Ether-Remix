@@ -161,6 +161,14 @@ var (
 // ParseCues parses SRT or WebVTT text (already UTF-8) into cues.
 func ParseCues(text string) ([]Cue, error) { return subtext.ParseCues(text) }
 
+// CleanCueText folds cue text to <i>, <b>, <u> and <font color="…">,
+// dropping WebVTT class/voice/lang spans, ruby and in-cue timestamps.
+func CleanCueText(s string) string { return subtext.CleanCueText(s) }
+
+func storedHasForeignTags(text, format string) bool {
+	return subtext.HasForeignTags(text, format)
+}
+
 // RenderSRT renders cues as SubRip.
 func RenderSRT(cues []Cue) string { return subtext.RenderSRT(cues) }
 

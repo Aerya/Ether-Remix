@@ -91,7 +91,7 @@ func Generate(ctx context.Context, db *sql.DB, s Scale, now time.Time) error {
 // generation) would dominate the load. Generate sets them aside and
 // rebuilds what they maintain once, from the same rows; the history
 // triggers stay on, they cost little.
-var fixtureTriggerTables = []string{"catalog_titles", "catalog_genres", "catalog_countries", "catalog_credits", "catalog_person_names", "catalog_keywords", "catalog_alt_titles", "catalog_studios", "catalog_studio_names", "catalog_collections", "catalog_home_release"}
+var fixtureTriggerTables = []string{"catalog_titles", "catalog_genres", "catalog_countries", "catalog_credits", "catalog_person_names", "catalog_keywords", "catalog_alt_titles", "catalog_studios", "catalog_studio_names", "catalog_collections", "catalog_franchises", "catalog_home_release"}
 
 // generate is Generate; live keeps every trigger on instead, as production
 // writes, so a test can prove the rebuild matches it.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 type HeatCell struct {
@@ -106,8 +108,17 @@ func (s *Service) activitySummary(ctx context.Context, out *Summary, where strin
 // catalogSummary starts with the indexed period of plays and joins catalogue
 // primary keys; old copy rows have no audio flag and count as direct stream.
 func (s *Service) catalogSummary(ctx context.Context, out *Summary, args []any) error {
-	const period = ` FROM stats_plays p JOIN catalog_titles t ON t.key=p.rating_key `
-	const filter = ` WHERE p.started>=? AND p.started<? AND (?=0 OR p.user_id=?) AND (p.bytes>0 OR p.watched_ms>0) `
+	// CROSS JOIN keeps SQLite's loop order anchored to the selected plays.
+	// Otherwise its episode-type index can lead it to scan the entire episode
+	// catalogue and then rescan plays for every episode, even for an empty day.
+	// The equality in WHERE also keeps this valid SQL on PostgreSQL.
+	period := ` FROM stats_plays p CROSS JOIN catalog_titles t `
+	if store.DialectOf(s.db) == store.SQLite {
+		// Keep the integer primary-key lookup; a selective-looking type
+		// index is still an episode scan for every selected play.
+		period += `NOT INDEXED `
+	}
+	const filter = ` WHERE t.key=p.rating_key AND p.channel_id='' AND p.started>=? AND p.started<? AND (?=0 OR p.user_id=?) AND (p.bytes>0 OR p.watched_ms>0) `
 	queries := []struct {
 		query string
 		dst   *[]Bucket

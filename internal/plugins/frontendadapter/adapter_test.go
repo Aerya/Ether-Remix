@@ -79,6 +79,19 @@ func testHost(viewers map[string]*core.Viewer) frontend.Host {
 	return frontend.Host{Identity: frontend.BindIdentity(fakeIdentity{viewers: viewers}, "plugin:plug1:feed")}
 }
 
+func TestDescribeExposesPathPrefixAndDefaultAuth(t *testing.T) {
+	decl := testDecl(core.LibraryMovies)
+	decl.Meta.Auth = ""
+	f, err := New(decl, &fakeManager{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := f.Describe()
+	if got.ID != "plugin:plug1:feed" || got.PathPrefix != "/opds" || got.Auth != AuthEtherToken {
+		t.Fatalf("Describe() = %+v", got)
+	}
+}
+
 // TestProxyInjectsViewerHeadersAndHidesCredential proves the plugin never
 // sees an Ether credential and receives the viewer headers §6.5 defines.
 func TestProxyInjectsViewerHeadersAndHidesCredential(t *testing.T) {
@@ -520,3 +533,82 @@ func TestMediaHandlerRejectsUnknownToken(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+// Host delivery is an authorization boundary, not another JSON body encoding.
+func TestHostedBinaryAndRedirectBoundary(t *testing.T) {
+	for _, location := range []string{"/ether/v1/kind-media/abc", "//evil.test/a", "https://evil.test/a", "/%2fevil.test/a", "/\\evil.test/a", "/a\r\nSet-Cookie: secret", "/a?X-Plex-Token=secret", "javascript:alert(1)"} {
+		t.Run(location, func(t *testing.T) {
+			mgr := &fakeManager{hosted: true, buff: func(plugins.Request) (plugins.Response, error) {
+				return plugins.Response{Status: 302, Headers: map[string]string{"location": location, "Set-Cookie": "secret", "X-Ether-Viewer": "99"}}, nil
+			}}
+			f, _ := New(testDecl(core.LibraryMovies), mgr)
+			inst, err := f.Mount(context.Background(), testHost(map[string]*core.Viewer{"tok": viewerWithLibraries(7, "A", core.LibraryMovies)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("GET", "/opds/file", nil)
+			req.Header.Set("Authorization", "Bearer tok")
+			w := httptest.NewRecorder()
+			inst.Handler().ServeHTTP(w, req)
+			want := ""
+			if location == "/ether/v1/kind-media/abc" {
+				want = location
+			}
+			if w.Code != 302 || w.Header().Get("Location") != want || w.Header().Get("Set-Cookie") != "" || w.Header().Get("X-Ether-Viewer") != "" {
+				t.Fatalf("unsafe response: %v", w.Result())
+			}
+		})
+	}
+	mgr := &binaryTestManager{fakeManager: fakeManager{hosted: true, buff: func(plugins.Request) (plugins.Response, error) {
+		return plugins.Response{Status: 200, Blob: &plugins.FrontendBlob{LibraryKey: "owned", Ref: "blob:fixture"}}, nil
+	}}}
+	f, _ := New(testDecl(core.LibraryMovies), mgr)
+	inst, err := f.Mount(context.Background(), testHost(map[string]*core.Viewer{"tok": viewerWithLibraries(7, "A", core.LibraryMovies)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, rng, token string
+		status             int
+		body, contentRange string
+	}{
+		{"GET", "", "tok", 200, "0123456789", ""}, {"GET", "bytes=2-5", "tok", 206, "2345", "bytes 2-5/10"},
+		{"GET", "bytes=-3", "tok", 206, "789", "bytes 7-9/10"}, {"GET", "bytes=8-", "tok", 206, "89", "bytes 8-9/10"},
+		{"GET", "bytes=10-", "tok", 416, "", "bytes */10"}, {"GET", "bytes=1-2,4-5", "tok", 416, "", "bytes */10"},
+		{"HEAD", "bytes=100-", "tok", 200, "", ""}, {"GET", "", "", 401, "", ""},
+	} {
+		req := httptest.NewRequest(tc.method, "/opds/file", nil)
+		req.Header.Set("Range", tc.rng)
+		if tc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+		}
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, req)
+		if w.Code != tc.status || (tc.status != 401 && w.Body.String() != tc.body) || w.Header().Get("Content-Range") != tc.contentRange {
+			t.Fatalf("%+v: %d %q %v", tc, w.Code, w.Body.String(), w.Header())
+		}
+	}
+	if mgr.opened != 7 || mgr.closed != 7 {
+		t.Fatalf("reader ownership: %d/%d", mgr.opened, mgr.closed)
+	}
+}
+
+type binaryTestManager struct {
+	fakeManager
+	opened, closed int
+}
+
+func (m *binaryTestManager) OpenFrontendBlob(_ context.Context, p string, v int64, libs []core.LibraryID, spec plugins.FrontendBlob) (io.ReadCloser, int64, error) {
+	if p != "plug1" || v != 7 || len(libs) != 1 || libs[0] != core.LibraryMovies {
+		return nil, 0, errors.New("scope")
+	}
+	m.opened++
+	return &binaryTestReader{Reader: strings.NewReader("0123456789"), close: func() { m.closed++ }}, 10, nil
+}
+
+type binaryTestReader struct {
+	io.Reader
+	close func()
+}
+
+func (r *binaryTestReader) Close() error { r.close(); return nil }

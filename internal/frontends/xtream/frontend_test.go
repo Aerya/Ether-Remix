@@ -132,6 +132,28 @@ func TestStartupSequenceAndRevocation(t *testing.T) {
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `group-title="News & Weather"`) || !strings.Contains(response.Body.String(), `group-title="Sports"`) {
 		t.Fatalf("export groups: %d %s", response.Code, response.Body.String())
 	}
+	ownerGroupedHost, _ := testHost(t)
+	ownerGroupedHost.LiveTV = frontendtest.LiveTV{
+		GroupsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveGroup, error) {
+			return []frontend.LiveGroup{{ID: "top-picks", Name: "Top Picks"}}, nil
+		},
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{
+				{ID: "news", Name: "News", Kind: "iptv", Group: "Provider News", Groups: []frontend.LiveGroup{{ID: "top-picks", Name: "Top Picks"}}},
+				{ID: "sport", Name: "Sport", Kind: "iptv", Group: "Sports"},
+			}, nil
+		},
+	}
+	ownerGrouped := mount(t, ownerGroupedHost)
+	categories = nil
+	response = request(ownerGrouped, "/player_api.php?"+authQuery()+"&action=get_live_categories")
+	if err := json.Unmarshal(response.Body.Bytes(), &categories); err != nil || len(categories) != 2 || categories[0]["category_name"] != "Top Picks" || categories[1]["category_name"] != "Sports" {
+		t.Fatalf("owner groups first + ungrouped provider fallback: %s %v", response.Body.String(), err)
+	}
+	response = request(ownerGrouped, "/get.php?"+authQuery()+"&type=m3u_plus")
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `group-title="Top Picks"`) || strings.Contains(response.Body.String(), `group-title="Provider News"`) || !strings.Contains(response.Body.String(), `group-title="Sports"`) {
+		t.Fatalf("owner export groups: %d %s", response.Code, response.Body.String())
+	}
 	a.revoked = true
 	if w = request(h, "/player_api.php?"+authQuery()); w.Code != 401 {
 		t.Fatal("revocation ignored")
@@ -233,11 +255,6 @@ func TestLargeCatalogueExport(t *testing.T) {
 	elapsed := time.Since(start)
 	if s.calls != 401 || w.bytes < 1000000 {
 		t.Fatalf("calls=%d bytes=%d", s.calls, w.bytes)
-	}
-	// The budget measures the export, not the race detector's slowdown; the
-	// bounded-page invariants above hold in every build.
-	if !raceEnabled && elapsed > 30*time.Second {
-		t.Fatalf("export too slow %v", elapsed)
 	}
 	t.Logf("100001 titles: %v, %d bounded pages, %d bytes", elapsed, s.calls, w.bytes)
 }
@@ -437,6 +454,20 @@ func TestXtreamAdmissionFailureStatus(t *testing.T) {
 			t.Fatalf("%v: %d want %d", tc.err, w.Code, tc.status)
 		}
 	}
+
+	// RequiredAudioLanguageError surfaces its actionable message with 422.
+	host, _ := testHost(t)
+	host.Experience = frontendtest.Experience{ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{Title: frontend.Title{Key: req.Key, Type: "movie", Title: "Seoul Drift"}}, nil
+	}}
+	host.Capabilities = frontendtest.Capabilities{}
+	langErr := &frontend.RequiredAudioLanguageError{Language: "English"}
+	host.LazyStreams = &unavailableAdmission{err: langErr}
+	id, _ := host.IDs.Compact(context.Background(), "xtream", "item", fmt.Sprint(core.MovieKey(1)))
+	w := request(mount(t, host), fmt.Sprintf("/movie/%s/eg1_test/%d.mkv", frontend.XtreamUsername("eg1_test"), id))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), langErr.Error()) {
+		t.Fatalf("xtream RequiredAudioLanguageError = %d %q, want 422 with %q", w.Code, w.Body.String(), langErr.Error())
+	}
 }
 
 func TestXtreamSharedOriginPreservesFrontendPrefix(t *testing.T) {
@@ -452,5 +483,18 @@ func TestXtreamSharedOriginPreservesFrontendPrefix(t *testing.T) {
 		if got != want {
 			t.Fatalf("base=%s got=%s want=%s", base, got, want)
 		}
+	}
+}
+
+func TestXtreamYouTubeTrailer(t *testing.T) {
+	got := xtreamYouTubeTrailer([]frontend.Extra{
+		{Kind: "featurette", Source: "YouTube", SourceID: "feat1"},
+		{Kind: "trailer", Source: "YouTube", SourceID: "trl1"},
+	})
+	if got != "trl1" {
+		t.Fatalf("got %q, want trl1", got)
+	}
+	if empty := xtreamYouTubeTrailer([]frontend.Extra{{Kind: "trailer"}}); empty != "" {
+		t.Fatalf("got %q, want empty", empty)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+const imageTTL = 24 * time.Hour
+
 // RasterFormat caches explicit output formats alongside fetched artwork, within
 // the same byte budget. Callers must authorize the source before calling it.
 // The content digest identifies the actual source variant (including its pixel

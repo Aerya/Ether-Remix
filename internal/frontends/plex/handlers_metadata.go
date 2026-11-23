@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -62,10 +63,12 @@ func (s *Server) titleVisible(u *frontend.User, t *frontend.Title) bool {
 
 // metadataKeys parses a detail key. Numeric rating keys stay as they are.
 // A plex:// guid (More Ways to Watch keeps the discover identity and asks
-// this server for it) resolves through the local mapping. A variant part id
-// resolves to the title that owns that part, so a re-read of the part the
+// this server for it) resolves through the local mapping, falling back to a
+// bounded live verification for a single movie/show identity when the local
+// row is cold or withheld pending rule-2 verification (#654). A variant part
+// id resolves to the title that owns that part, so a re-read of the part the
 // client just selected still shows the subtitle.
-func (s *Server) metadataKeys(ctx context.Context, raw string) ([]frontend.RatingKey, error) {
+func (s *Server) metadataKeys(ctx, lookupParent context.Context, raw string) ([]frontend.RatingKey, error) {
 	raw = strings.TrimSpace(raw)
 	if decoded, err := url.PathUnescape(raw); err == nil && decoded != "" {
 		raw = decoded
@@ -86,6 +89,14 @@ func (s *Server) metadataKeys(ctx context.Context, raw string) ([]frontend.Ratin
 			k, err := guidSrc.ExactKey(ctx, guid)
 			if err != nil {
 				if len(guids) == 1 {
+					if errors.Is(err, frontend.ErrNotFound) {
+						lookupCtx, cancel := context.WithTimeout(lookupParent, 5*time.Second)
+						k, err = guidSrc.Lookup(lookupCtx, guid)
+						cancel()
+						if err == nil {
+							return []frontend.RatingKey{k}, nil
+						}
+					}
 					return nil, err
 				}
 				if errors.Is(err, frontend.ErrNotFound) {
@@ -127,8 +138,12 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// Serve stored catalogue details while bounded enrichment fills the mirror.
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
-	ctx := r.Context()
+	reqCtx := r.Context()
+	ctx := s.exp().NoProviderWait(reqCtx)
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	r = r.WithContext(ctx)
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
 	q := r.URL.Query()
@@ -143,18 +158,23 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	keys, err := s.metadataKeys(ctx, chi.URLParam(r, "key"))
+	keys, err := s.metadataKeys(ctx, reqCtx, chi.URLParam(r, "key"))
 	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	if len(keys) == 1 && pr.User != nil && isPlayableKey(keys[0]) {
-		// A subtitle pick for this title may still be downloading; the
-		// re-read that selects the new track must already list it (#389).
-		s.subtitlePicks.wait(ctx, pr.User.ID, keys[0])
-		if ctx.Err() != nil {
+	if len(keys) > 1 {
+		mc, ok := s.handleMetadataBatch(ctx, r, pr, q, keys)
+		if !ok {
 			return
 		}
+		if mc == nil {
+			mc = libraryContainer()
+		}
+		s.projectFileAvailability(r, mc)
+		mc.Size = len(mc.Metadata)
+		s.write(w, r, mc)
+		return
 	}
 	var mc *model.MediaContainer
 	for _, k := range keys {
@@ -163,11 +183,8 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindCollection, frontend.KindSmart:
 			c, err := s.collection(ctx, pr.User, k)
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
-					return
-				}
-				continue
+				s.writeErr(w, r, err)
+				return
 			}
 			md = s.collectionMetadata(c, ctx)
 			if mc == nil {
@@ -176,11 +193,8 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindPlaylist:
 			pl, err := s.playlist(ctx, pr.User, k)
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
-					return
-				}
-				continue
+				s.writeErr(w, r, err)
+				return
 			}
 			md = s.playlistListingMetadata(ctx, pl)
 			if pl.SmartURI != "" {
@@ -192,17 +206,15 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindExtra:
 			emd, ok := s.extraMetadataByKey(ctx, pr, k)
 			if !ok {
-				if len(keys) == 1 {
-					writeHTTPError(w, http.StatusNotFound)
-					return
-				}
-				continue
+				writeHTTPError(w, http.StatusNotFound)
+				return
 			}
 			md = emd
 			if mc == nil {
 				mc = libraryContainer()
 			}
 		default:
+			ctx = frontend.WithColdDetail(ctx, k)
 			t, err := s.metadataTitle(ctx, pr, k)
 			// A plugin item is authorized by the Experience lookup itself; the
 			// built-in visibility policy maps a projected type onto a built-in
@@ -215,7 +227,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if ctx.Err() != nil {
 				return
 			}
-			if err != nil && len(keys) == 1 && q.Get("collection") == "" {
+			if err != nil && q.Get("collection") == "" {
 				if future, e := s.scheduledEpisode(ctx, pr, k); e == nil {
 					md = s.scheduledMetadata(ctx, pr, future)
 					mc = s.itemContainer(future.Type)
@@ -223,7 +235,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if err != nil && len(keys) == 1 {
+			if err != nil {
 				if t, ck, e := s.lookupPlaceholder(ctx, pr, k, q.Get("collection")); e == nil {
 					md = s.placeholderMetadata(ctx, pr, t, ck)
 					mc = s.itemContainer(t.Type)
@@ -232,73 +244,82 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
+				s.writeErr(w, r, err)
+				return
+			}
+			if isPlayable(t.Type) {
+				s.recentClients.recordTitle(r, pr, t.Key, s.now())
+				// Android TV and smart-TV HTML apps build their subtitle picker
+				// from this refresh after a manual pick. Join only an already
+				// pending download for this exact Part and client session;
+				// browsing never starts one.
+				if pr.User != nil && (plexMobileOrTVBedrockClient(pr) || plexSmartTVClient(pr)) {
+					partID := s.playIDs.selectedPart(s.playIdentityFor(pr, t.Key))
+					s.subtitlePicks.waitForPart(ctx, subtitlePickKey{
+						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
+					})
+				}
+				// Plezy reuses this row at Play and trusts only its
+				// selected subtitle: arm (or answer) its play-time
+				// re-ask so first play sees probed tracks (#618). Run
+				// before RefillSearchCache and scheduleDetailWarm so a
+				// play re-ask starts or promotes the foreground flight
+				// directly instead of spawning a competing speculative
+				// search or warm-up; browsing fetches return
+				// immediately and still run both below.
+				s.plezyFirstPlay(ctx, reqCtx, pr, t, q, r.URL.RawQuery)
+				if reqCtx.Err() != nil {
 					return
 				}
-				continue
-			}
-			if len(keys) == 1 && isPlayable(t.Type) {
+				playProbed := s.playIntentFirstPlay(ctx, reqCtx, pr, t, q)
+				if reqCtx.Err() != nil {
+					return
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
-				if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && variants != nil {
-					// Repeated metadata fetches while the same page is being
-					// watched must not retry a failed search on every fetch.
-					watchKey := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)
-					s.variantWatch.mu.Lock()
-					watching := s.variantWatch.pending[watchKey]
-					s.variantWatch.mu.Unlock()
-					if !watching {
-						pr.detailRefillRequested = true
-						pr.detailRefill = variants.RefillSearchCache(t)
+				// Plugin items resolve through their plugin rather than the
+				// built-in catalogue search cache or detail prewarmer.
+				if !playProbed && !t.Key.IsPluginKey() {
+					if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && !s.detailBurst(pr, t.Key) && variants != nil {
+						// Repeated metadata fetches while the same page is being
+						// watched must not retry a failed search on every fetch.
+						watchKey := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)
+						s.variantWatch.mu.Lock()
+						watching := s.variantWatch.pending[watchKey]
+						s.variantWatch.mu.Unlock()
+						if !watching {
+							pr.detailRefillRequested = true
+							pr.detailRefill = variants.RefillSearchCache(t)
+						}
 					}
+					s.scheduleDetailWarm(ctx, pr, t)
 				}
-				s.warmDetail(ctx, pr, t)
 			}
-			if len(keys) == 1 {
-				// Live session intent (#32): a single-item detail open.
-				s.recordDetailIntent(ctx, pr, t)
-			}
+			// Live session intent (#32): a single-item detail open.
+			s.recordDetailIntent(ctx, pr, t)
+			s.revealDetail(pr, t)
 			// renderTitles uses verified cached GUIDs and queues missing identities.
 			// Remote identity enrichment must not hold detail or Play requests.
-
-			if len(keys) == 1 {
-				pr.versionItemKey = t.Key
-			}
-			if len(keys) == 1 && (metadataOptionOn(q.Get("checkFiles")) || metadataOptionOn(q.Get("asyncCheckFiles")) || metadataOptionOn(q.Get("checkFileAvailability"))) {
+			pr.versionItemKey = t.Key
+			if metadataOptionOn(q.Get("checkFiles")) || metadataOptionOn(q.Get("asyncCheckFiles")) || metadataOptionOn(q.Get("checkFileAvailability")) {
 				pr.versionFlowKey = t.Key
 			}
 			md = s.detail(ctx, pr, t, metadataOptionOn(q.Get("includeChildren")), metadataOptionOn(q.Get("includeOnDeck")), metadataOptionOn(q.Get("includeRelated")), metadataOptionOn(q.Get("includeExtras")), q.Get("extraTypes"))
-			if len(keys) == 1 {
-				if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
-					md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
-					if t.Type == frontend.TypeEpisode {
-						md.GrandparentTheme = md.Theme
-						md.ParentTheme = md.Theme
-					}
-					if t.Type == frontend.TypeSeason {
-						md.ParentTheme = md.Theme
-					}
+			if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
+				md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
+				if t.Type == frontend.TypeEpisode {
+					md.GrandparentTheme = md.Theme
+					md.ParentTheme = md.Theme
+				}
+				if t.Type == frontend.TypeSeason {
+					md.ParentTheme = md.Theme
 				}
 			}
 			if q.Get("includePreferences") == "1" {
 				md.Preferences = s.itemTrackPreferences(ctx, pr, t)
 			}
-			if raw, present := q["includeRelatedCount"]; present && md.Related != nil {
-				if count, err := strconv.Atoi(raw[0]); err == nil && count >= 0 {
-					for i := range md.Related.Hub {
-						h := &md.Related.Hub[i]
-						if len(h.Metadata) > count {
-							h.Metadata, h.More = h.Metadata[:count], true
-						}
-						if len(h.Directory) > count {
-							h.Directory, h.More = h.Directory[:count], true
-						}
-						h.Size = len(h.Metadata) + len(h.Directory)
-					}
-				}
-			}
+			applyRelatedCountCap(&md, q)
 			if mc == nil {
 				mc = s.itemContainer(t.Type)
 			}
@@ -318,19 +339,325 @@ func metadataOptionOn(raw string) bool {
 	return err == nil && n == 1
 }
 
+func applyRelatedCountCap(md *model.Metadata, q url.Values) {
+	raw, present := q["includeRelatedCount"]
+	if !present || md.Related == nil {
+		return
+	}
+	count, err := strconv.Atoi(raw[0])
+	if err != nil || count < 0 {
+		return
+	}
+	for i := range md.Related.Hub {
+		h := &md.Related.Hub[i]
+		if len(h.Metadata) > count {
+			h.Metadata, h.More = h.Metadata[:count], true
+		}
+		if len(h.Directory) > count {
+			h.Directory, h.More = h.Directory[:count], true
+		}
+		h.Size = len(h.Metadata) + len(h.Directory)
+	}
+}
+
+// handleMetadataBatch serves multi-key /library/metadata/k1,k2,... requests
+// (such as HubKey expansions) with batched catalogue hydration, watch-state,
+// series visibility, GUID, artwork, and episode leaf-count queries instead of
+// N single-item detail round-trips. It returns ok=false only if ctx cancelled.
+func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *Request, q url.Values, keys []frontend.RatingKey) (*model.MediaContainer, bool) {
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	var preload []frontend.RatingKey
+	seenPreload := make(map[frontend.RatingKey]bool, len(keys)*2)
+	addPreload := func(k frontend.RatingKey) {
+		if k != 0 && !k.IsPluginKey() && !seenPreload[k] {
+			seenPreload[k] = true
+			preload = append(preload, k)
+		}
+	}
+	for _, k := range keys {
+		switch k.Kind() {
+		case frontend.KindCollection, frontend.KindSmart, frontend.KindPlaylist, frontend.KindExtra:
+		default:
+			addPreload(k)
+			if (k.Kind() == frontend.KindSeason || k.Kind() == frontend.KindEpisode) && k.TMDB() > 0 {
+				addPreload(frontend.ShowKey(k.TMDB()))
+			}
+		}
+	}
+	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(preload) > 1 {
+		pre.PreloadStored(ctx, preload)
+	}
+
+	type batchSlot struct {
+		isTitle bool
+		title   *frontend.Title
+		plugin  bool
+		md      model.Metadata
+	}
+	slots := make([]batchSlot, 0, len(keys))
+	var checkSeries []frontend.Title
+	var mc *model.MediaContainer
+	ensureContainer := func(kind frontend.MediaType, plain bool) {
+		if mc != nil {
+			return
+		}
+		if plain {
+			mc = libraryContainer()
+		} else {
+			mc = s.itemContainer(kind)
+		}
+	}
+
+	for _, k := range keys {
+		switch k.Kind() {
+		case frontend.KindCollection, frontend.KindSmart:
+			c, err := s.collection(ctx, pr.User, k)
+			if err != nil {
+				continue
+			}
+			ensureContainer(c.Type, false)
+			slots = append(slots, batchSlot{md: s.collectionMetadata(c, ctx)})
+		case frontend.KindPlaylist:
+			pl, err := s.playlist(ctx, pr.User, k)
+			if err != nil {
+				continue
+			}
+			md := s.playlistListingMetadata(ctx, pl)
+			if pl.SmartURI != "" {
+				md.Content = "library://x/directory/" + url.QueryEscape(pl.SmartURI)
+			}
+			ensureContainer("", true)
+			slots = append(slots, batchSlot{md: md})
+		case frontend.KindExtra:
+			emd, ok := s.extraMetadataByKey(ctx, pr, k)
+			if !ok {
+				continue
+			}
+			ensureContainer("", true)
+			slots = append(slots, batchSlot{md: emd})
+		default:
+			t, err := s.metadataTitle(ctx, pr, k)
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			if err != nil || t == nil {
+				continue
+			}
+			if !k.IsPluginKey() {
+				checkSeries = append(checkSeries, *t)
+			}
+			slots = append(slots, batchSlot{isTitle: true, title: t, plugin: k.IsPluginKey()})
+		}
+	}
+
+	if len(checkSeries) > 0 {
+		ctx = s.withSeriesRows(ctx, pr.User, checkSeries)
+	}
+
+	var uniqueTitles []frontend.Title
+	seenUnique := make(map[frontend.RatingKey]bool, len(slots))
+	hasShowOrSeason := false
+	kept := slots[:0]
+	for _, slot := range slots {
+		if !slot.isTitle {
+			kept = append(kept, slot)
+			continue
+		}
+		if !slot.plugin && !s.visibleTitle(ctx, pr.User, slot.title) {
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		s.rememberTitle(slot.title)
+		ensureContainer(slot.title.Type, false)
+		if slot.title.Type == frontend.TypeShow || slot.title.Type == frontend.TypeSeason {
+			hasShowOrSeason = true
+		}
+		if !seenUnique[slot.title.Key] {
+			seenUnique[slot.title.Key] = true
+			uniqueTitles = append(uniqueTitles, *slot.title)
+		}
+		kept = append(kept, slot)
+	}
+	slots = kept
+
+	includeChildren := metadataOptionOn(q.Get("includeChildren"))
+	includeOnDeck := metadataOptionOn(q.Get("includeOnDeck"))
+	includeRelated := metadataOptionOn(q.Get("includeRelated"))
+	includeExtras := metadataOptionOn(q.Get("includeExtras"))
+	includePrefs := q.Get("includePreferences") == "1"
+	extraTypes := q.Get("extraTypes")
+	needsMedia := metadataOptionOn(q.Get("includeChapters")) ||
+		metadataOptionOn(q.Get("includeMarkers")) ||
+		metadataOptionOn(q.Get("includeStreams")) ||
+		metadataOptionOn(q.Get("checkFiles")) ||
+		metadataOptionOn(q.Get("asyncCheckFiles")) ||
+		metadataOptionOn(q.Get("checkFileAvailability"))
+
+	renderedByKey := make(map[string]model.Metadata, len(uniqueTitles))
+	var memo showEpisodes
+	if len(uniqueTitles) > 0 {
+		now := s.now()
+		recorded := 0
+		for i := range uniqueTitles {
+			if isPlayable(uniqueTitles[i].Type) {
+				s.recentClients.recordTitle(r, pr, uniqueTitles[i].Key, now)
+				recorded++
+				if recorded >= 50 {
+					break
+				}
+			}
+		}
+		rendered := s.renderTitles(ctx, pr, uniqueTitles, renderOpts{
+			detail:            true,
+			batchDetail:       true,
+			skipExcludedMedia: !needsMedia,
+			skipLeafCounts:    true,
+			media:             true,
+		})
+		if hasShowOrSeason {
+			var states map[frontend.RatingKey]frontend.WatchStatus
+			memo, states = s.prefetchListEpisodes(ctx, pr, uniqueTitles)
+			s.applyLeafCountsWith(ctx, pr, rendered, uniqueTitles, memo, states)
+		}
+		for i := range rendered {
+			renderedByKey[rendered[i].RatingKey] = rendered[i]
+		}
+	}
+	if memo == nil {
+		memo = showEpisodes{}
+	}
+
+	if mc == nil {
+		mc = libraryContainer()
+	}
+	for _, slot := range slots {
+		if !slot.isTitle {
+			mc.Metadata = append(mc.Metadata, slot.md)
+			continue
+		}
+		md, ok := renderedByKey[slot.title.Key.String()]
+		if !ok {
+			continue
+		}
+		s.projectDetailBlocks(ctx, pr, slot.title, &md, memo, includeChildren, includeOnDeck, includeRelated, includeExtras, extraTypes)
+		if includePrefs {
+			md.Preferences = s.itemTrackPreferences(ctx, pr, slot.title)
+		}
+		applyRelatedCountCap(&md, q)
+		mc.Metadata = append(mc.Metadata, md)
+	}
+	return mc, true
+}
+
 // detail renders a full item page.
 func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, children, onDeck, related, extras bool, extraTypes string) model.Metadata {
 	s.rememberTitle(t)
 	memo := showEpisodes{}
 	ts := []frontend.Title{*t}
 	items := s.renderTitles(ctx, pr, ts, renderOpts{detail: true, media: true})
+	if len(items) == 0 {
+		return model.Metadata{}
+	}
 	s.applyLeafCounts(ctx, pr, items, ts, memo)
 	md := items[0]
 
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
+	start := time.Now()
+	s.projectDetailBlocks(ctx, pr, t, &md, memo, children, onDeck, related, extras, extraTypes)
+	if extras || related {
+		s.refreshDetailGUID(ctx, t, &md, start, extras)
+	}
+	return md
+}
+
+const detailFirstOpenWait = 900 * time.Millisecond
+
+type boundedGUIDResolver interface {
+	ResolveBounded(context.Context, frontend.RatingKey, time.Duration) string
+}
+
+// refreshDetailGUID updates a detail response's primary guid (and hierarchy
+// guids) and provider credits (real 24-hex person tagKeys, fallback thumbs,
+// slug and age rating) when a verified plex:// identity became available
+// during the request or within the remaining first-open budget. Only called
+// for detail page opens (includeExtras=1 or includeRelated=1), never for bare
+// metadata/Play requests or batches.
+func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *model.Metadata, start time.Time, extras bool) {
+	guidSrc := s.libraryGUIDs()
+	if guidSrc == nil || t == nil || md == nil {
+		return
+	}
+	if !strings.HasPrefix(md.GUID, "plex://") && !(t.Type == frontend.TypeSeason && t.Season >= 9000) {
+		if g := guidSrc.Cached(ctx, t.Key); g != "" {
+			md.GUID = g
+		} else if extras && frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
+			if resolver, ok := guidSrc.(boundedGUIDResolver); ok {
+				if rem := detailFirstOpenWait - time.Since(start); rem > 0 {
+					if g := resolver.ResolveBounded(ctx, t.Key, rem); g != "" {
+						md.GUID = g
+					}
+				}
+			}
+		}
+	}
+	if strings.HasPrefix(md.GUID, "plex://") && t.Type != frontend.TypeSeason {
+		if credSrc := s.libraryCredits(); credSrc != nil {
+			credits, ok := credSrc.CachedCredits(ctx, t.Key, md.GUID)
+			if !ok {
+				rem := detailFirstOpenWait - time.Since(start)
+				credits, ok = credSrc.ResolveCreditsBounded(ctx, t.Key, md.GUID, rem)
+			}
+			if ok {
+				s.applyDetailCredits(ctx, t, md, credits)
+			}
+		}
+	}
+	switch t.Type {
+	case frontend.TypeSeason:
+		if t.Season < 9000 && !strings.HasPrefix(md.ParentGUID, "plex://") && t.Key.TMDB() > 0 {
+			if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+				md.ParentGUID = sg
+			}
+		}
+	case frontend.TypeEpisode:
+		if t.Key.TMDB() > 0 {
+			if !strings.HasPrefix(md.GrandparentGUID, "plex://") {
+				if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+					md.GrandparentGUID = sg
+				}
+			}
+			if !strings.HasPrefix(md.ParentGUID, "plex://") && !strings.HasPrefix(md.ParentGUID, "local://episode-order/") {
+				if seag := guidSrc.Cached(ctx, frontend.SeasonKey(t.Key.TMDB(), t.Season)); seag != "" {
+					md.ParentGUID = seag
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *frontend.Title, md *model.Metadata, memo showEpisodes, children, onDeck, related, extras bool, extraTypes string) {
+	if memo == nil {
+		memo = showEpisodes{}
+	}
 	if children && t.Type == frontend.TypeShow {
-		if kids, err := s.metadataChildren(ctx, pr, t.Key); err == nil {
+		if t.Key.IsPluginKey() {
+			if kids, err := s.kindChildrenForParent(ctx, pr, t); err == nil {
+				base, _ := s.kindSectionBaseForTitle(t)
+				rendered := s.renderTitles(ctx, pr, kids, renderOpts{media: true, inSection: true, storedOnly: true, skipLeafCounts: true})
+				for i := range rendered {
+					rendered[i].Type = kindTypeForBase(base, rendered[i].Type, &kids[i])
+				}
+				md.Children = &model.Children{Size: len(rendered), Metadata: rendered}
+			}
+		} else if kids, err := s.metadataChildren(ctx, pr, t.Key); err == nil {
 			rendered := s.renderTitles(ctx, pr, kids, renderOpts{media: true, inSection: true, skipLeafCounts: t.Type == frontend.TypeShow})
 			if t.Type == frontend.TypeShow {
 				s.applyLeafCounts(ctx, pr, rendered, kids, memo)
@@ -347,7 +674,7 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 			// The show page's Play button plays this episode: resolve,
 			// open and probe it so OnDeck and the following Play have its tracks.
 			if noWarm, _ := ctx.Value(structuralProjectionKey{}).(bool); !noWarm {
-				s.warmDetail(ctx, pr, ep)
+				s.scheduleDetailWarm(ctx, pr, ep)
 			}
 			if items := s.renderTitles(ctx, pr, []frontend.Title{*ep}, renderOpts{media: true, state: st}); len(items) > 0 {
 				if extras {
@@ -370,22 +697,59 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 	}
 	if extras {
 		list := s.extrasFor(ctx, pr, t, extraTypes)
-		ex := &model.Extras{Size: len(list)}
+		ex := &model.Extras{}
 		for _, e := range list {
 			ex.Metadata = append(ex.Metadata, s.extraMetadata(e, t, true))
 		}
+		if pluginExtras := s.pluginVideoExtras(ctx, pr, t); len(pluginExtras) > 0 {
+			ex.Metadata = append(ex.Metadata, pluginExtras...)
+		}
+		ex.Size = len(ex.Metadata)
 		md.Extras = ex
-		if len(list) > 0 {
-			md.PrimaryExtraKey = "/library/metadata/" + list[0].Key.String()
+		if len(ex.Metadata) > 0 {
+			md.PrimaryExtraKey = "/library/metadata/" + ex.Metadata[0].RatingKey
 		}
 	}
-	return md
 }
 
 // sameDayUnavailable is a local visibility lookup. Merely browsing must never
 // spend search quota trying to discover an upload.
 func (s *Server) sameDayUnavailable(ctx context.Context, pr *Request, t *frontend.Title) bool {
 	return s.exp().SameDayUnavailable(ctx, t, s.now(), s.filterAvailable(), s.svc().variants)
+}
+
+// sameDayUnavailableFunc precomputes SameDayUnavailable across items in one
+// batched availability filter call instead of issuing a per-episode DB check.
+func (s *Server) sameDayUnavailableFunc(ctx context.Context, pr *Request, items []frontend.Title) func(*frontend.Title) bool {
+	filter := s.filterAvailable()
+	if filter == nil || len(items) == 0 {
+		return func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }
+	}
+	var candidates []frontend.Title
+	seen := make(map[frontend.RatingKey]bool, len(items))
+	for i := range items {
+		t := &items[i]
+		if t.Type == frontend.TypeEpisode && !t.Released.IsZero() && !seen[t.Key] {
+			seen[t.Key] = true
+			candidates = append(candidates, *t)
+		}
+	}
+	if len(candidates) == 0 {
+		return func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }
+	}
+	admitted := make(map[frontend.RatingKey]bool, len(candidates))
+	for _, t := range filter(ctx, candidates) {
+		admitted[t.Key] = true
+	}
+	return func(t *frontend.Title) bool {
+		if t == nil || t.Type != frontend.TypeEpisode || t.Released.IsZero() {
+			return false
+		}
+		if seen[t.Key] {
+			return !admitted[t.Key]
+		}
+		return s.sameDayUnavailable(ctx, pr, t)
+	}
 }
 
 // showOnDeck picks the episode to resume or start next.
@@ -395,10 +759,15 @@ func (s *Server) showOnDeck(ctx context.Context, pr *Request, show frontend.Rati
 		return nil, nil
 	}
 	st := s.stateFor(ctx, pr, eps)
-	return s.exp().ShowOnDeck(eps, st, func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }), st
+	return s.exp().ShowOnDeck(eps, st, s.sameDayUnavailableFunc(ctx, pr, eps)), st
 }
 
 const detailWarmWaitBudget = 1500 * time.Millisecond
+
+// detailVariantReserve is the part of a Bedrock detail/queue allowance the
+// source probe never consumes, so version discovery always has time left in
+// the same total bound.
+const detailVariantReserve = 500 * time.Millisecond
 
 // Apple TV can refresh detail metadata and obtains the admitted source's
 // tracks again on Play. Keep speculative preparation behind its browse
@@ -421,7 +790,7 @@ func startDetailPageWait(pr *Request) {
 // yet, so the first detail/season/show open renders the file's real audio and
 // subtitle tracks instead of an estimate.
 func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title) {
-	if t == nil || !isPlayable(t.Type) || s.playback() == nil {
+	if t == nil || !isPlayable(t.Type) || s.playback() == nil || libraryToolClient(pr) {
 		return
 	}
 	// A persisted probe describes the exact resume release already selected
@@ -434,7 +803,12 @@ func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title)
 			// A single wait: do not add speculative warmDetail's allowance
 			// after the metadata probe's own bounded wait. Errors/timeouts
 			// preserve the normal detail response and background preparation.
-			_ = s.probeDetailTracks(ctx, pr, t)
+			err := s.probeDetailTracks(ctx, pr, t)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				if warm, ok := s.playback().(frontend.Prewarmer); ok {
+					warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
+				}
+			}
 			return
 		}
 	}
@@ -480,10 +854,11 @@ func (s *Server) seasonNextEpisode(ctx context.Context, pr *Request, eps []front
 		return nil
 	}
 	now := s.now()
-	return s.exp().SeasonNextEpisode(eps, s.stateFor(ctx, pr, eps), now, func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) })
+	return s.exp().SeasonNextEpisode(eps, s.stateFor(ctx, pr, eps), now, s.sameDayUnavailableFunc(ctx, pr, eps))
 }
 
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
@@ -500,6 +875,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		s.handlePlaylistItems(w, r)
 		return
 	}
+	ctx = frontend.WithColdDetail(ctx, k)
 	parent, err := s.metadataTitle(ctx, pr, k)
 	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
@@ -513,15 +889,21 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rememberTitle(parent) // seasons render the show's studio/year/logo
+	if k.IsPluginKey() {
+		kids, err := s.kindChildrenForParent(ctx, pr, parent)
+		if err != nil && !errors.Is(err, frontend.ErrNotFound) {
+			s.writeErr(w, r, err)
+			return
+		}
+		s.writeKindChildren(w, r, pr, parent, kids)
+		return
+	}
 	kids, err := s.metadataChildren(ctx, pr, k)
 	if err != nil && !errors.Is(err, frontend.ErrNotFound) {
 		s.writeErr(w, r, err)
 		return
 	}
-	if k.IsPluginKey() {
-		s.writeKindChildren(w, r, pr, parent, kids)
-		return
-	}
+	s.revealDetail(pr, parent)
 	mc := s.itemContainer(parent.Type)
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
@@ -615,7 +997,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	page := kids[lo:hi]
 	if parent.Type == frontend.TypeSeason {
 		if ep := s.seasonNextEpisode(ctx, pr, page); ep != nil {
-			s.warmDetail(ctx, pr, ep)
+			s.scheduleDetailWarm(ctx, pr, ep)
 		}
 	}
 	if len(future) == 0 {
@@ -624,9 +1006,15 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		// Batch ordinary rendering without ever passing placeholders to media
 		// generation, then restore the canonical episode order.
 		var aired []frontend.Title
+		now := s.now()
+		recorded := 0
 		for _, child := range page {
-			if !child.Released.After(s.now()) {
+			if !child.Released.After(now) {
 				aired = append(aired, child)
+				if isPlayable(child.Type) && recorded < 50 {
+					s.recentClients.recordTitle(r, pr, child.Key, now)
+					recorded++
+				}
 			}
 		}
 		rendered := s.renderTitles(ctx, pr, aired, renderOpts{media: true, inSection: true, skipLeafCounts: parent.Type == frontend.TypeShow})
@@ -671,6 +1059,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
@@ -679,7 +1068,8 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	parent, err := s.metadataTitle(ctx, pr, k)
+	ctx = frontend.WithColdDetail(ctx, k)
+	parent, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, k)
 	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
 	}
@@ -687,10 +1077,11 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
+	s.revealDetail(pr, parent)
 	var eps []frontend.Title
 	switch parent.Type {
 	case frontend.TypeShow:
-		eps, err = s.metadataGrandchildren(ctx, pr, k)
+		eps, err = s.metadataGrandchildrenOf(ctx, pr, parent)
 	case frontend.TypeSeason:
 		eps, err = s.metadataChildren(ctx, pr, k)
 	default:
@@ -705,7 +1096,18 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 	mc.Title1 = parent.Title
 	mc.Title2 = "All Episodes"
 	mc.ViewGroup = "episode"
-	if parent.Type == frontend.TypeMovie {
+	if k.IsPluginKey() {
+		if base, ok := s.kindSectionBaseForTitle(parent); ok {
+			switch base {
+			case plexBaseArtist:
+				mc.Title2 = "All Tracks"
+				mc.ViewGroup = plexBaseTrack
+			case plexBasePhoto:
+				mc.Title2 = "All Photos"
+				mc.ViewGroup = plexBasePhoto
+			}
+		}
+	} else if parent.Type == frontend.TypeMovie {
 		mc.ViewGroup = "movie"
 	}
 	mc.ViewMode = viewModeList
@@ -738,7 +1140,15 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lo, hi := pr.window(len(eps))
-	mc.Metadata = s.renderTitles(ctx, pr, eps[lo:hi], renderOpts{media: true, inSection: true})
+	now := s.now()
+	recorded := 0
+	for i := lo; i < hi && recorded < 50; i++ {
+		if isPlayable(eps[i].Type) {
+			s.recentClients.recordTitle(r, pr, eps[i].Key, now)
+			recorded++
+		}
+	}
+	mc.Metadata = s.renderTitles(ctx, pr, eps[lo:hi], renderOpts{media: true, inSection: true, storedOnly: k.IsPluginKey()})
 	mc.Size = len(mc.Metadata)
 	if pr.HasPage {
 		mc.SetPage(lo, len(eps))
@@ -880,7 +1290,7 @@ func (s *Server) handleItemOnDeck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ep, st := s.showOnDeck(ctx, pr, k, nil); ep != nil {
-			s.warmDetail(ctx, pr, ep)
+			s.scheduleDetailWarm(ctx, pr, ep)
 			mc.Metadata = s.renderTitles(ctx, pr, []frontend.Title{*ep}, renderOpts{media: true, state: st})
 		}
 	}
@@ -1020,8 +1430,43 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 	mc := s.sectionContainer(sec)
 	_, mc.Title2 = sectionTypeTitle(sec)
 	mc.ViewGroup = string(sec.Type)
+	q := r.URL.Query()
+	hasFilter := q.Has("title") || q.Has("title!") || q.Has("title<") || q.Has("title>")
+	// Bound unpaged directory responses (like /studio and /country at 200,
+	// or defaultUnpagedLimit for /collections) so listing collections never
+	// scales with the library.
+	offset, size := pr.Start, pr.Size
+	if !pr.HasPage {
+		offset = 0
+		if sub == "collection" {
+			size = 200
+		} else {
+			size = defaultUnpagedLimit
+		}
+	}
+	// Catalogue collections are typed by movie or show and belong to the
+	// built-in libraries. A plugin library has none of them.
+	if !hasFilter && s.collections() != nil && sec.PluginID == "" {
+		if pager, ok := s.collections().(frontend.CollectionPager); ok {
+			page, total, err := pager.ListPage(ctx, pr.User, sec.Type, offset, size)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			before := len(page)
+			page = s.scopedCollectionCounts(ctx, pr.User, page)
+			if dropped := before - len(page); dropped > 0 && total >= dropped {
+				total -= dropped
+			}
+			mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, page)...)
+			mc.Size = len(mc.Metadata)
+			mc.SetPage(offset, total)
+			s.write(w, r, mc)
+			return
+		}
+	}
 	var all []frontend.Collection
-	if s.collections() != nil {
+	if s.collections() != nil && sec.PluginID == "" {
 		cs, err := s.collections().List(ctx, pr.User, sec.Type)
 		if err != nil {
 			s.writeErr(w, r, err)
@@ -1031,8 +1476,11 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 	}
 	all = s.pseThemeCollections(sec, all) // PSE-HOOK: bibliothèques à thème — voir docs/pse/FORK.fr.md
 	all = s.scopedCollectionCounts(ctx, pr.User, all)
-	all = filterCollectionTitles(all, r.URL.Query())
+	all = filterCollectionTitles(all, q)
 	lo, hi := pr.window(len(all))
+	if !pr.HasPage && hi-lo > size {
+		hi = lo + size
+	}
 	mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, all[lo:hi])...)
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(lo, len(all))
@@ -1045,14 +1493,32 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(ctx)
 	mc := libraryContainer()
 	if s.collections() != nil {
+		pager, hasPager := s.collections().(frontend.CollectionPager)
+		remaining := defaultUnpagedLimit
+		if pr.HasPage {
+			remaining = pr.Size
+		}
 		for _, sec := range s.userSections(pr.User) {
-			cs, err := s.collections().List(ctx, pr.User, sec.Type)
+			if sec.PluginID != "" || remaining <= 0 {
+				continue
+			}
+			var cs []frontend.Collection
+			var err error
+			if hasPager {
+				cs, _, err = pager.ListPage(ctx, pr.User, sec.Type, 0, remaining)
+			} else {
+				cs, err = s.collections().List(ctx, pr.User, sec.Type)
+			}
 			if err != nil {
 				s.writeErr(w, r, err)
 				return
 			}
 			cs = s.scopedCollectionCounts(ctx, pr.User, cs)
+			if len(cs) > remaining {
+				cs = cs[:remaining]
+			}
 			mc.Metadata = append(mc.Metadata, s.collectionRows(ctx, cs)...)
+			remaining -= len(cs)
 		}
 	}
 	mc.Size = len(mc.Metadata)
@@ -1306,7 +1772,9 @@ func (s *Server) probeDetailTracks(ctx context.Context, pr *Request, t *frontend
 	if prober, ok := s.playback().(frontend.MetadataProber); ok {
 		if !pr.detailWaitUntil.IsZero() {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, pr.detailWaitUntil)
+			// The probe may use the allowance except for a reserve that
+			// version discovery (detailVariantContext) always keeps.
+			ctx, cancel = context.WithDeadline(ctx, pr.detailWaitUntil.Add(-detailVariantReserve))
 			defer cancel()
 		}
 		return prober.ProbeMetadata(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))
@@ -1318,9 +1786,58 @@ func (s *Server) probeDetailTracks(ctx context.Context, pr *Request, t *frontend
 // the required probe nor version discovery may start a fresh indexer search.
 // Other clients retain their existing discovery policy.
 func (s *Server) detailSearchAllowed(pr *Request) bool {
+	if libraryToolClient(pr) {
+		// A monitoring or library tool reading metadata is not a viewer.
+		return false
+	}
 	if !plexMobileOrTVBedrockClient(pr) {
 		return true
 	}
 	c := s.cfg().Cache
 	return !c.DisableSpeculation && c.Mode != "off" && c.DetailWarmup != "off"
+}
+
+// detailBurst reports a client reading detail pages faster than a person
+// could (a library sync such as Tracearr). Such a client gets no detail
+// searches or warm-ups; see playback.Manager.DetailBurst.
+func (s *Server) detailBurst(pr *Request, key frontend.RatingKey) bool {
+	return pr.User != nil && frontend.DetailBurst(pr.User.ID, pr.ClientID, key)
+}
+
+// Detail-family GETs schedule preparation. Flagged Plex clients retain their
+// bounded cached-source probe exception so their first subtitle picker works.
+func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *frontend.Title) {
+	if t == nil || pr == nil || pr.User == nil || t.Key.IsPluginKey() || !isPlayable(t.Type) || libraryToolClient(pr) {
+		return
+	}
+	// Persisted tracks already describe the selected resume source. Version
+	// discovery is scheduled independently; do not reopen that source just
+	// because a client refreshed its detail page after a restart.
+	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
+		return
+	}
+	if plexMobileOrTVBedrockClient(pr) {
+		// These Plex clients build their subtitle picker from the first
+		// response. The playback manager permits this wait only for an
+		// already resolved/cached source, never a fresh search.
+		s.warmDetail(ctx, pr, t)
+		return
+	}
+	if warm, ok := s.playback().(frontend.Prewarmer); ok {
+		warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
+	}
+}
+
+func (s *Server) revealDetail(pr *Request, t *frontend.Title) {
+	if t == nil || pr == nil || pr.User == nil || t.Key.IsPluginKey() || libraryToolClient(pr) {
+		return
+	}
+	switch t.Type {
+	case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+	default:
+		return
+	}
+	if dr, ok := s.playback().(frontend.DetailRevealer); ok {
+		dr.RevealDetail(pr.User, pr.ClientID, t.Key)
+	}
 }

@@ -177,7 +177,7 @@ func (t *Thumbnails) PreviewWidth() int {
 
 // EnsureTrickplay implements core.TrickplayProvider.
 func (t *Thumbnails) EnsureTrickplay(_ context.Context, src core.TrickplaySource) {
-	if src.ReleaseID == "" || src.InputURL == "" || t.ffmpeg == "" {
+	if src.ReleaseID == "" || src.InputURL == "" || t.ffmpeg == "" || (len(src.Info.Streams) > 0 && src.Info.Video() == nil) {
 		return
 	}
 	t.mu.Lock()

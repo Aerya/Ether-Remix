@@ -206,6 +206,67 @@ func (s *Service) recordPlayableEpisode(ctx context.Context, key core.RatingKey,
 	return nil
 }
 
+func (s *Service) recordPlayableEpisodes(ctx context.Context, keys []core.RatingKey, at time.Time) error {
+	var eps []core.RatingKey
+	for _, k := range keys {
+		if k.Kind() == core.KindEpisode {
+			eps = append(eps, k)
+		}
+	}
+	if len(eps) == 0 {
+		return nil
+	}
+	if batch, ok := s.d.Catalog.(interface {
+		RecordPlayableEpisodes(context.Context, []core.RatingKey, time.Time) error
+	}); ok {
+		return batch.RecordPlayableEpisodes(ctx, eps, at)
+	}
+	for _, k := range eps {
+		if err := s.recordPlayableEpisode(ctx, k, at); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertGateBatch(ctx context.Context, tx *sql.Tx, policy string, openings []gateOpening, nowTS int64) (int64, error) {
+	if len(openings) == 0 || policy == "" {
+		return 0, nil
+	}
+	seen := make(map[core.RatingKey]bool, len(openings))
+	dedup := make([]gateOpening, 0, len(openings))
+	for _, op := range openings {
+		if op.key > 0 && !seen[op.key] {
+			seen[op.key] = true
+			dedup = append(dedup, op)
+		}
+	}
+	var added int64
+	const batch = 500
+	for chunk := range store.Chunks(dedup, batch) {
+		var sb strings.Builder
+		sb.Grow(128 + len(chunk)*12)
+		sb.WriteString(`INSERT INTO availability_gate(policy,rating_key,first_playable_at,source_id,updated_at) VALUES `)
+		args := make([]any, 0, len(chunk)*5)
+		for i, op := range chunk {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?,?,?,?,?)")
+			args = append(args, policy, int64(op.key), nowTS, op.source, nowTS)
+		}
+		sb.WriteString(` ON CONFLICT(policy,rating_key) DO NOTHING`)
+		res, err := tx.ExecContext(ctx, sb.String(), args...)
+		if err != nil {
+			return added, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			added += n
+		}
+	}
+	return added, nil
+}
+
 func (s *Service) isGateOpen(ctx context.Context, policy string, key core.RatingKey) bool {
 	if !s.hasGateTable || policy == "" || key == 0 {
 		return false
@@ -387,8 +448,29 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 	if done {
 		return
 	}
+
+	s.seedRunMu.Lock()
+	defer s.seedRunMu.Unlock()
+	s.seededMu.RLock()
+	done = s.seededPolicies[gp]
+	s.seededMu.RUnlock()
+	if done || s.bgCtx.Err() != nil {
+		return
+	}
+
+	// Detach HTTP client cancellation so a timed-out request (HTTP 499) cannot
+	// roll back policy seeding mid-flight and force the next request to repeat
+	// the entire scan. Values on ctx (such as query-stats collectors) stay intact,
+	// while service shutdown (bgCtx) still cancels promptly.
+	seedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	stop := context.AfterFunc(s.bgCtx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+
 	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM availability_gate_policy WHERE policy=?`, gp).Scan(&exists); err == nil {
+	if err := s.db.QueryRowContext(seedCtx, `SELECT 1 FROM availability_gate_policy WHERE policy=?`, gp).Scan(&exists); err == nil {
 		s.seededMu.Lock()
 		if s.seededPolicies == nil {
 			s.seededPolicies = map[string]bool{}
@@ -413,7 +495,7 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 		firstSeen int64
 		revision  int64
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT rating_key,source_id,generation,payload,state,first_seen,revision FROM availability_releases WHERE last_seen>=? AND state<>'unavailable' AND NOT (state='unknown' AND revision>0)`, input.retentionCutoff().Unix())
+	rows, err := s.db.QueryContext(seedCtx, `SELECT rating_key,source_id,generation,payload,state,first_seen,revision FROM availability_releases WHERE last_seen>=? AND state<>'unavailable' AND NOT (state='unknown' AND revision>0)`, input.retentionCutoff().Unix())
 	if err != nil {
 		return
 	}
@@ -437,6 +519,10 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 			keyList = append(keyList, o.key)
 		}
 	}
+	if rows.Err() != nil {
+		rows.Close()
+		return
+	}
 	rows.Close()
 
 	var openings []gateOpening
@@ -444,7 +530,7 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 		titleMap := map[core.RatingKey]*core.Title{}
 		for start := 0; start < len(keyList); start += 500 {
 			batch := keyList[start:min(start+500, len(keyList))]
-			if ts, e := s.d.Catalog.CachedTitles(ctx, batch); e == nil {
+			if ts, e := s.d.Catalog.CachedTitles(seedCtx, batch); e == nil {
 				for i := range ts {
 					t := ts[i]
 					titleMap[t.Key] = &t
@@ -452,29 +538,51 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 			}
 		}
 		// Synthesize premiere S01E01 descriptors for unmirrored episode keys when
-		// the parent show exists in the catalogue.
+		// the parent show exists in the catalogue. Batch parent show lookups so
+		// large retained feeds never issue one SELECT per premiere episode.
+		var premiereEpKeys []core.RatingKey
+		var showKeys []core.RatingKey
+		seenShow := map[core.RatingKey]bool{}
 		for _, k := range keyList {
 			if titleMap[k] != nil || k.Kind() != core.KindEpisode {
 				continue
 			}
 			tmdbID, season, episode := k.TMDB(), k.Season(), k.Episode()
 			if tmdbID > 0 && season == 1 && episode == 1 {
-				if show, e := s.d.Catalog.CachedTitle(ctx, core.ShowKey(tmdbID)); e == nil && show != nil && !show.Adult && show.IsReleased(input.now) {
-					ep := core.Title{
-						Key: k, Type: core.TypeEpisode, ShowKey: show.Key, ShowIDs: show.IDs,
-						ShowTitle: show.Title, ShowOriginalTitle: show.OriginalTitle, ShowYear: show.Year,
-						Season: 1, Episode: 1, Released: show.Released, Language: show.Language,
-					}
-					titleMap[k] = &ep
+				premiereEpKeys = append(premiereEpKeys, k)
+				sk := core.ShowKey(tmdbID)
+				if titleMap[sk] == nil && !seenShow[sk] {
+					seenShow[sk] = true
+					showKeys = append(showKeys, sk)
 				}
 			}
 		}
-		passed := s.officialDatesPassed(ctx, titleMap, input.now)
+		for start := 0; start < len(showKeys); start += 500 {
+			batch := showKeys[start:min(start+500, len(showKeys))]
+			if ts, e := s.d.Catalog.CachedTitles(seedCtx, batch); e == nil {
+				for i := range ts {
+					t := ts[i]
+					titleMap[t.Key] = &t
+				}
+			}
+		}
+		for _, k := range premiereEpKeys {
+			show := titleMap[core.ShowKey(k.TMDB())]
+			if show != nil && !show.Adult && show.IsReleased(input.now) {
+				ep := core.Title{
+					Key: k, Type: core.TypeEpisode, ShowKey: show.Key, ShowIDs: show.IDs,
+					ShowTitle: show.Title, ShowOriginalTitle: show.OriginalTitle, ShowYear: show.Year,
+					Season: 1, Episode: 1, Released: show.Released, Language: show.Language,
+				}
+				titleMap[k] = &ep
+			}
+		}
+		passed := s.officialDatesPassed(seedCtx, titleMap, input.now)
 		unavailable := map[core.RatingKey]time.Time{}
 		if source, ok := s.d.Validator.(interface {
 			KnownUnavailableSince(context.Context, []core.RatingKey) map[core.RatingKey]time.Time
 		}); ok {
-			unavailable = source.KnownUnavailableSince(ctx, keyList)
+			unavailable = source.KnownUnavailableSince(seedCtx, keyList)
 		}
 		var pairs []feedPair
 		var pairSources []string
@@ -509,7 +617,7 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 			pairSources = append(pairSources, o.source)
 		}
 		accepted := map[core.RatingKey]bool{}
-		for i, ok := range s.judge(offRequest(ctx), pairs, true) {
+		for i, ok := range s.judge(offRequest(seedCtx), pairs, true) {
 			if ok && !accepted[pairs[i].t.Key] {
 				accepted[pairs[i].t.Key] = true
 				openings = append(openings, gateOpening{key: pairs[i].t.Key, source: pairSources[i]})
@@ -517,29 +625,26 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 		}
 	}
 
-	for _, op := range openings {
-		if err := s.recordPlayableEpisode(ctx, op.key, input.now); err != nil {
+	if len(openings) > 0 {
+		openKeys := make([]core.RatingKey, len(openings))
+		for i, op := range openings {
+			openKeys[i] = op.key
+		}
+		if err := s.recordPlayableEpisodes(seedCtx, openKeys, input.now); err != nil {
 			return
 		}
 	}
 	nowTS := input.now.Unix()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(seedCtx, nil)
 	if err != nil {
 		return
 	}
 	defer tx.Rollback()
-	var added int64
-	for _, op := range openings {
-		res, e := tx.ExecContext(ctx, `INSERT INTO availability_gate(policy,rating_key,first_playable_at,source_id,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(policy,rating_key) DO NOTHING`,
-			gp, int64(op.key), nowTS, op.source, nowTS)
-		if e != nil {
-			return
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			added += n
-		}
+	added, err := insertGateBatch(seedCtx, tx, gp, openings, nowTS)
+	if err != nil {
+		return
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO availability_gate_policy(policy,seeded_at) VALUES(?,?) ON CONFLICT(policy) DO NOTHING`, gp, nowTS); err != nil {
+	if _, err := tx.ExecContext(seedCtx, `INSERT INTO availability_gate_policy(policy,seeded_at) VALUES(?,?) ON CONFLICT(policy) DO NOTHING`, gp, nowTS); err != nil {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -760,8 +865,12 @@ func (s *Service) matchRetainedAndOpenGate(ctx context.Context, titles map[core.
 		}
 	}
 
-	for _, op := range toOpen {
-		if err := s.recordPlayableEpisode(ctx, op.key, input.now); err != nil {
+	if len(toOpen) > 0 {
+		openKeys := make([]core.RatingKey, len(toOpen))
+		for i, op := range toOpen {
+			openKeys[i] = op.key
+		}
+		if err := s.recordPlayableEpisodes(ctx, openKeys, input.now); err != nil {
 			return
 		}
 	}
@@ -773,23 +882,50 @@ func (s *Service) matchRetainedAndOpenGate(ctx context.Context, titles map[core.
 		return
 	}
 	defer tx.Rollback()
-	for _, o := range toInsert {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO availability_releases(id,rating_key,source_id,generation,payload,title,name,protocol,first_seen,last_seen,priority,policy,policy_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id,rating_key,source_id) DO UPDATE SET generation=excluded.generation,payload=excluded.payload,policy_digest=excluded.policy_digest,first_seen=excluded.first_seen,last_seen=excluded.last_seen,state='observed',verified_at=0,first_verified=0,next_check=0,revision=availability_releases.revision+1 WHERE availability_releases.generation<>excluded.generation`,
-			o.r.ID, o.t.Key, o.feed.ID, o.feed.Generation, o.p.raw, o.t.Title, o.r.Name, cmp.Or(o.r.Protocol, o.feed.Protocol), o.p.seen, o.p.seen, o.t.Popularity, input.policy, releasePolicyDigest(o.r)); err != nil {
-			return
+	if len(toInsert) > 0 {
+		dedup := make([]observed, 0, len(toInsert))
+		pos := make(map[string]int, len(toInsert))
+		for _, o := range toInsert {
+			okKey := observationKey(o.r.ID, o.t.Key, o.feed.ID)
+			if idx, exists := pos[okKey]; exists {
+				dedup[idx] = o
+				continue
+			}
+			pos[okKey] = len(dedup)
+			dedup = append(dedup, o)
+		}
+		const relBatch = 250
+		for chunk := range store.Chunks(dedup, relBatch) {
+			var sb strings.Builder
+			sb.Grow(256 + len(chunk)*28)
+			sb.WriteString(`INSERT INTO availability_releases(id,rating_key,source_id,generation,payload,title,name,protocol,first_seen,last_seen,priority,policy,policy_digest) VALUES `)
+			args := make([]any, 0, len(chunk)*13)
+			for i, o := range chunk {
+				if i > 0 {
+					sb.WriteByte(',')
+				}
+				sb.WriteString("(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+				args = append(args, o.r.ID, o.t.Key, o.feed.ID, o.feed.Generation, o.p.raw, o.t.Title, o.r.Name, cmp.Or(o.r.Protocol, o.feed.Protocol), o.p.seen, o.p.seen, o.t.Popularity, input.policy, releasePolicyDigest(o.r))
+			}
+			sb.WriteString(` ON CONFLICT(id,rating_key,source_id) DO UPDATE SET generation=excluded.generation,payload=excluded.payload,policy_digest=excluded.policy_digest,first_seen=excluded.first_seen,last_seen=excluded.last_seen,state='observed',verified_at=0,first_verified=0,next_check=0,revision=availability_releases.revision+1 WHERE availability_releases.generation<>excluded.generation`)
+			if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+				return
+			}
 		}
 	}
 	nowTS := input.now.Unix()
-	var gateAdded int64
-	for _, op := range toOpen {
-		res, err := tx.ExecContext(ctx, `INSERT INTO availability_gate(policy,rating_key,first_playable_at,source_id,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(policy,rating_key) DO NOTHING`,
-			input.gatePolicy, int64(op.key), nowTS, op.source, nowTS)
-		if err != nil {
-			return
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			gateAdded += n
-			_, _ = tx.ExecContext(ctx, `UPDATE availability_title_checks SET next_check=0,state='found',reason='' WHERE rating_key=? AND (next_check<>0 OR state<>'found')`, int64(op.key))
+	gateAdded, err := insertGateBatch(ctx, tx, input.gatePolicy, toOpen, nowTS)
+	if err != nil {
+		return
+	}
+	if gateAdded > 0 {
+		const checkBatch = 500
+		for chunk := range store.Chunks(toOpen, checkBatch) {
+			args := make([]any, len(chunk))
+			for i, op := range chunk {
+				args[i] = int64(op.key)
+			}
+			_, _ = tx.ExecContext(ctx, `UPDATE availability_title_checks SET next_check=0,state='found',reason='' WHERE rating_key IN (`+store.Placeholders(len(chunk))+`) AND (next_check<>0 OR state<>'found')`, args...)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -947,13 +1083,25 @@ func (s *Service) seedDueChecks(ctx context.Context, cfg config.Availability) er
 		priority  float64
 		state     string
 	}
+	inProgressMemo := map[core.RatingKey]bool{}
+	revealSeasons := map[core.RatingKey]bool{}
 	nextFollowed := map[core.RatingKey]core.RatingKey{}
 	for _, t := range candidates {
 		if t.Type == core.TypeEpisode && t.Season > 0 && t.Episode > 0 && t.Released.After(now) && (watch[t.Key] || watch[t.ShowKey]) {
+			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
+			if s.isSeasonInProgress(ctx, sk, now, candidates, inProgressMemo) {
+				// Replace per-episode 72h-early probes inside an in-progress season
+				// with one season-level reveal check; keep 72h early for premieres.
+				revealSeasons[sk] = true
+				continue
+			}
 			if k := nextFollowed[t.ShowKey]; k == 0 || t.Key < k {
 				nextFollowed[t.ShowKey] = t.Key
 			}
 		}
+	}
+	for sk := range revealSeasons {
+		s.RevealSeason(ctx, sk)
 	}
 	var updates []upsertRow
 	for _, t := range candidates {
@@ -1076,15 +1224,36 @@ func (s *Service) seedDueChecks(ctx context.Context, cfg config.Availability) er
 	}
 
 	if len(updates) > 0 {
+		dedup := make([]upsertRow, 0, len(updates))
+		pos := make(map[core.RatingKey]int, len(updates))
+		for _, u := range updates {
+			if idx, exists := pos[u.key]; exists {
+				dedup[idx] = u
+				continue
+			}
+			pos[u.key] = len(dedup)
+			dedup = append(dedup, u)
+		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
-		for _, u := range updates {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO availability_title_checks(rating_key,kind,checked_at,next_check,anchor_ts,window_end_ts,priority,state) VALUES(?,?,?,?,?,?,?,?)
- ON CONFLICT(rating_key) DO UPDATE SET kind=excluded.kind,next_check=excluded.next_check,anchor_ts=excluded.anchor_ts,window_end_ts=excluded.window_end_ts,priority=excluded.priority,state=excluded.state`,
-				int64(u.key), u.kind, u.checked, u.next, u.anchor, u.windowEnd, u.priority, u.state); err != nil {
+		const batch = 500
+		for chunk := range store.Chunks(dedup, batch) {
+			var sb strings.Builder
+			sb.Grow(192 + len(chunk)*18)
+			sb.WriteString(`INSERT INTO availability_title_checks(rating_key,kind,checked_at,next_check,anchor_ts,window_end_ts,priority,state) VALUES `)
+			args := make([]any, 0, len(chunk)*8)
+			for i, u := range chunk {
+				if i > 0 {
+					sb.WriteByte(',')
+				}
+				sb.WriteString("(?,?,?,?,?,?,?,?)")
+				args = append(args, int64(u.key), u.kind, u.checked, u.next, u.anchor, u.windowEnd, u.priority, u.state)
+			}
+			sb.WriteString(` ON CONFLICT(rating_key) DO UPDATE SET kind=excluded.kind,next_check=excluded.next_check,anchor_ts=excluded.anchor_ts,window_end_ts=excluded.window_end_ts,priority=excluded.priority,state=excluded.state`)
+			if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
 				return err
 			}
 		}

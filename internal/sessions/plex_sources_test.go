@@ -58,6 +58,7 @@ type kindSourcePlayback struct {
 	core.Playback
 	kindPrepared int
 	kindSession  *core.PlaySession
+	lastPrefer   string
 }
 
 func (k *kindSourcePlayback) SessionFor(int64, string, core.RatingKey) (*core.PlaySession, bool) {
@@ -66,10 +67,18 @@ func (k *kindSourcePlayback) SessionFor(int64, string, core.RatingKey) (*core.Pl
 
 func (k *kindSourcePlayback) PrepareKind(_ context.Context, u *core.User, in core.KindInput, caps core.ClientCaps) (*core.PlaySession, error) {
 	k.kindPrepared++
+	k.lastPrefer = in.PreferSourceID
 	if in.Title == nil {
 		return nil, core.ErrNotAvailable
 	}
-	k.kindSession = &core.PlaySession{ID: "kind", UserID: u.ID, Key: in.Title.Key, ClientID: caps.ClientID}
+	relID := in.PreferSourceID
+	if relID == "" {
+		relID = "kind:default"
+	}
+	k.kindSession = &core.PlaySession{
+		ID: "kind", UserID: u.ID, Key: in.Title.Key, ClientID: caps.ClientID,
+		Resolution: &core.Resolution{Release: core.Release{ID: relID}},
+	}
 	return k.kindSession, nil
 }
 
@@ -104,9 +113,12 @@ func TestPartSourcesRoutesPluginKeyThroughKindPlayback(t *testing.T) {
 	if !got.Matches || got.Session == nil || got.Session.ID != "kind" {
 		t.Fatalf("Part plugin = %+v", got)
 	}
-	// A plugin key with a version release is refused: plugin items have no
-	// catalogue variants.
-	if _, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "v1", time.Second); !errors.Is(err, core.ErrNotAvailable) {
-		t.Fatalf("plugin Prepare with release = %v, want ErrNotAvailable", err)
+	// A plugin key with an explicit release pick forwards PreferSourceID to
+	// KindPlayback; the synthetic Auto slot leaves PreferSourceID empty.
+	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "v1", time.Second); err != nil || ps == nil || play.lastPrefer != "v1" {
+		t.Fatalf("plugin Prepare with release = (%v, %v, prefer=%q), want prefer=v1", ps, err, play.lastPrefer)
+	}
+	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, core.KindAutoVersionID, time.Second); err != nil || ps == nil || play.lastPrefer != "" {
+		t.Fatalf("plugin Prepare with Auto slot = (%v, %v, prefer=%q), want empty prefer", ps, err, play.lastPrefer)
 	}
 }

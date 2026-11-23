@@ -30,6 +30,9 @@ func (s *Service) reusablePayload(ctx context.Context, rel core.Release) (Payloa
 		return Payload{}, false
 	}
 	p.NativeTorrentOnly = core.QuickSource(ctx) == "torrent"
+	if p.isCompressedZip() && (rel.Target == nil || !rel.Target.AllowNonVideo) {
+		return Payload{}, false
+	}
 	p.Target = rel.Target
 	return p, true
 }

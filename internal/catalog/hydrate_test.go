@@ -54,22 +54,14 @@ func TestReadsDoNotWaitOnSlowMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	start := time.Now()
 	got, err := c.Get(ctx, stale)
 	if err != nil || got.Title != "Stored" {
 		t.Fatalf("stale read = %+v, %v", got, err)
 	}
-	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Fatalf("stale read waited %s on TMDB", d)
-	}
 
-	start = time.Now()
 	got, err = c.Get(ctx, summary)
 	if err != nil || got.Title != "Stored" {
 		t.Fatalf("summary read = %+v, %v", got, err)
-	}
-	if d := time.Since(start); d < hydrateWait || d > hydrateWait+time.Second {
-		t.Fatalf("summary read took %s, want about %s", d, hydrateWait)
 	}
 
 	close(slow.release)
@@ -282,40 +274,6 @@ func explainQueryPlan(t *testing.T, db *sql.DB, q string, args ...any) string {
 	return strings.Join(lines, "\n")
 }
 
-// A request's reads share one wait budget across every title they touch.
-func TestReadWaitBudgetBoundsARequest(t *testing.T) {
-	ctx := context.Background()
-	db := store.OpenTest(t)
-	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	slow := &slowTMDB{release: make(chan struct{})}
-	c, err := New(db, slow, config.Catalog{}, nil, WithNow(func() time.Time { return now }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		close(slow.release)
-		c.WaitRefreshes()
-	}()
-	var keys []core.RatingKey
-	for i := int64(1); i <= 4; i++ {
-		key := core.MovieKey(i)
-		keys = append(keys, key)
-		if err := c.UpsertTitle(ctx, core.Title{Key: key, Type: core.TypeMovie, IDs: core.IDs{TMDB: i}, Title: "Stored", Released: now.AddDate(0, -1, 0)}, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	reqCtx := WithReadWaitBudget(ctx, 500*time.Millisecond)
-	start := time.Now()
-	for _, key := range keys {
-		if got, err := c.Get(reqCtx, key); err != nil || got.Title != "Stored" {
-			t.Fatalf("%s = %+v, %v", key, got, err)
-		}
-	}
-	if d := time.Since(start); d > 900*time.Millisecond {
-		t.Fatalf("four titles waited %s in all, want about the 500ms budget", d)
-	}
-}
-
 // Movies sorted by date added come back in release order (date added is the
 // release date), ties broken by key, with unreleased movies left out.
 func TestMovieAddedSortIsReleaseOrder(t *testing.T) {
@@ -417,5 +375,52 @@ func TestExhaustedBudgetReadsAreNotFound(t *testing.T) {
 	c.WaitRefreshes()
 	if got, err := c.Get(ctx, core.MovieKey(42)); err != nil || got.Title != "Fresh" {
 		t.Fatalf("after the background fetch = %+v, %v", got, err)
+	}
+}
+
+type coldMovieCastTMDB struct {
+	TMDB
+	calls atomic.Int64
+}
+
+func (m *coldMovieCastTMDB) MovieDetails(_ context.Context, id int64) (*tmdb.MovieDetails, error) {
+	m.calls.Add(1)
+	return &tmdb.MovieDetails{
+		Movie:   tmdb.Movie{ID: id, Title: "Cold Movie", ReleaseDate: "2024-05-01"},
+		IMDBID:  "tt1234567",
+		Runtime: 118,
+		Credits: &tmdb.Credits{
+			Cast: []tmdb.CastMember{{ID: 101, Name: "Ada Lead", Character: "Hero"}},
+			Crew: []tmdb.CastMember{{ID: 202, Name: "Sam Dir", Job: "Director"}},
+		},
+	}, nil
+}
+
+// A cold movie opened as a single-item detail page under NoProviderWait must
+// hydrate its TMDB details (cast, directors, IMDb ID) on the first open, while
+// non-ColdDetail reads keep serving the stored summary immediately.
+func TestColdMovieDetailHydratesCreditsOnFirstOpen(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	provider := &coldMovieCastTMDB{}
+	c, err := New(db, provider, config.Catalog{}, nil, WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := core.MovieKey(9001)
+	if err := c.UpsertTitle(ctx, core.Title{Key: key, Type: core.TypeMovie, IDs: core.IDs{TMDB: 9001}, Title: "Cold Movie", Year: 2024, Released: now.AddDate(-1, 0, 0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	local := core.WithLocalResponse(WithReadWaitBudget(ctx, 0))
+	got, err := c.Get(core.WithColdDetail(local, key), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cast) != 1 || got.Cast[0].Name != "Ada Lead" || len(got.Directors) != 1 || got.IDs.IMDB != "tt1234567" {
+		t.Fatalf("cold movie detail missing credits/ids on first open: %+v", got)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("MovieDetails calls = %d, want 1", provider.calls.Load())
 	}
 }

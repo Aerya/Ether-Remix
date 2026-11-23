@@ -146,7 +146,11 @@ func discoverPlexTags(vars map[string]string, body []byte) {
 	}
 	if t, ok := first("Role"); ok {
 		setOnce(vars, "actorId", strconv.FormatInt(t.ID, 10))
-		setOnce(vars, "actorTagKey", t.TagKey)
+		tagKey := t.TagKey
+		if tagKey == "" && t.ID > 0 {
+			tagKey = "tmdb-person-" + strconv.FormatInt(t.ID, 10)
+		}
+		setOnce(vars, "actorTagKey", tagKey)
 	}
 	if t, ok := first("Director"); ok {
 		setOnce(vars, "directorId", strconv.FormatInt(t.ID, 10))

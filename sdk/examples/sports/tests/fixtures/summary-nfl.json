@@ -1,0 +1,1980 @@
+{
+  "header": {
+    "id": "401873066",
+    "uid": "s:20~l:28~e:401873066",
+    "season": {
+      "year": 2026,
+      "current": true,
+      "type": 2
+    },
+    "timeValid": true,
+    "competitions": [
+      {
+        "id": "401873066",
+        "uid": "s:20~l:28~e:401873066~c:401873066",
+        "date": "2026-11-20T01:15Z",
+        "neutralSite": false,
+        "conferenceCompetition": false,
+        "boxscoreAvailable": true,
+        "commentaryAvailable": false,
+        "liveAvailable": false,
+        "onWatchESPN": false,
+        "recent": false,
+        "wallclockAvailable": true,
+        "boxscoreSource": "full",
+        "playByPlaySource": "full",
+        "competitors": [
+          {
+            "id": "34",
+            "uid": "s:20~l:28~t:34",
+            "order": 0,
+            "homeAway": "home",
+            "winner": true,
+            "score": "26",
+            "linescores": [
+              {
+                "displayValue": "7"
+              },
+              {
+                "displayValue": "10"
+              },
+              {
+                "displayValue": "9"
+              },
+              {
+                "displayValue": "0"
+              }
+            ],
+            "team": {
+              "id": "34",
+              "uid": "s:20~l:28~t:34",
+              "location": "Houston",
+              "name": "Texans",
+              "abbreviation": "HOU",
+              "displayName": "Houston Texans",
+              "color": "021018",
+              "alternateColor": "eb0028",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:50Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:49Z"
+                }
+              ]
+            }
+          },
+          {
+            "id": "11",
+            "uid": "s:20~l:28~t:11",
+            "order": 1,
+            "homeAway": "away",
+            "winner": false,
+            "score": "3",
+            "linescores": [
+              {
+                "displayValue": "3"
+              },
+              {
+                "displayValue": "0"
+              },
+              {
+                "displayValue": "0"
+              },
+              {
+                "displayValue": "0"
+              }
+            ],
+            "team": {
+              "id": "11",
+              "uid": "s:20~l:28~t:11",
+              "location": "Indianapolis",
+              "name": "Colts",
+              "abbreviation": "IND",
+              "displayName": "Indianapolis Colts",
+              "color": "003b75",
+              "alternateColor": "ffffff",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:50Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/ind.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:50Z"
+                }
+              ]
+            }
+          }
+        ],
+        "status": {
+          "type": {
+            "id": "3",
+            "name": "STATUS_FINAL",
+            "state": "post",
+            "completed": true,
+            "description": "Final",
+            "detail": "Final",
+            "shortDetail": "Final"
+          },
+          "isTBDFlex": false
+        },
+        "broadcasts": [
+          {
+            "type": {
+              "id": "4",
+              "shortName": "Streaming"
+            },
+            "market": {
+              "id": "1",
+              "type": "National"
+            },
+            "media": {
+              "shortName": "Prime Video"
+            },
+            "lang": "en",
+            "region": "us",
+            "isNational": true
+          }
+        ],
+        "boxscoreMinutes": true
+      }
+    ],
+    "links": [
+      {
+        "rel": [
+          "summary",
+          "desktop",
+          "event"
+        ],
+        "href": "https://www.espn.com/nfl/game/_/gameId/401873066/colts-texans",
+        "text": "Gamecast",
+        "shortText": "Summary",
+        "isExternal": false,
+        "isPremium": false
+      },
+      {
+        "rel": [
+          "recap",
+          "desktop",
+          "event"
+        ],
+        "href": "https://www.espn.com/nfl/recap?gameId=401873066",
+        "text": "Recap",
+        "shortText": "Recap",
+        "isExternal": false,
+        "isPremium": false
+      },
+      {
+        "rel": [
+          "boxscore",
+          "desktop",
+          "event"
+        ],
+        "href": "https://www.espn.com/nfl/boxscore/_/gameId/401873066",
+        "text": "Box Score",
+        "shortText": "Box Score",
+        "isExternal": false,
+        "isPremium": false
+      }
+    ],
+    "week": 11,
+    "league": {
+      "id": "28",
+      "uid": "s:20~l:28",
+      "name": "National Football League",
+      "abbreviation": "NFL",
+      "shortName": "NFL",
+      "slug": "nfl",
+      "isTournament": false,
+      "links": [
+        {
+          "rel": [
+            "index",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/",
+          "text": "Index"
+        },
+        {
+          "rel": [
+            "index",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28",
+          "text": "Index"
+        },
+        {
+          "rel": [
+            "schedule",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/schedule",
+          "text": "Schedule"
+        },
+        {
+          "rel": [
+            "schedule",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=scores",
+          "text": "Schedule"
+        },
+        {
+          "rel": [
+            "standings",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/standings",
+          "text": "Standings"
+        },
+        {
+          "rel": [
+            "standings",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=standings",
+          "text": "Standings"
+        },
+        {
+          "rel": [
+            "rankings",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/powerrankings",
+          "text": "Power Rankings"
+        },
+        {
+          "rel": [
+            "scores",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/scoreboard",
+          "text": "Scores"
+        },
+        {
+          "rel": [
+            "scores",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=scores",
+          "text": "Scores"
+        },
+        {
+          "rel": [
+            "stats",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/stats",
+          "text": "Stats"
+        },
+        {
+          "rel": [
+            "stats",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=stats",
+          "text": "Stats"
+        },
+        {
+          "rel": [
+            "teams",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/teams",
+          "text": "Teams"
+        },
+        {
+          "rel": [
+            "athletes",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/players",
+          "text": "Players"
+        },
+        {
+          "rel": [
+            "injuries",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/injuries",
+          "text": "Injuries"
+        },
+        {
+          "rel": [
+            "odds",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/odds",
+          "text": "Odds"
+        },
+        {
+          "rel": [
+            "odds",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=odds",
+          "text": "Odds"
+        },
+        {
+          "rel": [
+            "playoff-bracket",
+            "desktop",
+            "league"
+          ],
+          "href": "https://www.espn.com/nfl/playoff-bracket",
+          "text": "Bracket"
+        },
+        {
+          "rel": [
+            "playoff-bracket",
+            "sportscenter",
+            "app",
+            "league"
+          ],
+          "href": "sportscenter://x-callback-url/showClubhouse?uid=s:20~l:28&section=bracket",
+          "text": "Bracket"
+        },
+        {
+          "rel": [
+            "freeagency",
+            "desktop",
+            "league"
+          ],
+          "href": "https://insider.espn.com/nfl/freeagency/",
+          "text": "Freeagency"
+        }
+      ],
+      "logos": [
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png",
+          "rel": [
+            "full",
+            "default"
+          ]
+        },
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500-dark/nfl.png",
+          "rel": [
+            "full",
+            "dark"
+          ]
+        }
+      ]
+    }
+  },
+  "gameInfo": {
+    "venue": {
+      "id": "3891",
+      "guid": "8a2b5070-4bbd-3dd3-bc00-e867aea0b5be",
+      "fullName": "Reliant Stadium",
+      "address": {
+        "city": "Houston",
+        "state": "TX",
+        "zipCode": "77054",
+        "country": "USA"
+      },
+      "grass": false,
+      "images": [
+        {
+          "href": "https://a.espncdn.com/i/venues/nfl/day/3891.jpg",
+          "width": 2000,
+          "height": 1125,
+          "alt": "",
+          "rel": [
+            "full",
+            "day"
+          ]
+        },
+        {
+          "href": "https://a.espncdn.com/i/venues/nfl/day/interior/3891.jpg",
+          "width": 2000,
+          "height": 1125,
+          "alt": "",
+          "rel": [
+            "full",
+            "day",
+            "interior"
+          ]
+        }
+      ]
+    },
+    "attendance": 70942,
+    "officials": [
+      {
+        "fullName": "Dino Paganelli",
+        "displayName": "Dino Paganelli",
+        "position": {
+          "name": "Back Judge",
+          "displayName": "Back Judge",
+          "id": "110"
+        },
+        "order": 2
+      },
+      {
+        "fullName": "Dyrol Prioleau",
+        "displayName": "Dyrol Prioleau",
+        "position": {
+          "name": "Field Judge",
+          "displayName": "Field Judge",
+          "id": "111"
+        },
+        "order": 3
+      },
+      {
+        "fullName": "Jeff Seeman",
+        "displayName": "Jeff Seeman",
+        "position": {
+          "name": "Line Judge",
+          "displayName": "Line Judge",
+          "id": "113"
+        },
+        "order": 1
+      },
+      {
+        "fullName": "Keith Parham",
+        "displayName": "Keith Parham",
+        "position": {
+          "name": "Side Judge",
+          "displayName": "Side Judge",
+          "id": "115"
+        },
+        "order": 4
+      },
+      {
+        "fullName": "Shawn Smith",
+        "displayName": "Shawn Smith",
+        "position": {
+          "name": "Referee",
+          "displayName": "Referee",
+          "id": "114"
+        },
+        "order": 5
+      },
+      {
+        "fullName": "Tra Blake",
+        "displayName": "Tra Blake",
+        "position": {
+          "name": "Umpire",
+          "displayName": "Umpire",
+          "id": "116"
+        },
+        "order": 6
+      },
+      {
+        "fullName": "Jay Bilbo",
+        "displayName": "Jay Bilbo",
+        "position": {
+          "name": "Down Judge",
+          "displayName": "Down Judge",
+          "id": "112"
+        },
+        "order": 7
+      }
+    ]
+  },
+  "broadcasts": [
+    {
+      "type": {
+        "id": "4",
+        "shortName": "Streaming",
+        "longName": "Streaming",
+        "slug": "streaming"
+      },
+      "station": "Prime Video",
+      "market": {
+        "id": "1",
+        "type": "National"
+      },
+      "media": {
+        "callLetters": "Prime Video",
+        "name": "Prime Video",
+        "shortName": "Prime Video"
+      },
+      "lang": "en",
+      "region": "us",
+      "isNational": true
+    }
+  ],
+  "boxscore": {
+    "teams": [
+      {
+        "team": {
+          "id": "11",
+          "uid": "s:20~l:28~t:11",
+          "location": "Indianapolis",
+          "name": "Colts",
+          "abbreviation": "IND",
+          "displayName": "Indianapolis Colts",
+          "shortDisplayName": "Colts",
+          "color": "003b75",
+          "alternateColor": "ffffff",
+          "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png"
+        },
+        "statistics": [
+          {
+            "name": "firstDowns",
+            "displayValue": "8",
+            "value": 8.0,
+            "label": "1st Downs"
+          },
+          {
+            "name": "firstDownsPassing",
+            "displayValue": "6",
+            "value": 6.0,
+            "label": "Passing 1st downs"
+          },
+          {
+            "name": "firstDownsRushing",
+            "displayValue": "1",
+            "value": 1.0,
+            "label": "Rushing 1st downs"
+          },
+          {
+            "name": "firstDownsPenalty",
+            "displayValue": "1",
+            "value": 1.0,
+            "label": "1st downs from penalties"
+          },
+          {
+            "name": "thirdDownEff",
+            "displayValue": "1-11",
+            "value": 0.0909090909,
+            "label": "3rd down efficiency"
+          },
+          {
+            "name": "fourthDownEff",
+            "displayValue": "1-2",
+            "value": 0.5,
+            "label": "4th down efficiency"
+          },
+          {
+            "name": "totalOffensivePlays",
+            "displayValue": "48",
+            "value": 48.0,
+            "label": "Total Plays"
+          },
+          {
+            "name": "totalYards",
+            "displayValue": "167",
+            "value": "-",
+            "label": "Total Yards"
+          },
+          {
+            "name": "yardsPerPlay",
+            "displayValue": "3.5",
+            "value": 3.4791666667,
+            "label": "Yards per Play"
+          },
+          {
+            "name": "totalDrives",
+            "displayValue": "10",
+            "value": 10.0,
+            "label": "Total Drives"
+          }
+        ],
+        "displayOrder": 1,
+        "homeAway": "away"
+      },
+      {
+        "team": {
+          "id": "34",
+          "uid": "s:20~l:28~t:34",
+          "location": "Houston",
+          "name": "Texans",
+          "abbreviation": "HOU",
+          "displayName": "Houston Texans",
+          "shortDisplayName": "Texans",
+          "color": "021018",
+          "alternateColor": "eb0028",
+          "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png"
+        },
+        "statistics": [
+          {
+            "name": "firstDowns",
+            "displayValue": "21",
+            "value": 21.0,
+            "label": "1st Downs"
+          },
+          {
+            "name": "firstDownsPassing",
+            "displayValue": "12",
+            "value": 12.0,
+            "label": "Passing 1st downs"
+          },
+          {
+            "name": "firstDownsRushing",
+            "displayValue": "8",
+            "value": 8.0,
+            "label": "Rushing 1st downs"
+          },
+          {
+            "name": "firstDownsPenalty",
+            "displayValue": "1",
+            "value": 1.0,
+            "label": "1st downs from penalties"
+          },
+          {
+            "name": "thirdDownEff",
+            "displayValue": "8-14",
+            "value": 0.5714285714,
+            "label": "3rd down efficiency"
+          },
+          {
+            "name": "fourthDownEff",
+            "displayValue": "0-1",
+            "value": 0,
+            "label": "4th down efficiency"
+          },
+          {
+            "name": "totalOffensivePlays",
+            "displayValue": "65",
+            "value": 65.0,
+            "label": "Total Plays"
+          },
+          {
+            "name": "totalYards",
+            "displayValue": "354",
+            "value": "-",
+            "label": "Total Yards"
+          },
+          {
+            "name": "yardsPerPlay",
+            "displayValue": "5.4",
+            "value": 5.4461538462,
+            "label": "Yards per Play"
+          },
+          {
+            "name": "totalDrives",
+            "displayValue": "10",
+            "value": 10.0,
+            "label": "Total Drives"
+          }
+        ],
+        "displayOrder": 2,
+        "homeAway": "home"
+      }
+    ],
+    "players": [
+      {
+        "team": {
+          "id": "11",
+          "uid": "s:20~l:28~t:11",
+          "location": "Indianapolis",
+          "name": "Colts",
+          "abbreviation": "IND",
+          "displayName": "Indianapolis Colts",
+          "shortDisplayName": "Colts",
+          "color": "003b75",
+          "alternateColor": "ffffff",
+          "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png"
+        },
+        "statistics": [
+          {
+            "name": "passing",
+            "text": "Indianapolis Passing",
+            "labels": [
+              "C/ATT",
+              "YDS",
+              "AVG",
+              "TD",
+              "INT",
+              "SACKS",
+              "QBR",
+              "RTG"
+            ],
+            "keys": [
+              "completions/passingAttempts",
+              "passingYards",
+              "yardsPerPassAttempt",
+              "passingTouchdowns",
+              "interceptions",
+              "sacks-sackYardsLost",
+              "adjQBR",
+              "QBRating"
+            ],
+            "totals": [
+              "12/29",
+              "129",
+              "5.0",
+              "0",
+              "1",
+              "2-15",
+              "--",
+              "42.9"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "3917792",
+                  "displayName": "Daniel Jones",
+                  "jersey": "17"
+                },
+                "stats": [
+                  "12/27",
+                  "144",
+                  "5.3",
+                  "0",
+                  "1",
+                  "2-15",
+                  "14.0",
+                  "45.9"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4429084",
+                  "displayName": "Anthony Richardson Sr.",
+                  "jersey": "5"
+                },
+                "stats": [
+                  "0/2",
+                  "0",
+                  "0.0",
+                  "0",
+                  "0",
+                  "0-0",
+                  "4.3",
+                  "39.6"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "rushing",
+            "text": "Indianapolis Rushing",
+            "labels": [
+              "CAR",
+              "YDS",
+              "AVG",
+              "TD",
+              "LONG"
+            ],
+            "keys": [
+              "rushingAttempts",
+              "rushingYards",
+              "yardsPerRushAttempt",
+              "rushingTouchdowns",
+              "longRushing"
+            ],
+            "totals": [
+              "17",
+              "38",
+              "2.2",
+              "0",
+              "8"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "4242335",
+                  "displayName": "Jonathan Taylor",
+                  "jersey": "28"
+                },
+                "stats": [
+                  "11",
+                  "21",
+                  "1.9",
+                  "0",
+                  "6"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4686468",
+                  "displayName": "Seth McGowan",
+                  "jersey": "20"
+                },
+                "stats": [
+                  "3",
+                  "7",
+                  "2.3",
+                  "0",
+                  "8"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4874509",
+                  "displayName": "DJ Giddens",
+                  "jersey": "21"
+                },
+                "stats": [
+                  "1",
+                  "5",
+                  "5.0",
+                  "0",
+                  "5"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "receiving",
+            "text": "Indianapolis Receiving",
+            "labels": [
+              "REC",
+              "YDS",
+              "AVG",
+              "TD",
+              "LONG",
+              "TGTS"
+            ],
+            "keys": [
+              "receptions",
+              "receivingYards",
+              "yardsPerReception",
+              "receivingTouchdowns",
+              "longReception",
+              "receivingTargets"
+            ],
+            "totals": [
+              "12",
+              "144",
+              "12.0",
+              "0",
+              "31",
+              "26"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "4429684",
+                  "displayName": "Anthony Gould",
+                  "jersey": "6"
+                },
+                "stats": [
+                  "2",
+                  "48",
+                  "24.0",
+                  "0",
+                  "31",
+                  "3"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4061956",
+                  "displayName": "Ashton Dulin",
+                  "jersey": "16"
+                },
+                "stats": [
+                  "2",
+                  "30",
+                  "15.0",
+                  "0",
+                  "25",
+                  "4"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4050373",
+                  "displayName": "Quez Watkins",
+                  "jersey": "9"
+                },
+                "stats": [
+                  "1",
+                  "26",
+                  "26.0",
+                  "0",
+                  "26",
+                  "3"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "team": {
+          "id": "34",
+          "uid": "s:20~l:28~t:34",
+          "location": "Houston",
+          "name": "Texans",
+          "abbreviation": "HOU",
+          "displayName": "Houston Texans",
+          "shortDisplayName": "Texans",
+          "color": "021018",
+          "alternateColor": "eb0028",
+          "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png"
+        },
+        "statistics": [
+          {
+            "name": "passing",
+            "text": "Houston Passing",
+            "labels": [
+              "C/ATT",
+              "YDS",
+              "AVG",
+              "TD",
+              "INT",
+              "SACKS",
+              "QBR",
+              "RTG"
+            ],
+            "keys": [
+              "completions/passingAttempts",
+              "passingYards",
+              "yardsPerPassAttempt",
+              "passingTouchdowns",
+              "interceptions",
+              "sacks-sackYardsLost",
+              "adjQBR",
+              "QBRating"
+            ],
+            "totals": [
+              "21/27",
+              "187",
+              "7.2",
+              "3",
+              "1",
+              "1-7",
+              "--",
+              "118.2"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "4432577",
+                  "displayName": "C.J. Stroud",
+                  "jersey": "7"
+                },
+                "stats": [
+                  "21/27",
+                  "194",
+                  "7.2",
+                  "3",
+                  "1",
+                  "1-7",
+                  "79.8",
+                  "118.2"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "rushing",
+            "text": "Houston Rushing",
+            "labels": [
+              "CAR",
+              "YDS",
+              "AVG",
+              "TD",
+              "LONG"
+            ],
+            "keys": [
+              "rushingAttempts",
+              "rushingYards",
+              "yardsPerRushAttempt",
+              "rushingTouchdowns",
+              "longRushing"
+            ],
+            "totals": [
+              "37",
+              "167",
+              "4.5",
+              "0",
+              "26"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "4035538",
+                  "displayName": "David Montgomery",
+                  "jersey": "32"
+                },
+                "stats": [
+                  "26",
+                  "107",
+                  "4.1",
+                  "0",
+                  "15"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4362478",
+                  "displayName": "Emari Demercado",
+                  "jersey": "21"
+                },
+                "stats": [
+                  "5",
+                  "33",
+                  "6.6",
+                  "0",
+                  "10"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4432577",
+                  "displayName": "C.J. Stroud",
+                  "jersey": "7"
+                },
+                "stats": [
+                  "6",
+                  "27",
+                  "4.5",
+                  "0",
+                  "26"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "receiving",
+            "text": "Houston Receiving",
+            "labels": [
+              "REC",
+              "YDS",
+              "AVG",
+              "TD",
+              "LONG",
+              "TGTS"
+            ],
+            "keys": [
+              "receptions",
+              "receivingYards",
+              "yardsPerReception",
+              "receivingTouchdowns",
+              "longReception",
+              "receivingTargets"
+            ],
+            "totals": [
+              "21",
+              "194",
+              "9.2",
+              "3",
+              "42",
+              "26"
+            ],
+            "athletes": [
+              {
+                "athlete": {
+                  "id": "4258173",
+                  "displayName": "Nico Collins",
+                  "jersey": "12"
+                },
+                "stats": [
+                  "3",
+                  "58",
+                  "19.3",
+                  "1",
+                  "42",
+                  "5"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4429022",
+                  "displayName": "Kayshon Boutte",
+                  "jersey": "14"
+                },
+                "stats": [
+                  "2",
+                  "40",
+                  "20.0",
+                  "1",
+                  "24",
+                  "2"
+                ]
+              },
+              {
+                "athlete": {
+                  "id": "4366031",
+                  "displayName": "Tank Dell",
+                  "jersey": "1"
+                },
+                "stats": [
+                  "3",
+                  "27",
+                  "9.0",
+                  "0",
+                  "10",
+                  "4"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "scoringPlays": [
+    {
+      "id": "401873066277",
+      "type": {
+        "id": "59",
+        "text": "Field Goal Good",
+        "abbreviation": "FG"
+      },
+      "text": "Spencer Shrader 34 Yd Field Goal ",
+      "awayScore": 3,
+      "homeScore": 0,
+      "period": {
+        "number": 1
+      },
+      "clock": {
+        "value": 643.0,
+        "displayValue": "10:43"
+      },
+      "team": {
+        "id": "11",
+        "uid": "s:20~l:28~t:11",
+        "abbreviation": "IND",
+        "displayName": "Indianapolis Colts",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/ind.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "field-goal",
+        "displayName": "Field Goal",
+        "abbreviation": "FG"
+      }
+    },
+    {
+      "id": "401873066834",
+      "type": {
+        "id": "67",
+        "text": "Passing Touchdown",
+        "abbreviation": "TD"
+      },
+      "text": "Nico Collins 42 Yd pass from C.J. Stroud (Ka'imi Fairbairn Kick)",
+      "awayScore": 3,
+      "homeScore": 7,
+      "period": {
+        "number": 1
+      },
+      "clock": {
+        "value": 134.0,
+        "displayValue": "2:14"
+      },
+      "team": {
+        "id": "34",
+        "uid": "s:20~l:28~t:34",
+        "abbreviation": "HOU",
+        "displayName": "Houston Texans",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:49Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      }
+    },
+    {
+      "id": "4018730661357",
+      "type": {
+        "id": "67",
+        "text": "Passing Touchdown",
+        "abbreviation": "TD"
+      },
+      "text": "Kayshon Boutte 24 Yd pass from C.J. Stroud (Ka'imi Fairbairn Kick)",
+      "awayScore": 3,
+      "homeScore": 14,
+      "period": {
+        "number": 2
+      },
+      "clock": {
+        "value": 458.0,
+        "displayValue": "7:38"
+      },
+      "team": {
+        "id": "34",
+        "uid": "s:20~l:28~t:34",
+        "abbreviation": "HOU",
+        "displayName": "Houston Texans",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:49Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      }
+    },
+    {
+      "id": "4018730662101",
+      "type": {
+        "id": "59",
+        "text": "Field Goal Good",
+        "abbreviation": "FG"
+      },
+      "text": "Ka'imi Fairbairn 27 Yd Field Goal",
+      "awayScore": 3,
+      "homeScore": 17,
+      "period": {
+        "number": 2
+      },
+      "clock": {
+        "value": 15.0,
+        "displayValue": "0:15"
+      },
+      "team": {
+        "id": "34",
+        "uid": "s:20~l:28~t:34",
+        "abbreviation": "HOU",
+        "displayName": "Houston Texans",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:49Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "field-goal",
+        "displayName": "Field Goal",
+        "abbreviation": "FG"
+      }
+    },
+    {
+      "id": "4018730662392",
+      "type": {
+        "id": "20",
+        "text": "Safety",
+        "abbreviation": "SF"
+      },
+      "text": "Daniel Jones Sacked by Will Anderson Jr. For 7 Yd Loss for Safety",
+      "awayScore": 3,
+      "homeScore": 19,
+      "period": {
+        "number": 3
+      },
+      "clock": {
+        "value": 622.0,
+        "displayValue": "10:22"
+      },
+      "team": {
+        "id": "34",
+        "uid": "s:20~l:28~t:34",
+        "abbreviation": "HOU",
+        "displayName": "Houston Texans",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:49Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "safety",
+        "displayName": "Safety",
+        "abbreviation": "SF"
+      }
+    },
+    {
+      "id": "4018730662675",
+      "type": {
+        "id": "67",
+        "text": "Passing Touchdown",
+        "abbreviation": "TD"
+      },
+      "text": "Marlin Klein 13 Yd pass from C.J. Stroud (Ka'imi Fairbairn Kick)",
+      "awayScore": 3,
+      "homeScore": 26,
+      "period": {
+        "number": 3
+      },
+      "clock": {
+        "value": 259.0,
+        "displayValue": "4:19"
+      },
+      "team": {
+        "id": "34",
+        "uid": "s:20~l:28~t:34",
+        "abbreviation": "HOU",
+        "displayName": "Houston Texans",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+        "logos": [
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "default"
+            ],
+            "lastUpdated": "2024-06-25T18:50Z"
+          },
+          {
+            "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+            "width": 500,
+            "height": 500,
+            "alt": "",
+            "rel": [
+              "full",
+              "dark"
+            ],
+            "lastUpdated": "2024-06-25T18:49Z"
+          }
+        ]
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      }
+    }
+  ],
+  "drives": {
+    "previous": [
+      {
+        "id": "40187306618",
+        "description": "7 plays, 21 yards, 4:13",
+        "team": {
+          "id": "34",
+          "name": "Texans",
+          "abbreviation": "HOU",
+          "displayName": "Houston Texans",
+          "shortDisplayName": "Texans",
+          "logos": [
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "default"
+              ],
+              "lastUpdated": "2024-06-25T18:50Z"
+            },
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "dark"
+              ],
+              "lastUpdated": "2024-06-25T18:49Z"
+            }
+          ]
+        },
+        "isScore": false,
+        "result": "DOWNS",
+        "displayResult": "Downs",
+        "plays": [
+          {
+            "id": "4018730663305",
+            "sequenceNumber": "330500",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "(Shotgun) E.Demercado right guard to IND 36 for 7 yards (C.Bynum).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "9:23"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:50:29Z",
+            "isPenalty": false,
+            "statYardage": 7,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663327",
+            "sequenceNumber": "332700",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "B.Fisher reported in as eligible.  C.Stroud right guard to IND 35 for 1 yard (B.Boettcher).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "8:35"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:51:16Z",
+            "isPenalty": false,
+            "statYardage": 1,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663351",
+            "sequenceNumber": "335100",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "B.Fisher reported in as eligible.  C.Stroud right end to IND 39 for -4 yards (B.Boettcher).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:57"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:51:55Z",
+            "isPenalty": false,
+            "statYardage": -4,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663363",
+            "sequenceNumber": "336300",
+            "type": {
+              "id": "74",
+              "text": "Official Timeout",
+              "abbreviation": "Off TO"
+            },
+            "text": "Official Timeout at 07:51.",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:51"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:52:25Z",
+            "isPenalty": false,
+            "statYardage": 0,
+            "isTurnover": false
+          }
+        ]
+      },
+      {
+        "id": "40187306619",
+        "description": "3 plays, 2 yards, 1:01",
+        "team": {
+          "id": "11",
+          "name": "Colts",
+          "abbreviation": "IND",
+          "displayName": "Indianapolis Colts",
+          "shortDisplayName": "Colts",
+          "logos": [
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "default"
+              ],
+              "lastUpdated": "2024-06-25T18:50Z"
+            },
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/ind.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "dark"
+              ],
+              "lastUpdated": "2024-06-25T18:50Z"
+            }
+          ]
+        },
+        "isScore": false,
+        "result": "PUNT",
+        "displayResult": "Punt",
+        "plays": [
+          {
+            "id": "4018730663375",
+            "sequenceNumber": "337500",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "(Shotgun) A.Richardson left end to IND 41 for 2 yards (J.Hansen).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:51"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:54:51Z",
+            "isPenalty": false,
+            "statYardage": 2,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663404",
+            "sequenceNumber": "340400",
+            "type": {
+              "id": "3",
+              "text": "Pass Incompletion"
+            },
+            "text": "(Shotgun) A.Richardson pass incomplete short middle to T.Warren (J.Hansen).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:13"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:55:30Z",
+            "isPenalty": false,
+            "statYardage": 0,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663427",
+            "sequenceNumber": "342700",
+            "type": {
+              "id": "3",
+              "text": "Pass Incompletion"
+            },
+            "text": "(Shotgun) A.Richardson pass incomplete deep left to Q.Watkins.",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:09"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:56:14Z",
+            "isPenalty": false,
+            "statYardage": 0,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663450",
+            "sequenceNumber": "345000",
+            "type": {
+              "id": "52",
+              "text": "Punt",
+              "abbreviation": "PUNT"
+            },
+            "text": "R.Sanchez punts 47 yards to HST 12, Center-L.Rhodes. N.Remigio to HST 27 for 15 yards (C.Curry). IND-C.Curry was injured during the play. PENALTY on HST-C.Muma, Illegal Block Above the Waist, 9 yards, enforced at HST 18.",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "7:03"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T03:56:49Z",
+            "isPenalty": true,
+            "statYardage": -3,
+            "penalty": {
+              "yards": 9,
+              "type": {
+                "slug": "illegal-block-above-the-waist",
+                "text": "Illegal Block Above the Waist"
+              },
+              "status": {
+                "slug": "accepted",
+                "text": "Accepted"
+              }
+            },
+            "isTurnover": false
+          }
+        ]
+      },
+      {
+        "id": "40187306620",
+        "description": "10 plays, 61 yards, 6:50",
+        "team": {
+          "id": "34",
+          "name": "Texans",
+          "abbreviation": "HOU",
+          "displayName": "Houston Texans",
+          "shortDisplayName": "Texans",
+          "logos": [
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "default"
+              ],
+              "lastUpdated": "2024-06-25T18:50Z"
+            },
+            {
+              "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+              "width": 500,
+              "height": 500,
+              "alt": "",
+              "rel": [
+                "full",
+                "dark"
+              ],
+              "lastUpdated": "2024-06-25T18:49Z"
+            }
+          ]
+        },
+        "isScore": false,
+        "result": "END OF GAME",
+        "displayResult": "End of Game",
+        "plays": [
+          {
+            "id": "4018730663649",
+            "sequenceNumber": "364900",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "D.Montgomery left tackle to IND 43 for 1 yard (G.Stewart).",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "2:00"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T04:04:28Z",
+            "isPenalty": false,
+            "statYardage": 1,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663687",
+            "sequenceNumber": "368700",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "(Shotgun) D.Montgomery up the middle to IND 29 for 14 yards (A.Ajiake; G.Gumbs). ** Injury Update: IND-C.Curry has returned to the game.",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "1:14"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T04:05:14Z",
+            "isPenalty": false,
+            "statYardage": 14,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663709",
+            "sequenceNumber": "370900",
+            "type": {
+              "id": "5",
+              "text": "Rush",
+              "abbreviation": "RUSH"
+            },
+            "text": "C.Stroud kneels to IND 30 for -1 yards.",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "0:29"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T04:06:00Z",
+            "isPenalty": false,
+            "statYardage": -1,
+            "isTurnover": false
+          },
+          {
+            "id": "4018730663734",
+            "sequenceNumber": "373400",
+            "type": {
+              "id": "66",
+              "text": "End of Game",
+              "abbreviation": "EG"
+            },
+            "text": "END GAME",
+            "awayScore": 3,
+            "homeScore": 26,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "0:00"
+            },
+            "scoringPlay": false,
+            "priority": false,
+            "wallclock": "2026-11-20T04:06:00Z",
+            "isPenalty": false,
+            "statYardage": 0,
+            "isTurnover": false
+          }
+        ]
+      }
+    ]
+  },
+  "winprobability": [
+    {
+      "homeWinPercentage": 0.7478,
+      "tiePercentage": 0.0,
+      "playId": "4018730661"
+    },
+    {
+      "homeWinPercentage": 0.6891,
+      "tiePercentage": 0.0,
+      "playId": "401873066277"
+    },
+    {
+      "homeWinPercentage": 0.6618,
+      "tiePercentage": 0.0,
+      "playId": "401873066553"
+    },
+    {
+      "homeWinPercentage": 0.7143,
+      "tiePercentage": 0.0,
+      "playId": "401873066812"
+    },
+    {
+      "homeWinPercentage": 0.8138,
+      "tiePercentage": 0.0,
+      "playId": "4018730661114"
+    },
+    {
+      "homeWinPercentage": 0.8809,
+      "tiePercentage": 0.0,
+      "playId": "4018730661398"
+    },
+    {
+      "homeWinPercentage": 0.8765,
+      "tiePercentage": 0.0,
+      "playId": "4018730661699"
+    },
+    {
+      "homeWinPercentage": 0.9401,
+      "tiePercentage": 0.0,
+      "playId": "4018730661987"
+    },
+    {
+      "homeWinPercentage": 0.9527,
+      "tiePercentage": 0.0,
+      "playId": "4018730662202"
+    },
+    {
+      "homeWinPercentage": 0.9717,
+      "tiePercentage": 0.0,
+      "playId": "4018730662443"
+    },
+    {
+      "homeWinPercentage": 0.9951,
+      "tiePercentage": 0.0,
+      "playId": "4018730662719"
+    },
+    {
+      "homeWinPercentage": 0.9963,
+      "tiePercentage": 0.0,
+      "playId": "4018730662972"
+    },
+    {
+      "homeWinPercentage": 0.999,
+      "tiePercentage": 0.0,
+      "playId": "4018730663207"
+    },
+    {
+      "homeWinPercentage": 0.999,
+      "tiePercentage": 0.0,
+      "playId": "4018730663490"
+    },
+    {
+      "homeWinPercentage": 1.0,
+      "tiePercentage": 0.0,
+      "playId": "4018730663734"
+    }
+  ]
+}

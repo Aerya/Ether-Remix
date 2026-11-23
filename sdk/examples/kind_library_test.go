@@ -430,7 +430,7 @@ func TestKindLibraryEndToEndSliceD(t *testing.T) {
 		HTTP:      &http.Client{Transport: mediaExampleTransport{target: media.URL}},
 		Logger:    log,
 	})
-	cachePut, cacheOpen := blobs.HostBackends(kc.QuotaFor)
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kc.QuotaFor)
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:     itemsSvc.KindUpsert,
 		KindDelete:     itemsSvc.KindDelete,
@@ -438,6 +438,7 @@ func TestKindLibraryEndToEndSliceD(t *testing.T) {
 		ResolveSources: kr.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,
+		CacheDelete:    cacheDelete,
 	})
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)

@@ -77,12 +77,21 @@ func sciFiFan(h *harness, uid int64) {
 }
 
 func TestGeneratorsForAFan(t *testing.T) {
-	trakt := &fakeTrakt{recs: nil}
+	trakt := &fakeTrakt{}
 	llm := &fakeLLMSync{}
-	h := newHarness(t, func(o *Options) { o.Trakt = trakt; o.LLM = llm })
-	llm.hubs = []core.Hub{{ID: "cosmic-dread", Title: "Cosmic Dread", Items: []core.Title{h.cat.titles[movieKey(0, 11)], h.cat.titles[movieKey(6, 2)], h.cat.titles[movieKey(0, 1)]}}}
-	trakt.recs = []core.Title{h.cat.titles[movieKey(6, 3)], h.cat.titles[movieKey(0, 2)]}
-	trakt.watch = []core.Title{h.cat.titles[movieKey(1, 4)]}
+	h := newHarness(t, func(o *Options) {
+		cat := o.Catalog.(*fakeCatalog)
+		llm.hubs = []core.Hub{{ID: "cosmic-dread", Title: "Cosmic Dread", Items: []core.Title{cat.titles[movieKey(0, 11)], cat.titles[movieKey(6, 2)], cat.titles[movieKey(0, 1)]}}}
+		trakt.recs = []core.Title{cat.titles[movieKey(6, 3)], cat.titles[movieKey(0, 2)]}
+		trakt.watch = []core.Title{cat.titles[movieKey(1, 4)]}
+		o.Trakt = trakt
+		o.LLM = llm
+	})
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
 	alice := core.User{ID: 1, Username: "alice"}
 	sciFiFan(h, alice.ID)
 	// Another viewer's plays make "Popular on this server".
@@ -249,15 +258,23 @@ func TestGenericModelHasNoPersonalRows(t *testing.T) {
 }
 
 func TestOwnerCollectionRows(t *testing.T) {
-	cols := &fakeCollections{}
-	h := newHarness(t, func(o *Options) { o.Collections = cols })
 	var picks []core.Title
-	for j := 0; j < 6; j++ {
-		picks = append(picks, h.cat.titles[movieKey(8, j)])
-	}
-	cols.rows = []core.CollectionRow{
-		{CollectionID: "docs", HomeRow: true, Hub: core.Hub{ID: "collection.docs", Title: "Staff Documentary Picks", Context: "hub.home.collection", Items: picks}},
-		{CollectionID: "secret", SectionRow: true, Hub: core.Hub{ID: "collection.secret", Title: "Section Only", Items: picks}},
+	cols := &fakeCollections{}
+	h := newHarness(t, func(o *Options) {
+		cat := o.Catalog.(*fakeCatalog)
+		for j := 0; j < 6; j++ {
+			picks = append(picks, cat.titles[movieKey(8, j)])
+		}
+		cols.rows = []core.CollectionRow{
+			{CollectionID: "docs", HomeRow: true, Hub: core.Hub{ID: "collection.docs", Title: "Staff Documentary Picks", Context: "hub.home.collection", Items: picks}},
+			{CollectionID: "secret", SectionRow: true, Hub: core.Hub{ID: "collection.secret", Title: "Section Only", Items: picks}},
+		}
+		o.Collections = cols
+	})
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
 	}
 	u := core.User{ID: 4, Username: "dee"}
 	h.rebuild(u)
@@ -277,15 +294,20 @@ func TestOwnerCollectionRows(t *testing.T) {
 	}
 	sec := hubContext(testNow, core.DeviceTV)
 	sec.SectionID = 1
-	p, _ = h.e.PreviewHome(context.Background(), &u, sec, "movies", 12)
+	p, _ = h.e.PreviewHome(context.Background(), &u, sec, "library:1", 12)
 	if rowByKind(p.Rows, KindCollectionPrefix+"secret") == nil {
 		t.Fatal("section row missing from the Movies section")
 	}
 	// Cached per context: a second Home load does not call collections again.
+	cols.mu.Lock()
 	before := cols.calls
+	cols.mu.Unlock()
 	h.e.HomeHubsFor(context.Background(), &u, hubContext(testNow, core.DeviceTV), 12)
-	if cols.calls != before {
-		t.Fatalf("owner rows fetched again (%d → %d)", before, cols.calls)
+	cols.mu.Lock()
+	after := cols.calls
+	cols.mu.Unlock()
+	if after != before {
+		t.Fatalf("owner rows fetched again (%d → %d)", before, after)
 	}
 }
 
@@ -315,6 +337,11 @@ func TestFavoritesRowIsOwnerPlacedAndPreservesOrder(t *testing.T) {
 func TestEmptyFavoritesPreservesGeneratedRows(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
 	user := core.User{ID: 1}
 	before, err := h.e.buildModel(ctx, user, false)
 	if err != nil {
@@ -362,6 +389,11 @@ func TestFavoriteHistoryPriorityStableAndEmptyParity(t *testing.T) {
 
 func TestUpNextFavoritesPreserveHistoryOrderWithinGroups(t *testing.T) {
 	h := newHarness(t, nil)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
 	a, b, c := showKey(0, 1), showKey(0, 2), showKey(0, 3)
 	for _, show := range []core.RatingKey{a, b, c} {
 		h.cat.addSeason(show, 1, testNow.AddDate(-1, 0, 0))

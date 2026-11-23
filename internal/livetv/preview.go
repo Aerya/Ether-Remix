@@ -29,6 +29,30 @@ var previewCaps = core.ClientCaps{
 	HLSContainers: []string{"mpegts"},
 }
 
+// PreviewClientCaps returns the browser MSE client capabilities advertised on
+// a console live preview request.
+func PreviewClientCaps(r *http.Request) core.ClientCaps {
+	return previewClientCaps(r)
+}
+
+// ServePreviewPlaylist serves a live session's HLS playlist with segment and
+// resource URIs rewritten onto the request's public session path prefix.
+func (s *Service) ServePreviewPlaylist(w http.ResponseWriter, r *http.Request, id string, u *core.User) {
+	mediasafety.SetHeaders(w)
+	pw := relativePlaylists(w, r, id)
+	s.ServePlaylist(pw, r, id, u)
+	pw.finish()
+}
+
+// ServePreviewResource serves a live session resource with nested playlists
+// rewritten onto the request's public session path prefix.
+func (s *Service) ServePreviewResource(w http.ResponseWriter, r *http.Request, id, resource string, u *core.User) {
+	mediasafety.SetHeaders(w)
+	pw := relativePlaylists(w, r, id)
+	s.ServeResource(pw, r, id, resource, u)
+	pw.finish()
+}
+
 // The console advertises only profiles confirmed by its MSE probes. These
 // are device limits, independent of the owner's uncapped quality default.
 func previewClientCaps(r *http.Request) core.ClientCaps {

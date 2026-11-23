@@ -2,9 +2,11 @@ package plex
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -24,16 +26,141 @@ func (s *Server) metadataChildren(ctx context.Context, pr *Request, k frontend.R
 	if k.IsPluginKey() {
 		return s.kindChildren(ctx, pr, k)
 	}
-	if s.episodeOrder() != nil {
-		return s.episodeOrder().Children(ctx, pr.User, k)
+	load := func() ([]frontend.Title, error) {
+		if s.episodeOrder() != nil {
+			return s.episodeOrder().Children(ctx, pr.User, k)
+		}
+		return s.catalog().Children(ctx, k)
 	}
-	return s.catalog().Children(ctx, k)
+	if !reqmemo.Active(ctx) {
+		return load()
+	}
+	var uid int64
+	if pr != nil && pr.User != nil {
+		uid = pr.User.ID
+	}
+	items, err := reqmemo.Do(ctx, fmt.Sprintf("plex:children:%p:%d:%d", s, uid, k), load)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.Title, len(items))
+	copy(out, items)
+	return out, nil
 }
+
+// maxGrandchildAlbumExpands caps how many empty child containers (e.g.
+// never-opened albums under an artist when artist expansion only stored album
+// shells) metadataGrandchildrenOf may expand on demand before returning.
+const (
+	maxGrandchildAlbumExpands = 3
+	maxPluginExpandDepth      = 4
+)
+
 func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.Title, error) {
+	if k.IsPluginKey() {
+		parent, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, k)
+		if err != nil {
+			return nil, err
+		}
+		return s.metadataGrandchildrenOf(ctx, pr, parent)
+	}
 	if s.episodeOrder() != nil {
 		return s.episodeOrder().Grandchildren(ctx, pr.User, k)
 	}
 	return s.catalog().Grandchildren(ctx, k)
+}
+
+// metadataGrandchildrenOf expands a plugin container (e.g. artist -> albums ->
+// tracks, album -> tracks, or 4-level league -> season -> round -> match) while
+// respecting branching levels and container expansion:
+//   - primary child listing excludes secondary branches (such as video concerts
+//     under a music artist) so artist Play, All Tracks, and Shuffle stay on audio;
+//   - when ctx allows expansion, opening a never-opened root container triggers
+//     its single-flight, error-backed-off container expansion once;
+//   - child containers are first read without expansion to avoid storms, and
+//     only if zero playable leaves were stored are at most
+//     maxGrandchildAlbumExpands empty child containers expanded until playable
+//     leaves are found.
+func (s *Server) metadataGrandchildrenOf(ctx context.Context, pr *Request, parent *frontend.Title) ([]frontend.Title, error) {
+	if parent == nil {
+		return nil, frontend.ErrNotFound
+	}
+	if !parent.Key.IsPluginKey() {
+		return s.metadataGrandchildren(ctx, pr, parent.Key)
+	}
+	base, _ := s.kindSectionBaseForTitle(parent)
+	excludeVideo := base == plexBaseArtist || (parent.MediaClass != "" && parent.MediaClass != frontend.MediaClassVideo)
+
+	children, err := s.kindChildrenForParent(ctx, pr, parent)
+	if err != nil {
+		return nil, err
+	}
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	var out []frontend.Title
+	var emptyContainers []frontend.Title
+	var walk func(walkCtx context.Context, items []frontend.Title, depth int, recordEmpty bool) error
+	walk = func(walkCtx context.Context, items []frontend.Title, depth int, recordEmpty bool) error {
+		for _, ch := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if excludeVideo && ch.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
+			if ch.Type != frontend.TypeShow && ch.Type != frontend.TypeSeason {
+				out = append(out, ch)
+				if len(out) >= maxExpand {
+					out = out[:maxExpand]
+					return nil
+				}
+				continue
+			}
+			if depth >= maxPluginExpandDepth {
+				continue
+			}
+			before := len(out)
+			sub, serr := s.kindChildren(walkCtx, pr, ch.Key)
+			if serr != nil {
+				continue
+			}
+			if err := walk(noExpandCtx, sub, depth+1, false); err != nil {
+				return err
+			}
+			if len(out) >= maxExpand {
+				out = out[:maxExpand]
+				return nil
+			}
+			if recordEmpty && len(out) == before {
+				emptyContainers = append(emptyContainers, ch)
+			}
+		}
+		return nil
+	}
+	if err := walk(noExpandCtx, children, 1, true); err != nil {
+		return nil, err
+	}
+	// If the root container expansion populated child container shells without
+	// leaves yet and this request explicitly permits expansion, expand a
+	// bounded number of empty child containers until leaves arrive.
+	if len(out) == 0 && len(emptyContainers) > 0 && !frontend.NoContainerExpand(ctx) {
+		limit := min(len(emptyContainers), maxGrandchildAlbumExpands)
+		for _, ch := range emptyContainers[:limit] {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			sub, serr := s.kindChildren(ctx, pr, ch.Key)
+			if serr != nil {
+				continue
+			}
+			if err := walk(noExpandCtx, sub, 2, false); err != nil {
+				return nil, err
+			}
+			if len(out) > 0 {
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // showEpisodes memoises shows' episodes for one response, so a show page
@@ -151,7 +278,7 @@ func (s *Server) episodeOrderList(ctx context.Context, pr *Request, ts []fronten
 // GUIDs and the resolver retain canonical identity while Plex sees the chosen
 // group tree and display numbering.
 func (s *Server) applyEpisodeOrder(ctx context.Context, pr *Request, t *frontend.Title, m *model.Metadata, v episodeOrderView) {
-	if s.episodeOrder() == nil {
+	if s.episodeOrder() == nil || t.Key.IsPluginKey() {
 		return
 	}
 	if t.Type == frontend.TypeShow {

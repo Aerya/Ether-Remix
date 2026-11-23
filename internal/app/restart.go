@@ -162,7 +162,7 @@ type restartStatus struct {
 
 func (a *App) restartStatus() restartStatus {
 	st := restartStatus{Restart: service.DetectRestart(), Active: a.restartActive(), Clustered: a.clustered()}
-	st.Sessions = (ownerPlayback{Playback: a.playback, app: a}).Sessions()
+	st.Sessions = (ownerPlayback{Playback: a.playback, app: a}).activeSessions()
 	a.restart.mu.Lock()
 	if w := a.restart.waiting; w != nil {
 		cp := *w

@@ -23,7 +23,7 @@ import {
   isPlainObject,
   relativeTime,
 } from "../../lib/format";
-import { qualityFallback } from "../../lib/quality-fallback";
+import { decisionErrorSummary, qualityFallback } from "../../lib/quality-fallback";
 import { useAsync } from "../../lib/hooks";
 import { releaseConsole, type HistoryRecord } from "../../lib/releases";
 import type { CandidateTrace, ResolverTrace } from "../../lib/types";
@@ -268,82 +268,91 @@ export function HistoryTab() {
               )}
             </p>
           ) : null}
-          <PagedTable<HistoryRecord>
-            rows={rows}
-            rowKey={(h) => String(h.id)}
-            searchable
-            pageSize={25}
-            onRowClick={setOpen}
-            labels={pagedTableLabels({
-              searchLabel: t("Search release history"),
-              searchPlaceholder: t("Filter by title, profile or release…"),
-            })}
-            empty={
-              <EmptyState
-                icon={<Route />}
-                title={t("No decisions yet")}
-                description={t("Play a title. The decision appears here.")}
-              />
-            }
-            columns={[
-              {
-                key: "title",
-                header: t("Title"),
-                search: (h) => `${h.titleName} ${h.profile ?? ""} ${h.releaseName ?? ""}`,
-                sortValue: (h) => h.titleName,
-                cell: (h) => (
-                  <span>
-                    <span className="block font-medium text-fg">{h.titleName}</span>
-                    {h.error ? (
-                      <span className="block truncate text-xs text-danger">{h.error}</span>
-                    ) : (
-                      <span className="block max-w-md truncate font-mono text-xs text-fg-muted">
-                        {h.releaseName}
+          <div className="[&_table]:min-w-[44rem] [&_table]:table-fixed [&_td:first-child]:max-w-0 [&_th:nth-child(2)]:w-44 [&_th:nth-child(3)]:w-32 [&_th:nth-child(4)]:w-24 [&_th:nth-child(5)]:w-32">
+            <PagedTable<HistoryRecord>
+              rows={rows}
+              rowKey={(h) => String(h.id)}
+              searchable
+              pageSize={25}
+              onRowClick={setOpen}
+              labels={pagedTableLabels({
+                searchLabel: t("Search release history"),
+                searchPlaceholder: t("Filter by title, profile or release…"),
+              })}
+              empty={
+                <EmptyState
+                  icon={<Route />}
+                  title={t("No decisions yet")}
+                  description={t("Play a title. The decision appears here.")}
+                />
+              }
+              columns={[
+                {
+                  key: "title",
+                  header: t("Title"),
+                  search: (h) =>
+                    `${h.titleName} ${h.profile ?? ""} ${h.releaseName ?? ""} ${decisionErrorSummary(h.error)} ${h.error ?? ""}`,
+                  sortValue: (h) => h.titleName,
+                  cell: (h) => {
+                    const summary = decisionErrorSummary(h.error);
+                    return (
+                      <span className="block min-w-0">
+                        <span className="block truncate font-medium text-fg">{h.titleName}</span>
+                        {summary ? (
+                          <span className="block truncate text-xs text-danger">{summary}</span>
+                        ) : h.releaseName ? (
+                          <span className="block truncate font-mono text-xs text-fg-muted">
+                            {h.releaseName}
+                          </span>
+                        ) : null}
                       </span>
-                    )}
-                  </span>
-                ),
-              },
-              {
-                key: "outcome",
-                header: t("Outcome"),
-                cell: (h) => {
-                  const choice = choiceLabel(h.chooser, h.chosenVersion);
-                  return (
-                    <span className="flex flex-wrap gap-1">
-                      {outcome(h)}
-                      {choice ? <Badge variant="secondary">{choice}</Badge> : null}
-                      {flags(h)}
-                    </span>
-                  );
+                    );
+                  },
                 },
-              },
-              {
-                key: "profile",
-                header: t("Profile"),
-                sortValue: (h) => h.profile ?? "",
-                cell: (h) => (h.profile ? <Badge variant="secondary">{h.profile}</Badge> : "—"),
-              },
-              {
-                key: "candidates",
-                header: t("Releases"),
-                align: "right",
-                sortValue: (h) => h.candidates,
-                cell: (h) => <span className="tabular-nums">{h.candidates}</span>,
-              },
-              {
-                key: "at",
-                header: t("When"),
-                sortValue: (h) => h.at,
-                cell: (h) => (
-                  <span className="text-fg-muted" title={formatDateTime(h.at)}>
-                    {relativeTime(h.at)}
-                  </span>
-                ),
-              },
-            ]}
-            defaultSort={{ key: "at", dir: "desc" }}
-          />
+                {
+                  key: "outcome",
+                  header: t("Outcome"),
+                  cell: (h) => {
+                    const choice = choiceLabel(h.chooser, h.chosenVersion);
+                    return (
+                      <span className="flex flex-wrap gap-1">
+                        {outcome(h)}
+                        {"kept" in h && h.kept === true && (
+                          <Badge variant="secondary">{t("Kept")}</Badge>
+                        )}
+                        {choice ? <Badge variant="secondary">{choice}</Badge> : null}
+                        {flags(h)}
+                      </span>
+                    );
+                  },
+                },
+                {
+                  key: "profile",
+                  header: t("Profile"),
+                  sortValue: (h) => h.profile ?? "",
+                  cell: (h) => (h.profile ? <Badge variant="secondary">{h.profile}</Badge> : "—"),
+                },
+                {
+                  key: "candidates",
+                  header: t("Releases"),
+                  align: "right",
+                  sortValue: (h) => h.candidates,
+                  cell: (h) => <span className="tabular-nums">{h.candidates}</span>,
+                },
+                {
+                  key: "at",
+                  header: t("When"),
+                  sortValue: (h) => h.at,
+                  cell: (h) => (
+                    <span className="text-fg-muted" title={formatDateTime(h.at)}>
+                      {relativeTime(h.at)}
+                    </span>
+                  ),
+                },
+              ]}
+              defaultSort={{ key: "at", dir: "desc" }}
+            />
+          </div>
         </>
       )}
       <Drawer
@@ -371,7 +380,7 @@ export function HistoryTab() {
           ) : detail.data?.id !== open.id ? (
             <LoadingRows rows={4} />
           ) : trace ? (
-            <TraceDetail trace={trace} titleKey={open.titleKey} />
+            <TraceDetail trace={trace} titleKey={open.titleKey} error={open.error} />
           ) : (
             <EmptyState
               title={t("No details stored")}
@@ -434,8 +443,18 @@ export function resolutionCeilings(trace: ResolverTrace): string | null {
 }
 
 /** Every candidate of one decision and why it won or lost. */
-export function TraceDetail({ trace, titleKey }: { trace: ResolverTrace; titleKey?: string }) {
+export function TraceDetail({
+  trace,
+  titleKey,
+  error,
+}: {
+  trace: ResolverTrace;
+  titleKey?: string;
+  error?: string;
+}) {
   const ceilings = resolutionCeilings(trace);
+  const rawError = trace.err || error;
+  const summaryError = decisionErrorSummary(rawError);
   const cands = [...(trace.candidates ?? [])].sort(
     (a, b) =>
       Number(b.releaseId === trace.winner) - Number(a.releaseId === trace.winner) ||
@@ -445,13 +464,23 @@ export function TraceDetail({ trace, titleKey }: { trace: ResolverTrace; titleKe
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {outcome(trace)}
+        {outcome({ ...trace, error })}
         {choiceLabel(trace.chooser, trace.chosenVersion) ? (
           <Badge variant="secondary">{choiceLabel(trace.chooser, trace.chosenVersion)}</Badge>
         ) : null}
         {flags({ failover: trace.failover, pinned: trace.pinStatus === "used" })}
-        {trace.err ? <span className="text-sm text-danger">{trace.err}</span> : null}
+        {summaryError ? <span className="text-sm text-danger">{summaryError}</span> : null}
       </div>
+      {rawError && rawError.trim() !== summaryError ? (
+        <details className="text-xs text-fg-muted">
+          <summary className="cursor-pointer select-none font-medium">
+            {t("Technical details")}
+          </summary>
+          <code className="mt-1 block whitespace-pre-wrap break-words font-mono text-xs text-fg-muted">
+            {rawError}
+          </code>
+        </details>
+      ) : null}
       {ceilings ? <p className="text-sm text-fg-muted">{ceilings}</p> : null}
       {trace.downgrade ? (
         <p className="text-sm text-fg-muted">{qualityFallback(trace.downgrade)}</p>

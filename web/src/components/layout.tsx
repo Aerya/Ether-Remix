@@ -1,14 +1,10 @@
 import { CollapsibleBlock, CollapsibleSections } from "./CollapsibleSections";
-import {
-  PageContainer,
-  PageHeader,
-  SubtabNav as AppKitSubtabNav,
-  cn,
-} from "@braedonsaunders/appkit-ui";
+import { PageContainer, SubtabNav as AppKitSubtabNav, cn } from "@braedonsaunders/appkit-ui";
 import { useContext, useRef, type ReactNode, type ComponentProps, type RefObject } from "react";
 import { OverflowTabs } from "./OverflowTabs";
 import { useNavigate, useParams } from "react-router-dom";
 import { t } from "../i18n";
+import { useFallbackDocumentTitle } from "../lib/document-title";
 
 export interface PageTab {
   key: string;
@@ -42,6 +38,7 @@ export function DomainPage({
   tabHref,
   children,
   className,
+  fit = false,
 }: {
   title: string;
   description?: string;
@@ -58,12 +55,39 @@ export function DomainPage({
   active?: string;
   children: ReactNode;
   className?: string;
+  /**
+   * The active tab fills the viewport height on desktop instead of the page
+   * scrolling (dashboards, full-height tables). Children get a flex column
+   * that takes the remaining height; give them min heights so a very short
+   * window scrolls rather than crushing them.
+   */
+  fit?: boolean;
 }) {
   const navigate = useNavigate();
   const tabsRoot = useRef<HTMLDivElement>(null);
-  return (
-    <PageContainer className={cn("space-y-6", className)}>
-      <PageHeader title={title} description={description} actions={actions} />
+  const activeKey = active ?? tabs?.[0]?.key;
+  const activeTabLabel =
+    tabs && tabs.length > 1 && activeKey && activeKey !== "overview" && activeKey !== "flows"
+      ? tabs.find((x) => x.key === activeKey)?.label
+      : undefined;
+  useFallbackDocumentTitle([title, activeTabLabel]);
+  const head = (
+    <>
+      <div className="space-y-2">
+        <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:items-end sm:gap-x-4">
+          <div className="min-w-0 flex-[1_1_12rem] space-y-1">
+            <h1 className="truncate text-xl font-semibold text-fg sm:text-2xl">{title}</h1>
+            {description ? (
+              <p className="hidden text-sm text-fg-muted sm:block">{description}</p>
+            ) : null}
+          </div>
+          {actions ? (
+            <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
+              {actions}
+            </div>
+          ) : null}
+        </header>
+      </div>
       {status}
       {tabs && tabs.length > 1 ? (
         <div
@@ -88,6 +112,26 @@ export function DomainPage({
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+  if (fit) {
+    return (
+      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div
+          className={cn(
+            "reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-1 flex-col gap-6 p-4 sm:p-6 lg:min-h-0",
+            className,
+          )}
+        >
+          {head}
+          <div className="flex flex-1 flex-col lg:min-h-0">{children}</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <PageContainer className={cn("space-y-6", className)}>
+      {head}
       <div className="space-y-6 pb-4">{children}</div>
     </PageContainer>
   );

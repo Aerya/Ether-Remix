@@ -265,6 +265,9 @@ func (s *Service) MatchItem(ctx context.Context, caller Caller, matcherPluginID,
 	if caller == nil {
 		return nil, fmt.Errorf("pluginitems: nil plugin route caller")
 	}
+	if candidates == nil {
+		candidates = []core.SourceCandidate{}
+	}
 	reqBody, err := json.Marshal(core.KindMatchRequest{
 		Item:       item,
 		Candidates: candidates,
@@ -291,6 +294,9 @@ func (s *Service) MatchItem(ctx context.Context, caller Caller, matcherPluginID,
 		if err := json.Unmarshal(resp.Body, &matchResp); err != nil {
 			return nil, fmt.Errorf("pluginitems: decode match response: %w", err)
 		}
+	}
+	if resp.Status == http.StatusAccepted || matchResp.Pending {
+		return nil, core.PreparingFromPending(matchResp.RetryInMS)
 	}
 	if item.Ref.Valid() && len(matchResp.Matches) > 0 {
 		if err := s.SaveMatches(ctx, item.Ref, matcherPluginID, matchResp.Matches, threshold); err != nil {

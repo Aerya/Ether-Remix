@@ -31,7 +31,7 @@ func (i *instance) sessionList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (i *instance) sessionRows(ctx context.Context, viewer *frontend.Viewer, device frontend.Device, remote string) ([]any, error) {
-	sessions, err := i.host.Sessions.Sessions(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: i.protocol, Owner: viewer.IsOwner && !viewer.Delegated})
+	sessions, err := i.host.Sessions.Sessions(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: i.protocol, Owner: viewer.IsOwner && !viewer.Delegated, VisibleOnly: true})
 	if err != nil {
 		return nil, err
 	}

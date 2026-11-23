@@ -16,6 +16,11 @@ func TestAudioAndSubtitleLanguagesStaySeparate(t *testing.T) {
 		{"Movie.2019.TRUEFRENCH.1080p.BluRay.x264-GRP", []string{"french"}, nil},
 		{"Pelicula.2019.VOSE.1080p.WEB-DL-GRP", nil, []string{"spanish"}},
 		{"Filme.2019.1080p.WEB-DL.LEGENDADO-GRP", nil, []string{"portuguese-brazil"}},
+		{"Filme.2019.1080p.WEB-DL.LEGENDADA-GRP", nil, []string{"portuguese-brazil"}},
+		{"Filme.2019.1080p.WEB-DL.PT.BR.SUBS-GRP", nil, []string{"portuguese-brazil"}},
+		{"Filme.2019.1080p.WEB-DL.SUBS.PT.BR-GRP", nil, []string{"portuguese-brazil"}},
+		{"Filme.2019.1080p.WEB-DL.PT-BR/ENG.SUBS-GRP", nil, []string{"english", "portuguese-brazil"}},
+		{"Filme.2019.1080p.WEB-DL.Dublado/Legendado-GRP", []string{"portuguese-brazil"}, []string{"portuguese-brazil"}},
 		{"Movie.2019.1080p.WEB-DL.Multi-Subs-GRP", nil, nil},
 		{"Movie.2019.1080p.WEB-DL.MULTi.SUB-GRP", nil, nil},
 		{"Movie 2019 1080p WEB-DL Dual-Audio", []string{"multi"}, nil},
@@ -36,13 +41,26 @@ func TestRegionalSpanishAndPortugueseVariants(t *testing.T) {
 		"Pelicula.2019.SPANISH.1080p.WEB-DL-GRP":       {"spanish"},
 		"Pelicula.2019.1080p.WEB-DL.ES-MX-GRP":         {"spanish-latino"},
 		"Filme.2019.1080p.WEB-DL.DUBLADO-GRP":          {"portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.DUBLADA-GRP":          {"portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.PT.BR.DDP5.1-GRP":     {"portuguese-brazil"},
+		"Filme_2019_1080p_WEB-DL_PT_BR-GRP":            {"portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.PTBR-GRP":             {"portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.[PT-BR/ENG]-GRP":      {"english", "portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.PT-BR+ENG-GRP":        {"english", "portuguese-brazil"},
+		"Filme.2019.1080p.WEB-DL.Dual.Áudio-GRP":       {"portuguese", "dual"},
 		"Filme.2019.1080p.WEB-DL.PT-PT-GRP":            {"portuguese-portugal"},
+		"Filme.2019.1080p.WEB-DL.PTPT-GRP":             {"portuguese-portugal"},
 		"Filme.2019.PORTUGUESE.1080p.WEB-DL-GRP":       {"portuguese"},
 		"Pelicula.2019.CASTELLANO.LATINO.1080p.WEB-DL": {"spanish-spain", "spanish-latino"},
 	} {
 		if got := Parse(name).Languages; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: languages %v, want %v", name, got, want)
 		}
+	}
+	// [Legendado] is metadata, not a release group.
+	leg := Parse("Moana.2.2024.1080p.WEB-DL.[Legendado]")
+	if leg.Group != "" || !leg.Subbed || !reflect.DeepEqual(leg.SubtitleLanguages, []string{"portuguese-brazil"}) {
+		t.Errorf("[Legendado] bracket: group=%q subbed=%v subs=%v", leg.Group, leg.Subbed, leg.SubtitleLanguages)
 	}
 }
 

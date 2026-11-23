@@ -22,9 +22,7 @@ afterEach(async () => {
 describe("Settings", () => {
   it("fills a proxy suggestion and tests the connection inline", async () => {
     const { fake } = renderApp("/server");
-    fireEvent.click(
-      await screen.findByLabelText("Send indexers, debrid and Usenet through a proxy", {}, WAIT),
-    );
+    fireEvent.click(await screen.findByLabelText("Send sources through a proxy", {}, WAIT));
     fireEvent.click(screen.getByRole("button", { name: "Common proxy setups" }));
     fireEvent.click(
       within(await screen.findByRole("listbox", { hidden: true })).getByText(
@@ -39,21 +37,35 @@ describe("Settings", () => {
       url: "http://gluetun:8888",
     });
   });
-  it("shows enabled app addresses and saves a non-Plex port from General", async () => {
-    const { fake } = renderApp("/server", {}, (f) => {
+  it("removes How apps connect from General and saves dedicated app ports on the app page", async () => {
+    const general = renderApp("/server", {}, (f) => {
       f.state.config.frontends = {
         plex: { enabled: true },
         jellyfin: { enabled: true },
         emby: { enabled: false },
       };
     });
-    const port = await screen.findByLabelText("Jellyfin port", {}, WAIT);
+    expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "How apps connect" })).toBeNull();
+    expect(screen.queryByLabelText("Jellyfin port")).toBeNull();
+    expect(screen.queryByLabelText("Plex port")).toBeNull();
+    general.unmount();
+
+    const { fake } = renderApp("/apps/jellyfin", {}, (f) => {
+      f.state.config.frontends = {
+        plex: { enabled: true },
+        jellyfin: { enabled: true },
+        emby: { enabled: false },
+      };
+    });
+    const port = await screen.findByRole("spinbutton", { name: "Port" }, WAIT);
     await waitFor(() => {
       expect(port).toBeEnabled();
       expect(port).toHaveValue(8096);
     }, WAIT);
-    expect(screen.queryByLabelText("Emby port")).toBeNull();
-    expect(screen.getByText("http://192.168.1.20:8096")).toBeVisible();
+    expect(screen.getByRole("link", { name: "http://192.168.1.20:8096" })).toBeVisible();
+    expect(screen.getByText("Also reachable at")).toBeVisible();
+    expect(screen.getByText("http://192.168.1.20:32400/jellyfin")).toBeVisible();
     expect(screen.getByText("https://jellyfin.example.com")).toBeVisible();
     fireEvent.change(port, { target: { value: "8098" } });
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
@@ -65,6 +77,51 @@ describe("Settings", () => {
       WAIT,
     );
   });
+
+  it("shows server listener power options on General and secondary interface labels on app pages", async () => {
+    const overview = renderApp("/server");
+    expect(await screen.findByRole("heading", { name: "Server address" }, WAIT)).toBeVisible();
+    expect(screen.queryByLabelText("Listen address")).toBeNull();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More options: Server address" }, WAIT),
+    );
+    expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
+    overview.unmount();
+
+    renderAppWith("/apps/jellyfin", (method, path) => {
+      if (method === "GET" && path === "/frontends") {
+        return [
+          {
+            descriptor: { id: "jellyfin", name: "Jellyfin", defaultPort: 8096 },
+            enabled: true,
+            status: {
+              connectUrls: [
+                "http://192.168.68.65:32550/jellyfin",
+                "http://192.168.68.65:8096",
+                "http://100.65.221.123:8096",
+                "http://[fd79:f184::1]:8096",
+                "http://10.255.0.2:8096",
+              ],
+              addresses: ["http://192.168.68.65:8096"],
+            },
+          },
+        ];
+      }
+      if (method === "GET" && path === "/frontends/jellyfin/settings") {
+        return { port: 8096 };
+      }
+      return undefined;
+    });
+
+    expect(
+      await screen.findByRole("link", { name: "http://192.168.68.65:8096" }, WAIT),
+    ).toBeVisible();
+    expect(screen.getByText("Also reachable at")).toBeVisible();
+    expect(screen.getByText("Tailscale")).toBeVisible();
+    expect(screen.getByText("LAN IPv6")).toBeVisible();
+    expect(screen.getByText("Other network interface")).toBeVisible();
+  });
+
   it("shows and filters client families reported by other protocols", async () => {
     renderApp("/playback/devices");
     expect(await screen.findByText("Stremio TV", {}, WAIT)).toBeInTheDocument();
@@ -495,13 +552,11 @@ describe("Settings", () => {
       } as never;
     });
     expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
-    expect(await screen.findByLabelText("Plex port", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText("Living Room Ether is ready for viewers.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "How apps connect" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Experiments" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Listen address")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Advanced" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "More options: How apps connect" }));
-    expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
     // Moved off General: logging to Maintenance › Logs, stream limits to Playback.
     expect(screen.queryByLabelText("Log level")).not.toBeInTheDocument();
     expect(
@@ -632,13 +687,13 @@ describe("Settings", () => {
     expect(calls(fake, "PUT", "/config/plex")[0]!.body).not.toHaveProperty("remoteAccess");
   });
 
-  it("returns disabled Plex settings to the overview without changing the saved account", async () => {
+  it("opens disabled Plex settings without changing the saved account", async () => {
     const { fake } = renderApp("/apps/plex", {}, (f) => {
       f.state.config.frontends = { plex: { enabled: false } };
     });
     const accountBefore = JSON.stringify(fake.state.config.plex);
     expect(await screen.findByRole("switch", { name: "Plex enabled" }, WAIT)).not.toBeChecked();
-    expect(screen.queryByRole("tab", { name: "Plex" })).toBeNull();
+    expect(screen.getByText("Off")).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Connection checks" })).toBeNull();
     expect(calls(fake, "PUT", "/config")).toHaveLength(0);
     expect(JSON.stringify(fake.state.config.plex)).toBe(accountBefore);
@@ -657,7 +712,7 @@ describe("Settings", () => {
       ((await screen.findByRole("switch", { name: "Quick Connect" }, WAIT)) as HTMLInputElement)
         .checked,
     ).toBe(!before);
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Port" })).toHaveValue(8096);
     expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeVisible();
   });
@@ -782,6 +837,7 @@ describe("Settings", () => {
       "href",
       "/metadata/ratings",
     );
+    expect(screen.queryByRole("link", { name: /Metadata › Ratings/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
     await waitFor(
       () => expect(calls(fake, "PUT", "/discovery/ratings/settings")).toHaveLength(1),
@@ -805,7 +861,7 @@ describe("Settings", () => {
     const { fake } = renderAppWith("/services/ratings", (_method, path) =>
       path === "/discovery/ratings/settings" ? ratings : undefined,
     );
-    expect(await screen.findByLabelText("Provider", {}, WAIT)).toHaveValue("omdb");
+    expect(await screen.findByRole("button", { name: "Provider" }, WAIT)).toHaveTextContent("OMDb");
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "External ratings" })).toBeNull();
     expect(screen.queryByLabelText("Keep scores for")).toBeNull();
@@ -949,7 +1005,7 @@ describe("Settings", () => {
     expect(seen).toHaveLength(2);
   });
 
-  it("runs the setup wizard from General without clearing a completed server", async () => {
+  it("runs the setup wizard from General with normal navigation and an Exit setup control", async () => {
     const { fake } = renderApp("/server");
     fireEvent.click(await screen.findByRole("button", { name: "Run setup wizard" }, WAIT));
     expect(await screen.findByRole("heading", { name: "Set up Ether" }, WAIT)).toBeInTheDocument();
@@ -958,6 +1014,9 @@ describe("Settings", () => {
     expect(fake.state.config.setupComplete).toBe(true);
     expect(fake.state.config.server.friendlyName).toBe("Living Room Ether");
     expect(calls(fake, "PUT", "/config")).toHaveLength(0);
+    expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Exit setup" }));
+    expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
   });
 
   it("links unfinished setup to the wizard without calling reopen", async () => {
@@ -978,5 +1037,81 @@ describe("Settings", () => {
       await screen.findByRole("heading", { name: "Test playback with a local file" }, WAIT),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Serve test files")).toBeInTheDocument();
+  });
+
+  it("configures the dedicated owner console port via the drawer on Server › General", async () => {
+    const { fake } = renderApp("/server");
+    const setBtn = await screen.findByRole("button", { name: "Set port" }, WAIT);
+    await waitFor(() => expect(setBtn).toBeEnabled(), WAIT);
+    fireEvent.click(setBtn);
+
+    const dialog = await screen.findByRole("dialog", { name: "Owner console port" }, WAIT);
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Dedicated console port" }));
+    const portInput = within(dialog).getByLabelText("Port");
+    expect(portInput).toHaveValue(8099);
+
+    // Reject matching Ether's main port.
+    fireEvent.change(portInput, { target: { value: String(fake.state.config.server.port) } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      String(fake.state.config.server.port),
+    );
+
+    // Save dedicated port 8099 with /ether turned off on the main port.
+    fireEvent.change(portInput, { target: { value: "8099" } });
+    fireEvent.click(
+      within(dialog).getByRole("switch", { name: "Serve /ether on Ether's main port" }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const puts = calls(fake, "PUT", "/config/server");
+      expect(puts).toHaveLength(1);
+      expect(puts[0]!.body).toEqual({
+        consolePort: 8099,
+        disableConsoleOnMainPort: true,
+      });
+    }, WAIT);
+
+    expect(
+      await screen.findByText(
+        "Listening on dedicated port 8099. /ether is turned off on Ether's main port.",
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a bind-failure fallback warning when the dedicated console port could not bind", async () => {
+    renderApp("/server", {}, (fake) => {
+      fake.state.config.server.consolePort = 8099;
+      fake.state.config.server.disableConsoleOnMainPort = true;
+      const orig = fake.fetch;
+      fake.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/server/console-listener")) {
+          return new Response(
+            JSON.stringify({
+              configuredPort: 8099,
+              activePort: 0,
+              mainPort: 32400,
+              onMainPort: true,
+              fallback: true,
+              error: "address already in use",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return orig(input, init);
+      };
+    });
+
+    expect(
+      await screen.findByText(
+        /Port 8099 couldn't bind, so Ether kept the console on port 32400 to prevent lockout/,
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
   });
 });

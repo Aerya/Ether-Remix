@@ -41,9 +41,10 @@ type lifecycleJSON struct {
 }
 
 type userJSON struct {
-	ID        int64         `json:"id"`
-	Username  string        `json:"username"`
-	Lifecycle lifecycleJSON `json:"lifecycle"`
+	ID           int64         `json:"id"`
+	Username     string        `json:"username"`
+	AccessStatus string        `json:"accessStatus"`
+	Lifecycle    lifecycleJSON `json:"lifecycle"`
 }
 
 func TestViewerLifecycleAPI(t *testing.T) {
@@ -119,10 +120,10 @@ func TestViewerLifecycleAPI(t *testing.T) {
 	if lc := byID[bob].Lifecycle; lc.Source != "local" || !lc.CanRemove || !lc.CanMerge || !lc.CanPause || lc.Paused || lc.ManagedBy != "" {
 		t.Fatalf("local lifecycle %+v", lc)
 	}
-	if lc := byID[plex].Lifecycle; lc.Source != "plex" || !lc.PlexShared || lc.CanRemove || lc.CanMerge || lc.CanPause || lc.ManagedBy != "plex" {
+	if lc := byID[plex].Lifecycle; lc.Source != "plex" || !lc.PlexShared || lc.CanRemove || lc.CanMerge || !lc.CanPause || lc.Paused || lc.ManagedBy != "plex" {
 		t.Fatalf("plex lifecycle %+v", lc)
 	}
-	if lc := byID[plexHome].Lifecycle; lc.Source != "plexHome" || lc.ManagedBy != "plex" || lc.CanRemove {
+	if lc := byID[plexHome].Lifecycle; lc.Source != "plexHome" || !lc.PlexShared || lc.ManagedBy != "plex" || lc.CanRemove || lc.CanMerge || !lc.CanPause || lc.Paused {
 		t.Fatalf("plexHome lifecycle %+v", lc)
 	}
 	res = do("GET", fmt.Sprintf("/ether/api/users/%d", bob), "")
@@ -153,7 +154,7 @@ func TestViewerLifecycleAPI(t *testing.T) {
 	for _, v := range viewers.Viewers {
 		if v.ID == plex {
 			foundPlex = true
-			if v.Lifecycle.ManagedBy != "plex" || v.Lifecycle.CanPause {
+			if v.Lifecycle.ManagedBy != "plex" || !v.Lifecycle.CanPause || v.Lifecycle.CanRemove || v.Lifecycle.CanMerge {
 				t.Fatalf("plex viewer lifecycle %+v", v.Lifecycle)
 			}
 		}
@@ -162,19 +163,17 @@ func TestViewerLifecycleAPI(t *testing.T) {
 		t.Fatal("plex viewer missing from viewers list")
 	}
 
-	// Plex viewers and the owner refuse pause/resume/remove/merge.
+	// Plex viewers still refuse remove and merge; the owner refuses pause/resume/remove/merge.
 	for _, tc := range []struct {
 		method, path string
 		body         string
 		want         int
 	}{
-		{"POST", fmt.Sprintf("/ether/api/users/%d/pause", plex), `{}`, 409},
-		{"POST", fmt.Sprintf("/ether/api/users/%d/resume", plex), `{}`, 409},
-		{"POST", fmt.Sprintf("/ether/api/users/%d/pause", plexHome), `{}`, 409},
 		{"DELETE", fmt.Sprintf("/ether/api/users/%d", plex), ``, 409},
 		{"DELETE", fmt.Sprintf("/ether/api/users/%d", plexHome), ``, 409},
 		{"DELETE", fmt.Sprintf("/ether/api/users/%d", owner), ``, 403},
 		{"POST", fmt.Sprintf("/ether/api/users/%d/pause", owner), `{}`, 403},
+		{"POST", fmt.Sprintf("/ether/api/users/%d/resume", owner), `{}`, 403},
 		{"POST", fmt.Sprintf("/ether/api/users/%d/merge", bob), fmt.Sprintf(`{"into":%d}`, plex), 409},
 		{"POST", fmt.Sprintf("/ether/api/users/%d/merge", plex), fmt.Sprintf(`{"into":%d}`, bob), 409},
 		{"POST", fmt.Sprintf("/ether/api/users/%d/merge", bob), fmt.Sprintf(`{"into":%d}`, owner), 403},
@@ -184,6 +183,66 @@ func TestViewerLifecycleAPI(t *testing.T) {
 	} {
 		if res := do(tc.method, tc.path, tc.body); res.Code != tc.want {
 			t.Fatalf("%s %s: %d %s, want %d", tc.method, tc.path, res.Code, res.Body, tc.want)
+		}
+	}
+
+	// Pausing a Plex viewer signs them out across every frontend and keeps plexShared separate from paused.
+	frontendSurfaces := []string{"jellyfin", "emby", "silo", "vela", "stremio", "xtream"}
+	plexGrants := make(map[string]string, len(frontendSurfaces))
+	for _, surface := range frontendSurfaces {
+		tok, err := grants.Issue(ctx, plex, nil, surface, core.Device{Client: surface})
+		if err != nil {
+			t.Fatalf("issue %s grant: %v", surface, err)
+		}
+		plexGrants[surface] = tok
+	}
+	plexDel, err := users.IssueDelegation(ctx, plex)
+	if err != nil {
+		t.Fatalf("issue plex delegation: %v", err)
+	}
+	res = do("POST", fmt.Sprintf("/ether/api/users/%d/pause", plex), `{}`)
+	if res.Code != 200 {
+		t.Fatalf("pause plex: %d %s", res.Code, res.Body)
+	}
+	for surface, tok := range plexGrants {
+		if _, err := grants.Resolve(ctx, surface, tok); err == nil {
+			t.Fatalf("paused plex %s grant still resolves", surface)
+		}
+	}
+	if _, _, err := users.Accept(ctx, "tok-friend"); err == nil {
+		t.Fatal("paused plex synced token still accepted")
+	}
+	if _, _, err := users.Accept(ctx, plexDel); err == nil {
+		t.Fatal("paused plex delegation token still accepted")
+	}
+	res = do("GET", fmt.Sprintf("/ether/api/users/%d", plex), "")
+	if res.Code != 200 {
+		t.Fatalf("get paused plex user: %d %s", res.Code, res.Body)
+	}
+	var pausedPlex struct {
+		User userJSON `json:"user"`
+	}
+	decode(t, res, &pausedPlex)
+	if !pausedPlex.User.Lifecycle.Paused || !pausedPlex.User.Lifecycle.PlexShared || !pausedPlex.User.Lifecycle.CanPause || pausedPlex.User.Lifecycle.CanRemove || pausedPlex.User.Lifecycle.CanMerge {
+		t.Fatalf("paused plex lifecycle = %+v", pausedPlex.User.Lifecycle)
+	}
+	// Pausing and resuming a Plex Home user works too.
+	if res := do("POST", fmt.Sprintf("/ether/api/users/%d/pause", plexHome), `{}`); res.Code != 200 {
+		t.Fatalf("pause plexHome: %d %s", res.Code, res.Body)
+	}
+	if res := do("POST", fmt.Sprintf("/ether/api/users/%d/resume", plexHome), `{}`); res.Code != 200 {
+		t.Fatalf("resume plexHome: %d %s", res.Code, res.Body)
+	}
+	// Resuming a paused Plex viewer restores access while still shared; pre-pause grants remain revoked.
+	if res := do("POST", fmt.Sprintf("/ether/api/users/%d/resume", plex), `{}`); res.Code != 200 {
+		t.Fatalf("resume plex: %d %s", res.Code, res.Body)
+	}
+	if _, _, err := users.Accept(ctx, "tok-friend"); err != nil {
+		t.Fatalf("resumed plex synced token rejected: %v", err)
+	}
+	for surface, tok := range plexGrants {
+		if _, err := grants.Resolve(ctx, surface, tok); err == nil {
+			t.Fatalf("revoked %s grant resurrected after resume", surface)
 		}
 	}
 

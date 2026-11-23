@@ -26,15 +26,18 @@ import (
 // Endpoints used:
 //
 //	GET  /torrents/checkcached?hash=a,b&format=object&list_files=true -> data{hash: {name,size,files}}
-//	POST /torrents/createtorrent  multipart magnet=, add_only_if_cached= -> data{torrent_id}
-//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,download_present,download_finished,files[{id,name,size}]}
-//	GET  /torrents/mylist?bypass_cache=true     -> data[...] (reuse by hash)
+//	POST /torrents/createtorrent  multipart magnet=, allow_zip=false, add_only_if_cached= -> data{torrent_id} or data{queued_id, hash, current_active_downloads}
+//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,active,download_present,download_finished,files[{id,name,size,zipped}]}
+//	GET  /torrents/mylist?bypass_cache=true&files=false -> data[...] (reuse and queued follow-up by hash)
+//	GET  /queued/getqueued?type=torrent&bypass_cache=true -> data[{id,hash,name,type}]
+//	POST /queued/controlqueued {queued_id, operation:"delete"}
 //	GET  /torrents/requestdl?token=&torrent_id=&file_id= -> data "https://..."
 //	POST /torrents/controltorrent {torrent_id, operation:"delete"}
 //	GET  /user/me -> data{email, plan, premium_expires_at}
 const (
-	torBoxBase    = "https://api.torbox.app/v1/api"
-	torBoxLinkTTL = 3 * time.Hour
+	torBoxBase             = "https://api.torbox.app/v1/api"
+	torBoxLinkTTL          = 3 * time.Hour
+	torBoxAutoZipThreshold = 100
 )
 
 type torBox struct {
@@ -44,8 +47,11 @@ type torBox struct {
 	// each other; production approval runs without it.
 	edgeApproval func(raw, candidate string) bool
 	list         listCache
+	recent       recentLinks
 	knownMu      sync.Mutex
 	known        map[string]string // validated owned ids; no network lock on Play
+	zipMu        sync.Mutex
+	zipCDs       map[string]torBoxZipCD // bounded Central Directory cache for server-side zips
 }
 
 func newTorBox(key string, opts ProviderOptions) *torBox {
@@ -53,6 +59,11 @@ func newTorBox(key string, opts ProviderOptions) *torBox {
 }
 
 func (p *torBox) Kind() string { return "torbox" }
+
+// zipOnlyCheckThreshold: TorBox caches torrents of 100+ files only as a single
+// server-side zip, which /torrents/checkcached reports as uncached even though
+// cached-only /torrents/createtorrent returns the cached zip (#667, #709).
+func (p *torBox) zipOnlyCheckThreshold() int { return torBoxAutoZipThreshold }
 
 // edgePortableLinks: TorBox download links stand on the nexus CDN as a
 // whole. During the 2026-11-09 maintenance window a link minted on the
@@ -119,18 +130,80 @@ func (e *tbEnvelope) UnmarshalJSON(body []byte) error {
 	return nil
 }
 
+type tbFile struct {
+	ID       json.Number `json:"id"`
+	Name     string      `json:"name"`
+	Size     int64       `json:"size"`
+	MIMEType string      `json:"mimetype"`
+	Zipped   bool        `json:"zipped"`
+}
+
 type tbTorrent struct {
 	ID               json.Number `json:"id"`
 	Hash             string      `json:"hash"`
 	Name             string      `json:"name"`
+	Active           bool        `json:"active"`
 	DownloadPresent  bool        `json:"download_present"`
 	DownloadFinished bool        `json:"download_finished"`
 	DownloadState    string      `json:"download_state"`
-	Files            []struct {
-		ID   json.Number `json:"id"`
-		Name string      `json:"name"`
-		Size int64       `json:"size"`
-	} `json:"files"`
+	Files            []tbFile    `json:"files"`
+}
+
+type tbQueued struct {
+	ID   json.Number `json:"id"`
+	Hash string      `json:"hash"`
+	Name string      `json:"name"`
+	Type string      `json:"type"`
+}
+
+func tbID(n json.Number) string {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return ""
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if i <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(i, 10)
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		if f <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(f), 10)
+	}
+	if s == "0" {
+		return ""
+	}
+	return s
+}
+
+func tbCount(n json.Number) int {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return 0
+	}
+	if i, err := strconv.Atoi(s); err == nil && i > 0 {
+		return i
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+		return int(f)
+	}
+	return 0
+}
+
+func matchesQueuedHash(candidate string, hashes ...string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	for _, h := range hashes {
+		if h != "" && strings.EqualFold(candidate, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *torBox) do(ctx context.Context, r apiRequest) (json.RawMessage, error) {
@@ -162,7 +235,7 @@ func (p *torBox) classify(status int, env tbEnvelope) error {
 	}
 	code := strings.ToUpper(env.Error)
 	switch {
-	case code == "DUPLICATE_ITEM":
+	case code == "DUPLICATE_ITEM" || strings.Contains(strings.ToLower(msg), "already queued"):
 		return errDuplicateTorrent
 	case strings.Contains(code, "AUTH") || strings.Contains(code, "TOKEN") || strings.Contains(code, "PLAN") || code == "NO_AUTH":
 		return fmt.Errorf("torbox: %s: %w", msg, ErrAuth)
@@ -173,6 +246,12 @@ func (p *torBox) classify(status int, env tbEnvelope) error {
 	case code == "ACTIVE_LIMIT":
 		// The plan's active-download slots are full: nothing new is added.
 		return fmt.Errorf("torbox: %s: %w", msg, ErrDownloadLimit)
+	case code == "DOWNLOAD_TOO_LARGE":
+		// Torrent exceeds this TorBox plan's size limit; another provider
+		// may still serve it, and this is not a provider outage (#667).
+		return fmt.Errorf("torbox: %s: %w", msg, ErrTooLarge)
+	case code == "BOZO_TORRENT":
+		return fmt.Errorf("torbox: %s: %w", msg, core.ErrReleaseRejected)
 	case code == "COOLDOWN_LIMIT" || strings.Contains(code, "RATE"):
 		return fmt.Errorf("torbox: %s: %w", msg, ErrRateLimited)
 	}
@@ -221,7 +300,7 @@ func (p *torBox) findBackground(ctx context.Context, hash string) string {
 }
 
 func (p *torBox) loadList(ctx context.Context) (map[string]string, error) {
-	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}}})
+	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}, "files": {"false"}}})
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +319,113 @@ func (p *torBox) loadList(ctx context.Context) (map[string]string, error) {
 	return m, nil
 }
 
+func decodeTorBoxTorrents(data json.RawMessage) ([]tbTorrent, error) {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, nil
+	}
+	var items []tbTorrent
+	if err := json.Unmarshal(t, &items); err != nil {
+		return nil, errors.New("torbox: unexpected torrent list")
+	}
+	return items, nil
+}
+
+func decodeTorBoxQueued(data json.RawMessage) ([]tbQueued, error) {
+	t := bytes.TrimSpace(data)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, nil
+	}
+	if t[0] == '[' {
+		var items []tbQueued
+		if err := json.Unmarshal(t, &items); err != nil {
+			return nil, errors.New("torbox: unexpected queued list")
+		}
+		return items, nil
+	}
+	if t[0] == '{' {
+		var item tbQueued
+		if err := json.Unmarshal(t, &item); err != nil {
+			return nil, errors.New("torbox: unexpected queued item")
+		}
+		if tbID(item.ID) == "" && strings.TrimSpace(item.Hash) == "" {
+			return nil, nil
+		}
+		return []tbQueued{item}, nil
+	}
+	return nil, errors.New("torbox: unexpected queued list")
+}
+
+func (p *torBox) findQueued(ctx context.Context, queuedID string, hashes ...string) (string, bool, error) {
+	data, err := p.do(ctx, apiRequest{
+		method: http.MethodGet,
+		path:   "/queued/getqueued",
+		query:  url.Values{"type": {"torrent"}, "bypass_cache": {"true"}},
+	})
+	if err != nil {
+		if errors.Is(err, ErrGone) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	items, err := decodeTorBoxQueued(data)
+	if err != nil {
+		return "", false, err
+	}
+	for _, it := range items {
+		id := tbID(it.ID)
+		if (queuedID != "" && id == queuedID) || matchesQueuedHash(it.Hash, hashes...) {
+			if id == "" {
+				id = queuedID
+			}
+			return id, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (p *torBox) removeQueued(ctx context.Context, queuedID string) error {
+	if queuedID == "" {
+		return nil
+	}
+	var idv any = queuedID
+	if n, err := strconv.ParseInt(queuedID, 10, 64); err == nil {
+		idv = n
+	}
+	body, _ := json.Marshal(map[string]any{"queued_id": idv, "operation": "delete"})
+	_, err := p.do(ctx, apiRequest{
+		method: http.MethodPost,
+		path:   "/queued/controlqueued",
+		body:   bytes.NewReader(body),
+		ctype:  "application/json",
+	})
+	return err
+}
+
+// followQueuedTorrent checks whether a queued TorBox add has moved into
+// /torrents/mylist yet or is still waiting in /queued/getqueued.
+func (p *torBox) followQueuedTorrent(ctx context.Context, hash, queuedHash, queuedID string) (queuedTorrentStatus, error) {
+	id, active, err := p.findInMyList(ctx, hash, queuedHash)
+	if err != nil {
+		return queuedTorrentStatus{}, err
+	}
+	if id != "" {
+		return queuedTorrentStatus{TorrentID: id}, nil
+	}
+	qid, ok, err := p.findQueued(ctx, queuedID, hash, queuedHash)
+	if err != nil {
+		return queuedTorrentStatus{}, err
+	}
+	if ok {
+		return queuedTorrentStatus{
+			StillQueued:     true,
+			QueuedID:        qid,
+			ActiveDownloads: active,
+		}, nil
+	}
+	return queuedTorrentStatus{}, nil
+}
+
 func (p *torBox) torrent(ctx context.Context, id string) (*tbTorrent, error) {
 	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"id": {id}, "bypass_cache": {"true"}}})
 	if err != nil {
@@ -253,6 +439,13 @@ func (p *torBox) torrent(ctx context.Context, id string) (*tbTorrent, error) {
 }
 
 func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, error) {
+	if req.Private && !req.privateChecked {
+		var perr error
+		req, perr = prepareAcquire(ctx, p, req, false)
+		if perr != nil {
+			return nil, perr
+		}
+	}
 	id, added := req.TorrentID, false
 	if id == "" {
 		// createtorrent enforces add_only_if_cached atomically. An extra
@@ -262,6 +455,10 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 		var body bytes.Buffer
 		mw := multipart.NewWriter(&body)
 		_ = mw.WriteField("magnet", req.Magnet)
+		// TorBox defaults allow_zip=true and collapses torrents with 100+
+		// files into one .zip unless explicitly disabled; Ether selects
+		// individual files itself (#667).
+		_ = mw.WriteField("allow_zip", "false")
 		if req.CachedOnly {
 			_ = mw.WriteField("add_only_if_cached", "true")
 		}
@@ -271,11 +468,23 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 			// The account may contain an item added by another app/node.
 			// Only this collision needs a fresh account-wide hash lookup;
 			// never identify it by a similar title or delete the existing item.
-			id, err = p.findFresh(ctx, req.InfoHash)
+			var active int
+			id, active, err = p.findDuplicate(ctx, req.InfoHash)
 			if err != nil {
 				return nil, err
 			}
 			if id == "" {
+				qid, ok, qerr := p.findQueued(ctx, "", req.InfoHash)
+				if qerr != nil {
+					return nil, qerr
+				}
+				if ok {
+					err := fmt.Errorf("torbox: torrent queued: %w", core.ErrNotCached)
+					if req.CachedOnly {
+						return nil, err
+					}
+					return nil, queued(qid, req.InfoHash, active, err)
+				}
 				return nil, fmt.Errorf("torbox: duplicate torrent not listed: %w", core.ErrSourceUnavailable)
 			}
 		} else {
@@ -283,12 +492,36 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 				return nil, err
 			}
 			var out struct {
-				TorrentID json.Number `json:"torrent_id"`
+				TorrentID              json.Number `json:"torrent_id"`
+				QueuedID               json.Number `json:"queued_id"`
+				Hash                   string      `json:"hash"`
+				CurrentActiveDownloads json.Number `json:"current_active_downloads"`
+				ActiveLimit            json.Number `json:"active_limit"`
 			}
-			if err := json.Unmarshal(data, &out); err != nil || out.TorrentID.String() == "" {
+			if err := json.Unmarshal(data, &out); err != nil {
 				return nil, errors.New("torbox: createtorrent returned no torrent id")
 			}
-			id, added = out.TorrentID.String(), true
+			if tid := tbID(out.TorrentID); tid != "" {
+				id, added = tid, true
+			} else if qid := tbID(out.QueuedID); qid != "" {
+				qhash := strings.ToLower(strings.TrimSpace(out.Hash))
+				if qhash == "" {
+					qhash = strings.ToLower(strings.TrimSpace(req.InfoHash))
+				}
+				active := tbCount(out.CurrentActiveDownloads)
+				qerr := fmt.Errorf("torbox: torrent queued: %w", core.ErrNotCached)
+				if req.CachedOnly {
+					if req.RemoveUncached {
+						rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+						defer cancel()
+						_ = p.removeQueued(rctx, qid)
+					}
+					return nil, qerr
+				}
+				return nil, queued(qid, qhash, active, qerr)
+			} else {
+				return nil, errors.New("torbox: createtorrent returned no torrent id")
+			}
 		}
 	}
 	cleanup := func() bool {
@@ -324,7 +557,15 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 	}
 	files := make([]File, 0, len(t.Files))
 	for _, f := range t.Files {
-		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size})
+		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size, MIMEType: f.MIMEType})
+	}
+	// If TorBox already cached this 100+-file torrent as a single server-side
+	// zip archive despite allow_zip=false, inspect the zip over HTTP range
+	// requests (Central Directory + chosen member's Local File Header) so the
+	// named member can be streamed directly; fall back to errProviderZipped
+	// only when the zip or chosen member cannot be streamed (#667, #709).
+	if len(t.Files) == 1 && t.Files[0].Zipped {
+		return p.acquireFromZip(ctx, req, id, t.Name, t.Files[0], files, added, cleanup)
 	}
 	chosen, err := req.Choose(files)
 	if err != nil {
@@ -339,7 +580,14 @@ func (p *torBox) Link(ctx context.Context, h Handle) (DirectLink, error) {
 	if h.TorrentID == "" || h.FileID == "" {
 		return DirectLink{}, ErrGone
 	}
-	q := url.Values{"token": {p.key}, "torrent_id": {h.TorrentID}, "file_id": {h.FileID}, "zip_link": {"false"}}
+	if u := p.recent.take(h.TorrentID, h.FileID, p.opts.Now()); u != "" {
+		return DirectLink{URL: u, Size: h.Size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
+	}
+	return p.requestDL(ctx, h.TorrentID, h.FileID, h.Size)
+}
+
+func (p *torBox) requestDL(ctx context.Context, torrentID, fileID string, size int64) (DirectLink, error) {
+	q := url.Values{"token": {p.key}, "torrent_id": {torrentID}, "file_id": {fileID}, "zip_link": {"false"}}
 	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/requestdl", query: q})
 	if err != nil {
 		return DirectLink{}, err
@@ -348,7 +596,7 @@ func (p *torBox) Link(ctx context.Context, h Handle) (DirectLink, error) {
 	if err := json.Unmarshal(data, &link); err != nil || link == "" {
 		return DirectLink{}, fmt.Errorf("torbox: requestdl returned no link: %w", ErrGone)
 	}
-	return DirectLink{URL: link, Size: h.Size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
+	return DirectLink{URL: link, Size: size, Expires: p.opts.Now().Add(torBoxLinkTTL)}, nil
 }
 
 func (p *torBox) Remove(ctx context.Context, torrentID string) error {
@@ -356,6 +604,8 @@ func (p *torBox) Remove(ctx context.Context, torrentID string) error {
 		return nil
 	}
 	p.list.forget(torrentID)
+	p.recent.forget(torrentID)
+	p.forgetZipCD(torrentID)
 	p.knownMu.Lock()
 	for hash, id := range p.known {
 		if id == torrentID {

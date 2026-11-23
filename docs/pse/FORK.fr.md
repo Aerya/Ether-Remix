@@ -179,7 +179,7 @@ Les vues Jellyfin des bibliothèques Remix utilisent le numéro de section princ
 
 ## Synchronisation du 15 novembre 2026
 
-Révision Ether intégrée : `13d21d35fd15980c13c2bca15a26ddb7e5b8734a`. Conserver le filtrage de découverte des collections, les messages de téléchargement local, les traductions des rangées Plex, la signature des profils de qualité, la priorité SubMaker et le routage MediaFlow lors des prochaines fusions. Les bibliothèques upstream utilisent désormais la source `catalogue` ; les bibliothèques issues des collections Remix restent disponibles. Le repère upstream avance avec cette résolution, sans changement des workflows de synchronisation.
+Révision Ether intégrée : `bb3b4a1411fdbdc00407f40ed7515e43ec6a9676`. Conserver le filtrage de découverte des collections, les messages de téléchargement local, les traductions des rangées Plex, la signature des profils de qualité, la priorité SubMaker et le routage MediaFlow lors des prochaines fusions. Les bibliothèques upstream utilisent désormais la source `catalogue` ; les bibliothèques issues des collections Remix restent disponibles. Le repère upstream avance avec cette résolution, sans changement des workflows de synchronisation.
 
 ## Seedstrem
 
@@ -213,3 +213,11 @@ Les compteurs de priorité utilisent une seule réponse `/pse/indexer/details`, 
 Seules les PR non brouillon de `kesurof`, provenant exactement de `kesurof/Ether-Remix` et ciblant `main`, activent automatiquement la fusion squash. Les autres contributions conservent leur fonctionnement habituel. L'Action privilégiée ne lit que les métadonnées GitHub et son propre script sur `main` ; elle n'exécute jamais le code du fork. Un conflit, un contrôle absent ou une CI en échec bloque la fusion native GitHub. Après confirmation de la fusion, la publication Docker habituelle est déclenchée explicitement pour les changements applicatifs, sans déploiement de service. Une PR limitée à la documentation et à `.github/` ne construit ni ne publie d'image, avant ou après fusion.
 
 Gitleaks examine les nouveaux commits de chaque PR, y compris les forks et la documentation. Les anciennes détections hors de ces commits ne bloquent pas la PR ; la configuration et les listes d'exclusion fournies par la PR sont ignorées. Aucun résultat contenant une valeur secrète n'est publié dans les logs ou les artefacts. Le secret scanning GitHub et sa push protection complètent ce contrôle ; les notifications de sécurité se règlent dans les préférences du compte GitHub.
+
+### Synchronisation du 23 novembre 2026
+
+Les migrations publiées `plugins/7` (cadence des manifests), `collections/9` (origines) et `state/11` (index de reprise) gardent leur sens. Les migrations amont en collision sont enregistrées sous `plugins/11` et `collections/10`. Les prochaines synchronisations doivent conserver ces correspondances, y compris les fonctions de migration SQL associées.
+
+Les règles d’identité des indexeurs utilisent désormais l’éditeur `IdentityRules`. Les sélecteurs `AnyProviderIdEquals` passent par le parcours commun Ether, avec les droits du spectateur ; les bibliothèques Scrob restent un ajout Remix. La visibilité des thèmes est appliquée aussi aux contrôles par lots. Sur Plex, les requêtes par bibliothèque répartissent les rangées choisies pour l’accueil selon leur type ; elles n’ajoutent pas en bloc les recommandations de la page Bibliothèque. Les sources de plugins et bibliothèques personnalisées conservent leur filtrage propre.
+
+La sélection explicite d’un créneau de version peut retenter une autre release du même créneau. Les échecs automatiques restent temporisés et le plafond Remix de tentatives reste applicable (4 par défaut, réglable jusqu’à 10). Les tests de transcodage utilisent les binaires épinglés de `packaging/ffmpeg.lock.json`.

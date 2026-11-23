@@ -1,7 +1,6 @@
 package vela
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -44,22 +43,26 @@ func (i *instance) rowPage(r *http.Request, v *frontend.Viewer, id string, offse
 		return frontend.Row{}, e
 	}
 	noteBootstrapDeadline(r, page.ExpiresAt)
+	return rowFromPage(id, page), nil
+}
+
+func rowFromPage(id string, page frontend.RowViewPage) frontend.Row {
 	kind := ""
 	if page.Truncated {
 		kind = "truncated"
 	}
-	return frontend.Row{RankedTop10: page.RankedTop10, Kind: kind, ID: id, Entries: page.Entries, Handle: page.ImpressionHandle, More: page.More}, nil
+	return frontend.Row{RankedTop10: page.RankedTop10, Kind: kind, ID: id, Entries: page.Entries, Handle: page.ImpressionHandle, More: page.More}
 }
 func (i *instance) rowToken(r *http.Request, v *frontend.Viewer, id string, offset int, exclude []string) string {
-	return i.sealRowCursor(rowCursor{Row: id, Scope: i.cursorScope(r, v), Offset: offset, Exclude: exclude, Expires: time.Now().Add(10 * time.Minute).Unix()})
+	return i.sealRowCursor(rowCursor{Row: id, Scope: i.cursorScope(r, v), Offset: offset, Exclude: exclude, Expires: cursorExpiry(time.Now())})
 }
 
 func (i *instance) sealRowCursor(c rowCursor) string {
-	nonce := make([]byte, i.seal.NonceSize())
-	if _, e := rand.Read(nonce); e != nil {
+	b, _ := json.Marshal(c)
+	nonce, e := i.cursorNonce("vela-row", b)
+	if e != nil {
 		return ""
 	}
-	b, _ := json.Marshal(c)
 	return base64.RawURLEncoding.EncodeToString(i.seal.Seal(nonce, nonce, b, []byte("vela-row")))
 }
 func (i *instance) readRowToken(r *http.Request, v *frontend.Viewer, token string) (rowCursor, error) {

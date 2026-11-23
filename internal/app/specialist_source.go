@@ -11,6 +11,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/trackprefs"
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
@@ -76,9 +77,20 @@ func (a *App) buildSourceRole(ctx context.Context, cfg config.Config) error {
 	}
 	probeCloser := len(a.closers)
 	a.closers = append(a.closers, func() { _ = a.sourceProber.Close() })
+	a.trackprefs = trackprefs.New(a.db)
 	var tc core.Transcoder = sourceProbeOnly{prober: a.sourceProber}
 	a.playback, err = playback.New(playback.Deps{
-		Resolver: a.resolver, Engine: playbackEngine(a), Transcoder: tc, Catalog: a.catalog, Cache: a.cache, DB: a.db, Logger: a.log, Cluster: a.clusterNode(), Availability: a.dbAvail,
+		OpenResolution:         a.openVaultResolution,
+		Resolver:               a.resolver,
+		Engine:                 playbackEngine(a),
+		Transcoder:             tc,
+		Catalog:                a.catalog,
+		Cache:                  a.cache,
+		DB:                     a.db,
+		Logger:                 a.log,
+		Cluster:                a.clusterNode(),
+		Availability:           a.dbAvail,
+		ViewerAudioPreferences: a.viewerAudioPreferences,
 		NativeProbe: func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {
 			return transcode.ProbeSource(ctx, src, src.Size())
 		},
@@ -122,6 +134,9 @@ func (a *App) applySourceConfig(c config.Config) {
 	c.Cache = a.runningCacheConfig()
 	a.engine.UpdatePlaybackReadAhead(c.Cache.PlaybackReadAhead())
 	a.playback.SetConfig(c)
+	if a.deployment != nil && a.deployment.encoder != nil {
+		a.deployment.encoder.SetPauseRetention(c.Server.PausedStreamRetention())
+	}
 }
 
 // Source ownership needs actual metadata fallback, without constructing an

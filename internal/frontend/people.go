@@ -26,13 +26,17 @@ type PeopleQuery struct {
 
 type PersonReadOptions struct{ Prefetch bool }
 
-// PersonDetail contains only facts from currently visible credits. Artwork is
-// optional and remains bound to the authorized title that owns the image.
+// PersonDetail contains only facts from currently visible credits, plus optional
+// cached person metadata. Artwork remains bound to the authorized title that owns it.
 type PersonDetail struct {
 	ID, Name, IMDB string
 	TMDB           int64
 	ArtworkItem    RatingKey
 	Images         []Image
+	KnownFor       string
+	Biography      string
+	Birthday       string
+	Roles          []string
 }
 
 // PeopleReader resolves existing person facet IDs through current visible
@@ -83,4 +87,30 @@ type PersonImageGrantBatch interface {
 // lists, without listing every value of the library.
 type FacetPager interface {
 	FacetPage(ctx context.Context, viewer *Viewer, device Device, viewID, kind string, offset, limit int) ([]FacetValue, int, error)
+}
+
+// LevelFacetPager pages a facet list scoped to a plugin hierarchy level or
+// protocol item type. Only plugin libraries scope by level; every other
+// library answers its indexed FacetPage.
+type LevelFacetPager interface {
+	FacetPageAtLevel(ctx context.Context, viewer *Viewer, device Device, viewID, level, kind string, offset, limit int) ([]FacetValue, int, error)
+}
+
+// FacetPerson is one person entry in a plugin library's people tab.
+type FacetPerson struct {
+	Person    PersonDetail
+	ItemCount int
+}
+
+// FacetPersonPage is one page of people in a plugin library's people tab.
+type FacetPersonPage struct {
+	Items []FacetPerson
+	Total int
+	More  bool
+}
+
+// LibraryFacetPeople is an optional Experience capability returning a single
+// page of people for a plugin library's declared people-type facet field.
+type LibraryFacetPeople interface {
+	LibraryFacetPeople(ctx context.Context, viewer *Viewer, device Device, viewID, field, order string, page PageQuery) (FacetPersonPage, error)
 }

@@ -12,6 +12,5 @@ func init() {
 	store.RegisterViewerTable("identity", "identity_quickconnect", "viewer_id", store.ViewerMergeDrop)
 	store.RegisterViewerTable("identity", "identity_grant_revocations", "viewer_id", store.ViewerMergeDrop)
 	store.RegisterViewerTable("identity", "identity_viewer_times", "viewer_id", store.ViewerMergeMove)
-	store.RegisterViewerTable("identity", "frontend_image_grants", "viewer_id", store.ViewerMergeDrop)
 	store.RegisterViewerTable("identity", "frontend_preferences", "viewer_id", store.ViewerMergeMove, "surface", "client", "pref_key")
 }

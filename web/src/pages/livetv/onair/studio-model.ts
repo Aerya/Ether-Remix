@@ -150,11 +150,6 @@ export const studio = {
   draft: (body: { prompt: string; style: Style; sceneId?: string }) =>
     send<{ style: Style; summary: string }>("/onair/draft", "POST", body),
   exportPack: (id: string) => `/ether/api/onair/looks/${enc(id)}/pack`,
-  importPack: (file: File) => {
-    const data = new FormData();
-    data.append("file", file);
-    return send<Style>("/onair/packs", "POST", data);
-  },
   library: () => apiFetch<LibraryAsset[]>("/onair/assets"),
   asset: (digest: string) => apiFetch<LibraryAsset>(`/onair/assets/${enc(digest)}/info`),
   renameAsset: (digest: string, name: string) =>

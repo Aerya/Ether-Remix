@@ -1,15 +1,15 @@
-import { Button } from "@braedonsaunders/appkit-ui";
+import { Button, SubtabNav } from "@braedonsaunders/appkit-ui";
 import type { ReactNode } from "react";
-import { NavLink, useLocation } from "react-router-dom";
-import { Images, ListVideo, Star } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useRouteTab } from "../../components/layout";
 import { Workspace } from "../../components/workspace";
 import { localized, t } from "../../i18n";
 import "./metadata.css";
 
 const sections = localized(() => [
-  { key: "artwork", label: t("Artwork"), icon: Images },
-  { key: "ratings", label: t("Ratings"), icon: Star },
-  { key: "episodes", label: t("Episode order"), icon: ListVideo },
+  { key: "artwork" as const, label: t("Artwork") },
+  { key: "ratings" as const, label: t("Ratings") },
+  { key: "episodes" as const, label: t("Episode order") },
 ]);
 
 export function MetadataWorkspace({
@@ -23,12 +23,20 @@ export function MetadataWorkspace({
   actions?: ReactNode;
   fitPreview?: boolean;
 }) {
-  const location = useLocation();
+  const active = useRouteTab(sections);
+  const navigate = useNavigate();
   return (
     <Workspace
       title={t("Metadata")}
       actions={
         <>
+          <SubtabNav
+            ariaLabel={t("Metadata sections")}
+            active={active}
+            onSelect={(next) => navigate(`/metadata/${next}`)}
+            tabs={sections}
+            className="[&_button]:py-1.5"
+          />
           {actions}
           <Button
             size="sm"
@@ -45,25 +53,7 @@ export function MetadataWorkspace({
       asideLabel={t("Metadata controls")}
       mainLabel={t("Metadata preview")}
       mainClassName={`metadata-canvas ${fitPreview ? "metadata-canvas-fit" : ""}`}
-      aside={
-        <>
-          <nav className="metadata-nav" aria-label={t("Metadata sections")}>
-            {sections.map(({ key, label, icon: Icon }) => (
-              <NavLink
-                key={key}
-                to={`/metadata/${key}`}
-                className={({ isActive }) =>
-                  `metadata-nav-item ${isActive || (key === "artwork" && location.pathname.endsWith("/metadata")) ? "is-active" : ""}`
-                }
-              >
-                <Icon size={15} />
-                <span>{label}</span>
-              </NavLink>
-            ))}
-          </nav>
-          <div className="metadata-controls">{aside}</div>
-        </>
-      }
+      aside={<div className="metadata-controls">{aside}</div>}
       main={main}
     />
   );

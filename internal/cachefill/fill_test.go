@@ -3,6 +3,7 @@ package cachefill
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -47,11 +48,14 @@ type engineFake struct {
 	cache  *segcache.Cache
 	fail   bool
 	calls  int
+	opens  int
+	size   int // source size; 0 means 32 bytes
 	during func(context.Context)
 }
 
 func (e *engineFake) Open(_ context.Context, id string, _ []byte) (core.MediaSource, error) {
-	return &sourceFake{Reader: bytes.NewReader(make([]byte, 32)), id: id}, nil
+	e.opens++
+	return &sourceFake{Reader: bytes.NewReader(make([]byte, max(e.size, 32))), id: id}, nil
 }
 func (e *engineFake) Prefetch(context.Context, string, []byte, int64, int64) error {
 	panic("managed fill must use durable prefetch")
@@ -235,6 +239,126 @@ func TestAllocationAndTitleLimits(t *testing.T) {
 		t.Fatal("lower budget left shelf over allocated")
 	}
 }
+
+// Failed titles that never got a source reserve nothing, so they must not
+// use up preload title slots, and they leave the manifest once no longer selected.
+func TestFailedTitlesWithoutSourceDoNotFillTitleCap(t *testing.T) {
+	m, cfg, _, res := harness(t)
+	cfg.PreloadMaxTitles = 2
+	released := time.Now().Add(-time.Hour)
+	var titles []core.Title
+	for i := int64(1); i <= 4; i++ {
+		titles = append(titles, core.Title{Key: core.MovieKey(i), Title: fmt.Sprint("Movie ", i), Type: core.TypeMovie, Released: released})
+	}
+	m.deps.Catalog = catalogFake{items: titles}
+	now := time.Now()
+	raw, _ := json.Marshal(*cfg)
+	m.mu.Lock()
+	m.settings = string(raw) // unchanged settings keep the failure backoff
+	m.failed = map[core.RatingKey]failure{}
+	for _, k := range []core.RatingKey{core.MovieKey(1), core.MovieKey(2), core.MovieKey(3), core.MovieKey(50)} {
+		m.items[k] = Item{Key: k, Title: fmt.Sprint(k), State: "failed", Updated: now}
+		m.failed[k] = failure{count: 1, at: now} // still backing off
+	}
+	m.mu.Unlock()
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := m.Status()
+	if s.Ready != 1 || res.calls.Load() != 1 {
+		t.Fatalf("fillable title blocked by failed titles: ready %d, resolves %d, items %+v", s.Ready, res.calls.Load(), s.Items)
+	}
+	states := map[core.RatingKey]string{}
+	for _, it := range s.Items {
+		states[it.Key] = it.State
+	}
+	if states[core.MovieKey(4)] != "cached" || states[core.MovieKey(1)] != "failed" {
+		t.Fatalf("items = %+v", s.Items)
+	}
+	if _, ok := states[core.MovieKey(50)]; ok {
+		t.Fatal("failed title that is no longer selected stayed in the manifest")
+	}
+}
+
+// A title ranked below a full shelf cannot be admitted, so preload must not
+// search indexers or open a source for it. Higher-ranked titles still displace.
+func TestFullShelfSkipsLowerRankedTitlesBeforeResolving(t *testing.T) {
+	m, cfg, eng, res := harness(t)
+	cfg.PreloadBudgetBytes = 48 << 20 // one 32 MiB-overhead reservation fits
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 1 || s.Items[0].Key != core.MovieKey(1) {
+		t.Fatalf("shelf = %+v", s.Items)
+	}
+	if res.calls.Load() != 1 || eng.opens != 1 {
+		t.Fatalf("lower-ranked title resolved %d times, opened %d times for a full shelf", res.calls.Load(), eng.opens)
+	}
+	m.deps.Catalog = catalogFake{items: []core.Title{{Key: core.MovieKey(3), Title: "Three", Type: core.TypeMovie, Released: time.Now().Add(-time.Hour)}, {Key: core.MovieKey(1), Title: "One", Type: core.TypeMovie, Released: time.Now().Add(-time.Hour)}}}
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 1 || s.Items[0].Key != core.MovieKey(3) {
+		t.Fatalf("higher-ranked title did not displace: %+v", s.Items)
+	}
+}
+
+// Once a title's source proved too large for the room below higher-ranked
+// titles, later passes skip it without searching until that room grows.
+func TestTooLargeTitleIsNotResolvedAgainWhileRoomIsShort(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sizeMiB   int
+		budgetMiB int64
+		ready     int
+	}{
+		{"higher-ranked reservation", 8, 75, 1},
+		{"overhead exceeds entire allocation", 8, 39, 0},
+		{"source exceeds entire allocation", 40, 36, 0},
+		{"watchlist can fit a prefix", 40, 65, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cfg, eng, res := harness(t)
+			eng.size = tc.sizeMiB << 20
+			cfg.PreloadBudgetBytes = tc.budgetMiB << 20
+			clock := time.Now()
+			m.deps.Now = func() time.Time { return clock }
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if s := m.Status(); s.Ready != tc.ready || res.calls.Load() != 2 {
+				t.Fatalf("first pass: ready %d, resolves %d", s.Ready, res.calls.Load())
+			}
+			clock = clock.Add(3 * time.Hour) // past the failure backoff
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if res.calls.Load() != 2 || eng.opens != 2 {
+				t.Fatalf("title known not to fit resolved again: resolves %d, opens %d", res.calls.Load(), eng.opens)
+			}
+			if tc.name == "watchlist can fit a prefix" {
+				clock = clock.Add(3 * time.Hour)
+				m.deps.WatchlistIntents = func(context.Context) ([]WarmIntent, error) {
+					return []WarmIntent{{UserID: 1, User: core.User{ID: 1}, Key: core.MovieKey(1), Added: clock}}, nil
+				}
+				if err := m.pass(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if s := m.Status(); s.Ready != 1 || res.calls.Load() != 3 {
+					t.Fatalf("full-source reservation blocked watchlist prefix: ready %d, resolves %d", s.Ready, res.calls.Load())
+				}
+			}
+			cfg.PreloadBudgetBytes = 256 << 20 // room grows: try again
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if s := m.Status(); s.Ready != 2 {
+				t.Fatalf("title not retried after room grew: %+v", s.Items)
+			}
+		})
+	}
+}
+
 func TestFutureTitlesNeverResolve(t *testing.T) {
 	m, _, _, res := harness(t)
 	m.deps.Catalog = catalogFake{items: []core.Title{{Key: core.MovieKey(3), Type: core.TypeMovie, Released: time.Now().Add(time.Hour)}}}

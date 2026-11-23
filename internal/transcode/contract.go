@@ -127,9 +127,13 @@ func contractOf(info core.MediaInfo, d core.Decision) (*videoContract, bool) {
 	if c.width <= 0 || c.height <= 0 {
 		return nil, false
 	}
-	// The scale filter keeps the display aspect, so rounding the width to
-	// an even number leaves a slightly non-square sample aspect ratio.
-	c.pic.sarNum, c.pic.sarDen = reduce(src.sarNum*v.Width*c.height, src.sarDen*v.Height*c.width)
+	// A scaled encode is made square-pixel (planPicture sets setsar=1);
+	// an unscaled one keeps the source's sample aspect ratio.
+	if c.width != v.Width || c.height != v.Height {
+		c.pic.sarNum, c.pic.sarDen = 1, 1
+	} else {
+		c.pic.sarNum, c.pic.sarDen = src.sarNum, src.sarDen
+	}
 	return c, true
 }
 

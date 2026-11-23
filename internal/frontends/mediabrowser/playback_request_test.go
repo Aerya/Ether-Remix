@@ -33,3 +33,20 @@ func TestPlaybackRequestFlexibleJSONTypes(t *testing.T) {
 		t.Fatal(plain)
 	}
 }
+
+func TestPlaybackRequestTopLevelBitrateWinsWhenLower(t *testing.T) {
+	var body playbackRequest
+	if err := json.Unmarshal([]byte(`{"MaxStreamingBitrate":3000000,"DeviceProfile":{"MaxStreamingBitrate":120000000}}`), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.DeviceProfile.MaxStreamingBitrate != 3000000 {
+		t.Fatalf("got %d, want 3000000", body.DeviceProfile.MaxStreamingBitrate)
+	}
+	var higher playbackRequest
+	if err := json.Unmarshal([]byte(`{"MaxStreamingBitrate":120000000,"DeviceProfile":{"MaxStreamingBitrate":4000000}}`), &higher); err != nil {
+		t.Fatal(err)
+	}
+	if higher.DeviceProfile.MaxStreamingBitrate != 4000000 {
+		t.Fatalf("got %d, want 4000000", higher.DeviceProfile.MaxStreamingBitrate)
+	}
+}

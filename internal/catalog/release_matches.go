@@ -10,7 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
-const releaseMatchCols = `SELECT t.key,t.type,t.tmdb_id,t.imdb,t.tvdb,t.title,t.original_title,t.year,t.adult FROM catalog_titles t `
+const releaseMatchCols = `SELECT t.key,t.type,t.tmdb_id,t.imdb,t.tvdb,t.title,t.original_title,t.english_title,t.year,t.adult FROM catalog_titles t `
 
 // ReleaseMatches joins a feed page to local metadata through bounded indexed lookups. It
 // never spends a metadata API call per feed item. Ambiguous names are ignored;
@@ -45,7 +45,7 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 		for rows.Next() {
 			var t core.Title
 			var adult bool
-			if err := rows.Scan(&t.Key, &t.Type, &t.IDs.TMDB, &t.IDs.IMDB, &t.IDs.TVDB, &t.Title, &t.OriginalTitle, &t.Year, &adult); err != nil {
+			if err := rows.Scan(&t.Key, &t.Type, &t.IDs.TMDB, &t.IDs.IMDB, &t.IDs.TVDB, &t.Title, &t.OriginalTitle, &t.EnglishTitle, &t.Year, &adult); err != nil {
 				return err
 			}
 			if adult {
@@ -80,7 +80,7 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 					continue
 				}
 				same, conflict := releaseparse.CompareTitleIDs(r.TitleIDs, t.IDs)
-				if conflict || (!same && (!releaseparse.YearMatches(r.Info.Year, t.Year) || !(releaseparse.TitleMatches(r.Info, t.Title) || releaseparse.TitleMatches(r.Info, t.OriginalTitle)))) {
+				if conflict || (!same && (!releaseparse.YearMatches(r.Info.Year, t.Year) || !(releaseparse.TitleMatches(r.Info, t.Title) || releaseparse.TitleMatches(r.Info, t.OriginalTitle) || (t.EnglishTitle != "" && releaseparse.TitleMatches(r.Info, t.EnglishTitle))))) {
 					continue
 				}
 				if !same && t.Type == core.TypeMovie && r.Info.Year == 0 {
@@ -144,7 +144,7 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 						out[r.ID] = []core.Title{{
 							Key: core.EpisodeKey(show.Key.TMDB(), 1, 1), Type: core.TypeEpisode,
 							ShowKey: show.Key, ShowIDs: show.IDs, ShowTitle: show.Title,
-							ShowOriginalTitle: show.OriginalTitle, ShowYear: show.Year,
+							ShowOriginalTitle: show.OriginalTitle, ShowEnglishTitle: show.EnglishTitle, ShowYear: show.Year,
 							Season: 1, Episode: 1, Released: show.Released, Language: show.Language,
 						}}
 					}
@@ -166,7 +166,7 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 					if t.ShowTitle == "" {
 						t.ShowTitle = show.Title
 					}
-					t.ShowOriginalTitle, t.ShowYear = show.OriginalTitle, show.Year
+					t.ShowOriginalTitle, t.ShowEnglishTitle, t.ShowYear = show.OriginalTitle, show.EnglishTitle, show.Year
 					if t.Language == "" {
 						t.Language = show.Language
 					}

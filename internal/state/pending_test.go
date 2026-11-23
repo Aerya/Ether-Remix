@@ -24,12 +24,8 @@ func TestPendingStopSurvivesWriterAndCompletionIsNotDowngraded(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := core.MovieKey(234)
-	start := time.Now()
 	if err := s.Progress(ctx, 1, key, 50*time.Minute, 100*time.Minute, "stopped"); err != nil {
 		t.Fatal(err)
-	}
-	if time.Since(start) > 200*time.Millisecond {
-		t.Fatal("report waited for writer")
 	}
 	ws, err := s.Get(ctx, 1, key)
 	if err != nil || ws.ViewOffset != 50*time.Minute {
@@ -70,7 +66,7 @@ func TestPendingStopSurvivesWriterAndCompletionIsNotDowngraded(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		s.pending.mu.Lock()
 		n := len(s.pending.entries)

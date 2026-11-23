@@ -62,6 +62,9 @@ func readRAR4(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 		if headersEncrypted {
 			salt := make([]byte, 8)
 			if err := readAt(r, salt, pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			keys, err := crypto.rar4(salt)
@@ -76,6 +79,9 @@ func readRAR4(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 			headerBytes = 8 + padded
 		} else {
 			if err := readAt(r, base[:], pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			length := int64(binary.LittleEndian.Uint16(base[5:]))
@@ -276,9 +282,15 @@ func parseRAR4File(h []byte, flags uint16) (RARFile, int64, error) {
 	if nameSize > len(h)-p {
 		return f, 0, fmt.Errorf("name (%d bytes) overflows header: %w", nameSize, ErrCorrupt)
 	}
-	f.Name = decodeRAR4Name(h[p:p+nameSize], flags&rar4FileUnicode != 0)
+	f.StoredName = decodeRAR4RawName(h[p:p+nameSize], flags&rar4FileUnicode != 0)
+	f.Name = strings.ReplaceAll(f.StoredName, `\`, "/")
+	if flags&rar4FileUnicode == 0 {
+		// Keep embedded NUL bytes visible to identifier safety checks; the
+		// compatibility name decoder truncates them for ordinary RAR readers.
+		f.StoredName = bytesToString(h[p : p+nameSize])
+	}
 	f.NonRegular = (h[15] == 3 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0x8000 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0x4000) || (h[15] == 2 && binary.LittleEndian.Uint32(h[28:])&0x400 != 0)
-	f.UnsafeName = strings.Contains(decodeRAR4RawName(h[p:p+nameSize], flags&rar4FileUnicode != 0), "\\")
+	f.UnsafeName = strings.Contains(f.StoredName, "\\")
 	f.Stored = f.Method == rar4MethodStore
 	f.Encrypted = flags&rar4FilePassword != 0
 	f.Solid = flags&rar4FileSolid != 0

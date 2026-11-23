@@ -7,13 +7,34 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
+)
+
+func sqliteCompactExpr(expr string) string {
+	s := `lower(coalesce(` + expr + `,''))`
+	for _, lit := range []string{
+		`' '`, `char(9)`, `char(10)`, `char(13)`,
+		`'-'`, `'_'`, `'.'`, `','`, `'&'`, `'|'`, `'/'`, `'\'`,
+		`':'`, `';'`, `''''`, `'"'`, `'('`, `')'`, `'['`, `']'`,
+		`'+'`, `'!'`, `'?'`, `'*'`, `'#'`, `'@'`, `'~'`,
+	} {
+		s = `replace(` + s + `,` + lit + `,'')`
+	}
+	return s
+}
+
+var (
+	sqliteCompactNameExpr      = sqliteCompactExpr(`json_extract(data,'$.name')`)
+	sqliteCompactNewNameExpr   = sqliteCompactExpr(`json_extract(new.data,'$.name')`)
+	sqliteCompactNewNumberExpr = sqliteCompactExpr(`json_extract(new.data,'$.number')`)
 )
 
 func init() {
@@ -27,7 +48,7 @@ func init() {
 		// maintains GIN indexes unconditionally and starts active.
 		_, err := tx.ExecContext(ctx, `UPDATE livetv_search_state SET ready=0 WHERE id=1`)
 		return nil, err
-	}, "livetv_search_channel_keys", "livetv_search_programme_keys", "livetv_search_channels", "livetv_search_programmes")
+	}, "livetv_search_channel_keys", "livetv_search_programme_keys", "livetv_search_channels", "livetv_search_channels_compact", "livetv_search_programmes")
 
 	// Index changes happen in the import transaction, without a worker or polling.
 	store.Register("livetv", 21, `
@@ -60,19 +81,232 @@ func init() {
  CREATE INDEX livetv_search_programmes ON livetv_programmes USING gin(to_tsvector('simple',coalesce(data::jsonb->'item'->>'title','') || ' ' || coalesce(data::jsonb->'item'->>'episodeTitle','') || ' ' || coalesce(data::jsonb->'item'->>'summary','')));
  CREATE INDEX livetv_search_channel_guide ON livetv_channels(coalesce(nullif(data::jsonb->>'guideSourceId',''),data::jsonb->>'sourceId'),(data::jsonb->>'guideId'));
  `)
+
+	// Migration 27 indexes space- and punctuation-normalised channel names so
+	// queries like "red zone" match "NFL RedZone" and "fox5" matches "FOX 5"
+	// through indexes on both SQLite and PostgreSQL.
+	store.Register("livetv", 27, `
+ CREATE VIRTUAL TABLE livetv_search_channels_compact USING fts5(id UNINDEXED, body, tokenize='trigram');
+ CREATE INDEX livetv_search_compact_fallback ON livetv_channels(`+sqliteCompactNameExpr+`);
+ DROP TRIGGER IF EXISTS livetv_search_channels_insert;
+ DROP TRIGGER IF EXISTS livetv_search_channels_delete;
+ DROP TRIGGER IF EXISTS livetv_search_channels_update;
+ CREATE TRIGGER livetv_search_channels_insert AFTER INSERT ON livetv_channels WHEN (SELECT active FROM livetv_search_state WHERE id=1)=1 BEGIN
+  INSERT INTO livetv_search_channel_keys(id) VALUES(new.id) ON CONFLICT DO NOTHING;
+  INSERT OR REPLACE INTO livetv_search_channels(rowid,id,body) VALUES((SELECT docid FROM livetv_search_channel_keys WHERE id=new.id),new.id,coalesce(json_extract(new.data,'$.name'),'') || ' ' || coalesce(json_extract(new.data,'$.number'),'') || ' ' || coalesce(json_extract(new.data,'$.guideId'),'') || ' ' || `+sqliteCompactNewNameExpr+`);
+  INSERT OR REPLACE INTO livetv_search_channels_compact(rowid,id,body) VALUES((SELECT docid FROM livetv_search_channel_keys WHERE id=new.id),new.id,`+sqliteCompactNewNameExpr+` || ' ' || `+sqliteCompactNewNumberExpr+`);
+ END;
+ CREATE TRIGGER livetv_search_channels_delete AFTER DELETE ON livetv_channels WHEN (SELECT active FROM livetv_search_state WHERE id=1)=1 BEGIN
+  DELETE FROM livetv_search_channels WHERE rowid=(SELECT docid FROM livetv_search_channel_keys WHERE id=old.id);
+  DELETE FROM livetv_search_channels_compact WHERE rowid=(SELECT docid FROM livetv_search_channel_keys WHERE id=old.id);
+  DELETE FROM livetv_search_channel_keys WHERE id=old.id;
+ END;
+ CREATE TRIGGER livetv_search_channels_update AFTER UPDATE ON livetv_channels WHEN (SELECT active FROM livetv_search_state WHERE id=1)=1 BEGIN
+  DELETE FROM livetv_search_channels WHERE rowid=(SELECT docid FROM livetv_search_channel_keys WHERE id=old.id);
+  DELETE FROM livetv_search_channels_compact WHERE rowid=(SELECT docid FROM livetv_search_channel_keys WHERE id=old.id);
+  DELETE FROM livetv_search_channel_keys WHERE id=old.id;
+  INSERT INTO livetv_search_channel_keys(id) VALUES(new.id) ON CONFLICT DO NOTHING;
+  INSERT OR REPLACE INTO livetv_search_channels(rowid,id,body) VALUES((SELECT docid FROM livetv_search_channel_keys WHERE id=new.id),new.id,coalesce(json_extract(new.data,'$.name'),'') || ' ' || coalesce(json_extract(new.data,'$.number'),'') || ' ' || coalesce(json_extract(new.data,'$.guideId'),'') || ' ' || `+sqliteCompactNewNameExpr+`);
+  INSERT OR REPLACE INTO livetv_search_channels_compact(rowid,id,body) VALUES((SELECT docid FROM livetv_search_channel_keys WHERE id=new.id),new.id,`+sqliteCompactNewNameExpr+` || ' ' || `+sqliteCompactNewNumberExpr+`);
+ END;
+ UPDATE livetv_search_state SET ready=0 WHERE id=1;
+ `)
+	store.RegisterDialect("livetv", 27, store.Postgres, `
+ CREATE OR REPLACE FUNCTION livetv_channel_search_text(name text, num text, guide_id text) RETURNS text
+ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT
+   coalesce(name,'') || ' ' || coalesce(num,'') || ' ' || coalesce(guide_id,'') ||
+   CASE WHEN coalesce(num,'') <> '' THEN ' ' || regexp_replace(lower(num), '[^[:alnum:]]+', '', 'g') ELSE '' END ||
+   coalesce((
+    SELECT ' ' || string_agg(words[i] || ' ' || array_to_string(words[i:], ''), ' ')
+    FROM (
+     SELECT array_remove(
+      regexp_split_to_array(
+       lower(
+        regexp_replace(
+         regexp_replace(
+          regexp_replace(
+           regexp_replace(coalesce(name,''), '([A-Z]+)([A-Z][a-z])', '\1 \2', 'g'),
+           '([a-z])([A-Z])', '\1 \2', 'g'
+          ),
+          '([A-Za-z])([0-9])', '\1 \2', 'g'
+         ),
+         '([0-9])([A-Za-z])', '\1 \2', 'g'
+        )
+       ),
+       '[^[:alnum:]]+'
+      ),
+      ''
+     ) AS words
+    ) w,
+    LATERAL generate_subscripts(words, 1) AS i
+    WHERE i <= 12
+   ), '')
+ $$;
+ DROP INDEX IF EXISTS livetv_search_channels;
+ CREATE INDEX livetv_search_channels ON livetv_channels USING gin(to_tsvector('simple', livetv_channel_search_text(data::jsonb->>'name', data::jsonb->>'number', data::jsonb->>'guideId')));
+ `)
 }
 
-// SearchLiveTV searches identities once, regardless of guide overlap. Only a
+func searchWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+func compactSearchText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+// channelBoundaryWords splits a channel name into lowercase alphanumeric runs
+// at punctuation, whitespace, CamelCase, and letter/digit boundaries.
+func channelBoundaryWords(s string) []string {
+	runes := []rune(s)
+	var out []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			flush()
+			continue
+		}
+		if cur.Len() > 0 {
+			prev := runes[i-1]
+			split := (unicode.IsLower(prev) && unicode.IsUpper(r)) ||
+				(unicode.IsLetter(prev) && unicode.IsDigit(r)) ||
+				(unicode.IsDigit(prev) && unicode.IsLetter(r)) ||
+				(unicode.IsUpper(prev) && unicode.IsUpper(r) && i+1 < len(runes) && unicode.IsLower(runes[i+1]))
+			if split {
+				flush()
+			}
+		}
+		cur.WriteRune(unicode.ToLower(r))
+	}
+	flush()
+	return out
+}
+
+// channelSearchBody produces the FTS5 token body for a channel: the raw name,
+// number, and guide ID plus CamelCase/digit-split words and word-boundary
+// compact suffixes so queries like "red zone", "redz", "nfl red", "fox5",
+// "nickjr", and "espn2" hit the word-prefix index directly.
+func channelSearchBody(name, number, guideID string) string {
+	var b strings.Builder
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(number)
+	b.WriteByte(' ')
+	b.WriteString(guideID)
+	if compactNum := compactSearchText(number); compactNum != "" && compactNum != strings.ToLower(number) {
+		b.WriteByte(' ')
+		b.WriteString(compactNum)
+	}
+	words := channelBoundaryWords(name)
+	if len(words) > 12 {
+		words = words[:12]
+	}
+	for i := range words {
+		b.WriteByte(' ')
+		b.WriteString(words[i])
+		if i+1 < len(words) {
+			b.WriteByte(' ')
+			for j := i; j < len(words); j++ {
+				b.WriteString(words[j])
+			}
+		}
+	}
+	return b.String()
+}
+
+// channelSearchRank evaluates how well a channel matches the parsed query.
+// Lower rank numbers are better matches:
+//
+//	1: exact compact match on name or number
+//	2: compact prefix match on name or number
+//	3: compact prefix match at a word/CamelCase/digit boundary in name
+//	4: every query word matches a word prefix across name/number/guideId
+//	5: compact substring match inside name
+func channelSearchRank(name, number, guideID string, plainWords []string, compactQ string) (int, bool) {
+	if compactQ == "" || len(plainWords) == 0 {
+		return 0, false
+	}
+	nameCompact := compactSearchText(name)
+	numCompact := compactSearchText(number)
+	if nameCompact == compactQ || numCompact == compactQ {
+		return 1, true
+	}
+	if strings.HasPrefix(nameCompact, compactQ) || strings.HasPrefix(numCompact, compactQ) {
+		return 2, true
+	}
+	bwords := channelBoundaryWords(name)
+	for i := range bwords {
+		var suffix strings.Builder
+		for j := i; j < len(bwords); j++ {
+			suffix.WriteString(bwords[j])
+		}
+		if strings.HasPrefix(suffix.String(), compactQ) {
+			return 3, true
+		}
+	}
+	tokens := append([]string(nil), bwords...)
+	tokens = append(tokens, searchWords(name)...)
+	tokens = append(tokens, searchWords(number)...)
+	tokens = append(tokens, searchWords(guideID)...)
+	allWords := true
+	for _, w := range plainWords {
+		found := false
+		for _, tok := range tokens {
+			if strings.HasPrefix(tok, w) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			allWords = false
+			break
+		}
+	}
+	if allWords {
+		return 4, true
+	}
+	if utf8.RuneCountInString(compactQ) >= 3 && strings.Contains(nameCompact, compactQ) {
+		return 5, true
+	}
+	return 0, false
+}
+
+func channelMatchesText(name, number, extra, query string) bool {
+	words := searchWords(query)
+	if len(words) == 0 {
+		return true
+	}
+	compactQ := strings.Join(words, "")
+	_, ok := channelSearchRank(name, number, extra, words, compactQ)
+	return ok
+}
+
+// SearchLiveTV searches identities once, regardless of group overlap. Only a
 // bounded candidate window is decoded and checked by the normal viewer policy.
 func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query string, limit int) (frontend.LiveSearchResults, error) {
 	out := frontend.LiveSearchResults{Channels: []frontend.LiveTVChannel{}, Programmes: []frontend.LiveTVProgramme{}}
-	words := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	if len(words) == 0 || len(query) > 1024 || !h.s.Enabled() {
+	plainWords := searchWords(query)
+	if len(plainWords) == 0 || len(query) > 1024 || !h.s.Enabled() {
 		return out, nil
 	}
-	if len(words) > 6 {
-		words = words[:6]
+	if len(plainWords) > 6 {
+		plainWords = plainWords[:6]
 	}
+	compactQ := strings.Join(plainWords, "")
 	if limit <= 0 {
 		limit = 20
 	}
@@ -81,76 +315,94 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 	if err := h.s.demandSearchIndex(ctx); err != nil {
 		return out, err
 	}
-	plainWords := append([]string(nil), words...)
 	h.s.searchMu.Lock()
 	out.Partial = !h.s.searchReady
 	h.s.searchMu.Unlock()
-	for i, w := range words {
+	words := make([]string, len(plainWords))
+	for i, w := range plainWords {
 		if pg {
 			words[i] = w + ":*"
 		} else {
 			words[i] = "\"" + w + "\"*"
 		}
 	}
-	match := strings.Join(words, " AND ")
+	var match string
 	if pg {
 		match = strings.Join(words, " & ")
+		if len(plainWords) > 1 && compactQ != "" {
+			match = "(" + match + ") | " + compactQ + ":*"
+		}
+	} else {
+		match = strings.Join(words, " AND ")
+		if len(plainWords) > 1 && compactQ != "" {
+			match = "(" + match + ") OR \"" + compactQ + "\"*"
+		}
 	}
+	// The unary + strips p's column affinity so SQLite probes
+	// livetv_search_channel_guide for each match. Without it every matched
+	// programme scans the whole channel table (25 s for "office" on a large
+	// lineup).
 	cq := `SELECT id FROM livetv_search_channels WHERE livetv_search_channels MATCH ? ORDER BY rank LIMIT 400`
-	pq := `SELECT c.id,p.data FROM livetv_search_programmes f JOIN livetv_programmes p ON p.source_id=f.source AND p.channel_id=f.channel AND p.start_ms=f.start JOIN livetv_channels c ON coalesce(nullif(json_extract(c.data,'$.guideSourceId'),''),json_extract(c.data,'$.sourceId'))=p.source_id AND json_extract(c.data,'$.guideId')=p.channel_id WHERE livetv_search_programmes MATCH ? AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`
+	pq := `SELECT c.id,p.data FROM livetv_search_programmes f JOIN livetv_programmes p ON p.source_id=f.source AND p.channel_id=f.channel AND p.start_ms=f.start JOIN livetv_channels c ON coalesce(nullif(json_extract(c.data,'$.guideSourceId'),''),json_extract(c.data,'$.sourceId'))=+p.source_id AND json_extract(c.data,'$.guideId')=+p.channel_id WHERE livetv_search_programmes MATCH ? AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`
 	if pg {
-		cq = `SELECT id FROM livetv_channels WHERE to_tsvector('simple',coalesce(data::jsonb->>'name','') || ' ' || coalesce(data::jsonb->>'number','') || ' ' || coalesce(data::jsonb->>'guideId','')) @@ to_tsquery('simple',?) ORDER BY id LIMIT 400`
+		cq = `SELECT id FROM livetv_channels WHERE to_tsvector('simple', livetv_channel_search_text(data::jsonb->>'name', data::jsonb->>'number', data::jsonb->>'guideId')) @@ to_tsquery('simple',?) ORDER BY id LIMIT 400`
 		pq = `SELECT c.id,p.data FROM livetv_programmes p JOIN livetv_channels c ON coalesce(nullif(c.data::jsonb->>'guideSourceId',''),c.data::jsonb->>'sourceId')=p.source_id AND c.data::jsonb->>'guideId'=p.channel_id WHERE to_tsvector('simple',coalesce(p.data::jsonb->'item'->>'title','') || ' ' || coalesce(p.data::jsonb->'item'->>'episodeTitle','') || ' ' || coalesce(p.data::jsonb->'item'->>'summary','')) @@ to_tsquery('simple',?) AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`
 	}
-	rows, err := h.s.o.DB.QueryContext(ctx, cq, match)
-	if err != nil {
-		return out, err
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			break
+	channelCandIDs := []string{}
+	seenCand := map[string]bool{}
+	collectChannelIDs := func(q string, args ...any) error {
+		rows, err := h.s.o.DB.QueryContext(ctx, q, args...)
+		if err != nil {
+			return err
 		}
-		ids = append(ids, id)
-	}
-	re := rows.Err()
-	rows.Close()
-	if err != nil {
-		return out, err
-	}
-	if re != nil {
-		return out, re
-	}
-	if out.Partial && !pg {
-		prefix := plainWords[0]
-		fallback := `SELECT id FROM livetv_channels WHERE lower(coalesce(json_extract(data,'$.name'),''))>=? AND lower(coalesce(json_extract(data,'$.name'),''))<? UNION SELECT id FROM livetv_channels WHERE lower(coalesce(json_extract(data,'$.number'),''))>=? AND lower(coalesce(json_extract(data,'$.number'),''))<? LIMIT 400`
-		fr, e := h.s.o.DB.QueryContext(ctx, fallback, prefix, prefix+"\uffff", prefix, prefix+"\uffff")
-		if e != nil {
-			return out, e
-		}
-		for fr.Next() {
+		for rows.Next() {
 			var id string
-			if e = fr.Scan(&id); e != nil {
+			if err = rows.Scan(&id); err != nil {
 				break
 			}
-			ids = append(ids, id)
+			if !seenCand[id] {
+				seenCand[id] = true
+				channelCandIDs = append(channelCandIDs, id)
+			}
 		}
-		re := fr.Err()
-		fr.Close()
-		if e != nil {
-			return out, e
+		re := rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
 		}
-		if re != nil {
-			return out, re
+		return re
+	}
+	if err := collectChannelIDs(cq, match); err != nil {
+		return out, err
+	}
+	if !pg {
+		if utf8.RuneCountInString(compactQ) >= 3 {
+			compactSQL := `SELECT id FROM livetv_search_channels_compact WHERE livetv_search_channels_compact MATCH ? ORDER BY rank LIMIT 400`
+			if err := collectChannelIDs(compactSQL, `"`+compactQ+`"`); err != nil {
+				return out, err
+			}
+		}
+		if utf8.RuneCountInString(compactQ) < 3 || out.Partial {
+			compactFallback := `SELECT id FROM livetv_channels WHERE ` + sqliteCompactNameExpr + `>=? AND ` + sqliteCompactNameExpr + `<? LIMIT 400`
+			if err := collectChannelIDs(compactFallback, compactQ, compactQ+"\uffff"); err != nil {
+				return out, err
+			}
+		}
+		if out.Partial {
+			prefix := plainWords[0]
+			fallback := `SELECT id FROM livetv_channels WHERE lower(coalesce(json_extract(data,'$.name'),''))>=? AND lower(coalesce(json_extract(data,'$.name'),''))<? UNION SELECT id FROM livetv_channels WHERE lower(coalesce(json_extract(data,'$.number'),''))>=? AND lower(coalesce(json_extract(data,'$.number'),''))<? LIMIT 400`
+			if err := collectChannelIDs(fallback, prefix, prefix+"\uffff", prefix, prefix+"\uffff"); err != nil {
+				return out, err
+			}
 		}
 	}
 	now := h.s.o.Now()
-	rows, err = h.s.o.DB.QueryContext(ctx, pq, match, now.UnixMilli(), now.Add(7*24*time.Hour).UnixMilli())
+	rows, err := h.s.o.DB.QueryContext(ctx, pq, match, now.UnixMilli(), now.Add(7*24*time.Hour).UnixMilli())
 	if err != nil {
 		return out, err
 	}
 	ps := []Programme{}
+	progChannelIDs := []string{}
 	for rows.Next() {
 		var id string
 		var raw []byte
@@ -164,9 +416,9 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 		p.ChannelID = id
 		p.ID = fmt.Sprintf("%s-%d", id, p.Start.UnixMilli())
 		ps = append(ps, p)
-		ids = append(ids, id)
+		progChannelIDs = append(progChannelIDs, id)
 	}
-	re = rows.Err()
+	re := rows.Err()
 	rows.Close()
 	if err != nil {
 		return out, err
@@ -198,7 +450,7 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 		}
 		p.ChannelID = id
 		ps = append(ps, p)
-		ids = append(ids, id)
+		progChannelIDs = append(progChannelIDs, id)
 	}
 	re = vr.Err()
 	vr.Close()
@@ -208,8 +460,15 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 	if re != nil {
 		return out, re
 	}
-	unique := uniqueIDs(append([]string(nil), ids...))
-	visible, err := h.s.searchVisibleGuideIDs(ctx, unique)
+	ctx, _, err = h.s.withPolicy(ctx, viewer)
+	if err != nil {
+		return out, err
+	}
+	allIDs := make([]string, 0, len(channelCandIDs)+len(progChannelIDs))
+	allIDs = append(allIDs, channelCandIDs...)
+	allIDs = append(allIDs, progChannelIDs...)
+	unique := uniqueIDs(allIDs)
+	visible, err := h.s.searchVisibleGroupIDs(ctx, unique)
 	if err != nil {
 		return out, err
 	}
@@ -223,32 +482,32 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 			allowed[c.ID] = c
 		}
 	}
-	seen := map[string]bool{}
-	for _, id := range ids[:len(ids)-len(ps)] {
-		if c, ok := allowed[id]; ok && !seen[id] && len(out.Channels) < limit {
-			if out.Partial {
-				text := strings.ToLower(c.Name + " " + c.Number + " " + c.GuideID)
-				matches := true
-				for _, word := range plainWords {
-					if !strings.Contains(text, word) {
-						matches = false
-						break
-					}
-				}
-				if !matches {
-					continue
-				}
-			}
-			seen[id] = true
-			out.Channels = append(out.Channels, ToFrontendChannel(c))
+	type rankedChannel struct {
+		c    Channel
+		rank int
+	}
+	matched := make([]rankedChannel, 0, len(channelCandIDs))
+	for _, id := range channelCandIDs {
+		c, ok := allowed[id]
+		if !ok {
+			continue
 		}
+		rank, ok := channelSearchRank(c.Name, c.Number, c.GuideID, plainWords, compactQ)
+		if !ok {
+			continue
+		}
+		matched = append(matched, rankedChannel{c: c, rank: rank})
+	}
+	sort.SliceStable(matched, func(i, j int) bool { return matched[i].rank < matched[j].rank })
+	for i := 0; i < len(matched) && i < limit; i++ {
+		out.Channels = append(out.Channels, ToFrontendChannel(matched[i].c))
 	}
 	channelIDs := map[string]bool{}
 	ctx, _, err = h.s.withPolicy(ctx, viewer)
 	if err != nil {
 		return out, err
 	}
-	seen = map[string]bool{}
+	seen := map[string]bool{}
 	for _, p := range ps {
 		if c, ok := allowed[p.ChannelID]; ok && !seen[p.ID] && h.s.allowedProgramme(ctx, viewer, c, &p) && len(out.Programmes) < limit {
 			seen[p.ID] = true
@@ -274,12 +533,19 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 	if s.searchReady {
 		return nil
 	}
+	if store.DialectOf(s.o.DB) == store.Postgres {
+		// PostgreSQL maintains GIN indexes unconditionally.
+		s.searchReady = true
+		return nil
+	}
 	var ready int
 	if err := s.o.DB.QueryRowContext(ctx, `SELECT ready FROM livetv_search_state WHERE id=1`).Scan(&ready); err != nil {
 		return err
 	}
 	if !s.searchBuilding {
 		s.searchBuilding = true
+		done := make(chan struct{})
+		s.searchDone = done
 		s.wg.Add(1)
 		s.ctxMu.Lock()
 		workerCtx := s.ctx
@@ -290,6 +556,10 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 			s.searchMu.Lock()
 			s.searchBuilding = false
 			s.searchReady = err == nil
+			if s.searchDone == done {
+				s.searchDone = nil
+			}
+			close(done)
 			s.searchMu.Unlock()
 			if err != nil && !errors.Is(err, context.Canceled) {
 				s.o.Logger.Warn("live search index preparation failed", "error", err)
@@ -297,6 +567,44 @@ func (s *Service) demandSearchIndex(ctx context.Context) error {
 		}()
 	}
 	return nil
+}
+
+func (s *Service) isSearchReady() bool {
+	if s == nil {
+		return false
+	}
+	if s.o.DB != nil && store.DialectOf(s.o.DB) == store.Postgres {
+		return true
+	}
+	s.searchMu.Lock()
+	ready := s.searchReady
+	s.searchMu.Unlock()
+	return ready
+}
+
+// prepareWatchSearchIndex activates migration 27's channel search index and
+// waits briefly for small lineups to finish indexing without blocking on
+// tens-of-thousands-of-channel backfills.
+func (s *Service) prepareWatchSearchIndex(ctx context.Context) (bool, error) {
+	if err := s.demandSearchIndex(ctx); err != nil {
+		return false, err
+	}
+	s.searchMu.Lock()
+	ready := s.searchReady
+	done := s.searchDone
+	s.searchMu.Unlock()
+	if ready || done == nil {
+		return ready, nil
+	}
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return s.isSearchReady(), nil
 }
 func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 	if _, err := s.o.DB.ExecContext(ctx, `UPDATE livetv_search_state SET active=1 WHERE id=1`); err != nil {
@@ -329,18 +637,82 @@ func (s *Service) buildSearchIndex(ctx context.Context, backfill bool) error {
 				batch.Rollback()
 				return err
 			}
-			query := `INSERT OR REPLACE INTO livetv_search_channels(rowid,id,body) SELECT (SELECT docid FROM livetv_search_channel_keys k WHERE k.id=livetv_channels.id),id,json_extract(data,'$.name') || ' ' || coalesce(json_extract(data,'$.number'),'') || ' ' || coalesce(json_extract(data,'$.guideId'),'') FROM livetv_channels WHERE rowid>? AND rowid<=?`
-			if table == "livetv_programmes" {
-				query = `INSERT OR REPLACE INTO livetv_search_programmes(rowid,source,channel,start,body) SELECT (SELECT docid FROM livetv_search_programme_keys k WHERE k.source=livetv_programmes.source_id AND k.channel=livetv_programmes.channel_id AND k.start=livetv_programmes.start_ms),source_id,channel_id,start_ms,coalesce(json_extract(data,'$.item.title'),'') || ' ' || coalesce(json_extract(data,'$.item.episodeTitle'),'') || ' ' || coalesce(json_extract(data,'$.item.summary'),'') FROM livetv_programmes WHERE rowid>? AND rowid<=?`
-			}
-			if _, err = batch.ExecContext(ctx, query, last, end); err != nil {
-				batch.Rollback()
-				return err
+			var batchCount int
+			if table == "livetv_channels" {
+				type chanIndexRow struct {
+					docid   int64
+					id      string
+					name    string
+					number  string
+					guideID string
+				}
+				rs, qerr := batch.QueryContext(ctx, `SELECT k.docid,c.id,coalesce(json_extract(c.data,'$.name'),''),coalesce(json_extract(c.data,'$.number'),''),coalesce(json_extract(c.data,'$.guideId'),'') FROM livetv_channels c JOIN livetv_search_channel_keys k ON k.id=c.id WHERE c.rowid>? AND c.rowid<=?`, last, end)
+				if qerr != nil {
+					batch.Rollback()
+					return qerr
+				}
+				buf := make([]chanIndexRow, 0, 500)
+				for rs.Next() {
+					var r chanIndexRow
+					if qerr = rs.Scan(&r.docid, &r.id, &r.name, &r.number, &r.guideID); qerr != nil {
+						break
+					}
+					buf = append(buf, r)
+				}
+				re := rs.Err()
+				rs.Close()
+				if qerr != nil {
+					batch.Rollback()
+					return qerr
+				}
+				if re != nil {
+					batch.Rollback()
+					return re
+				}
+				batchCount = len(buf)
+				mainStmt, serr := batch.PrepareContext(ctx, `INSERT OR REPLACE INTO livetv_search_channels(rowid,id,body) VALUES(?,?,?)`)
+				if serr != nil {
+					batch.Rollback()
+					return serr
+				}
+				compactStmt, cerr := batch.PrepareContext(ctx, `INSERT OR REPLACE INTO livetv_search_channels_compact(rowid,id,body) VALUES(?,?,?)`)
+				if cerr != nil {
+					mainStmt.Close()
+					batch.Rollback()
+					return cerr
+				}
+				for _, r := range buf {
+					if _, err = mainStmt.ExecContext(ctx, r.docid, r.id, channelSearchBody(r.name, r.number, r.guideID)); err != nil {
+						break
+					}
+					if _, err = compactStmt.ExecContext(ctx, r.docid, r.id, compactSearchText(r.name)+" "+compactSearchText(r.number)); err != nil {
+						break
+					}
+				}
+				mainStmt.Close()
+				compactStmt.Close()
+				if err != nil {
+					batch.Rollback()
+					return err
+				}
+			} else {
+				query := `INSERT OR REPLACE INTO livetv_search_programmes(rowid,source,channel,start,body) SELECT (SELECT docid FROM livetv_search_programme_keys k WHERE k.source=livetv_programmes.source_id AND k.channel=livetv_programmes.channel_id AND k.start=livetv_programmes.start_ms),source_id,channel_id,start_ms,coalesce(json_extract(data,'$.item.title'),'') || ' ' || coalesce(json_extract(data,'$.item.episodeTitle'),'') || ' ' || coalesce(json_extract(data,'$.item.summary'),'') FROM livetv_programmes WHERE rowid>? AND rowid<=?`
+				res, qerr := batch.ExecContext(ctx, query, last, end)
+				if qerr != nil {
+					batch.Rollback()
+					return qerr
+				}
+				if n, rerr := res.RowsAffected(); rerr == nil {
+					batchCount = int(n)
+				}
 			}
 			if err = batch.Commit(); err != nil {
 				return err
 			}
 			last = end
+			if batchCount < 500 {
+				continue
+			}
 			timer := time.NewTimer(10 * time.Millisecond)
 			select {
 			case <-ctx.Done():

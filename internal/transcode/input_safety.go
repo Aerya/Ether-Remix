@@ -5,7 +5,12 @@ package transcode
 // of its contents: generic probing must not turn a VOD source into a playlist
 // that can open other inputs. Keep this list explicit rather than blacklisting
 // individual manifest formats.
-const vodInputFormats = "matroska,webm,mov,mp4,m4a,3gp,3g2,mj2,avi,mpegts,asf,mpeg,mpegvideo,ogg,flv"
+//
+// The audio demuxers below are self-contained single-file formats too (music,
+// audiobooks: MP3, FLAC, AAC/ADTS, WAV, AIFF, CAF, WavPack, APE and raw
+// Dolby/DTS); none of them can reference another input. M4A/M4B use mov.
+const vodInputFormats = "matroska,webm,mov,mp4,m4a,3gp,3g2,mj2,avi,mpegts,asf,mpeg,mpegvideo,ogg,flv," +
+	"mp3,flac,aac,wav,aiff,caf,wv,ape,ac3,eac3,dts,truehd"
 
 // inputSafetyArgs applies to the next -i only. Live playlist support is an
 // explicit trusted call-site choice, never inferred from media metadata.

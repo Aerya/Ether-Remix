@@ -109,7 +109,7 @@ func (i *instance) writeTokenResult(w http.ResponseWriter, r *http.Request, acce
 			fail(w, frontend.ErrUnauthorized)
 			return
 		}
-		viewer, err := i.viewerPolicyWire(r, v, d)
+		viewer, err := i.viewerPolicyWire(r, v, d, i.viewerAvatar(r, v, access, d))
 		if err != nil {
 			fail(w, err)
 			return

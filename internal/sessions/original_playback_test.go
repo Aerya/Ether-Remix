@@ -161,3 +161,82 @@ func TestOriginalPlaybackNegotiationAndGeneration(t *testing.T) {
 		t.Fatalf("reopened replacement: %v", err)
 	}
 }
+
+func TestOriginalPlaybackRespectsClientAndOwnerBudgets(t *testing.T) {
+	runtime := &frontend.OriginalPlaybackCapabilities{
+		Version:         1,
+		Range:           true,
+		DemuxContainers: []string{"mkv", "mp4"},
+		VideoDecoders:   []string{"h264", "hevc"},
+		AudioDecoders:   []string{"aac", "truehd"},
+	}
+	uhdInfo := core.MediaInfo{
+		Container:   "mkv",
+		Size:        49_931_122_868,
+		Duration:    2*time.Hour + 18*time.Minute,
+		BitrateKbps: 48_000,
+		Streams: []core.StreamInfo{
+			{Type: "video", Index: 0, Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10, ColorTransfer: "smpte2084"},
+			{Type: "audio", Index: 1, Codec: "truehd", Channels: 8},
+		},
+	}
+	hdInfo := core.MediaInfo{
+		Container:   "mkv",
+		Size:        4_000_000_000,
+		Duration:    2 * time.Hour,
+		BitrateKbps: 4_500,
+		Streams: []core.StreamInfo{
+			{Type: "video", Index: 0, Codec: "hevc", Width: 1920, Height: 1080},
+			{Type: "audio", Index: 1, Codec: "aac", Channels: 2},
+		},
+	}
+	b := &Broker{deps: BrokerDeps{RemoteBitrateLimit: func() int { return 12_000 }}}
+	baseReq := frontend.PlanRequest{
+		Protocol: "vela",
+		Caps: core.ClientCaps{
+			Platform:    "Android",
+			Product:     "Vela",
+			Containers:  []string{"mp4"},
+			VideoCodecs: []string{"h264", "hevc"},
+			AudioCodecs: []string{"aac"},
+		},
+		Intent: frontend.PlayIntent{
+			OriginalPlayback: runtime,
+			Options:          core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1},
+		},
+	}
+
+	// Within client's 1080p hardware ceiling: original_runtime is admitted.
+	okReq := baseReq
+	okReq.Intent.Options.MaxWidth = 1920
+	okReq.Intent.Options.MaxHeight = 1080
+	if d, err := b.decideProfile(&core.PlaySession{Info: hdInfo}, okReq); err != nil || d.Reason != "original_runtime" {
+		t.Fatalf("1080p within 1080p ceiling = (%+v, %v), want original_runtime", d, err)
+	}
+
+	rejectCases := []struct {
+		name   string
+		mutate func(*frontend.PlanRequest)
+	}{
+		{"client maxHeight 1080 rejects 2160p", func(r *frontend.PlanRequest) { r.Intent.Options.MaxHeight = 1080 }},
+		{"client maxWidth 1920 rejects 3840px", func(r *frontend.PlanRequest) { r.Intent.Options.MaxWidth = 1920 }},
+		{"client maxBitrate rejects 48 Mbps", func(r *frontend.PlanRequest) { r.Intent.Options.MaxBitrateKbps = 15_000 }},
+		{"per-codec video maxHeight rejects 2160p hevc", func(r *frontend.PlanRequest) { r.Caps.VideoMaxHeights = map[string]int{"hevc": 1080} }},
+		{"owner AlwaysEncodeVideo rejects original_runtime", func(r *frontend.PlanRequest) { r.Caps.AlwaysEncodeVideo = true }},
+		{"owner app compatibility MaxHeight override rejects 2160p", func(r *frontend.PlanRequest) {
+			r.Caps.MaxHeight = 1080
+			r.Caps.MaxHeightSource = "App compatibility override"
+		}},
+		{"remote client respects RemoteBitrateLimit", func(r *frontend.PlanRequest) { r.Caps.Remote = true }},
+	}
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := baseReq
+			tc.mutate(&req)
+			d, _ := b.decideProfile(&core.PlaySession{Info: uhdInfo}, req)
+			if d.Reason == "original_runtime" {
+				t.Fatalf("expected original_runtime rejection, got %+v", d)
+			}
+		})
+	}
+}

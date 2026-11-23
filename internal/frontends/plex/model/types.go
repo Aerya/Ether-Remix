@@ -163,7 +163,11 @@ type ProviderDirectory struct {
 	Icon       string `plex:"icon,omitempty"`
 	Context    string `plex:"context,omitempty"`
 
-	Pivot []Pivot `plex:"Pivot"`
+	// Preferences is present only when the client asked for
+	// includePreferences=1, as on PMS; Plex for Roku reads
+	// Preferences.Setting unguarded when opening a library (#652).
+	Preferences *TrackPreferences `plex:"Preferences"`
+	Pivot       []Pivot           `plex:"Pivot"`
 }
 
 // XMLElementName implements ElementNamer.
@@ -220,6 +224,7 @@ type Metadata struct {
 	OriginalTitle         string  `plex:"originalTitle,omitempty"`
 	TitleSort             string  `plex:"titleSort,omitempty"`
 	ContentRating         string  `plex:"contentRating,omitempty"`
+	ContentRatingAge      int     `plex:"contentRatingAge,omitempty"`
 	Summary               string  `plex:"summary"`
 	Smart                 *bool   `plex:"smart"`
 	PlaylistType          string  `plex:"playlistType,omitempty"`
@@ -534,23 +539,24 @@ type Stream struct {
 
 // Hub is a row of items.
 type Hub struct {
-	Channel        []SearchChannel `plex:"Channel"`
-	Meta           *Meta           `plex:"Meta,object"`
-	RankedTop10    bool            `plex:"-"`
-	PreviewOnFocus bool            `plex:"-"`
-	HubKey         string          `plex:"hubKey,omitempty"`
-	UpNext         *bool           `plex:"upNext"`
-	Key            string          `plex:"key,omitempty"`
-	Title          string          `plex:"title"`
-	Type           string          `plex:"type"`
-	HubIdentifier  string          `plex:"hubIdentifier"`
-	Context        string          `plex:"context"`
-	Size           int             `plex:"size"`
-	TotalSize      *int            `plex:"totalSize"`
-	More           bool            `plex:"more"`
-	Style          string          `plex:"style,omitempty"`
-	Promoted       *bool           `plex:"promoted"`
-	Random         *bool           `plex:"random"`
+	Meta           *Meta  `plex:"Meta,object"`
+	RankedTop10    bool   `plex:"-"`
+	PreviewOnFocus bool   `plex:"-"`
+	HubKey         string `plex:"hubKey,omitempty"`
+	UpNext         *bool  `plex:"upNext"`
+	Key            string `plex:"key,omitempty"`
+	Title          string `plex:"title"`
+	Type           string `plex:"type"`
+	HubIdentifier  string `plex:"hubIdentifier"`
+	Context        string `plex:"context"`
+	Size           int    `plex:"size"`
+	TotalSize      *int   `plex:"totalSize"`
+	More           bool   `plex:"more"`
+	Style          string `plex:"style,omitempty"`
+	Promoted       *bool  `plex:"promoted"`
+	Random         *bool  `plex:"random"`
+	Source         string `plex:"source,omitempty"`
+	Identifier     string `plex:"identifier,omitempty"`
 
 	Metadata  []Metadata  `plex:"Metadata"`
 	Directory []Directory `plex:"Directory"`
@@ -809,25 +815,34 @@ type Session struct {
 }
 
 type TranscodeSess struct {
-	Key                  string  `plex:"key"`
-	Throttled            bool    `plex:"throttled"`
-	Complete             bool    `plex:"complete"`
-	Progress             float64 `plex:"progress"`
-	Speed                float64 `plex:"speed,omitempty"`
-	Duration             int64   `plex:"duration,omitempty"`
-	Context              string  `plex:"context"`
-	SourceVideoCodec     string  `plex:"sourceVideoCodec,omitempty"`
-	SourceAudioCodec     string  `plex:"sourceAudioCodec,omitempty"`
-	VideoDecision        string  `plex:"videoDecision,omitempty"`
-	AudioDecision        string  `plex:"audioDecision,omitempty"`
-	SubtitleDecision     string  `plex:"subtitleDecision,omitempty"`
-	Protocol             string  `plex:"protocol"`
-	Container            string  `plex:"container"`
-	VideoCodec           string  `plex:"videoCodec,omitempty"`
-	AudioCodec           string  `plex:"audioCodec,omitempty"`
-	AudioChannels        int     `plex:"audioChannels,omitempty"`
-	TranscodeHwRequested bool    `plex:"transcodeHwRequested"`
-	TimeStamp            float64 `plex:"timeStamp,omitempty"`
+	Key                      string  `plex:"key"`
+	Throttled                bool    `plex:"throttled"`
+	Complete                 bool    `plex:"complete"`
+	Progress                 float64 `plex:"progress"`
+	Speed                    float64 `plex:"speed,omitempty"`
+	Duration                 int64   `plex:"duration,omitempty"`
+	Context                  string  `plex:"context"`
+	SourceVideoCodec         string  `plex:"sourceVideoCodec,omitempty"`
+	SourceAudioCodec         string  `plex:"sourceAudioCodec,omitempty"`
+	VideoDecision            string  `plex:"videoDecision,omitempty"`
+	AudioDecision            string  `plex:"audioDecision,omitempty"`
+	SubtitleDecision         string  `plex:"subtitleDecision,omitempty"`
+	Protocol                 string  `plex:"protocol"`
+	Container                string  `plex:"container"`
+	VideoCodec               string  `plex:"videoCodec,omitempty"`
+	AudioCodec               string  `plex:"audioCodec,omitempty"`
+	AudioChannels            int     `plex:"audioChannels,omitempty"`
+	Width                    int     `plex:"width,omitempty"`
+	Height                   int     `plex:"height,omitempty"`
+	TranscodeHwRequested     bool    `plex:"transcodeHwRequested"`
+	TranscodeHwDecoding      string  `plex:"transcodeHwDecoding,omitempty"`
+	TranscodeHwDecodingTitle string  `plex:"transcodeHwDecodingTitle,omitempty"`
+	TranscodeHwEncoding      string  `plex:"transcodeHwEncoding,omitempty"`
+	TranscodeHwEncodingTitle string  `plex:"transcodeHwEncodingTitle,omitempty"`
+	TranscodeHwFullPipeline  *bool   `plex:"transcodeHwFullPipeline"`
+	MinOffsetAvailable       float64 `plex:"minOffsetAvailable,omitempty"`
+	MaxOffsetAvailable       float64 `plex:"maxOffsetAvailable,omitempty"`
+	TimeStamp                float64 `plex:"timeStamp,omitempty"`
 }
 
 type SessionControl struct {
@@ -870,6 +885,7 @@ type NotificationContainer struct {
 	ActivityNotification         []ActivityNotification         `plex:"ActivityNotification"`
 	AutoUpdateNotification       []AutoUpdateNotification       `plex:"AutoUpdateNotification"`
 	StatusNotification           []StatusNotification           `plex:"StatusNotification"`
+	ReachabilityNotification     []ReachabilityNotification     `plex:"ReachabilityNotification"`
 	TranscodeSession             []TranscodeSess                `plex:"TranscodeSession"`
 }
 
@@ -914,6 +930,10 @@ type StatusNotification struct {
 	NotificationName string `plex:"notificationName"`
 }
 
+type ReachabilityNotification struct {
+	Reachability bool `plex:"reachability"`
+}
+
 // A builds an Attr.
 func A(name string, value any) Attr { return Attr{Name: name, Value: value} }
 
@@ -940,16 +960,27 @@ type TimelineBandwidth struct {
 	Resolution string `plex:"resolution"`
 }
 
-// SearchChannel is distinct from a programme Metadata hit. Plex Web requires
-// categories even when empty and tunes using the originating source and id.
+// SearchChannel is distinct from a programme Metadata hit. Plex Web and
+// Bedrock clients render coverPoster/thumb and categories and tune using the
+// originating EPG provider source and channel identifier.
 type SearchChannel struct {
-	ID         string     `plex:"id"`
-	GridKey    string     `plex:"gridKey"`
-	VCN        string     `plex:"vcn"`
-	Title      string     `plex:"title"`
-	ShortTitle string     `plex:"shortTitle"`
-	Source     string     `plex:"source"`
-	Categories StringList `plex:"categories"`
+	ID                 string     `plex:"id"`
+	Identifier         string     `plex:"identifier"`
+	ChannelIdentifier  string     `plex:"channelIdentifier"`
+	Slug               string     `plex:"slug"`
+	Key                string     `plex:"key"`
+	Type               string     `plex:"type"`
+	GridKey            string     `plex:"gridKey"`
+	VCN                string     `plex:"vcn"`
+	Title              string     `plex:"title"`
+	ShortTitle         string     `plex:"shortTitle"`
+	CallSign           string     `plex:"callSign"`
+	Thumb              string     `plex:"thumb"`
+	CoverPoster        string     `plex:"coverPoster"`
+	Language           string     `plex:"language"`
+	ProviderIdentifier string     `plex:"providerIdentifier"`
+	Source             string     `plex:"source"`
+	Categories         StringList `plex:"categories"`
 }
 
 // StringList encodes primitive strings as a JSON array (including [] when

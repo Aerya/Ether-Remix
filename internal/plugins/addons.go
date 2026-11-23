@@ -99,6 +99,43 @@ func (m *Manager) InstallAddon(ctx context.Context, in AddonInstall) (Record, er
 // AddonCapabilities are the roles a plain Stremio add-on can play.
 var AddonCapabilities = []Capability{CapStreamSource, CapListSource, CapLiveTV, CapSubtitles, CapMetadata, CapPluginDirectory}
 
+// AddonHost returns the redacted display host for an add-on record (never its
+// configured path or credentials).
+func AddonHost(rec Record) string {
+	if rec.SourceURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rec.SourceURL)
+	if err != nil {
+		return ""
+	}
+	return displayHost(u.Hostname())
+}
+
+// PreviewAddonURL reads a Stremio add-on's manifest from link without
+// installing it (or returns the already-installed record for the same link).
+// Only the redacted host is returned; the full link is never exposed.
+func (m *Manager) PreviewAddonURL(ctx context.Context, link string) (id, host string, installed *Record, man Manifest, err error) {
+	id, base, err := StremioInstallID(link)
+	if err != nil {
+		return "", "", nil, Manifest{}, &ValidationError{Fields: []FieldError{{Field: "url", Message: "That is not a Stremio add-on install link."}}}
+	}
+	if u, perr := url.Parse(base); perr == nil {
+		host = displayHost(u.Hostname())
+	}
+	if rec, gerr := m.Get(ctx, id); gerr == nil {
+		return id, host, &rec, rec.Manifest, nil
+	}
+	p, err := m.PreviewInstall(ctx, Source{Kind: "url", URL: base, LAN: privateHost(base)})
+	if err != nil {
+		return id, host, nil, Manifest{}, err
+	}
+	if !p.Manifest.IsStremioOnly() {
+		return id, host, nil, Manifest{}, &ValidationError{Fields: []FieldError{{Field: "url", Message: "This link is an Ether plugin, not a Stremio add-on."}}}
+	}
+	return id, host, nil, p.Manifest, nil
+}
+
 // offlineManifest is a minimal manifest for a legacy entry whose add-on is
 // unreachable while it is migrated: it serves what the entry proves.
 func offlineManifest(base, name string, resources []string) (json.RawMessage, error) {

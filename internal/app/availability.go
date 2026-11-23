@@ -11,7 +11,7 @@ import (
 
 func (a *App) buildAvailability() error {
 	s, err := availability.New(availability.Deps{Clustered: a.clustered(), DB: a.db, Config: a.cfg.Read, ConfigGeneration: a.cfg.Generation, Feeds: a.indexers, Catalog: a.catalog, Validator: a.resolver,
-		CacheCheck: a.debrid.CheckCached, Search: func(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+		CacheCheck: a.debrid.CheckCached, PackFiles: a.debrid.CachedPackMatcher, Search: func(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
 			if a.indexers == nil {
 				return nil, nil
 			}
@@ -63,6 +63,7 @@ func (a *App) buildAvailability() error {
 		Pace: 3 * time.Second,
 	})
 	a.availability = s
+	a.availabilityLive.Store(s)
 	if err == nil {
 		a.closers = append(a.closers, s.Close)
 	}
@@ -123,5 +124,11 @@ func (a *App) invalidateRelease(ctx context.Context, id string) {
 func (a *App) observeSearch(ctx context.Context, t *core.Title, rs []core.Release) {
 	if a.availability != nil {
 		a.availability.RecordSearch(ctx, t, rs)
+	}
+}
+
+func (a *App) revealTitleSeason(key core.RatingKey) {
+	if a.availability != nil {
+		a.availability.RevealTitleSeason(key)
 	}
 }

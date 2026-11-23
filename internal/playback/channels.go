@@ -58,13 +58,46 @@ func (m *Manager) prepareChannelRelease(ctx context.Context, u *core.User, key c
 }
 
 // reservationCountsLocked counts distinct viewing groups and ordinary sources.
-func (m *Manager) reservationCountsLocked(id identity) (user, total, children int) {
+func (m *Manager) reservationCountsLocked(id identity) (user, total, children, sourced int) {
+	return m.reservationCountsForMultiviewLocked(id, "")
+}
+
+func (m *Manager) reservationCountsForMultiviewLocked(id identity, mvGroup string) (user, total, children, sourced int) {
 	group := m.channelGroups[id]
 	joining := strings.HasPrefix(id.clientID, "join/")
+	external := strings.HasPrefix(id.clientID, "external/")
 	units := map[string]int64{}
+	// sourcedUnits are units that resolve a release (sessions and pending
+	// prepares, virtual channels included); passthrough IPTV groups and
+	// broadcasts never touch Usenet.
+	sourcedUnits := map[string]bool{}
 	broadcastUnits := map[string]bool{}
 	viewerUnits := map[string]bool{}
 	for g, slot := range m.externalGroups {
+		// Ordinary VOD playback on the same device supersedes any live
+		// channel or multiview group on that device.
+		if !joining && !external && group == "" && slot.user.ID == id.userID && id.clientID != "" && slot.caps.ClientID == id.clientID {
+			continue
+		}
+		if slot.caps.MultiviewGroup != "" {
+			// A multiview group counts as 1 stream for its viewer across all
+			// tiles (passthrough, relay or broadcast).
+			if slot.broadcast != "" && slot.broadcast != group {
+				broadcastUnits[slot.broadcast] = true
+			}
+			if slot.user.ID == id.userID && mvGroup != "" && slot.caps.MultiviewGroup == mvGroup {
+				continue
+			}
+			mvKey := fmt.Sprintf("multiview/%d/%s", slot.user.ID, slot.caps.MultiviewGroup)
+			if slot.broadcast != "" {
+				if slot.user.ID == id.userID && (joining || group == "") {
+					viewerUnits[mvKey] = true
+				}
+			} else {
+				units[mvKey] = slot.user.ID
+			}
+			continue
+		}
 		if slot.broadcast != "" {
 			if slot.broadcast != group {
 				broadcastUnits[slot.broadcast] = true
@@ -101,6 +134,7 @@ func (m *Manager) reservationCountsLocked(id identity) (user, total, children in
 			unit = fmt.Sprintf("client/%d/%s/%s", other.userID, other.surface, other.clientID)
 		}
 		units[unit] = other.userID
+		sourcedUnits[unit] = true
 	}
 	now := m.now()
 	for sid, s := range m.sessions {
@@ -115,14 +149,15 @@ func (m *Manager) reservationCountsLocked(id identity) (user, total, children in
 	for other := range m.reservations {
 		add(other, pendingID("", other))
 	}
-	for _, uid := range units {
+	for k, uid := range units {
 		total++
-		if uid == id.userID {
+		if uid == id.userID && !viewerUnits[k] {
 			user++
 		}
 	}
 	total += len(broadcastUnits)
 	user += len(viewerUnits)
+	sourced = len(sourcedUnits)
 	return
 }
 
@@ -155,7 +190,12 @@ func (m *Manager) beginChannel(u *core.User, caps core.ClientCaps, group, output
 	}
 	cfg := m.config()
 	userLimit := UserStreamLimit(cfg, u)
-	serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	if derived {
+		// The automatic limit protects Usenet connections; a channel
+		// reserved here plays from its IPTV source, never from Usenet.
+		serverLimit = 0
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -180,7 +220,7 @@ func (m *Manager) beginChannel(u *core.User, caps core.ClientCaps, group, output
 		id.clientID = "join/" + caps.ClientID
 		m.channelGroups[id] = output
 	}
-	userN, total, _ := m.reservationCountsLocked(id)
+	userN, total, _, _ := m.reservationCountsForMultiviewLocked(id, caps.MultiviewGroup)
 	if output != "" {
 		delete(m.channelGroups, id)
 	}
@@ -205,6 +245,8 @@ func (m *Manager) beginChannel(u *core.User, caps core.ClientCaps, group, output
 	claimGroup := group
 	if output != "" {
 		claimGroup = output
+	} else if caps.MultiviewGroup != "" {
+		claimGroup = "multiview-" + caps.MultiviewGroup
 	}
 	claim := unitRow{id: groupID(group), user: u.ID, client: caps.ClientID, grp: claimGroup, kind: unitGroup,
 		started: m.now().UnixMilli()}

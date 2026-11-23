@@ -98,8 +98,10 @@ func (p *Prefetcher) onTimelinePostPlay(user *core.User, key core.RatingKey, off
 	// hours by the previous session's finished jobs.
 	if !probed {
 		p.enqueue(job{
-			id:  "ppprobe:" + id,
-			run: func(ctx context.Context) error { return p.probePostPlay(ctx, &u, key, duration) },
+			id:       "ppprobe:" + id,
+			kind:     "postplay_probe",
+			titleKey: key,
+			run:      func(ctx context.Context) error { return p.probePostPlay(ctx, &u, key, duration) },
 		})
 		return
 	}
@@ -110,8 +112,10 @@ func (p *Prefetcher) onTimelinePostPlay(user *core.User, key core.RatingKey, off
 		}
 		p.ppMu.Unlock()
 		p.enqueue(job{
-			id:  "postplay:" + id,
-			run: func(ctx context.Context) error { return p.firePostPlay(ctx, &u, key) },
+			id:       "postplay:" + id,
+			kind:     "postplay",
+			titleKey: key,
+			run:      func(ctx context.Context) error { return p.firePostPlay(ctx, &u, key) },
 		})
 	}
 }
@@ -251,11 +255,18 @@ func (p *Prefetcher) firePostPlay(ctx context.Context, user *core.User, key core
 		return nil
 	}
 	p.setCurrent(episodeLabel(playable), core.CacheCausePostPlay)
+	if out := outcomeFromContext(ctx); out != nil {
+		out.titleKey = playable.Key.String()
+		out.titleName = episodeLabel(playable)
+	}
 	log := p.log.With("user", user.ID, "after", key, "pick", playable.Key, "reason", picks[0].Reason)
 	if p.deps.Prewarmer != nil {
 		if p.deps.Prewarmer.Prewarm(ctx, user, playable.Key, caps, core.PrewarmOptions{
 			Reason: core.PrewarmPostPlay, PrefetchBytes: p.opts.PostPlayBytes, DuringPlayback: true,
 		}) {
+			if out := outcomeFromContext(ctx); out != nil {
+				out.bytesWarmed = p.opts.PostPlayBytes
+			}
 			log.Info("pre-warming post-play pick")
 		} else {
 			log.Debug("post-play prewarm skipped by playback budgets")
@@ -269,7 +280,14 @@ func (p *Prefetcher) firePostPlay(ctx context.Context, user *core.User, key core
 		if rp, err := p.deps.Hints.ResumeFor(ctx, user, playable.Key, caps); err == nil && rp != nil {
 			log.Info("pre-buffering post-play pick (stored release)")
 			p.noteCause(rp.ReleaseID(), core.CacheCausePostPlay, episodeLabel(playable))
-			return p.deps.Engine.Prefetch(ctx, rp.ReleaseID(), rp.NZB, 0, clampLen(0, length, rp.Size))
+			warmed := clampLen(0, length, rp.Size)
+			if err := p.deps.Engine.Prefetch(ctx, rp.ReleaseID(), rp.NZB, 0, warmed); err != nil {
+				return err
+			}
+			if out := outcomeFromContext(ctx); out != nil {
+				out.bytesWarmed = warmed
+			}
+			return nil
 		}
 	}
 	// Nobody waits on a post-play pre-buffer: fallback queries go one at a time.
@@ -288,7 +306,14 @@ func (p *Prefetcher) firePostPlay(ctx context.Context, user *core.User, key core
 	}
 	log.Info("pre-buffering post-play pick", "release", res.Release.Name, "bytes", length)
 	p.noteCause(res.Release.ID, core.CacheCausePostPlay, episodeLabel(playable))
-	return p.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, 0, clampLen(0, length, res.Release.Size))
+	warmed := clampLen(0, length, res.Release.Size)
+	if err := p.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, 0, warmed); err != nil {
+		return err
+	}
+	if out := outcomeFromContext(ctx); out != nil {
+		out.bytesWarmed = warmed
+	}
+	return nil
 }
 
 // playablePick turns a pick into the title Play would start: a movie

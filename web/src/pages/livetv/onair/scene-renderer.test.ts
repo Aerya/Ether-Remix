@@ -2,6 +2,7 @@ import { test, expect, vi } from "vitest";
 import { referenceLooks } from "./fixtures";
 import { MOMENTS } from "./model";
 import { evaluate, ease, random, renderScene, type Scene } from "./scene-renderer";
+import { styleBindings as stageStyleBindings } from "./Stage";
 function context() {
   const calls: unknown[] = [];
   const canvas = { width: 320, height: 180 };
@@ -170,6 +171,33 @@ test("scene evaluation preserves Go boundary, slot, premultiplied-colour and ene
   expect(ease("back", 0.7, 2)).toBeGreaterThan(ease("back", 0.7, 0));
   expect(random(7, 0)).not.toBe(random(8, 0));
   expect(random(7, 0)).toBe(random(7, 4294967296));
+});
+
+test("styleBindings resolves bracketed list slots, words tokens and artwork URLs", () => {
+  const b = stageStyleBindings(referenceLooks[0]!, {
+    next: {
+      title: "Arrival",
+      time: "21:00",
+      poster: "/ether/api/image?path=%2Fposter.jpg&w=780",
+      backdrop: "/ether/api/image?path=%2Fbackdrop.jpg&w=1280",
+    },
+    list: [
+      { time: "20:00", title: "Solaris", meta: "1972 · 2h 47m" },
+      { time: "22:45", title: "Stalker", meta: "1979 · 2h 42m" },
+    ],
+  });
+  expect(evaluate("{list[0].time} {list[0].title} ({list[1].meta})", b, 0)).toBe(
+    "20:00 Solaris (1979 · 2h 42m)",
+  );
+  expect(
+    evaluate(
+      "{words.upNext} | {words.tonight} | {words.now} | {words.break} | {words.back} | {words.offair}",
+      b,
+      0,
+    ),
+  ).toBe("UP NEXT | TONIGHT | NOW PLAYING | BACK IN A MOMENT | NOW RESUMING | OFF AIR");
+  expect(evaluate("{next.poster}", b, 0)).toBe("/ether/api/image?path=%2Fposter.jpg&w=780");
+  expect(evaluate("{next.backdrop}", b, 0)).toBe("/ether/api/image?path=%2Fbackdrop.jpg&w=1280");
 });
 
 test("a tile paints immediately while its worker starts, and releases its worker", async () => {

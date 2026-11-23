@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -64,7 +63,8 @@ func TestRuntimeRowViewsMissingCollectionFailsClosed(t *testing.T) {
 	}
 
 	views, err := service.ListRowViews(ctx, frontend.RowViewRequest{Viewer: viewer, Device: core.Device{ID: "tv"}, Protocol: "jellyfin", Placement: frontend.PlacementHome})
-	if !errors.Is(err, experience.ErrRowViewNotFound) || len(views) != 0 {
+	// The unsourced row is dropped; the rest of Home still loads.
+	if err != nil || len(views) != 0 {
 		t.Fatalf("missing collection source: views=%+v err=%v", views, err)
 	}
 }

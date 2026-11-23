@@ -53,7 +53,7 @@ func (a *App) authorizeDeliveryPlex(ctx context.Context, r *http.Request, _ stri
 	// Use the shipping Plex parser: native media loaders may retain only the
 	// query credential, including its established case-insensitive spelling.
 	token := plex.ParseRequest(r, a.trustedProxyPrefixes()...).Token
-	if token == "" || core.IsGrantCredential(token) || auth.IsOwnerSession(token) {
+	if token == "" || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) || auth.IsOwnerSession(token) {
 		return core.ErrUnauthorized
 	}
 	user, receipt, err := a.users.Accept(ctx, token)

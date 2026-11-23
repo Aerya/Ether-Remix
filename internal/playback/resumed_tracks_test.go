@@ -52,7 +52,7 @@ func TestResumedTracksFollowTheResumeRow(t *testing.T) {
 	other := &core.User{ID: 2}
 	key := core.MovieKey(550)
 	caps := core.ClientCaps{}
-	french := core.MediaInfo{Container: "mkv", Size: 8000, Duration: time.Hour, Streams: []core.StreamInfo{
+	french := core.MediaInfo{Container: "mkv", Size: 8000, Duration: time.Hour, Chapters: []core.Chapter{{Title: "Opening", Start: time.Minute}}, Streams: []core.StreamInfo{
 		{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160},
 		{Index: 1, Type: "audio", Codec: "aac", Language: "fr", Channels: 2},
 	}}
@@ -64,8 +64,8 @@ func TestResumedTracksFollowTheResumeRow(t *testing.T) {
 	}
 
 	info, rel, ok := m.ResumedTracks(ctx, owner, key, caps)
-	if !ok || rel != "rel-a" || !hasAudioLang(info, "fr") {
-		t.Fatalf("owner tracks = %+v %q %v", info.Streams, rel, ok)
+	if !ok || rel != "rel-a" || !hasAudioLang(info, "fr") || len(info.Chapters) != 1 || info.Chapters[0].Title != "Opening" {
+		t.Fatalf("owner tracks = %+v chapters=%+v %q %v", info.Streams, info.Chapters, rel, ok)
 	}
 	if _, _, ok := m.ResumedTracks(ctx, other, key, caps); ok {
 		t.Fatal("another viewer received the owner's release")

@@ -70,12 +70,16 @@ function rows(
 
 export function settingsIndex(): SettingHit[] {
   const general = t("General");
+  const apps = t("Apps");
+  const serverAddress = `${general} › ${t("Server address")}`;
   const quality = t("Quality");
   const playback = t("Playback");
+  const cachePreloading = `${t("Cache")} › ${t("Preloading")}`;
   const moviesSettings = t("Movies · Settings");
   const viewers = t("Viewers");
   const plex = "Plex";
   const away = t("Away from home");
+  const connectGroup = S.SERVER.find((g) => g.id === "connect");
   return [
     {
       key: "looks",
@@ -105,18 +109,58 @@ export function settingsIndex(): SettingHit[] {
       href: "/services/overview",
       keywords: "poster API key",
     })),
+    // Cache › Preloading
+    ...rows("/cache/preloading", cachePreloading, [
+      ["allow-opening-and-resume-warming", t("Allow opening and resume warming")],
+      ["warm-detail-pages", t("Warm detail pages")],
+      ["prepare-the-next-episode", t("Prepare the next episode")],
+      ["keep-resume-points-warm", t("Keep resume points warm")],
+      ["warm-up-new-arrivals", t("Warm up new arrivals")],
+      ["read-ahead-while-playing", t("Read ahead while playing")],
+      ["preload-movies-and-tv", t("Preload movies & TV")],
+      ["keep-warm", t("Keep warm")],
+      ["speculative-warming", t("Speculative warming")],
+      ["preload-allocation", t("Preload allocation")],
+      ["include-in-your-shelf", t("Include in your shelf")],
+      ["selection-strategy", t("Selection strategy")],
+      ["household-influence", t("Household influence")],
+      ["learn-from", t("Learn from")],
+      ["episode-window-per-show", t("Episode window per show")],
+    ]),
+    ...rows(
+      "/cache/preloading",
+      cachePreloading,
+      [
+        ["opening-window", t("Opening window")],
+        ["next-episode-resume-window", t("Next episode / resume window")],
+        ["prepare-next-episode-at", t("Prepare next episode at")],
+      ],
+      "playback-warming",
+    ),
+    ...rows(
+      "/cache/preloading",
+      cachePreloading,
+      [
+        ["household-history-window", t("Household history window")],
+        ["maximum-preloaded-titles", t("Maximum preloaded titles")],
+        ["preload-speed", t("Preload speed")],
+        ["keep-disk-space-free", t("Keep disk space free")],
+        ["preload-during-playback", t("Preload during playback")],
+      ],
+      "local-shelf",
+    ),
     // General
-    ...groupHits(S.SERVER, "/server", general),
+    ...groupHits(
+      S.SERVER.filter((g) => g.id !== "connect"),
+      "/server",
+      general,
+    ),
     ...rows("/server", general, [
       [
         "send-indexers-debrid-and-usenet-through-a-proxy",
         t("Send indexers, debrid and Usenet through a proxy"),
       ],
       ["proxy-address", t("Proxy address")],
-      ["how-apps-connect", t("How apps connect")],
-      ["port", t("Port")],
-      ["local-url", t("Local URL")],
-      ["remote-url", t("Remote URL")],
     ]),
     ...rows(
       "/server",
@@ -128,10 +172,28 @@ export function settingsIndex(): SettingHit[] {
       ],
       "how-ether-reaches-the-internet",
     ),
-    // Apps
-    ...groupHits(S.AWAY, "/apps/overview", t("Apps")).map((h) => ({
+    // General › Server address
+    ...rows("/server", serverAddress, [
+      ["server-port", t("Main port")],
+      ["local-address", t("Local")],
+      ["remote-address", t("Remote")],
+      ["tailscale-address", t("Tailscale")],
+    ]),
+    ...fieldHits(
+      (connectGroup?.more ?? []).filter((f) => f.key === "allowRemoteConsole"),
+      "/server",
+      serverAddress,
+      undefined,
+    ),
+    ...fieldHits(
+      (connectGroup?.more ?? []).filter((f) => f.key !== "allowRemoteConsole"),
+      "/server",
+      serverAddress,
+      "connect",
+    ),
+    ...groupHits(S.AWAY, "/apps/overview", apps).map((h) => ({
       ...h,
-      where: `${t("Apps")} › ${away}`,
+      where: `${apps} › ${away}`,
     })),
     ...groupHits(
       S.PLEX.filter((g) => g.id === "compatibility"),
@@ -174,7 +236,10 @@ export function settingsIndex(): SettingHit[] {
     ...rows(
       "/sources/indexers",
       t("Indexers"),
-      [["daily-budget-for-new-release-checks", t("Daily budget for new-release checks")]],
+      [
+        ["daily-budget-for-new-release-checks", t("Daily budget for new-release checks")],
+        ["daily-plugin-usenet-checks", t("Daily background Usenet checks per plugin")],
+      ],
       "daily-budgets",
     ),
     ...rows(

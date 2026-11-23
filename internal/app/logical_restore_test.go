@@ -28,10 +28,16 @@ func TestLogicalRestoreMatchesRowByRowWrites(t *testing.T) {
 		`INSERT INTO catalog_titles(key,type,title,show_key,season,episode,released_ts) VALUES(11,'episode','Pilot',10,1,1,1600000000)`,
 		`INSERT INTO catalog_titles(key,type,title,show_key,season,episode,released_ts) VALUES(12,'episode','Second',10,1,2,1600600000)`,
 		`INSERT INTO catalog_titles(key,type,title,show_key,season,episode,released_ts,adult) VALUES(13,'episode','Hidden',10,1,3,1601200000,1)`,
-		`INSERT INTO catalog_titles(key,type,title,released_ts) VALUES(20,'movie','Film',1500000000)`,
+		`INSERT INTO catalog_titles(key,type,title,released_ts,browsable,collection_id,collection_name) VALUES(20,'movie','Film',1500000000,1,500,'Galactic Saga')`,
+		`INSERT INTO catalog_titles(key,type,title,released_ts,browsable,collection_id,collection_name) VALUES(21,'movie','Sequel',1550000000,1,500,'Galactic Saga')`,
+		`INSERT INTO catalog_alt_titles(key,title) VALUES(20,'Zeta Alias')`,
+		`INSERT INTO catalog_alt_titles(key,title) VALUES(10,'Alpha Alias')`,
+		`INSERT INTO catalog_studios(key,studio) VALUES(20,'Nebula Pictures')`,
+		`INSERT INTO catalog_studios(key,studio) VALUES(10,'Aurora Studios')`,
 		`INSERT INTO catalog_credits(key,person_tmdb,name,role) VALUES(10,7,'','Lead')`,
 		`INSERT INTO catalog_credits(key,person_tmdb,name,role) VALUES(20,7,'Ada Actor','Hero')`,
 		`INSERT INTO catalog_credits(key,person_tmdb,name,role) VALUES(20,8,'Bo Builder','Villain')`,
+		`INSERT INTO livetv_search_virtual(docid,id,viewer_id,channel_id,start_ms,end_ms,data,body) VALUES(17,'v-17',0,'ch-1',1000,2000,'{}','Midnight Documentary')`,
 		`INSERT INTO notinterested_titles(viewer_id,title_key,added_at,handle) VALUES(1,'20',1,'h1')`,
 		`INSERT INTO notinterested_titles(viewer_id,title_key,added_at,handle) VALUES(1,'10',2,'h2')`,
 		`DELETE FROM notinterested_titles WHERE handle='h2'`,
@@ -79,9 +85,20 @@ func TestLogicalRestoreMatchesRowByRowWrites(t *testing.T) {
 			}
 			if store.DialectOf(dst) != store.Postgres {
 				// Full-text indexes are not in dumps; the restore rebuilds them.
-				var title, person int
-				if err := dst.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM catalog_titles_fts WHERE title LIKE '%Second%'), (SELECT COUNT(*) FROM catalog_person_names_fts WHERE catalog_person_names_fts MATCH 'Ada')`).Scan(&title, &person); err != nil || title != 1 || person != 1 {
-					t.Errorf("search indexes after restore: title %d person %d, %v", title, person, err)
+				var title, alt, person, studio, franchise, virt int
+				if err := dst.QueryRowContext(ctx, `SELECT
+					(SELECT COUNT(*) FROM catalog_titles_fts WHERE title LIKE '%Second%'),
+					(SELECT COUNT(*) FROM catalog_alt_titles_fts f JOIN catalog_alt_titles a ON a.rowid=f.rowid WHERE catalog_alt_titles_fts MATCH '"Alpha"' AND a.key=10),
+					(SELECT COUNT(*) FROM catalog_person_names_fts WHERE catalog_person_names_fts MATCH 'Ada'),
+					(SELECT COUNT(*) FROM catalog_studio_names_fts f JOIN catalog_studio_names s ON s.rowid=f.rowid WHERE catalog_studio_names_fts MATCH '"Aurora"' AND s.studio='Aurora Studios'),
+					(SELECT COUNT(*) FROM catalog_franchises_fts f JOIN catalog_franchises fr ON fr.collection_id=f.rowid WHERE catalog_franchises_fts MATCH '"Galactic"' AND fr.collection_id=500),
+					(SELECT COUNT(*) FROM livetv_search_virtual_fts f JOIN livetv_search_virtual v ON v.docid=f.rowid WHERE livetv_search_virtual_fts MATCH 'Documentary' AND v.docid=17)`).Scan(&title, &alt, &person, &studio, &franchise, &virt); err != nil || title != 1 || alt != 1 || person != 1 || studio != 1 || franchise != 1 || virt != 1 {
+					t.Errorf("search indexes after restore: title=%d alt=%d person=%d studio=%d franchise=%d virt=%d, %v", title, alt, person, studio, franchise, virt, err)
+				}
+				for _, fts := range []string{"catalog_titles_fts", "catalog_alt_titles_fts", "catalog_person_names_fts", "catalog_studio_names_fts", "catalog_franchises_fts"} {
+					if _, err := dst.ExecContext(ctx, `INSERT INTO `+fts+`(`+fts+`) VALUES('integrity-check')`); err != nil {
+						t.Errorf("%s integrity-check after restore: %v", fts, err)
+					}
 				}
 			}
 			// Triggers are live again once the restore commits.
@@ -96,7 +113,11 @@ func TestLogicalRestoreMatchesRowByRowWrites(t *testing.T) {
 	}
 	restore("current dump", dump.Bytes())
 	// A dump from a release before these derived tables existed.
-	restore("dump without derived tables", withoutTables(t, dump.Bytes(), "catalog_show_episodes", "catalog_person_names", "catalog_stats_tally", "catalog_stats_tally_delta"))
+	restore("dump without derived tables", withoutTables(t, dump.Bytes(),
+		"catalog_show_episodes", "catalog_person_names", "catalog_studio_names",
+		"catalog_stats_tally", "catalog_stats_tally_delta",
+		"catalog_franchises", "catalog_franchise_counts", "catalog_franchise_counts_delta",
+	))
 }
 
 func policyEpoch(t *testing.T, db *sql.DB) int64 {
@@ -110,8 +131,10 @@ func policyEpoch(t *testing.T, db *sql.DB) int64 {
 
 // foldedTallies are the catalogue's delta-kept count tables and their keys.
 var foldedTallies = map[string]string{
-	"catalog_browse_tally": "type,genre,rating_rank",
-	"catalog_stats_tally":  "kind,browsable,home,year_pending",
+	"catalog_browse_tally":     "type,genre,rating_rank",
+	"catalog_stats_tally":      "kind,browsable,home,year_pending",
+	"catalog_facet_tally":      "type,facet,value,rating_rank",
+	"catalog_franchise_counts": "id",
 }
 
 // tableContents renders every non-empty table as sorted "a|b|c" lines.

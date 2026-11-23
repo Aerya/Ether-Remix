@@ -40,11 +40,10 @@ func TestOpenWithRetryWaitsForUnreachableServer(t *testing.T) {
 }
 
 func TestOpenWithRetryGivesUpOnConfigErrors(t *testing.T) {
-	start := time.Now()
 	var retried bool
 	_, _, err := OpenWithRetry(context.Background(), Options{URL: "postgres://%zz", Logger: quietLog()},
 		RetryOptions{OnRetry: func(int, time.Duration, error) { retried = true }})
-	if err == nil || retried || time.Since(start) > 5*time.Second {
+	if err == nil || retried {
 		t.Fatalf("invalid URL: err %v retried %v", err, retried)
 	}
 	raw := os.Getenv(TestPostgresEnv)

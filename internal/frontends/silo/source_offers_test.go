@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -248,5 +249,181 @@ func TestVersionsRouteProbesOneSource(t *testing.T) {
 	watch := call("/api/v2/watch/" + ids.RatingKeyGUID(key))
 	if watch.Code != 200 || calls != 2 || !strings.Contains(watch.Body.String(), `"file_id"`) || !strings.Contains(watch.Body.String(), `"audio_tracks"`) || !strings.Contains(watch.Body.String(), `"duration_seconds"`) || strings.Contains(watch.Body.String(), `"versions":[]`) {
 		t.Fatalf("watch probe: %d calls=%d %s", watch.Code, calls, watch.Body.String())
+	}
+}
+
+type pluginSiloEditions struct {
+	variants func(context.Context, frontend.ResolveRequest, int) ([]frontend.ReleaseVariant, error)
+}
+
+func (e pluginSiloEditions) Editions(context.Context, *frontend.Viewer, frontend.Device, frontend.RatingKey) ([]frontend.Version, error) {
+	return nil, nil
+}
+
+func (e pluginSiloEditions) Variants(ctx context.Context, req frontend.ResolveRequest, max int) ([]frontend.ReleaseVariant, error) {
+	return e.variants(ctx, req, max)
+}
+
+func (e pluginSiloEditions) Available(context.Context, frontend.RatingKey) (bool, bool) {
+	return false, false
+}
+
+func (e pluginSiloEditions) RefillSearchCache(*frontend.Title) <-chan struct{} {
+	return nil
+}
+
+func TestPluginItemVersionsWatchAndPlayback(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 7}
+	key := core.PluginKey(9001)
+	var variantCalls int
+	var lastLocal bool
+	var lastPurpose string
+	var issuedTargets []frontend.SourceOfferTarget
+	media1080 := frontend.MediaInfo{
+		Container: "mp4",
+		Duration:  90 * time.Minute,
+		Streams: []frontend.StreamInfo{
+			{Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Type: "audio", Codec: "aac", Language: "eng", Channels: 2, Default: true},
+		},
+	}
+	editions := pluginSiloEditions{
+		variants: func(ctx context.Context, req frontend.ResolveRequest, _ int) ([]frontend.ReleaseVariant, error) {
+			variantCalls++
+			lastLocal = core.LocalResponse(ctx)
+			lastPurpose = core.IndexerPurpose(ctx)
+			if req.Title == nil || req.Title.Key != key {
+				t.Fatalf("unexpected ResolveRequest title: %+v", req.Title)
+			}
+			return []frontend.ReleaseVariant{
+				{ID: core.KindAutoVersionID, Label: "Auto · 1080p", Auto: true, Info: media1080},
+				{ID: "src-1080", Label: "1080p Feed", Release: frontend.Release{ID: "src-1080"}, Info: media1080},
+				{ID: "src-1080", Label: "Duplicate 1080p Feed", Release: frontend.Release{ID: "src-1080"}, Info: media1080},
+			}, nil
+		},
+	}
+	var detailPlanCalls int
+	var plannedReq frontend.PlanRequest
+	dec := frontend.Decision{Kind: frontend.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: "mp4"}
+	sess := frontend.Session{
+		ID: "silo-plugin-sess", Item: key, Device: frontend.Device{ID: "tv"},
+		Media: &media1080,
+	}
+	sessions := testDetailSessions{
+		embeddedDetailSessions: frontendtest.Sessions{
+			PlanFunc: func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+				plannedReq = req
+				return frontend.PlayPlan{ID: "plan-1", Media: media1080, Decision: dec, DirectPlay: true}, nil
+			},
+			OpenFunc: func(context.Context, frontend.OpenRequest) (frontend.Session, error) {
+				return sess, nil
+			},
+			StartStreamFunc: func(context.Context, frontend.SessionAccess, string, frontend.StreamRequest) (string, error) {
+				return "/sessions/media/" + sess.ID + "/scoped/direct", nil
+			},
+		},
+		detail: func(context.Context, frontend.PlanRequest) (frontend.PlayPlan, error) {
+			detailPlanCalls++
+			return frontend.PlayPlan{}, errors.New("plugin key must not call DetailPlan")
+		},
+	}
+	offeredByID := map[string]frontend.SourceOffer{}
+	offers := testSourceOffers{
+		issue: func(_ frontend.VersionScope, targets []frontend.SourceOfferTarget) ([]frontend.SourceOffer, error) {
+			issuedTargets = append([]frontend.SourceOfferTarget(nil), targets...)
+			out := make([]frontend.SourceOffer, len(targets))
+			for idx, target := range targets {
+				id := strconv.Itoa(500 + idx)
+				out[idx] = frontend.SourceOffer{ID: id, Target: target}
+				offeredByID[id] = out[idx]
+			}
+			return out, nil
+		},
+		resolve: func(_ frontend.VersionScope, id string) (frontend.SourceOffer, error) {
+			if o, ok := offeredByID[id]; ok {
+				return o, nil
+			}
+			return frontend.SourceOffer{}, frontend.ErrSourceGone
+		},
+	}
+	exp := frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{Title: frontend.Title{Key: key, Type: "movie", Title: "Championship Final"}}, nil
+	}}
+	inst, err := (Frontend{MachineID: "test"}).Mount(context.Background(), frontend.Host{
+		Identity:       testDeviceIdentity(frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}, viewer),
+		Experience:     exp,
+		Editions:       editions,
+		Sessions:       sessions,
+		VersionHandles: testVersionHandles{},
+		SourceOffers:   offers,
+		Capabilities:   frontendtest.Capabilities{},
+		IDs:            ids.Codecs{Allocator: fileIDs{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer grant")
+		r.Header.Set("X-Silo-Device-Id", "tv")
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. Item browse MUST NOT call Editions.Variants or DetailPlan.
+	browse := call("GET", "/api/v2/catalog/items/"+ids.RatingKeyGUID(key), "")
+	if browse.Code != 200 || variantCalls != 0 || detailPlanCalls != 0 || !strings.Contains(browse.Body.String(), `"versions":[]`) {
+		t.Fatalf("item browse resolved plugin versions: code=%d variantCalls=%d detailCalls=%d body=%s", browse.Code, variantCalls, detailPlanCalls, browse.Body.String())
+	}
+
+	// 2. /versions resolves the plugin version menu with !LocalResponse and Playback purpose,
+	//    deduplicates variant IDs, and issues VersionHandle offers (never DetailSource).
+	versionsRes := call("GET", "/api/v2/catalog/items/"+ids.RatingKeyGUID(key)+"/versions", "")
+	if versionsRes.Code != 200 || variantCalls != 1 || detailPlanCalls != 0 {
+		t.Fatalf("/versions failed: code=%d variantCalls=%d detailCalls=%d body=%s", versionsRes.Code, variantCalls, detailPlanCalls, versionsRes.Body.String())
+	}
+	if lastLocal {
+		t.Fatalf("pluginVersions passed LocalResponse=true; cold plugin items would return empty")
+	}
+	if lastPurpose != core.IndexerPurposePlayback {
+		t.Fatalf("pluginVersions IndexerPurpose = %q, want %q", lastPurpose, core.IndexerPurposePlayback)
+	}
+	if len(issuedTargets) != 2 {
+		t.Fatalf("issuedTargets = %+v, want 2 deduplicated version-handle targets", issuedTargets)
+	}
+	for _, tgt := range issuedTargets {
+		if tgt.Item != key || tgt.VersionHandle == "" || tgt.DetailSource != "" {
+			t.Fatalf("unexpected target %+v, want VersionHandle only", tgt)
+		}
+	}
+
+	// 3. /watch returns those file_ids and POST /api/v2/playback/start plans via VersionHandle.
+	watchRes := call("GET", "/api/v2/watch/"+ids.RatingKeyGUID(key), "")
+	if watchRes.Code != 200 || variantCalls != 2 || detailPlanCalls != 0 {
+		t.Fatalf("/watch failed: code=%d variantCalls=%d detailCalls=%d body=%s", watchRes.Code, variantCalls, detailPlanCalls, watchRes.Body.String())
+	}
+	var watchBody struct {
+		Versions []struct {
+			FileID string `json:"file_id"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(watchRes.Body.Bytes(), &watchBody); err != nil {
+		t.Fatalf("decode /watch: %v", err)
+	}
+	if len(watchBody.Versions) != 2 {
+		t.Fatalf("/watch versions = %+v, want 2", watchBody.Versions)
+	}
+	startBody := `{"protocol_version":3,"file_id":"` + watchBody.Versions[1].FileID + `","profile_id":"7","installation_id":"` + inst.(*instance).installationID() + `","playback_attempt_id":"att-1","client_capabilities":{"codecs_video":["h264"]}}`
+	startRes := call("POST", "/api/v2/playback/start", startBody)
+	if startRes.Code != 201 {
+		t.Fatalf("POST /api/v2/playback/start status=%d body=%s", startRes.Code, startRes.Body.String())
+	}
+	if plannedReq.Item != key || !plannedReq.Intent.ExactVersion || plannedReq.Version != issuedTargets[1].VersionHandle || plannedReq.DetailSource != "" {
+		t.Fatalf("Plan req = %+v, want Item=%v ExactVersion=true Version=%q DetailSource=\"\"", plannedReq, key, issuedTargets[1].VersionHandle)
 	}
 }

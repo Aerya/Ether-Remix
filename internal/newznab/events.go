@@ -14,7 +14,7 @@ type Event struct {
 	Empty           bool // network search succeeded with zero releases
 	Cached          bool // answered from Ether's cache without an HTTP request
 	BudgetExhausted bool // held back locally by Ether's budget or rate-limit pause
-	SpeculativeHeld bool // held back specifically by the background speculative share
+	SpeculativeHeld bool // held back by the warm-up or viewer detail share
 	RateLimited     bool // remote indexer answered HTTP 429 or quota error to a sent request
 	Results         int
 	Duration        time.Duration

@@ -42,10 +42,7 @@ func (i *instance) creditPortraits(r *http.Request, viewer *frontend.Viewer, cre
 		}
 		candidates[id] = append(candidates[id], img)
 	}
-	prefix := ""
-	if r.Context().Value(sharedPrefix{}) != nil {
-		prefix = "/silo"
-	}
+	prefix := i.pathPrefix(r)
 	for round := 0; ; round++ {
 		var pending []int64
 		var portraits []frontend.Image
@@ -133,10 +130,7 @@ func (i *instance) sectionArtwork(r *http.Request, v *frontend.Viewer, credentia
 }
 
 func (i *instance) paintCardArtwork(r *http.Request, granted []frontend.GrantedImage, out map[string]any) {
-	prefix := ""
-	if r.Context().Value(sharedPrefix{}) != nil {
-		prefix = "/silo"
-	}
+	prefix := i.pathPrefix(r)
 	fields := map[string]string{frontend.ImagePoster: "poster_url", frontend.ImageBackdrop: "backdrop_url", frontend.ImageLogo: "logo_url", frontend.ImageStill: "still_url"}
 	seen := map[string]bool{}
 	for _, grant := range granted {
@@ -186,7 +180,7 @@ func (i *instance) artwork(r *http.Request, viewer *frontend.Viewer, credential 
 	if i.host.Experience == nil || i.host.ImageGrants == nil {
 		return
 	}
-	detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: viewer, Device: device(r), Key: key})
 	if err != nil {
 		return
 	}
@@ -204,10 +198,7 @@ func (i *instance) artwork(r *http.Request, viewer *frontend.Viewer, credential 
 		if err != nil {
 			continue
 		}
-		prefix := ""
-		if r.Context().Value(sharedPrefix{}) != nil {
-			prefix = "/silo"
-		}
+		prefix := i.pathPrefix(r)
 		path := siloImageURL(r, prefix+"/api/v2/images/"+token, img.Kind)
 		if _, exists := out[field]; !exists {
 			out[field] = path
@@ -262,10 +253,7 @@ func (i *instance) artwork(r *http.Request, viewer *frontend.Viewer, credential 
 			if err != nil {
 				continue
 			}
-			prefix := ""
-			if r.Context().Value(sharedPrefix{}) != nil {
-				prefix = "/silo"
-			}
+			prefix := i.pathPrefix(r)
 			out[field+"_url"] = siloImageURL(r, prefix+"/api/v2/images/"+token, img.Kind)
 			if img.ThumbHash != "" {
 				out[field+"_thumbhash"] = img.ThumbHash

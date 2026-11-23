@@ -63,10 +63,12 @@ func RefreshStatistics(ctx context.Context, db *sql.DB) ([]string, error) {
 	}
 	started := time.Now()
 	var analysed []string
+	var ran int
 	var longest time.Duration
 	err = withFullAnalysis(ctx, conn, func() error {
 		for _, t := range stale {
-			took, err := analyzeFull(ctx, conn, t)
+			took, n, err := analyzeFull(ctx, conn, t)
+			ran += n
 			if err != nil {
 				return err
 			}
@@ -75,10 +77,12 @@ func RefreshStatistics(ctx context.Context, db *sql.DB) ([]string, error) {
 		}
 		return nil
 	})
-	if len(analysed) > 0 {
+	if ran > 0 {
 		if rerr := reloadStatistics(ctx, conn); err == nil {
 			err = rerr
 		}
+	}
+	if len(analysed) > 0 {
 		slog.Info("store: planner statistics refreshed", "tables", strings.Join(analysed, ","),
 			"took", time.Since(started).Round(time.Millisecond), "longest_statement", longest.Round(time.Millisecond))
 	}
@@ -93,21 +97,29 @@ func AnalyzeFull(ctx context.Context, db *sql.DB, names ...string) error {
 	if DialectOf(db) == Postgres || len(names) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	var ran int
 	err = withFullAnalysis(ctx, conn, func() error {
 		for _, n := range names {
-			if _, err := analyzeFull(ctx, conn, n); err != nil {
+			_, count, err := analyzeFull(ctx, conn, n)
+			ran += count
+			if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	if rerr := reloadStatistics(ctx, conn); err == nil {
-		err = rerr
+	if ran > 0 {
+		if rerr := reloadStatistics(ctx, conn); err == nil {
+			err = rerr
+		}
 	}
 	return err
 }
@@ -279,48 +291,51 @@ func withFullAnalysis(ctx context.Context, conn *sql.Conn, fn func() error) erro
 // analyzeFull analyses one table or index on conn. A table with indexes is
 // analysed one index per statement, which records the same statistics as
 // ANALYZE of the table but holds the write lock for one index scan at a
-// time. It returns the longest statement.
-func analyzeFull(ctx context.Context, conn *sql.Conn, name string) (time.Duration, error) {
+// time. It returns the longest statement and the number of ANALYZE statements
+// committed.
+func analyzeFull(ctx context.Context, conn *sql.Conn, name string) (time.Duration, int, error) {
 	targets := []string{name}
 	rows, err := conn.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name=? AND EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?) ORDER BY name`, name, name)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var idx []string
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		idx = append(idx, n)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(idx) > 0 {
 		targets = idx
 	}
 	gate := connGate(conn)
 	var longest time.Duration
+	var ran int
 	for _, t := range targets {
 		began := time.Now()
 		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
-			return longest, err
+			return longest, ran, err
 		}
 		gate.extendHeld(time.Now().Add(maintenanceHold))
 		if _, err := tx.ExecContext(ctx, `ANALYZE `+quoteIdent(t)); err != nil {
 			tx.Rollback()
-			return longest, fmt.Errorf("store: analyze %s: %w", t, err)
+			return longest, ran, fmt.Errorf("store: analyze %s: %w", t, err)
 		}
 		if err := tx.Commit(); err != nil {
-			return longest, fmt.Errorf("store: analyze %s: %w", t, err)
+			return longest, ran, fmt.Errorf("store: analyze %s: %w", t, err)
 		}
+		ran++
 		longest = max(longest, time.Since(began))
 	}
-	return longest, nil
+	return longest, ran, nil
 }
 
 // reloadStatistics makes every connection load the statistics ANALYZE just

@@ -14,6 +14,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/blobcache"
+	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
@@ -22,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/livetv"
+	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/notify"
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -33,22 +35,25 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins/remote"
 	"github.com/braedonsaunders/ether/internal/plugins/studio"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/state"
 )
 
 // pluginRuntime is the plugin host and its adapters.
 type pluginRuntime struct {
-	mgr           *plugins.Manager
-	cat           *catalogue.Service
-	studio        *studio.Studio
-	tunnel        *remote.TunnelServer
-	pairing       *remote.Pairing
-	pluginHost    http.Handler
-	subtitleProbe *adapters.SubtitleProbe
-	pluginitems   *pluginitems.Service
-	blobcache     *blobcache.Cache
-	kindCatalog   *adapters.KindCatalog
-	kindResolver  *adapters.KindResolver
+	mgr            *plugins.Manager
+	cat            *catalogue.Service
+	studio         *studio.Studio
+	tunnel         *remote.TunnelServer
+	pairing        *remote.Pairing
+	pluginHost     http.Handler
+	subtitleProbe  *adapters.SubtitleProbe
+	catalogImports *adapters.CatalogImporter
+	pluginitems    *pluginitems.Service
+	blobcache      *blobcache.Cache
+	kindCatalog    *adapters.KindCatalog
+	kindResolver   *adapters.KindResolver
+	screens        *screens.Service
 	// adapterCtrl keeps plugin-provided frontend adapters registered with
 	// the frontend registry; adapterTickets mints the scoped stream tickets
 	// adapter responses embed.
@@ -61,6 +66,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	var busyAt time.Time
 	var busyValue bool
 	mgr, err := plugins.New(plugins.Deps{
+		EventBus:          a.EventBus(),
+		EventRegistry:     a.EventRegistry(),
+		FlowActions:       a.FlowsActions(),
 		ReadRuntimeConfig: func() config.Plugins { return a.cfg.Read().Plugins },
 		SaveRuntimeConfig: func(id string, limits config.PluginRuntimeLimits) error {
 			return a.cfg.Update(func(c *config.Config) error {
@@ -122,6 +130,30 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Backends: plugins.Backends{
 			CollectionsUpsert: a.pluginCollectionUpsert,
 			CollectionsDelete: a.pluginCollectionDelete,
+			ResolveBadgeTitles: func(ctx context.Context, refs []plugins.BadgeTitleRef) ([]string, error) {
+				if a.catalog == nil || len(refs) == 0 {
+					return make([]string, len(refs)), nil
+				}
+				crefs := make([]catalog.ExternalTitleRef, len(refs))
+				for i, r := range refs {
+					crefs[i] = catalog.ExternalTitleRef{
+						Type: core.MediaType(r.Type),
+						TMDB: r.TMDB,
+						IMDB: r.IMDB,
+					}
+				}
+				keys, err := a.catalog.ResolveExternalTitles(ctx, crefs)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]string, len(keys))
+				for i, k := range keys {
+					if k != 0 {
+						out[i] = k.String()
+					}
+				}
+				return out, nil
+			},
 			ViewerNames: func(ctx context.Context, ids []int64) (json.RawMessage, error) {
 				out := make([]map[string]any, 0, len(ids))
 				for _, id := range ids {
@@ -248,16 +280,36 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 					_ = a.streamRT.Publish(context.Background(), admin.StreamNotice, map[string]any{"text": text})
 				}
 			},
+			AIComplete: func(ctx context.Context, req plugins.AICompleteBackendRequest) (string, error) {
+				if a.llm == nil || a.llm.Client() == nil || !a.llm.Client().Enabled() {
+					return "", plugins.ErrNotConfigured
+				}
+				msgs := make([]llm.Message, len(req.Messages))
+				for i, m := range req.Messages {
+					msgs[i] = llm.Message{Role: m.Role, Content: m.Content}
+				}
+				out, err := a.llm.Client().Complete(ctx, llm.CompleteOptions{
+					Messages:    msgs,
+					JSONMode:    req.JSONMode,
+					MaxTokens:   req.MaxTokens,
+					Temperature: req.Temperature,
+				})
+				if errors.Is(err, llm.ErrNotConfigured) {
+					return "", plugins.ErrNotConfigured
+				}
+				return out, err
+			},
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	indexURL, indexKey := cfg.Plugins.Catalogue()
 	cat, err := catalogue.New(catalogue.Options{
 		DB:        a.db,
 		Manager:   mgr,
-		IndexURL:  cfg.Plugins.IndexURL,
-		PublicKey: cfg.Plugins.PublicKey,
+		IndexURL:  indexURL,
+		PublicKey: indexKey,
 		Log:       a.log.With("component", "plugins-catalogue"),
 	})
 	if err != nil {
@@ -293,7 +345,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	log := a.log.With("component", "plugins-remote")
 	tunnel := remote.NewTunnelServer(remote.TunnelOptions{Auth: auth, Logger: log})
-	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), Logger: log}
+	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), Logger: log}
 	mgr.RegisterRuntime("remote", factory.RuntimeFactory())
 	mgr.SetSidecarState(factory.SidecarState)
 	// A sidecar that (re)connects is checked at once, so the console does
@@ -303,7 +355,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		defer cancel()
 		_, _ = mgr.CheckHealth(ctx, pluginID)
 	})
-	host := remote.NewHostHandler(remote.HostOptions{Host: remote.HostAdapter{HostFor: mgr.HostFor, SettingsWithSecrets: mgr.PluginSettings}, Auth: auth, Logger: log})
+	host := remote.NewHostHandler(remote.HostOptions{Host: remote.HostAdapter{HostFor: mgr.HostFor, SettingsWithSecrets: mgr.PluginSettings, ResolveAdapterViewerToken: mgr.ResolveAdapterViewerToken, ResolveAdapterCallToken: mgr.ResolveAdapterCallToken}, Auth: auth, Logger: log})
 	pairing := remote.NewPairing(a.db, grants, func(ctx context.Context) (int64, error) {
 		owner, err := a.users.Owner(ctx)
 		if err != nil {
@@ -340,6 +392,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	}
 	a.closers = append(a.closers, func() { _ = tunnel.Close() })
 	adapters.Attach(mgr, a.collections, a.personalize, a.livetv)
+	catalogImports := adapters.AttachCatalogImporter(a.db, mgr, a.collections, a.log.With("component", "addon-imports"))
 	adapters.AttachSubtitles(mgr, a.subtitles)
 	adapters.AttachMetadata(mgr, a.catalog)
 	adapters.AttachDebrid(mgr, a.debrid)
@@ -347,8 +400,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	a.closers = append(a.closers, subtitleProbe.Close)
 	markerCtx, cancelMarkers := context.WithCancel(context.Background())
 	markerBridge := adapters.AttachMarkers(markerCtx, mgr, a.markers, a.catalog, adapters.MarkerBridgeOptions{
+		Logger: a.log.With("component", "markers"),
 		Selected: func(id string) bool {
-			for _, source := range a.cfg.Get().Markers.SourceOrder {
+			for _, source := range a.cfg.Read().Markers.SourceOrder {
 				if source == id {
 					return true
 				}
@@ -356,7 +410,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			return false
 		},
 		SkipDB: func() (enabled bool, apiKey, baseURL string) {
-			c := a.cfg.Get().Markers
+			c := a.cfg.Read().Markers
 			return c.SkipDB, c.SkipDBAPIKey, ""
 		},
 	})
@@ -365,10 +419,12 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	runCtx, cancelRun := context.WithCancel(context.Background())
 
 	itemsSvc, err := pluginitems.New(ctx, a.db, pluginitems.Options{
-		Caller:   mgr,
-		Health:   mgr,
-		Logger:   a.log.With("component", "pluginitems"),
-		IsLeader: func() bool { return a.cluster == nil || a.cluster.IsLeader() },
+		Caller:            mgr,
+		Health:            mgr,
+		Jobs:              pluginSyncJobTracker{mgr: mgr},
+		MaxPluginItemsFor: mgr.MaxPluginItems,
+		Logger:            a.log.With("component", "pluginitems"),
+		IsLeader:          func() bool { return a.cluster == nil || a.cluster.IsLeader() },
 	})
 	if err != nil {
 		cancelRun()
@@ -389,7 +445,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 
 	kindCatalog := adapters.AttachKindCatalog(runCtx, adapters.KindCatalogDeps{
 		TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
-			return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
+			return a.catalog.TitleInFilter(ctx, libraryAccessFilter(lib), key)
+		},
+		TitlesInLibrary: func(ctx context.Context, lib core.Library, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+			return a.catalog.TitlesInFilter(ctx, libraryAccessFilter(lib), keys)
 		},
 		Manager:   mgr,
 		Libraries: a.libraries,
@@ -398,6 +457,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		BlobDir:   blobDir,
 		Logger:    a.log,
 	})
+	if a.state != nil {
+		a.state.SetSkipResume(kindCatalog.SkipResume)
+	}
 
 	var idx core.Indexer
 	var eng core.Engine
@@ -416,50 +478,65 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	if a.debrid != nil {
 		deb = a.debrid
 	}
+	var usenetServing func() bool
+	if a.opts.FixtureMedia == nil {
+		usenetServing = func() bool {
+			return a.fetcher == nil || a.fetcher.HasServingProvider()
+		}
+	}
+	var probeStream func(context.Context, string) (*core.MediaInfo, error)
+	if tc := a.activeTranscoder(); tc != nil {
+		probeStream = tc.Probe
+	} else if a.sourceProber != nil {
+		probeStream = a.sourceProber.Probe
+	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
-		Manager:   mgr,
-		Libraries: a.libraries,
-		Items:     itemsSvc,
-		Blobs:     blobs,
-		Catalog:   kindCatalog,
-		Indexer:   idx,
-		Debrid:    deb,
-		Engine:    eng,
+		Manager:       mgr,
+		Libraries:     a.libraries,
+		Items:         itemsSvc,
+		Blobs:         blobs,
+		Catalog:       kindCatalog,
+		Indexer:       idx,
+		Resolver:      a.resolver,
+		Debrid:        deb,
+		Engine:        eng,
+		UsenetServing: usenetServing,
 		Authorize: func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error {
-			if viewer == nil || viewer.ID <= 0 || a.users == nil {
-				return core.ErrNotFound
-			}
-			u, err := a.users.PolicyUser(ctx, viewer.ID)
-			if err != nil || u == nil {
-				return core.ErrNotFound
-			}
-			piv, err := kindCatalog.Item(ctx, key)
-			if err != nil {
-				return core.ErrNotFound
-			}
-			if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
-				return core.ErrNotFound
-			}
-			if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
-				return core.ErrNotFound
-			}
-			if !experience.TitleAllowed(a.safety, u, &piv.Title) {
-				return core.ErrNotFound
-			}
-			return nil
+			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
+			return err
 		},
-		Logger: a.log,
+		ProbeCache:  a.playback,
+		ProbeStream: probeStream,
+		Logger:      a.log,
 	})
-	cachePut, cacheOpen := blobs.HostBackends(kindCatalog.QuotaFor)
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
+	cachePartial := blobs.HostPartialBackend(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
+	var admitUsenetCheck func(ctx context.Context, pluginID string) (context.Context, func(), time.Time, error)
+	if a.availability != nil {
+		admitUsenetCheck = a.availability.AdmitPluginUsenetCheck
+	}
 	mgr.SetKindBackends(plugins.KindBackends{
-		KindUpsert:     itemsSvc.KindUpsert,
-		KindDelete:     itemsSvc.KindDelete,
-		KindItems:      itemsSvc.KindItems,
-		ResolveSources: kindResolver.ResolveSources,
-		CachePut:       cachePut,
-		CacheOpen:      cacheOpen,
-		StreamURL:      a.adapterStreamURL(adapterTickets),
+		KindUpsert:                 itemsSvc.KindUpsert,
+		KindUpsertStats:            itemsSvc.KindUpsertWithStats,
+		KindDelete:                 itemsSvc.KindDelete,
+		KindItems:                  itemsSvc.KindItems,
+		KindItemsByID:              itemsSvc.KindItemsByID,
+		KindItemCount:              itemsSvc.PluginItemCount,
+		KindVisible:                a.adapterKindVisible(),
+		KindBrowse:                 a.adapterKindBrowse(),
+		ResolveSources:             kindResolver.ResolveSources,
+		ResolveSourcesResult:       kindResolver.ResolveSourcesWithResult,
+		PeekUsenetCheck:            kindResolver.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: admitUsenetCheck,
+		CachePut:                   cachePut,
+		CacheOpen:                  cacheOpen,
+		CacheDelete:                cacheDelete,
+		CachePartial:               cachePartial,
+		StreamURL:                  a.adapterStreamURL(adapterTickets),
+		StreamPartURL:              a.adapterStreamPartURL(adapterTickets),
+		StreamURLOptions:           a.adapterStreamURLOptions(adapterTickets),
+		MediaProbe:                 kindResolver.ProbeMedia,
 	})
 
 	if err := mgr.Start(ctx); err != nil {
@@ -471,14 +548,19 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	// the running search manager in step with installs, removals and role
 	// switches. Also refresh published library sections when plugin libraries
 	// appear or disappear.
-	mgr.OnSync(func(context.Context, plugins.Record) {
-		a.reapplyAddonIndexers()
-		a.publishLibrarySections()
+	mgr.OnSync(func(_ context.Context, r plugins.Record) {
+		if r.Manifest.IsStremioOnly() || r.Manifest.HasCapability(plugins.CapStreamSource) {
+			a.reapplyAddonIndexers()
+		}
+		if r.Manifest.Ether != nil && len(r.Manifest.Ether.Contributes.MediaKinds) > 0 {
+			a.publishLibrarySections()
+		}
 	})
 	mgr.OnRemove(func(context.Context, string) {
 		a.reapplyAddonIndexers()
 		a.publishLibrarySections()
 	})
+	screensSvc := a.buildScreensService(mgr)
 
 	if a.resolver != nil {
 		a.resolver.SetRankingHooks(adapters.Ranking{Manager: mgr, Registry: a.extendRT.registry})
@@ -505,6 +587,12 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		unsubscribe()
 		return nil, err
 	}
+	// Auto-import Live TV channels when a native channels plugin is newly installed.
+	mgr.OnInstall(func(_ context.Context, rec plugins.Record) {
+		if !rec.Manifest.SpeaksStremio() {
+			a.startPluginLiveTV(rec)
+		}
+	})
 	// Removing a plugin removes the drafts it was installed from.
 	mgr.OnRemove(func(ctx context.Context, id string) { studioSvc.ForgetPlugin(ctx, id) })
 
@@ -517,8 +605,11 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	stopPlayback := func() {}
 	if a.playback != nil {
 		stopPlayback = a.playback.Subscribe(func(ev playback.Event) {
-			if ev.Kind == "start" && ev.Session != nil {
-				markerBridge.Schedule(ev.Session.Key, ev.Session.Info.Duration)
+			if ev.Session != nil && !ev.Session.PreparedOnly && !ev.Session.Info.Estimated {
+				switch ev.Kind {
+				case "start", "surface", "failover", "downfailover":
+					markerBridge.Schedule(ev.Session.Key, ev.Session.Info.Duration)
+				}
 			}
 			name := plugins.NormalizePlayback(ev.Kind, "")
 			if name == "" {
@@ -570,6 +661,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	go cat.Run(runCtx, catalogue.DefaultRefreshInterval)
 	a.closers = append(a.closers, func() {
 		cancelRun()
+		kindResolver.Close()
 		stopPlayback()
 		stopState()
 		stopNotify()
@@ -577,6 +669,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	return &pluginRuntime{
 		subtitleProbe:  subtitleProbe,
+		catalogImports: catalogImports,
 		mgr:            mgr,
 		cat:            cat,
 		studio:         studioSvc,
@@ -587,6 +680,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		blobcache:      blobs,
 		kindCatalog:    kindCatalog,
 		kindResolver:   kindResolver,
+		screens:        screensSvc,
 		adapterTickets: adapterTickets,
 	}, nil
 }
@@ -598,6 +692,7 @@ func (a *App) pluginHandlers(m map[string]http.Handler) {
 		if a.pluginsRT.studio != nil {
 			h = a.pluginsRT.studio.WrapPluginHandler(h)
 		}
+		h = a.wrapPluginLiveEventsHandler(h)
 		if a.pluginsRT.pairing != nil {
 			wrapped := a.pluginsRT.pairing.WrapOwner(h)
 			h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -660,8 +755,8 @@ func (a *App) pluginTextResolver() extend.TextResolver {
 	return a.pluginsRT.mgr.TextResolver()
 }
 
-// startPluginLiveTV adds a Live TV source for a channels plugin installed
-// from Studio, so its lineup lands in the guide without a second setup step.
+// startPluginLiveTV adds a Live TV source for a newly installed channels
+// plugin, so its lineup lands in the guide without a second setup step.
 // It runs once per install; an owner who later removes the source keeps
 // that choice.
 func (a *App) startPluginLiveTV(rec plugins.Record) {
@@ -670,6 +765,8 @@ func (a *App) startPluginLiveTV(rec plugins.Record) {
 	}
 	kind := extend.PluginID(rec.ID, "channels")
 	go func() {
+		a.pluginLiveTVMu.Lock()
+		defer a.pluginLiveTVMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		// The source kind registers when the install syncs; wait for it.
@@ -693,4 +790,33 @@ func (a *App) startPluginLiveTV(rec plugins.Record) {
 			}
 		}
 	}()
+}
+
+// pluginPlayableTitle is the viewer check for a plugin library item: the
+// library must be visible to the viewer and active, and the item must pass
+// the viewer's rating and safety policy. Resolving a source and re-checking
+// a playing session both use it.
+func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.KindCatalog, viewer *core.Viewer, key core.RatingKey) (*core.Title, error) {
+	if viewer == nil || viewer.ID <= 0 || a.users == nil || kindCatalog == nil {
+		return nil, core.ErrNotFound
+	}
+	u, err := a.users.PolicyUser(ctx, viewer.ID)
+	if err != nil || u == nil {
+		return nil, core.ErrNotFound
+	}
+	piv, err := kindCatalog.Item(ctx, key)
+	if err != nil {
+		return nil, core.ErrNotFound
+	}
+	if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
+		return nil, core.ErrNotFound
+	}
+	if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
+		return nil, core.ErrNotFound
+	}
+	if !experience.TitleAllowed(a.safety, u, &piv.Title) {
+		return nil, core.ErrNotFound
+	}
+	t := piv.Title
+	return &t, nil
 }

@@ -19,7 +19,7 @@
     "@braedonsaunders/appkit-dashboard": "^4.0.0",
     "@braedonsaunders/appkit-i18n": "^0.2.0",
     "@braedonsaunders/appkit-tokens": "^0.2.0",
-    "@braedonsaunders/appkit-ui": "^0.4.1",
+    "@braedonsaunders/appkit-ui": "^0.4.2",
     "@braedonsaunders/appkit-viewspec": "^0.2.0",
     "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/lang-javascript": "^6.2.5",

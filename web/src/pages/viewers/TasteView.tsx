@@ -35,6 +35,147 @@ import type {
 import { fixed, formatMinutes, formatPercent, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 
+/** Plain-language affinity label for a normalized weight in -1..1. */
+export function affinityLabel(weight: number): string {
+  if (weight >= 0.65) return t("Loves");
+  if (weight >= 0.25) return t("Likes");
+  if (weight > 0.05) return t("Mild");
+  if (weight <= -0.65) return t("Avoids");
+  if (weight <= -0.25) return t("Dislikes");
+  if (weight < -0.05) return t("Less");
+  return t("Neutral");
+}
+
+const GENERIC_THEME_KEYWORDS = new Set([
+  "based on novel or book",
+  "duringcreditsstinger",
+  "aftercreditsstinger",
+  "duringcreditstinger",
+  "woman director",
+  "sequel",
+  "remake",
+  "3d",
+  "independent film",
+  "based on comic",
+  "live action remake",
+  "anime",
+  "based on manga",
+  "biography",
+  "sitcom",
+  "miniseries",
+  "limited series",
+  "mini-series",
+  "based on young adult novel",
+  "shared universe",
+  "reboot",
+  "prequel",
+  "spin off",
+  "short film",
+  "tv movie",
+  "based on true story",
+  "based on play or musical",
+  "based on video game",
+  "based on tv series",
+  "based on short story",
+  "based on children's book",
+  "post-credits scene",
+  "mid-credits scene",
+  "flashback",
+  "voice over",
+  "narration",
+  "ensemble cast",
+  "female protagonist",
+  "male protagonist",
+  "anthology",
+  "feature debut",
+  "directorial debut",
+  "surprise ending",
+  "plot twist",
+  "title spoken by character",
+  "one word title",
+  "character name in title",
+  "employer",
+  "employee",
+  "husband wife relationship",
+  "parent child relationship",
+  "father son relationship",
+  "mother daughter relationship",
+  "brother sister relationship",
+]);
+
+const SENSITIVE_THEME_PHRASES = new Set([
+  "sexual assault",
+  "sexual violence",
+  "sexual abuse",
+  "child abuse",
+  "domestic violence",
+  "domestic abuse",
+  "spousal abuse",
+  "human trafficking",
+  "sex trafficking",
+  "forced prostitution",
+  "self-harm",
+  "self harm",
+  "self-injury",
+  "self injury",
+  "self-mutilation",
+  "suicide attempt",
+  "erotic movie",
+  "full frontal nudity",
+  "female nudity",
+  "male nudity",
+  "prostitution",
+  "prostitute",
+  "torture",
+  "mutilation",
+  "genital mutilation",
+  "school shooting",
+  "mass shooting",
+  "ethnic cleansing",
+  "concentration camp",
+  "drug overdose",
+  "overdose",
+  "anorexia",
+  "bulimia",
+  "eating disorder",
+  "miscarriage",
+  "stillbirth",
+  "abortion",
+]);
+
+const SENSITIVE_THEME_WORDS = new Set([
+  "rape",
+  "raped",
+  "rapist",
+  "suicide",
+  "suicidal",
+  "incest",
+  "pedophilia",
+  "paedophilia",
+  "pedophile",
+  "paedophile",
+  "molestation",
+  "necrophilia",
+  "bestiality",
+  "zoophilia",
+  "pornography",
+  "erotica",
+  "softcore",
+  "hardcore",
+  "nudity",
+  "snuff",
+]);
+
+/** Excludes generic meta tags and sensitive plot incidents from the viewer's Themes cloud. */
+export function isDisplayThemeKeyword(raw: string): boolean {
+  const k = raw.trim().toLowerCase();
+  if (!k || GENERIC_THEME_KEYWORDS.has(k) || SENSITIVE_THEME_PHRASES.has(k)) return false;
+  for (const word of k.split(/[^a-z0-9]+/)) {
+    if (word && SENSITIVE_THEME_WORDS.has(word)) return false;
+  }
+  return true;
+}
+
 type ContextPresetKey = "weeknight" | "weekend" | "mobile" | "late";
 
 const CONTEXT_PRESETS: {
@@ -245,10 +386,17 @@ export function TasteView({
       label: g.name,
       weight: o ? o.weight : g.weight,
       hint: o
-        ? t("Owner override (learned {weight})", { weight: fixed(g.weight, 2) })
+        ? t("Owner override (learned: {affinity})", { affinity: affinityLabel(g.weight) })
         : t("Learned from viewing history"),
     };
   });
+  const visibleThemes = useMemo(
+    () =>
+      [...taste.keywords]
+        .filter((k) => isDisplayThemeKeyword(k.name))
+        .sort((a, b) => b.weight - a.weight),
+    [taste.keywords],
+  );
   const decades = [...taste.decades].sort((a, b) => a.decade - b.decade);
   const sel = selectedGenre ? genres.find((g) => g.name === selectedGenre) : undefined;
   const selOverride = selectedGenre ? overrideFor("genre", selectedGenre) : undefined;
@@ -483,6 +631,7 @@ export function TasteView({
               <DivergingBars
                 data={genreData}
                 ariaLabel={t("Genre affinity from dislike to like")}
+                valueFormat={affinityLabel}
                 onSelect={(d) => setSelectedGenre(d.key === selectedGenre ? null : d.key)}
                 selectedKey={selectedGenre ?? undefined}
               />
@@ -510,9 +659,7 @@ export function TasteView({
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-medium text-fg">{sel.name}</p>
                     <span className="text-xs text-fg-muted">
-                      {t("Learned {weight}", {
-                        weight: `${sel.weight > 0 ? "+" : ""}${fixed(sel.weight, 2)}`,
-                      })}
+                      {t("Learned: {affinity}", { affinity: affinityLabel(sel.weight) })}
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
@@ -551,8 +698,8 @@ export function TasteView({
                       }
                       className="flex-1"
                     />
-                    <span className="w-10 text-right tabular-nums text-fg">
-                      {fixed(selOverride?.weight ?? sel.weight, 2)}
+                    <span className="min-w-16 text-right text-xs text-fg">
+                      {affinityLabel(selOverride?.weight ?? sel.weight)}
                     </span>
                   </label>
                 </div>
@@ -610,31 +757,29 @@ export function TasteView({
       <div className="grid gap-6 lg:grid-cols-2">
         {tab === "themes" && (
           <DashboardPanel title={t("Themes")} icon={<Tags size={16} />}>
-            {taste.keywords.length === 0 ? (
+            {visibleThemes.length === 0 ? (
               <p className="text-sm text-fg-muted">{t("No themes yet.")}</p>
             ) : (
               <div className="flex flex-wrap gap-1.5">
-                {[...taste.keywords]
-                  .sort((a, b) => b.weight - a.weight)
-                  .map((k) => (
-                    <span
-                      key={k.name}
-                      title={t("Weight {weight}", { weight: fixed(k.weight, 2) })}
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5",
-                        k.weight >= 0
-                          ? "border-primary/30 bg-primary-subtle text-primary"
-                          : "border-border text-fg-subtle line-through",
-                        Math.abs(k.weight) > 0.6
-                          ? "text-sm font-semibold"
-                          : Math.abs(k.weight) > 0.3
-                            ? "text-sm"
-                            : "text-xs",
-                      )}
-                    >
-                      {k.name}
-                    </span>
-                  ))}
+                {visibleThemes.map((k) => (
+                  <span
+                    key={k.name}
+                    title={affinityLabel(k.weight)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-0.5",
+                      k.weight >= 0
+                        ? "border-primary/30 bg-primary-subtle text-primary"
+                        : "border-border text-fg-subtle line-through",
+                      Math.abs(k.weight) > 0.6
+                        ? "text-sm font-semibold"
+                        : Math.abs(k.weight) > 0.3
+                          ? "text-sm"
+                          : "text-xs",
+                    )}
+                  >
+                    {k.name}
+                  </span>
+                ))}
               </div>
             )}
           </DashboardPanel>
@@ -646,6 +791,7 @@ export function TasteView({
             ) : (
               <DivergingBars
                 ariaLabel={t("Language affinity")}
+                valueFormat={affinityLabel}
                 data={[...taste.languages]
                   .sort((a, b) => b.weight - a.weight)
                   .map((l) => ({ key: l.code, label: langName(l.code), weight: l.weight }))}
@@ -657,7 +803,9 @@ export function TasteView({
 
       {tab === "corrections" && (
         <DashboardPanel title={t("Your corrections")} icon={<Sparkles size={16} />}>
-          <p className="mb-4 text-sm text-fg-muted">{t("−1 hides it. +1 favours it.")}</p>
+          <p className="mb-4 text-sm text-fg-muted">
+            {t("“Not into it” hides it from recommendations. “Loves it” pushes it higher.")}
+          </p>
           {overrides.length === 0 ? (
             <EmptyState
               title={t("No corrections")}
@@ -688,15 +836,15 @@ export function TasteView({
                   />
                   <span
                     className={cn(
-                      "w-24 text-right text-xs tabular-nums",
+                      "min-w-24 text-right text-xs",
                       o.weight < 0 ? "text-danger" : "text-success",
                     )}
                   >
                     {o.weight <= -0.95
-                      ? t("Never")
+                      ? t("Not into it")
                       : o.weight >= 0.95
-                        ? t("Always")
-                        : `${o.weight > 0 ? "+" : ""}${fixed(o.weight, 2)}`}
+                        ? t("Loves it")
+                        : affinityLabel(o.weight)}
                   </span>
                   <Button
                     variant="ghost"

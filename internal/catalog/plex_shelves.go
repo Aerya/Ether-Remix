@@ -17,11 +17,29 @@ func init() {
 // RecentPage merges independently indexed movie and episode streams in SQL.
 // Only the requested page is hydrated; totals use the catalogue's count cache.
 func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []core.MediaType) (core.Page, error) {
+	movieOpt, episodeOpt := q.Filter.MovieFilter, q.Filter.EpisodeFilter
+	q.Filter.MovieFilter, q.Filter.EpisodeFilter = nil, nil
+	limit := min(max(q.Limit, 1), 10000)
+	if q.Limit == 0 {
+		limit = 0
+	}
+	offset := max(q.Offset, 0)
+	branchLimit := min(limit+offset, 10000)
+	if limit == 0 {
+		branchLimit = 0
+	}
 	var branches []string
 	var args []any
 	total := 0
 	for _, kind := range kinds {
 		f := q.Filter
+		if kind == core.TypeMovie && movieOpt != nil {
+			f = *movieOpt
+			f.MovieFilter, f.EpisodeFilter = nil, nil
+		} else if kind == core.TypeEpisode && episodeOpt != nil {
+			f = *episodeOpt
+			f.MovieFilter, f.EpisodeFilter = nil, nil
+		}
 		f.Type = kind
 		f = c.viewerPaging(ctx, f)
 		counted, err := c.Browse(ctx, core.BrowseQuery{Filter: f, Sort: core.SortAdded, Desc: true, Limit: 1})
@@ -32,25 +50,22 @@ func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []co
 		var where string
 		var a []any
 		if kind == core.TypeEpisode {
-			where, a, err = c.storedEpisodesWhere(f)
-			branches = append(branches, `SELECT e.key AS key,e.released_ts AS stamp FROM catalog_titles e CROSS JOIN catalog_titles t WHERE t.key=e.show_key AND e.type='episode' AND `+where)
+			where, a, err = c.storedEpisodesProbeWhere(f)
+			branches = append(branches, `SELECT key,stamp FROM (SELECT e.key AS key,e.released_ts AS stamp FROM catalog_titles e WHERE `+where+` ORDER BY e.released_ts DESC,e.key ASC LIMIT ?) recent_ep`)
 		} else {
 			where, a, err = c.browseWhere(f)
-			branches = append(branches, `SELECT t.key AS key,t.released_ts AS stamp FROM catalog_titles t WHERE `+where)
+			branches = append(branches, `SELECT key,stamp FROM (SELECT t.key AS key,t.released_ts AS stamp FROM catalog_titles t WHERE `+where+` ORDER BY t.released_ts DESC,t.key ASC LIMIT ?) recent_title`)
 		}
 		if err != nil {
 			return core.Page{}, err
 		}
 		args = append(args, a...)
+		args = append(args, branchLimit)
 	}
 	if len(branches) == 0 {
 		return core.Page{}, nil
 	}
-	limit := min(max(q.Limit, 1), 10000)
-	if q.Limit == 0 {
-		limit = 0
-	}
-	args = append(args, limit, max(q.Offset, 0))
+	args = append(args, limit, offset)
 	keys := `SELECT key,stamp FROM (` + strings.Join(branches, ` UNION ALL `) + `) recent ORDER BY stamp DESC,key ASC LIMIT ? OFFSET ?`
 	rows, err := c.queryTitles(ctx, `SELECT `+prefixedCols("t")+` FROM (`+keys+`) page JOIN catalog_titles t ON t.key=page.key ORDER BY page.stamp DESC,t.key ASC`, args...)
 	return core.Page{Items: rows, Total: total}, err
@@ -70,7 +85,13 @@ func (c *Catalog) OnDeckPageSince(ctx context.Context, uid int64, offset, limit 
 	if episodesOnly && f.Type == core.TypeMovie {
 		return core.WatchPage{}, nil
 	}
+	movieOpt, episodeOpt := f.MovieFilter, f.EpisodeFilter
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	movie := f
+	if movieOpt != nil {
+		movie = *movieOpt
+		movie.MovieFilter, movie.EpisodeFilter = nil, nil
+	}
 	movie.Type = core.TypeMovie
 	movie = c.viewerPaging(ctx, movie)
 	mw, ma, err := c.browseWhere(movie)
@@ -78,6 +99,10 @@ func (c *Catalog) OnDeckPageSince(ctx context.Context, uid int64, offset, limit 
 		return core.WatchPage{}, err
 	}
 	episode := f
+	if episodeOpt != nil {
+		episode = *episodeOpt
+		episode.MovieFilter, episode.EpisodeFilter = nil, nil
+	}
 	episode.Type = core.TypeEpisode
 	episode = c.viewerPaging(ctx, episode)
 	ew, ea, err := c.storedEpisodesWhere(episode)

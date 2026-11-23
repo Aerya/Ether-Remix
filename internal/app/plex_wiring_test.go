@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/plextv"
+	"github.com/braedonsaunders/ether/internal/plexwatch"
 )
 
 // TestPlexRootAdvertisesTranscoderThroughAppWiring is the regression guard for
@@ -83,5 +84,19 @@ func TestPlexRootAdvertisesTranscoderThroughAppWiring(t *testing.T) {
 	}
 	if body := get("/library/sections", false); !strings.Contains(body, `type="movie" title="Movies"`) {
 		t.Errorf("/library/sections missing the Movies section: %s", body)
+	}
+}
+
+func TestPlexServersAPIHidesTokenMethods(t *testing.T) {
+	api := (&App{plexServers: &plexwatch.Servers{}}).plexServersAPI()
+	if _, ok := api.(interface {
+		LinkedServers(context.Context) ([]plexwatch.LinkedServer, error)
+	}); ok {
+		t.Fatal("admin.PlexServers must not expose LinkedServers")
+	}
+	if _, ok := api.(interface {
+		ForEachServerCredential(context.Context, func(int64, string, string, string)) error
+	}); ok {
+		t.Fatal("admin.PlexServers must not expose ForEachServerCredential")
 	}
 }

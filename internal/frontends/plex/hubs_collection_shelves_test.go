@@ -33,13 +33,22 @@ func shelfRows(t *testing.T, body []byte) []shelfRow {
 // Infuse Direct Mode draws a library's promoted rows only when they are
 // PMS's own kinds and folds any other row's items into the next row it
 // draws. Its per-library request must lead with Recently Added, carry every
-// Ether row as a promoted collection shelf, and show Home rows once.
+// Ether section row as a promoted collection shelf, and never repeat rows
+// across libraries.
 func TestInfusePromotedRowsAreCollectionShelves(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
 	f.srv.setRecommender(&fakeRecommender{
-		home:    []core.Hub{{ID: "home.trending", Title: "Trending Now", Promoted: true, Items: []core.Title{fightClub, alien, breakingBad}}},
-		section: map[core.MediaType][]core.Hub{core.TypeMovie: {{ID: "movie.toprated", Title: "Top Rated", Type: core.TypeMovie, Promoted: true, Items: []core.Title{alien}}}},
+		home: []core.Hub{{ID: "home.trending", Title: "Household Trending", Promoted: true, Items: []core.Title{fightClub, alien, breakingBad}}},
+		section: map[core.MediaType][]core.Hub{
+			core.TypeMovie: {
+				{ID: "movie.trending", Title: "Trending Now", Type: core.TypeMovie, Promoted: true, Items: []core.Title{fightClub, alien}},
+				{ID: "movie.toprated", Title: "Top Rated", Type: core.TypeMovie, Promoted: true, Items: []core.Title{alien}},
+			},
+			core.TypeShow: {
+				{ID: "tv.trending", Title: "Trending Shows", Type: core.TypeShow, Promoted: true, Items: []core.Title{breakingBad}},
+			},
+		},
 	})
 	infuse := append([]string{"X-Plex-Product", "Infuse-Direct", "X-Plex-Device", "Apple TV"}, jsonAccept...)
 	const q = "/hubs/promoted?count=20&excludeContinueWatching=1&contentDirectoryID="
@@ -62,8 +71,8 @@ func TestInfusePromotedRowsAreCollectionShelves(t *testing.T) {
 			}
 		}
 	}
-	if !titles["Trending Now"] || !titles["Top Rated"] {
-		t.Fatalf("Ether rows missing: %v", titles)
+	if !titles["Trending Now"] || !titles["Top Rated"] || titles["Household Trending"] {
+		t.Fatalf("unexpected Movies shelves: %v", titles)
 	}
 	again := shelfRows(t, f.get(t, q+"1", infuse...).Body.Bytes())
 	for i := range movies {
@@ -72,8 +81,8 @@ func TestInfusePromotedRowsAreCollectionShelves(t *testing.T) {
 		}
 	}
 	for _, row := range shelfRows(t, f.get(t, q+"2", infuse...).Body.Bytes()) {
-		if row.Title == "Trending Now" {
-			t.Fatalf("Home row repeated in the second library: %+v", row)
+		if row.Title == "Trending Now" || row.Title == "Top Rated" || row.Title == "Household Trending" {
+			t.Fatalf("Movies/Home row repeated in the second library: %+v", row)
 		}
 	}
 
@@ -91,8 +100,10 @@ func TestInfusePromotedRowsAreCollectionShelves(t *testing.T) {
 func TestInfuseCollectionShelvesAfterRestart(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
-	f.srv.setRecommender(&fakeRecommender{home: []core.Hub{{ID: "home.trending", Title: "Trending Now", Promoted: true, Items: []core.Title{fightClub, alien}}}})
-	path := "/library/collections/" + collectionShelfNumber(model.Hub{HubIdentifier: "home.trending"}) + "/children"
+	f.srv.setRecommender(&fakeRecommender{section: map[core.MediaType][]core.Hub{
+		core.TypeMovie: {{ID: "movie.trending", Title: "Trending Now", Type: core.TypeMovie, Promoted: true, Items: []core.Title{fightClub, alien}}},
+	}})
+	path := "/library/collections/" + collectionShelfNumber(model.Hub{HubIdentifier: "movie.trending"}) + "/children"
 	hdr := map[string]string{"X-Plex-Product": "Infuse-Direct", "Accept": "application/json"}
 	codes := make(chan string, 6)
 	var wg sync.WaitGroup

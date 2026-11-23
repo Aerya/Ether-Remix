@@ -41,6 +41,9 @@ func (t tileSessions) ServeMedia(w http.ResponseWriter, r *http.Request) { t.bas
 func (t tileSessions) Report(c context.Context, a frontend.SessionAccess, id string, line frontend.Timeline) error {
 	return t.base.Report(c, a, id, line)
 }
+func (t tileSessions) KeepAlive(c context.Context, a frontend.SessionAccess, id string) error {
+	return t.base.KeepAlive(c, a, id)
+}
 func (t tileSessions) Stop(c context.Context, a frontend.SessionAccess, id string) error {
 	return t.base.Stop(c, a, id)
 }
@@ -102,7 +105,7 @@ func TestJellyfinTrickplayRouteUsesBorrowedTiles(t *testing.T) {
 	detail.Header.Set("X-Emby-Token", "grant")
 	dw := httptest.NewRecorder()
 	inst.Handler().ServeHTTP(dw, detail)
-	if dw.Code != 200 || !strings.Contains(dw.Body.String(), `"Trickplay":{"320":`) || !strings.Contains(dw.Body.String(), `"TileWidth":10`) || !strings.Contains(dw.Body.String(), `"Interval":10000`) {
+	if dw.Code != 200 || !strings.Contains(dw.Body.String(), `"Trickplay":{"`+id+`":{"320":`) || !strings.Contains(dw.Body.String(), `"TileWidth":10`) || !strings.Contains(dw.Body.String(), `"Interval":10000`) {
 		t.Fatal(dw.Code, dw.Body.String())
 	}
 	// The combined browse shell must preserve the playback dimensions while

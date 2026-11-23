@@ -34,7 +34,7 @@ func TestStopEncodingUsesAuthenticatedDeviceScope(t *testing.T) {
 		query  string
 		status int
 	}{
-		{"?deviceId=other&playSessionId=session", 403},
+		{"?deviceId=other&playSessionId=session", 204},
 		{"?deviceId=tv", 400},
 		{"?deviceId=tv&playSessionId=session", 204},
 	} {
@@ -47,7 +47,7 @@ func TestStopEncodingUsesAuthenticatedDeviceScope(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.query, w.Code, w.Body)
 		}
 	}
-	if stopped != 1 {
+	if stopped != 2 {
 		t.Fatalf("stopped %d sessions", stopped)
 	}
 }

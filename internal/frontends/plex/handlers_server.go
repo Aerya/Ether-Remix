@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
@@ -142,17 +144,46 @@ func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 // sectionPivots are the top-level navigation pivots of a section.
 func sectionPivots(sec Section) []model.Pivot {
 	id := strconv.Itoa(sec.ID)
-	typeNum := "1"
-	if sec.Type == frontend.TypeShow {
-		typeNum = "2"
+	typeNum := strconv.Itoa(typeNumber(sec.Type))
+	playlistType := "video"
+	switch string(sec.Type) {
+	case plexBaseArtist:
+		playlistType = "audio"
+	case plexBasePhoto:
+		playlistType = "photo"
 	}
 	return []model.Pivot{
 		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommended", Context: "content.discover", Symbol: "star"},
 		{ID: "library", Key: "/library/sections/" + id + "/all?type=" + typeNum, Type: "list", Title: "Library", Context: "content.library", Symbol: "library"},
 		{ID: "collections", Key: "/library/sections/" + id + "/collections", Type: "list", Title: "Collections", Context: "content.collections", Symbol: "stack"},
-		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=video", Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},
+		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=" + playlistType, Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},
 		{ID: "categories", Key: "/library/sections/" + id + "/categories", Type: "list", Title: "Categories", Context: "content.categories", Symbol: "stack"},
 	}
+}
+
+func providerTypes(secs []Section) string {
+	var hasVideo, hasAudio, hasPhoto bool
+	for _, sec := range secs {
+		switch string(sec.Type) {
+		case plexBaseArtist:
+			hasAudio = true
+		case plexBasePhoto:
+			hasPhoto = true
+		default:
+			hasVideo = true
+		}
+	}
+	var out []string
+	if hasVideo || (!hasAudio && !hasPhoto) {
+		out = append(out, "video")
+	}
+	if hasAudio {
+		out = append(out, "audio")
+	}
+	if hasPhoto {
+		out = append(out, "photo")
+	}
+	return strings.Join(out, ",")
 }
 
 func agentFor(t frontend.MediaType) (agent, scanner string) {
@@ -171,11 +202,13 @@ func agentFor(t frontend.MediaType) (agent, scanner string) {
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	now := s.now().Unix()
+	includePrefs := r.URL.Query().Get("includePreferences") == "1"
+	userSecs := s.userSections(u)
 	dirs := []model.ProviderDirectory{{HubKey: "/hubs", Title: "Home"}} // discovery only: no browse key
-	for _, sec := range s.pseWithThemes(u, s.userSections(u)) {         // PSE-HOOK: bibliothèques à thème — voir docs/pse/FORK.fr.md
+	for _, sec := range s.pseWithThemes(u, userSecs) {
 		agent, scanner := agentFor(sec.Type)
 		id := strconv.Itoa(sec.ID)
-		dirs = append(dirs, model.ProviderDirectory{
+		dir := model.ProviderDirectory{
 			Agent:      agent,
 			Language:   sec.Language,
 			Refreshing: model.Ptr(false),
@@ -189,7 +222,13 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt:  now,
 			ScannedAt:  now,
 			Pivot:      sectionPivots(sec),
-		})
+		}
+		if includePrefs {
+			// PMS repeats the section's /prefs settings here; Roku crashes
+			// opening a library whose entry has none (#652).
+			dir.Preferences = &model.TrackPreferences{Setting: s.sectionPrefs(sec)}
+		}
+		dirs = append(dirs, dir)
 	}
 	dirs = s.pseMusicProvider(dirs) // PSE-HOOK: bibliothèque Musique — voir docs/pse/FORK.fr.md
 	dirs = append(dirs, model.ProviderDirectory{
@@ -207,7 +246,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	provider := model.MediaProvider{
 		Identifier: model.LibraryIdentifier,
 		Title:      "Library",
-		Types:      s.pseProviderTypes("video"), // PSE-HOOK: bibliothèque Musique
+		Types:      s.pseProviderTypes(providerTypes(userSecs)),
 		Protocols:  "stream,download",
 		Feature: []model.Feature{
 			{Key: "/library/sections", Type: "content", Directory: dirs},
@@ -242,26 +281,29 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 // Older Roku clients cannot consume provider pivots. PMS compares only the
 // numeric components supplied by the client, so 6.4 satisfies 6.4.2.
 func legacyRoku(pr *Request) bool {
-	if pr.Platform != "Roku" {
+	if !strings.EqualFold(pr.Platform, "Roku") {
 		return false
 	}
+	// Only major.minor.patch matters. Current apps send a fourth part and a
+	// build suffix ("9.21.12.12191-2cb8e41a8-Plex"), and a part may carry a
+	// tag ("9.22.1-beta"), so each part is read up to its first non-digit.
 	parts := strings.Split(pr.Version, ".")
-	if len(parts) < 2 || len(parts) > 3 {
+	if len(parts) < 2 {
 		return true
 	}
-	values := make([]int, len(parts))
+	if len(parts) > 3 {
+		parts = parts[:3]
+	}
+	minimum := []int{6, 4, 2}
 	for i, part := range parts {
-		if part == "" || strings.IndexFunc(part, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-			return true
+		end := strings.IndexFunc(part, func(r rune) bool { return r < '0' || r > '9' })
+		if end < 0 {
+			end = len(part)
 		}
-		n, err := strconv.Atoi(part)
+		n, err := strconv.Atoi(part[:end])
 		if err != nil {
 			return true
 		}
-		values[i] = n
-	}
-	minimum := []int{6, 4, 2}
-	for i, n := range values {
 		if n != minimum[i] {
 			return n < minimum[i]
 		}
@@ -324,6 +366,19 @@ func (s *Server) handleMyPlexAccount(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &acct)
 }
 
+func (s *Server) handleRefreshReachability(w http.ResponseWriter, r *http.Request) {
+	c := s.cfg()
+	reachable := c.Plex.RemoteAccess && (c.Plex.Claimed || c.Plex.Token != "")
+	s.publishNotification(model.NotificationContainer{
+		Type: "reachability",
+		Size: 1,
+		ReachabilityNotification: []model.ReachabilityNotification{{
+			Reachability: reachable,
+		}},
+	}, 0)
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	id := s.identity()
 	host, portS, err := net.SplitHostPort(r.Host)
@@ -358,7 +413,7 @@ func (s *Server) handlePrefs(w http.ResponseWriter, r *http.Request) {
 		// PMS lists these after its general settings, before MachineIdentifier.
 		{ID: "OnDeckWindow", Label: "Weeks to consider for Continue Watching", Summary: "Movies not watched in this many weeks leave Continue Watching. Unfinished series remain eligible regardless of age.", Type: "int", Default: 16, Value: 16, Group: "library", Advanced: true},
 		{ID: "OnDeckLimit", Label: "Maximum number of Continue Watching items which will appear.", Summary: "Limits the number of shows which will appear Continue Watching. Setting it too high can affect performance.", Type: "int", Default: plexOnDeckLimit, Value: plexOnDeckLimit, Group: "library", Advanced: true},
-		{ID: "OnDeckIncludePremieres", Label: "Include season premieres in Continue Watching", Summary: "Always included: unfinished series, including new season premieres, have no age cutoff.", Type: "bool", Default: true, Value: true, Group: "library", Advanced: true},
+		{ID: "OnDeckIncludePremieres", Label: "Include season premieres in Continue Watching", Summary: "Unfinished series, including season premieres, remain eligible regardless of age.", Type: "bool", Default: true, Value: true, Group: "library", Advanced: true},
 		{ID: "MachineIdentifier", Label: "", Summary: "", Type: "text", Default: "", Value: id.MachineIdentifier, Hidden: true, Group: ""},
 		{ID: "PublishServerOnPlexOnlineKey", Label: "Publish server on Plex Online", Summary: "", Type: "bool", Default: false, Value: c.Plex.RemoteAccess, Group: "network"},
 		{ID: "ManualPortMappingMode", Label: "Manually specify public port", Summary: "", Type: "bool", Default: false, Value: c.Plex.PublicPort != 0, Group: "network"},
@@ -400,6 +455,42 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &model.MediaContainer{Size: len(agents), Agent: agents})
 }
 
+func (s *Server) modelAccount(ctx context.Context, u frontend.User) model.Account {
+	id := plexAccountID(u)
+	a := model.Account{
+		ID:              id,
+		Key:             "/accounts/" + strconv.FormatInt(id, 10),
+		Name:            plexAccountName(u),
+		AutoSelectAudio: true,
+		Thumb:           u.Thumb,
+	}
+	if len(u.AudioLanguages) > 0 {
+		a.DefaultAudioLanguage = u.AudioLanguages[0]
+	}
+	if len(u.SubtitleLanguages) > 0 {
+		a.DefaultSubtitleLang = u.SubtitleLanguages[0]
+	}
+	if tp := s.svc().trackPrefs; tp != nil {
+		if rules, err := tp.GetRules(ctx, u.ID); err == nil {
+			// Project the effective (layered) preferences: account,
+			// household (user 0) and viewer rules all count, so a viewer
+			// who inherits Always-on/English reads the same here as one
+			// who saved it themselves (#617). With nothing configured at
+			// any layer GetRules returns the defaults (mode off, no
+			// languages), which leaves this document unchanged.
+			// Plex account subtitleMode: 0 manual, 1 with foreign audio, 2 always.
+			a.SubtitleMode = plexSubtitleMode(rules.SubtitleMode)
+			if len(rules.SubtitleLanguages) > 0 {
+				a.DefaultSubtitleLang = rules.SubtitleLanguages[0]
+			}
+			if len(rules.AudioLanguages) > 0 {
+				a.DefaultAudioLanguage = rules.AudioLanguages[0]
+			}
+		}
+	}
+	return a
+}
+
 func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	var users []frontend.User
 	if s.getHost().Identity != nil {
@@ -411,43 +502,35 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	mc := &model.MediaContainer{Identifier: "com.plexapp.system.accounts"}
 	for _, u := range users {
-		a := model.Account{ID: u.ID, Key: "/accounts/" + strconv.FormatInt(u.ID, 10), Name: u.Username, AutoSelectAudio: true, Thumb: u.Thumb}
-		if len(u.AudioLanguages) > 0 {
-			a.DefaultAudioLanguage = u.AudioLanguages[0]
-		}
-		if len(u.SubtitleLanguages) > 0 {
-			a.DefaultSubtitleLang = u.SubtitleLanguages[0]
-		}
-		if tp := s.svc().trackPrefs; tp != nil && viewerStoredSubtitlePreference(r.Context(), tp, u.ID) {
-			if rules, err := tp.GetRules(r.Context(), u.ID); err == nil {
-				// Plex account subtitleMode: 0 manual, 1 with foreign audio, 2 always.
-				// Unset and off stay 0, which is the value already written for every account.
-				// Shared defaults (user 0) stay off this document so an untouched account
-				// keeps the bytes it had before this viewer chose a preference.
-				a.SubtitleMode = plexSubtitleMode(rules.SubtitleMode)
-				if len(rules.SubtitleLanguages) > 0 {
-					a.DefaultSubtitleLang = rules.SubtitleLanguages[0]
-				}
-			}
-		}
-		mc.Account = append(mc.Account, a)
+		mc.Account = append(mc.Account, s.modelAccount(r.Context(), u))
 	}
 	mc.Size = len(mc.Account)
 	s.write(w, r, mc)
+}
+
+func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseWhole(chi.URLParam(r, "id"))
+	if !ok || id <= 0 {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	dir := s.newPlexAccountDir(r.Context(), FromContext(r.Context()).User, true)
+	entry, found := dir.resolve(r.Context(), id)
+	if !found {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	s.write(w, r, &model.MediaContainer{
+		Size:       1,
+		Identifier: "com.plexapp.system.accounts",
+		Account:    []model.Account{s.modelAccount(r.Context(), entry.user)},
+	})
 }
 
 // plexSubtitleMode matches Plex's account attribute: 0 is manual, 1 is shown
 // with foreign audio, 2 is always. Forced-only has no Plex value; 1 tells the
 // client to enable subtitles while Ether's selector still picks a forced track.
 // Off stays 0, the same attribute every unchanged account already carries.
-// viewerStoredSubtitlePreference is true when this account has its own
-// trackprefs row. Stores that cannot tell own from inherited still report
-// the GetRules result, which tests and older fakes rely on.
-func viewerStoredSubtitlePreference(ctx context.Context, prefs TrackPreferences, user int64) bool {
-	has, err := prefs.HasViewerRules(ctx, user)
-	return err == nil && has
-}
-
 func plexSubtitleMode(mode string) int {
 	switch mode {
 	case "always":
@@ -514,7 +597,7 @@ func redactQuery(q string) string {
 		// Authentication URL-decodes parameter names. Apply the same decoding
 		// before classifying secrets, while preserving unrelated diagnostics.
 		name, err := url.QueryUnescape(k)
-		if err == nil && (strings.EqualFold(name, "X-Plex-Token") || strings.EqualFold(name, streamGrantParam) || strings.EqualFold(name, readCapParam)) {
+		if err == nil && (strings.EqualFold(name, "X-Plex-Token") || strings.EqualFold(name, streamGrantParam) || strings.EqualFold(name, readCapParam) || strings.EqualFold(name, deliveryGrantParam)) {
 			parts[i] = k + "=REDACTED"
 		}
 	}

@@ -59,7 +59,7 @@ func (a *App) remoteSourceAdminDeps(d *admin.Deps) {
 				continue
 			}
 			v := cfg.Indexers[ix.Slot]
-			out = append(out, newznab.Remaining{Indexer: v.ID, HitsUsed: ix.HitsUsed, HitsRemaining: ix.HitsRemaining, GrabsUsed: ix.GrabsUsed, GrabsRemaining: ix.GrabsRemaining, RetryAt: ix.RetryAt, Enabled: ix.Enabled, Torrent: ix.Torrent})
+			out = append(out, newznab.Remaining{Indexer: v.ID, HitsUsed: ix.HitsUsed, HitsRemaining: ix.HitsRemaining, GrabsUsed: ix.GrabsUsed, GrabsRemaining: ix.GrabsRemaining, RetryAt: ix.RetryAt, PausedUntil: ix.PausedUntil, MissingDefinition: ix.MissingDefinition, Enabled: ix.Enabled, Torrent: ix.Torrent})
 		}
 		return out
 	}

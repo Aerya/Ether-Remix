@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HomeLayout, Rule } from "./contract";
-import { formatBytes, formatNanos, relativeTime } from "./format";
+import { formatBytes, formatCompactNumber, formatNanos, relativeTime } from "./format";
 import {
   cacheHealth,
   catalogHealth,
@@ -297,7 +297,9 @@ describe("layout", () => {
     expect(effectivePolicy(doc, 5, "home", "home.because.42", "because-you-watched")).toMatchObject(
       { layer: "override", policy: { row: "because.*" } },
     );
-    expect(effectivePolicy(doc, 5, "movies", "movie.because.42", "because-you-watched")).toBeNull();
+    expect(
+      effectivePolicy(doc, 5, "library:1", "movie.because.42", "because-you-watched"),
+    ).toBeNull();
     expect(matchRank("collection:*", "collection.7", "collection:7")).toBe(1);
   });
 
@@ -327,7 +329,7 @@ describe("layout", () => {
     expect(effectiveLength(doc, 3, "home", "tv", 14)).toEqual({ n: 6, layer: "override" });
     expect(effectiveLength(doc, 3, "home", "mobile", 14)).toEqual({ n: 8, layer: "global" });
     expect(effectiveLength(doc, null, "home", "web", 14)).toEqual({ n: 12, layer: "global" });
-    expect(effectiveLength(doc, null, "shows", "web", 10)).toEqual({ n: 10, layer: "default" });
+    expect(effectiveLength(doc, null, "library:2", "web", 10)).toEqual({ n: 10, layer: "default" });
     doc = setPageLength(doc, 3, "home", "tv", undefined);
     expect(doc.viewers).toEqual([]);
   });
@@ -505,6 +507,88 @@ describe("health", () => {
     expect(
       computeHealth({ indexers: [nzb], debrid }, now).find((x) => x.id === "indexers")?.level,
     ).toBe("warn");
+  });
+  it("surfaces missing site definitions, paused indexers, and simultaneous-IP NNTP refusals", () => {
+    const ipLimitSingle = usenetHealth([
+      {
+        id: "p1",
+        name: "Giganews",
+        backfill: false,
+        state: "backoff",
+        lastError: "nntp: 481 max number of simultaneous IP addresses reached",
+        configuredConnections: 20,
+        activeConnections: 0,
+      },
+    ]);
+    expect(ipLimitSingle.level).toBe("error");
+    expect(ipLimitSingle.statusLabel).toBe("Needs attention");
+    expect(ipLimitSingle.summary).toBe("Account in use from another IP address.");
+
+    const ipLimitPartial = usenetHealth([
+      {
+        id: "p1",
+        name: "Giganews",
+        backfill: false,
+        state: "backoff",
+        lastError: "nntp: 481 max number of simultaneous IP addresses reached",
+        configuredConnections: 20,
+        activeConnections: 0,
+      },
+      {
+        id: "p2",
+        name: "Frugal",
+        backfill: false,
+        state: "ok",
+        configuredConnections: 20,
+        activeConnections: 4,
+      },
+    ]);
+    expect(ipLimitPartial.level).toBe("warn");
+    expect(ipLimitPartial.details[0]).toContain(
+      "Giganews: Account in use from another IP address.",
+    );
+
+    const healthyNzb = { indexer: "NZBgeek", hitsLimit: 100, hitsRemaining: 90, enabled: true };
+    const missingSite = {
+      indexer: "TorrentGalaxy",
+      hitsLimit: 0,
+      enabled: true,
+      torrent: true,
+      missingDefinition: true,
+    };
+    const partialMissing = indexersHealth([healthyNzb, missingSite], { enabled: false }, now);
+    expect(partialMissing.level).toBe("warn");
+    expect(partialMissing.summary).toBe("1 of 2 indexers missing their definition");
+    expect(partialMissing.details).toContain("TorrentGalaxy: definition missing");
+
+    // When the only torrent indexer is missing its site definition, debrid still lacks a usable torrent source.
+    const withDebrid = indexersHealth([healthyNzb, missingSite], { enabled: true }, now);
+    expect(withDebrid.level).toBe("warn");
+    expect(withDebrid.details.some((d) => d.includes("Stremio addon or Torznab"))).toBe(true);
+
+    // When all enabled indexers are missing definitions or paused, level escalates to error.
+    const allMissing = indexersHealth(
+      [missingSite, { ...missingSite, indexer: "1337x" }],
+      { enabled: false },
+      now,
+    );
+    expect(allMissing.level).toBe("error");
+    expect(allMissing.summary).toBe("2 of 2 indexers missing their definition");
+
+    const singleMissing = indexersHealth([missingSite], { enabled: false }, now);
+    expect([singleMissing.level, singleMissing.summary]).toEqual(["error", "Definition missing"]);
+
+    const pausedUntil = Math.floor(now.getTime() / 1000) + 600;
+    const paused = indexersHealth(
+      [
+        healthyNzb,
+        { indexer: "DOGnzb", hitsLimit: 100, hitsRemaining: 80, enabled: true, pausedUntil },
+      ],
+      { enabled: false },
+      now,
+    );
+    expect(paused.level).toBe("warn");
+    expect(paused.summary).toBe("1 of 2 indexers paused after failures");
   });
   it("flags real problems", () => {
     expect(usenetHealth([]).setupGap).toBe(true);
@@ -873,9 +957,14 @@ describe("health", () => {
 });
 
 describe("format", () => {
-  it("formats bytes, durations and relative times", () => {
+  it("formats bytes, durations, compact axis ticks and relative times", () => {
     expect(formatBytes(1536)).toBe("1.5 KiB");
     expect(formatBytes(-1)).toBe("—");
+    expect(formatCompactNumber(0)).toBe("0");
+    expect(formatCompactNumber(950)).toBe("950");
+    expect(formatCompactNumber(1500)).toBe("1.5K");
+    expect(formatCompactNumber(500_000)).toBe("500K");
+    expect(formatCompactNumber(1_000_000)).toBe("1M");
     expect(formatNanos(1.8e9)).toBe("1.8 s");
     expect(formatNanos(3.1e8)).toBe("310 ms");
     expect(relativeTime("0001-01-01T00:00:00Z")).toBe("never");

@@ -32,7 +32,17 @@ type Limits struct {
 // count toward admission, or only live ones under LiveAfterMillis. This does
 // not fence direct SQL or old binaries.
 func AdmitHeadersInTx(ctx context.Context, db *sql.DB, tx *sql.Tx, headers []Header, limits Limits) error {
-	if db == nil || tx == nil || len(headers) == 0 || len(headers) > HeaderBatchMax || limits.PerScope <= 0 || limits.PerShard < limits.PerScope || limits.LiveAfterMillis < 0 {
+	return admitHeadersInTx(ctx, db, tx, headers, limits, HeaderBatchMax)
+}
+
+// AdmitPageHeadersInTx admits one bounded experience page in one statement.
+// Ordinary capability callers retain the smaller HeaderBatchMax bound.
+func AdmitPageHeadersInTx(ctx context.Context, db *sql.DB, tx *sql.Tx, headers []Header, limits Limits) error {
+	return admitHeadersInTx(ctx, db, tx, headers, limits, 10000)
+}
+
+func admitHeadersInTx(ctx context.Context, db *sql.DB, tx *sql.Tx, headers []Header, limits Limits, maxHeaders int) error {
+	if db == nil || tx == nil || len(headers) == 0 || len(headers) > maxHeaders || limits.PerScope <= 0 || limits.PerShard < limits.PerScope || limits.LiveAfterMillis < 0 {
 		return ErrInvalidHeader
 	}
 	first := headers[0]
@@ -70,6 +80,9 @@ func AdmitHeadersInTx(ctx context.Context, db *sql.DB, tx *sql.Tx, headers []Hea
 	}
 	if n+len(headers) > limits.PerShard {
 		return &CapacityError{Scope: "shard"}
+	}
+	if len(headers) > HeaderBatchMax {
+		return insertPageHeadersInTx(ctx, db, tx, headers)
 	}
 	return insertHeadersInTx(ctx, tx, headers)
 }

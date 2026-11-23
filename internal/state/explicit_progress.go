@@ -9,6 +9,7 @@ import (
 )
 
 func (s *State) explicitProgressAt(ctx context.Context, user int64, key core.RatingKey, w progressWrite) error {
+	skipResume := w.skipResume || s.shouldSkipResume(ctx, key)
 	return s.updateAt(ctx, user, []core.RatingKey{key}, w.at, func(cur *row, now time.Time) (bool, bool, []Event) {
 		complete := w.state == "explicit-complete"
 		before := cur.ws.ViewOffset
@@ -17,7 +18,11 @@ func (s *State) explicitProgressAt(ctx context.Context, user int64, key core.Rat
 		}
 		switch w.state {
 		case "explicit-resume":
-			cur.ws.ViewOffset = w.offset
+			if skipResume {
+				cur.ws.ViewOffset = 0
+			} else {
+				cur.ws.ViewOffset = w.offset
+			}
 			cur.ws.LastViewedAt = now
 		case "explicit-complete":
 			cur.ws.ViewOffset = 0
@@ -39,7 +44,7 @@ func (s *State) explicitProgressAt(ctx context.Context, user int64, key core.Rat
 		if complete {
 			ev.Fraction = 1
 		} else {
-			ev.ResumeSet, ev.Resume = cur.ws.ViewOffset != before, cur.ws.ViewOffset
+			ev.ResumeSet, ev.Resume = !skipResume && cur.ws.ViewOffset != before, cur.ws.ViewOffset
 		}
 		return complete && key.Kind() != core.KindPlaylist, complete, []Event{ev}
 	})

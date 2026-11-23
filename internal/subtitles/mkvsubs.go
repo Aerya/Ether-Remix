@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/container/ebml"
 	"io"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/container/ebml"
 )
 
 // Published Matroska element IDs (https://www.matroska.org/technical/elements.html).
@@ -129,16 +131,29 @@ func isTextCodec(id string) bool {
 	switch {
 	case strings.HasPrefix(id, "S_TEXT/"):
 		return true
+	case id == "S_UTF8" || id == "S_ASS" || id == "S_SSA":
+		return true
 	case id == "S_VOBSUB" || id == "S_HDMV/PGS" || id == "S_HDMV/TEXTST":
 		return false
 	}
 	return false
 }
 
-// ReadEmbeddedTextCues reads cue times from the first embedded TEXT
+// ReadEmbeddedTextCues reads cue times from the richest embedded TEXT
 // subtitle track of a Matroska or MP4 source, using only the container
 // index and bounded range reads.
 func ReadEmbeddedTextCues(ctx context.Context, src io.ReaderAt, size int64) ([]Cue, error) {
+	tracks, err := readEmbeddedTextCueTracks(ctx, src, size, size <= sourceReadBudget)
+	if err != nil || len(tracks) == 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errMKV
+	}
+	return tracks[0], nil
+}
+
+func readEmbeddedTextCueTracks(ctx context.Context, src io.ReaderAt, size int64, scanClusters bool) ([][]Cue, error) {
 	if src == nil || size < 16 {
 		return nil, errMKV
 	}
@@ -148,12 +163,12 @@ func ReadEmbeddedTextCues(ctx context.Context, src io.ReaderAt, size int64) ([]C
 		return nil, errMKV
 	}
 	if binary.BigEndian.Uint32(head) == mkvEBMLID {
-		return r.mkvTextCues(size)
+		return r.mkvTextCueTracks(size, scanClusters)
 	}
-	return r.mp4TextCues(size)
+	return r.mp4TextCueTracks(size)
 }
 
-func (r *rangeReader) mkvTextCues(size int64) ([]Cue, error) {
+func (r *rangeReader) mkvTextCueTracks(size int64, scanClusters bool) ([][]Cue, error) {
 	var seg mkvElem
 	for off, n := int64(0), 0; off < size && n < 32; n++ {
 		e, err := r.mkvElement(off, size)
@@ -171,10 +186,12 @@ func (r *rangeReader) mkvTextCues(size int64) ([]Cue, error) {
 	}
 	scale := uint64(1000000)
 	var (
-		textTrack uint64
-		cuesRaw   []byte
-		seenInfo  bool
-		seenTrk   bool
+		trackOrder      []uint64
+		trackSet        = map[uint64]bool{}
+		cuesRaw         []byte
+		seenInfo        bool
+		seenTrk         bool
+		firstClusterOff int64
 	)
 	targets := map[uint64]int64{}
 	visited := map[int64]bool{}
@@ -223,8 +240,9 @@ func (r *rangeReader) mkvTextCues(size int64) ([]Cue, error) {
 						codec = string(f.b)
 					}
 				}
-				if typ == 0x11 && isTextCodec(codec) && textTrack == 0 {
-					textTrack = num
+				if typ == 0x11 && num != 0 && isTextCodec(codec) && !trackSet[num] {
+					trackSet[num] = true
+					trackOrder = append(trackOrder, num)
 				}
 			}
 		case mkvSeekHeadID:
@@ -255,13 +273,14 @@ func (r *rangeReader) mkvTextCues(size int64) ([]Cue, error) {
 			return nil, err
 		}
 		if e.id == mkvClusterID {
+			firstClusterOff = off
 			break
 		}
 		visited[off] = true
 		if err = inspect(e); err != nil {
 			return nil, err
 		}
-		if cuesRaw != nil && seenInfo && seenTrk {
+		if cuesRaw != nil && seenInfo && seenTrk && !scanClusters {
 			break
 		}
 		if e.end <= off {
@@ -282,68 +301,193 @@ func (r *rangeReader) mkvTextCues(size int64) ([]Cue, error) {
 			return nil, err
 		}
 	}
-	if textTrack == 0 || cuesRaw == nil || scale == 0 {
+	if len(trackOrder) == 0 || scale == 0 {
 		return nil, errMKV
 	}
-	points, err := mkvChildren(cuesRaw)
-	if err != nil {
-		return nil, err
-	}
-	var out []Cue
-	for _, p := range points {
-		if p.id != mkvCuePointID {
-			continue
-		}
-		fields, err := mkvChildren(p.b)
+	byTrack := map[uint64][]Cue{}
+	if cuesRaw != nil {
+		points, err := mkvChildren(cuesRaw)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		var stamp, dur uint64
-		hasTime, hasPos := false, false
-		for _, f := range fields {
-			if f.id == mkvCueTimeID {
-				stamp = mkvUint(f.b)
-				hasTime = true
-			}
-		}
-		if !hasTime {
-			continue
-		}
-		for _, f := range fields {
-			if f.id != mkvCueTrackPosID {
+		for _, p := range points {
+			if p.id != mkvCuePointID {
 				continue
 			}
-			ps, err := mkvChildren(f.b)
+			fields, err := mkvChildren(p.b)
 			if err != nil {
 				continue
 			}
-			var track uint64
-			for _, q := range ps {
-				switch q.id {
-				case mkvCueTrackID:
-					track = mkvUint(q.b)
-				case mkvCueClusterPosID:
-					hasPos = true
-				case mkvCueDurationID:
-					dur = mkvUint(q.b)
+			var stamp uint64
+			hasTime := false
+			for _, f := range fields {
+				if f.id == mkvCueTimeID {
+					stamp = mkvUint(f.b)
+					hasTime = true
 				}
 			}
-			if track != textTrack || !hasPos {
+			if !hasTime {
 				continue
 			}
-			start := time.Duration(stamp * scale)
-			end := start + time.Duration(dur*scale)
-			if dur == 0 {
-				end = start + 2*time.Second
+			for _, f := range fields {
+				if f.id != mkvCueTrackPosID {
+					continue
+				}
+				ps, err := mkvChildren(f.b)
+				if err != nil {
+					continue
+				}
+				var track, dur uint64
+				hasPos := false
+				for _, q := range ps {
+					switch q.id {
+					case mkvCueTrackID:
+						track = mkvUint(q.b)
+					case mkvCueClusterPosID:
+						hasPos = true
+					case mkvCueDurationID:
+						dur = mkvUint(q.b)
+					}
+				}
+				if !trackSet[track] || !hasPos {
+					continue
+				}
+				start := time.Duration(stamp * scale)
+				end := start + time.Duration(dur*scale)
+				if dur == 0 {
+					end = start + 2*time.Second
+				}
+				if end <= start {
+					continue
+				}
+				byTrack[track] = append(byTrack[track], Cue{Start: start, End: end})
 			}
-			if end <= start {
-				continue
-			}
-			out = append(out, Cue{Start: start, End: end})
 		}
 	}
-	if len(out) == 0 {
+	tracks := orderCueTracks(trackOrder, byTrack)
+	if (len(tracks) == 0 || len(tracks[0]) < 3) && scanClusters && firstClusterOff > 0 && seg.end-firstClusterOff <= sourceReadBudget {
+		if scanned := r.scanMKVClusters(firstClusterOff, seg.end, scale, trackOrder, trackSet); len(scanned) > 0 {
+			if len(tracks) == 0 || len(scanned[0]) > len(tracks[0]) {
+				tracks = scanned
+			}
+		}
+	}
+	if len(tracks) == 0 {
 		return nil, errMKV
 	}
-	return out, nil
+	return tracks, nil
+}
+
+func (r *rangeReader) scanMKVClusters(startOff, endOff int64, scale uint64, trackOrder []uint64, trackSet map[uint64]bool) [][]Cue {
+	total := endOff - startOff
+	if total <= 0 || total > sourceReadBudget {
+		return nil
+	}
+	// Read sequential 1 MiB windows so many small clusters stay well under
+	// rangeMaxSegments.
+	const chunkSize = 1 << 20
+	raw := make([]byte, 0, int(total))
+	for off := startOff; off < endOff; {
+		n := int(min(int64(chunkSize), endOff-off))
+		b, err := r.read(off, n)
+		if err != nil || len(b) == 0 {
+			break
+		}
+		raw = append(raw, b...)
+		off += int64(len(b))
+	}
+	byTrack := map[uint64][]Cue{}
+	for len(raw) >= 2 {
+		id, ni, err := mkvVint(raw, true)
+		if err != nil {
+			break
+		}
+		sz, ns, err := mkvVint(raw[ni:], false)
+		if err != nil {
+			break
+		}
+		hdr := ni + ns
+		if sz == (uint64(1)<<uint(7*ns))-1 {
+			sz = uint64(len(raw) - hdr)
+		}
+		if sz > uint64(len(raw)-hdr) {
+			break
+		}
+		body := raw[hdr : hdr+int(sz)]
+		raw = raw[hdr+int(sz):]
+		if id != mkvClusterID {
+			continue
+		}
+		children, err := mkvChildren(body)
+		if err != nil {
+			continue
+		}
+		var clusterTS uint64
+		for _, c := range children {
+			if c.id == mkvTimestampID {
+				clusterTS = mkvUint(c.b)
+				break
+			}
+		}
+		for _, c := range children {
+			switch c.id {
+			case mkvSimpleBlockID:
+				appendMKVBlockCue(byTrack, trackSet, clusterTS, scale, c.b, 0)
+			case mkvBlockGroupID:
+				fields, err := mkvChildren(c.b)
+				if err != nil {
+					continue
+				}
+				var block []byte
+				var dur uint64
+				for _, f := range fields {
+					switch f.id {
+					case mkvBlockID:
+						block = f.b
+					case mkvBlockDurationID:
+						dur = mkvUint(f.b)
+					}
+				}
+				if len(block) > 0 {
+					appendMKVBlockCue(byTrack, trackSet, clusterTS, scale, block, dur)
+				}
+			}
+		}
+	}
+	return orderCueTracks(trackOrder, byTrack)
+}
+
+func appendMKVBlockCue(byTrack map[uint64][]Cue, trackSet map[uint64]bool, clusterTS, scale uint64, block []byte, dur uint64) {
+	trackNum, n := ebml.Vint(block, false)
+	if n == 0 || len(block) < n+3 || !trackSet[trackNum] {
+		return
+	}
+	rel := int16(binary.BigEndian.Uint16(block[n : n+2]))
+	stamp := int64(clusterTS) + int64(rel)
+	if stamp < 0 {
+		return
+	}
+	start := time.Duration(stamp) * time.Duration(scale)
+	end := start + time.Duration(dur*scale)
+	if dur == 0 {
+		end = start + 2*time.Second
+	}
+	if end <= start || len(byTrack[trackNum]) >= 20000 {
+		return
+	}
+	byTrack[trackNum] = append(byTrack[trackNum], Cue{Start: start, End: end})
+}
+
+func orderCueTracks(trackOrder []uint64, byTrack map[uint64][]Cue) [][]Cue {
+	var out [][]Cue
+	for _, num := range trackOrder {
+		cues := byTrack[num]
+		if len(cues) == 0 {
+			continue
+		}
+		sort.SliceStable(cues, func(i, j int) bool { return cues[i].Start < cues[j].Start })
+		out = append(out, cues)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
 }

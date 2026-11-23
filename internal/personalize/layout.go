@@ -77,7 +77,9 @@ func validateWhen(ve *ValidationError, field string, w *core.LayoutWhen) {
 
 type decision struct {
 	hidden, pinned bool
-	position       int
+	// repeats: the row keeps titles other rows show (RowPolicy.ShowRepeats).
+	repeats  bool
+	position int
 }
 
 // matchRank reports how specifically a rule's hubId targets a row (the

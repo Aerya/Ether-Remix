@@ -66,7 +66,7 @@ func (s *Service) validateLook(ctx context.Context, l Look) error {
 	if strings.TrimSpace(l.Name) == "" || utf8.RuneCountInString(l.Name) > 120 || utf8.RuneCountInString(l.Brand.Tagline) > 40 {
 		return fmt.Errorf("name required (120 characters maximum); tagline maximum 40 characters")
 	}
-	known := " inter playfairdisplay specialelite fraunces bungee fredoka orbitron vt323 spacegrotesk ibmplexmono archivoblack notosans "
+	known := " " + strings.Join(BundledFonts, " ") + " "
 	for _, f := range []string{l.Brand.Type.Display, l.Brand.Type.Body} {
 		if !strings.Contains(known, " "+normalizeFont(f)+" ") {
 			var n int

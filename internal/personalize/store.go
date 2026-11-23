@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -271,6 +272,7 @@ func (s *sqlStore) lastSeen(ctx context.Context) (map[int64]time.Time, error) {
 // rowStat is per-row-kind engagement.
 type rowStat struct {
 	kind, hubID, title string
+	titles             map[string]bool
 	shows              float64 // row-days shown
 }
 
@@ -459,7 +461,7 @@ func (s *sqlStore) plays(ctx context.Context, userID int64, since time.Time) ([]
 // ---- row insights ------------------------------------------------------------
 
 // rowShowsSince returns row-days per kind since `since`, with the latest
-// title seen for the kind.
+// title and distinct concrete titles seen for the kind.
 func (s *sqlStore) rowShowsSince(ctx context.Context, since time.Time) (map[string]*rowStat, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT kind, hub_id, title, last_at FROM personalize_row_impressions WHERE last_at >= ?
 		ORDER BY last_at`, ms(since))
@@ -476,11 +478,15 @@ func (s *sqlStore) rowShowsSince(ctx context.Context, since time.Time) (map[stri
 		}
 		st := out[kind]
 		if st == nil {
-			st = &rowStat{kind: kind}
+			st = &rowStat{kind: kind, titles: map[string]bool{}}
 			out[kind] = st
 		}
 		st.shows++
-		st.hubID, st.title = hubID, title
+		st.hubID = hubID
+		if title != "" && !strings.Contains(title, "<") {
+			st.title = title
+			st.titles[title] = true
+		}
 	}
 	return out, rows.Err()
 }

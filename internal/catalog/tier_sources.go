@@ -73,6 +73,7 @@ var tierTouchSources = []touchSource{
 	{table: "collections_members", column: "key", tierA: true},
 	{table: "collections_specs", column: "spec_json", form: touchScan},
 	{table: "episodeorder_preferences", column: "show_key", tierA: true},
+	{table: "episodeorder_release_preferences", column: "show_key", tierA: true},
 	{table: "trackprefs_memory", column: "show_id", form: touchIDOrKey},
 	{table: "trackprefs_scoped", column: "scope_id", form: touchIDOrKey},
 	{table: "viewer_episode_alerts", column: "episode_key", form: touchKeyText, tierA: true},
@@ -172,6 +173,24 @@ var tierUntouchedTables = []string{
 	"remix_submaker_budget",  // Daily counters, no title references.
 	"remix_submaker_scopes",  // Library/collection identifiers, no title keys.
 	"remix_quality_config",   // Release policy configuration, no viewer title references.
+	"transcode_decode_caps",  // Device capabilities hold no title references.
+	"personalize_meta",       // One-time migration markers, no titles.
+	// Release identity memory (blocklist links, failed grabs) names releases, not titles.
+	"resolver_content_links",
+	"resolver_failed_grabs",
+	// The NZB vault keeps release payloads and aliases; a removed title's
+	// releases are re-found by search, so the vault never pins a title.
+	"vault_",
+	// Durable trailer/extras lists are a rebuildable cache: a removed title's
+	// list is looked up again on its next open, so it never pins a title.
+	"extras_",
+	"vela_wordmarks",                           // Owner branding images.
+	"vela_app_icons", "vela_app_icon_variants", // Owner app icon and its generated variants.
+	// Flows automations and the event outbox hold rules and run history,
+	// not catalogue references that should keep a title.
+	"flows_", "events_outbox",
+	// A viewer's remembered version choice is re-made if the title returns.
+	"resolver_viewer_choices",
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).
@@ -179,22 +198,28 @@ var tierUntouchedTables = []string{
 	// Tier C: caches and derived state, rebuilt on demand.
 	"markers_cache", "markers_plugin_cache", "markers_breaks_", "ratings_cache", "ratings_settings",
 	"plexmeta_titles", "plexguid_", "resolver_availability", "resolver_hardsub", "resolver_reputation",
-	"resolver_subtitle_checks", "resolver_verified", "collections_air_dates", "collections_external",
-	"collections_names", "collections_defaults", "collections_meta", "release_observations", "availability_",
+	"resolver_release_titles", "resolver_seadex", "resolver_seadex_keys", "resolver_subtitle_checks", "resolver_verified", "collections_air_dates", "collections_external",
+	"collections_names", "collections_defaults", "collections_meta", "release_observations", "release_probes", "vault_tracks", "availability_",
 	"cachefill_shared", "plex_ultrablur", "plex_shelf_generations", "onair_", "xtream_vod", "xtream_vod_refresh", "experience_row_",
-	"mediabrowser_personal_home", "frontend_image_grants", "segcache_", "debrid_", "newznab_", "cardigann_",
-	"livetv_programmes", "livetv_guide_", "livetv_owner_guides", "livetv_search_", "livetv_numbers", "livetv_sources", "livetv_policies",
+	"mediabrowser_personal_home", "segcache_", "debrid_", "newznab_", "cardigann_",
+	"livetv_programmes", "livetv_guide_", "livetv_group_", "livetv_owner_groups", "livetv_search_", "livetv_numbers", "livetv_sources", "livetv_policies",
 	"livetv_channel_epoch", "livetv_plex_guide_gate", "livetv_source_history", "livetv_login_", "artwork_image_",
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",
 	// Libraries hold owner filter definitions and plugin-owned items; a
 	// plugin match naming a removed title is promoted again on open.
-	"libraries", "libraries_", "plugin_", "plugins_setup",
+	"libraries", "libraries_", "plugin_", "plugins_setup", "plugins_schedule_runs",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
-	// Encrypted idempotency responses contain transient authority, not durable title intent.
-	"vela_replays",
+	// Encrypted idempotency responses and installed Vela skins hold no title references.
+	"vela_replays", "vela_skins",
 	// Accounts, identity, sessions and devices.
 	"auth_", "identity_", "invites_", "mcp_oauth_", "capability_", "credentials_format", "safety_policies",
+	// Download quota ledger: counts a viewer's downloads per day; a removed
+	// title only frees a quota entry and is never a reason to keep it.
+	"safety_download_usage",
+	"collections_addon_imports",
+	// Live sports events are keyed by plugin event ids, never catalogue titles.
+	"live_event_reveals", "viewer_push_liveevent_claims",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",
 	"sessions_xtream_connections", "viewer_alert_preferences", "viewer_episode_scan", "viewer_policy_",
 	"viewer_push_subscriptions", "favorites_mirror", "notinterested_revisions", "state_playlist_markers",
@@ -214,9 +239,9 @@ var tierUntouchedTables = []string{
 	"backup_", "notify_channels", "notify_once", "notify_push_keys", "notify_settings", "overlays_settings",
 	"prerolls", "prerolls_settings", "stats_costs", "stats_device_registry", "stats_device_registry_counter", "stats_indexer_days",
 	"stats_debrid_days", "stats_stream_days",
-	"stats_newsletter_", "stats_provider_days", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
-	"plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
-	"plugins_proposals", "plugins_settings", "agent_approvals", "agent_audit", "agent_secret_requests",
+	"stats_newsletter_", "stats_provider_days", "stats_play_timeline", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
+	"plugins_remote_hashes", "plugins_remote_hash_budget", "plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
+	"plugins_proposals", "plugins_settings", "plugins_derived_secrets", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",
 }
 

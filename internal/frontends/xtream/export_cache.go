@@ -23,10 +23,6 @@ func (i *instance) listRequest(r *http.Request, l login, kind string) (listcache
 		return listcache.Request{}, false
 	}
 	renewer, renews := i.host.ImageGrants.(frontend.ImagePageRenewer)
-	if _, signs := i.host.ImageGrants.(frontend.ImagePageSigner); signs && !renews {
-		// A listing outlives its grants; it is kept only if they can be re-armed.
-		return listcache.Request{}, false
-	}
 	cat := r.URL.Query().Get("category_id")
 	if cat == "0" {
 		cat = ""
@@ -38,7 +34,7 @@ func (i *instance) listRequest(r *http.Request, l login, kind string) (listcache
 	fresh := i.host.PageFreshness()
 	state := listcache.State{Catalog: fresh.Catalog, At: i.exports.Now()}
 	h := sha256.New()
-	fmt.Fprintf(h, "%d|%d|%d|%d|%d\n", fresh.Config, fresh.Accounts, fresh.Safety, fresh.Hidden, fresh.Images)
+	fmt.Fprintf(h, "%d|%d|%d|%d|%d|%d|%d\n", fresh.Config, fresh.Accounts, fresh.Safety, fresh.Hidden, fresh.Images, fresh.Libraries, fresh.KindSync)
 	for _, v := range views {
 		if string(v.Type) != kind || cat != "" && cat != v.ID {
 			continue
@@ -56,13 +52,15 @@ func (i *instance) listRequest(r *http.Request, l login, kind string) (listcache
 	req, bl := r.Clone(context.Background()), l.detached()
 	out := listcache.Request{Slot: kind + "\x00" + cat + "\x00" + l.base + "\x00" + strconv.FormatInt(l.viewer.ID, 10), State: state, Owner: l.device.ID,
 		Build: func(ctx context.Context, e *listcache.Entry) error {
-			bl.keep = e.KeepImages
+			if renews {
+				bl.keep = e.KeepImages
+			}
 			_, err := i.writeList(req.WithContext(ctx), bl, kind, e)
 			return err
 		}}
 	if renews {
 		out.Renew = func(ctx context.Context, e *listcache.Entry) error {
-			return listcache.RenewImages(ctx, e, renewer, l.password, l.device)
+			return listcache.RenewImages(ctx, e, renewer, l.credential, l.device)
 		}
 	}
 	return out, true

@@ -53,6 +53,17 @@ func (s *Service) Router() http.Handler {
 		}
 		reply(w, out)
 	})
+	r.Post("/friends/sync", func(w http.ResponseWriter, r *http.Request) {
+		s.StartFriendsSync(r.Context())
+		out, e := s.Settings(r.Context())
+		if e != nil {
+			http.Error(w, "Settings unavailable", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(out)
+	})
 	r.Route("/users/{id}", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

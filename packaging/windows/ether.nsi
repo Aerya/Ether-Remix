@@ -17,10 +17,11 @@
 ; Usage (release workflow, windows runner):
 ;   stage into dist\windows\staging: ether.exe, ether-tray.exe,
 ;   ffmpeg.exe, ffprobe.exe, LICENSE, THIRD_PARTY_NOTICES.md
+;   sign ether.exe and ether-tray.exe with Azure Artifact Signing
 ;   makensis /DVERSION=1.2.0 /DSTAGING=dist\windows\staging ^
 ;            /DOUTFILE=dist\EtherSetup-1.2.0.exe packaging\windows\ether.nsi
-; Then sign with signtool when a code-signing cert is available
-; (see .github/workflows/release.yml).
+;   sign dist\EtherSetup-1.2.0.exe with Azure Artifact Signing
+;   (see .github/workflows/release.yml).
 
 Unicode True
 ManifestDPIAware True

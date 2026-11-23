@@ -34,7 +34,7 @@ it("shows Plex track values as badges", async () => {
       : { config: { frontends: { plex: { enabled: true } } } },
   );
   render(<FromPlexDefaults viewerId={2} show="tracks" />);
-  expect(await screen.findByText("EN")).toHaveClass("rounded-full");
+  expect(await screen.findByText("English")).toHaveClass("rounded-full");
   expect(screen.getByText("Yes")).toHaveClass("rounded-full");
   expect(screen.getByText("Always on")).toHaveClass("rounded-full");
 });

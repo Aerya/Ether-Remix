@@ -281,27 +281,21 @@ func TestResultCacheTTL(t *testing.T) {
 	}
 }
 
-func TestFetchNZBGzipAndDiskReuse(t *testing.T) {
+func TestFetchNZBGzipAndVaultReuse(t *testing.T) {
 	f := newFakeIndexer(t, "")
 	f.gzipNZB = true
 	cfg := testConfig(f.server.URL)
 	cfg.DailyGrabs = 1
-	c := New(cfg, nil, Options{NZBDir: t.TempDir()})
+	c := New(cfg, nil, Options{Vault: &testVault{}})
 	r := core.Release{ID: "abc123", GUID: "g1", Indexer: "Fake", Name: "X", NZBURL: f.server.URL + "/nzb?id=g1"}
 	b, err := c.FetchNZB(context.Background(), r)
 	if err != nil || string(b) != fakeNZB {
 		t.Fatalf("b=%q err=%v", b, err)
 	}
-	// Second fetch hits disk, not the grab budget or the server.
+	// The vault serves the replay after the grab allowance is spent.
 	b, err = c.FetchNZB(context.Background(), r)
 	if err != nil || string(b) != fakeNZB {
 		t.Fatalf("second b=%q err=%v", b, err)
-	}
-	f.mu.Lock()
-	n := f.nzbHits
-	f.mu.Unlock()
-	if n != 1 {
-		t.Errorf("nzb server hits=%d want 1", n)
 	}
 }
 
@@ -408,5 +402,66 @@ func TestSearchAnimeCourFallback(t *testing.T) {
 	})
 	if err != nil || len(res) != 1 || res[0].Info.Cour != 2 || len(res[0].Info.Episodes) != 1 || res[0].Info.Episodes[0] != 1 {
 		t.Fatalf("cour search fallback: got %+v err=%v", res, err)
+	}
+}
+
+func TestSearchAnimeCourTVDBSeason(t *testing.T) {
+	var queriesMu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch q.Get("t") {
+		case "caps":
+			fmt.Fprint(w, `<caps><searching><search available="yes" supportedParams="q"/><tv-search available="yes" supportedParams="q,tvdbid,tmdbid,season,ep"/></searching></caps>`)
+		default:
+			queriesMu.Lock()
+			queries = append(queries, fmt.Sprintf("t=%s|tvdb=%s|tmdb=%s|s=%s|ep=%s|q=%s",
+				q.Get("t"), q.Get("tvdbid"), q.Get("tmdbid"), q.Get("season"), q.Get("ep"), q.Get("q")))
+			queriesMu.Unlock()
+			fmt.Fprint(w, `<rss version="2.0"><channel></channel></rss>`)
+		}
+	}))
+	defer srv.Close()
+	cfg := testConfig(srv.URL)
+	cfg.Protocol = "torrent"
+	c := New(cfg, nil, Options{SearchCacheTTL: -1})
+	_, err := c.Search(context.Background(), core.SearchRequest{
+		Type:   core.TypeEpisode,
+		IDs:    core.IDs{TMDB: 237150, TVDB: 434704},
+		Title:  "Tensei Kizoku",
+		Season: 1, Episode: 25,
+		Cour: 3, CourEpisode: 1,
+		CourTVDBSeason: 3, CourTVDBEpisode: 1,
+		Anime: true,
+	})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	want := []string{
+		"t=tvsearch|tvdb=434704|tmdb=|s=3|ep=1|q=",
+		"t=tvsearch|tvdb=|tmdb=237150|s=1|ep=25|q=",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S01E25",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S03E01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 3rd Season - 01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 25",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S01 Part 3 01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku Part 3 01",
+		"t=tvsearch|tvdb=434704|tmdb=|s=3|ep=|q=",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S03",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 3rd Season",
+	}
+	gotSet := map[string]bool{}
+	queriesMu.Lock()
+	defer queriesMu.Unlock()
+	for _, q := range queries {
+		gotSet[q] = true
+	}
+	for _, wq := range want {
+		if !gotSet[wq] {
+			t.Errorf("missing expected query %q in %v", wq, queries)
+		}
+	}
+	if gotSet["t=tvsearch|tvdb=434704|tmdb=|s=1|ep=25|q="] {
+		t.Fatalf("sent TMDB season/ep to tvdbid tvsearch: %v", queries)
 	}
 }

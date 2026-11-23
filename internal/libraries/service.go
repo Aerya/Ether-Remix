@@ -13,9 +13,74 @@ import (
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
+var allowedSiloTypes = map[string]bool{
+	"movies": true, "tvshows": true, "music": true, "audiobooks": true, "books": true, "photos": true, "homevideos": true,
+	"movie": true, "series": true, "show": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "Video": true, "MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+}
+
+// allowedMediaBrowserItemTypes is the closed set a presentation's per-level
+// MediaBrowser itemTypes may name; mirrors the manifest rule so a console
+// edit cannot store a type no client knows.
+var allowedMediaBrowserItemTypes = map[string]bool{
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "Video": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
+}
+
+// ValidatePresentations validates stored or API-supplied protocol presentations.
+func ValidatePresentations(p core.Presentations) error { return validatePresentations(p) }
+
+func validatePresentations(p core.Presentations) error {
+	if p.Vela != nil {
+		switch p.Vela.Type {
+		case "movies", "shows":
+		default:
+			return fmt.Errorf("%w: vela type must be movies or shows", ErrInvalid)
+		}
+	}
+	if p.Plex != nil {
+		switch p.Plex.Base {
+		case "movie", "show", "artist", "photo":
+		default:
+			return fmt.Errorf("%w: plex base must be movie, show, artist or photo", ErrInvalid)
+		}
+	}
+	if p.MediaBrowser != nil {
+		switch p.MediaBrowser.CollectionType {
+		case "movies", "tvshows", "music", "audiobooks", "books", "photos", "homevideos":
+		default:
+			return fmt.Errorf("%w: mediaBrowser collectionType must be movies, tvshows, music, audiobooks, books, photos or homevideos", ErrInvalid)
+		}
+		for level, itemType := range p.MediaBrowser.ItemTypes {
+			if !allowedMediaBrowserItemTypes[itemType] {
+				return fmt.Errorf("%w: mediaBrowser itemTypes[%s] must be Movie, Series, Season, Episode, Video, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo", ErrInvalid, level)
+			}
+		}
+	}
+	if p.Stremio != nil {
+		switch p.Stremio.Type {
+		case "movie", "series", "channel", "tv":
+		default:
+			return fmt.Errorf("%w: stremio type must be movie, series, channel or tv", ErrInvalid)
+		}
+	}
+	if p.Xtream != nil {
+		switch p.Xtream.Category {
+		case "movie", "series", "live":
+		default:
+			return fmt.Errorf("%w: xtream category must be movie, series or live", ErrInvalid)
+		}
+	}
+	if p.Silo != nil && !allowedSiloTypes[p.Silo.Type] {
+		return fmt.Errorf("%w: invalid silo type", ErrInvalid)
+	}
+	return nil
+}
+
 // List returns every library in owner order: sort, then id (§1.3).
 func (s *Service) listDB(ctx context.Context) ([]core.Library, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryCols+` FROM libraries ORDER BY sort, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryCols+` FROM libraries WHERE deleted=0 ORDER BY sort, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +158,9 @@ func cloneRule(r core.LibraryExclusion) core.LibraryExclusion {
 				copy(v, c.Value)
 				c.Value = v
 			}
+			if len(c.Labels) > 0 {
+				c.Labels = append([]string(nil), c.Labels...)
+			}
 			conds[i] = c
 		}
 		r.Rules = conds
@@ -108,6 +176,13 @@ func cloneLibrary(lib core.Library) core.Library {
 			rules[i] = cloneRule(r)
 		}
 		lib.Rules = rules
+	}
+	if len(lib.Tabs) > 0 {
+		tabs := make([]core.LibraryTab, len(lib.Tabs))
+		for i, t := range lib.Tabs {
+			tabs[i] = t.Clone()
+		}
+		lib.Tabs = tabs
 	}
 	return lib
 }
@@ -128,6 +203,8 @@ func (s *Service) ByKey(ctx context.Context, key string) (core.Library, error) {
 
 // Create saves a library with sources and visible visibility rules.
 func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaType, rules []core.LibraryExclusion, fallback string, p core.Presentations) (core.Library, error) {
+	mediaType = core.MediaType(core.NormalizeRuleMediaType(string(mediaType)))
+	rules = core.NormalizeLibraryRules(rules)
 	name = strings.TrimSpace(name)
 	slug := slugify(name)
 	if name == "" || slug == "" {
@@ -136,7 +213,10 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: library type must be movie or show", ErrInvalid)
 	}
-	if _, err := libraryfilter.CompilePolicy(rules, fallback); err != nil {
+	if err := validatePresentations(p); err != nil {
+		return core.Library{}, err
+	}
+	if _, err := s.compileCatalogueRules(rules, fallback); err != nil {
 		return core.Library{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -185,6 +265,9 @@ func (s *Service) CreateCollection(ctx context.Context, name string, collectionI
 	}
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: collection library type must be movie or show", ErrInvalid)
+	}
+	if err := validatePresentations(p); err != nil {
+		return core.Library{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -241,6 +324,15 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 	if pluginID == "" || kindKey == "" || name == "" || slugify(pluginID) == "" || slugify(kindKey) == "" {
 		return core.Library{}, fmt.Errorf("%w: plugin library needs plugin, kind and name", ErrInvalid)
 	}
+	if err := validatePresentations(decl.Present); err != nil {
+		return core.Library{}, err
+	}
+	// A plugin library that declares video for the other apps also shows in
+	// Vela unless the plugin says otherwise, set once when the library is
+	// created; the owner can switch it off in Show in apps.
+	if t := inferVelaType(decl.Present); t != "" {
+		decl.Present.Vela = &core.VelaPresentation{Type: t}
+	}
 	existing, err := s.libraryForPluginKind(ctx, pluginID, kindKey)
 	if err == nil {
 		return existing, nil
@@ -284,8 +376,14 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 }
 
 func (s *Service) libraryForPluginKind(ctx context.Context, pluginID, kindKey string) (core.Library, error) {
+	var deleted int
+	if err := s.db.QueryRowContext(ctx, "SELECT deleted FROM libraries WHERE source='plugin' AND plugin_id=? AND kind_key=?", pluginID, kindKey).Scan(&deleted); err == nil && deleted != 0 {
+		return core.Library{}, ErrDeleted
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return core.Library{}, err
+	}
 	lib, err := scanLibrary(s.db.QueryRowContext(ctx,
-		`SELECT `+libraryCols+` FROM libraries WHERE source = 'plugin' AND plugin_id = ? AND kind_key = ?`, pluginID, kindKey))
+		`SELECT `+libraryCols+` FROM libraries WHERE source = 'plugin' AND plugin_id = ? AND kind_key = ? AND deleted=0`, pluginID, kindKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Library{}, core.ErrNotFound
 	}
@@ -318,11 +416,53 @@ func (s *Service) SetHidden(ctx context.Context, id core.LibraryID, hidden bool)
 
 // SetPresent sets how protocols expose a library (§6.2).
 func (s *Service) SetPresent(ctx context.Context, id core.LibraryID, p core.Presentations) error {
+	if err := validatePresentations(p); err != nil {
+		return err
+	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
 	return s.setColumn(ctx, id, "present", string(b))
+}
+
+// SetPresentAndOverrides atomically saves the effective Presentations and
+// sticky per-app owner overrides for library id.
+func (s *Service) SetPresentAndOverrides(ctx context.Context, id core.LibraryID, p core.Presentations, overrides core.PresentationOverrides) error {
+	if err := validatePresentations(p); err != nil {
+		return err
+	}
+	pb, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	ob := []byte("{}")
+	if !overrides.IsEmpty() {
+		ob, err = json.Marshal(overrides)
+		if err != nil {
+			return err
+		}
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE libraries SET present=?, present_overrides=?, updated_at=? WHERE id=?`,
+		string(pb), string(ob), s.now().Unix(), int64(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return core.ErrNotFound
+	}
+	s.gen.Add(1)
+	return nil
+}
+
+// SetCardShape sets the owner-chosen card shape ("", "poster", "landscape", or
+// "square") on library id.
+func (s *Service) SetCardShape(ctx context.Context, id core.LibraryID, shape string) error {
+	shape = strings.ToLower(strings.TrimSpace(shape))
+	if !core.ValidCardShape(shape) {
+		return fmt.Errorf("%w: card shape must be poster, landscape or square", ErrInvalid)
+	}
+	return s.setColumn(ctx, id, "card_shape", shape)
 }
 
 // SetQualityProfile sets the quality profile name titles in this library
@@ -347,13 +487,13 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		pinnedType = "mixed"
 	}
 	switch {
-	case lib.ID == core.LibraryMovies || lib.MediaType == core.TypeMovie:
+	case lib.MediaType == core.TypeMovie:
 		pinnedType = string(core.TypeMovie)
-	case lib.ID == core.LibraryShows || lib.MediaType == core.TypeShow:
+	case lib.MediaType == core.TypeShow:
 		pinnedType = string(core.TypeShow)
 	}
 	normalized := make([]core.LibraryExclusion, len(rules))
-	for i, r := range rules {
+	for i, r := range core.NormalizeLibraryRules(rules) {
 		cp := cloneRule(r)
 		if pinnedType != "" {
 			cp.MediaType = pinnedType
@@ -362,9 +502,14 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		}
 		normalized[i] = cp
 	}
-	compile := libraryfilter.CompilePolicy
+	compile := s.compileCatalogueRules
 	if lib.Source == core.LibraryPlugin {
-		compile = libraryfilter.CompilePluginPolicy
+		compile = func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+			if s.compilePluginPolicy != nil {
+				return s.compilePluginPolicy(ctx, lib.ID, specs, fallback)
+			}
+			return libraryfilter.CompilePluginPolicy(specs, fallback, nil)
+		}
 	}
 	if _, err := compile(normalized, visibilityDefault); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
@@ -393,21 +538,81 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 	return nil
 }
 
-// Delete removes a filter or plugin library. Built-ins are refused:
-// Movies and TV Shows exist forever. Plugin libraries are deleted
-// only through plugin removal (§2.5), which calls this after purging
-// the plugin's items.
+// Delete withdraws publication and retains the declaration as a tombstone.
+// Media, source membership and watch history survive removal. Retained rules
+// are available only to already admitted playback and explicit restoration.
 func (s *Service) Delete(ctx context.Context, id core.LibraryID) error {
-	lib, err := s.Get(ctx, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if lib.Source == core.LibraryBuiltin {
-		return ErrBuiltinLibrary
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE libraries SET deleted=1 WHERE id=? AND deleted=0", int64(id))
+	if err != nil {
+		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, int64(id)); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return core.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.changed()
 	return nil
+}
+
+// ListCurrent bypasses the presentation cache for admission decisions.
+func (s *Service) ListCurrent(ctx context.Context) ([]core.Library, error) { return s.listDB(ctx) }
+
+// RestorePluginLibrary is an explicit owner action. Keeping the original row
+// preserves item references, owner settings and the exact plugin/kind identity.
+func (s *Service) RestorePluginLibrary(ctx context.Context, plugin, kind string, decl PluginLibraryDecl) (core.Library, error) {
+	plugin, kind = strings.TrimSpace(plugin), strings.TrimSpace(kind)
+	if plugin == "" || kind == "" || strings.TrimSpace(decl.Name) == "" || slugify(plugin) == "" || slugify(kind) == "" {
+		return core.Library{}, ErrInvalid
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE libraries SET deleted=0 WHERE source='plugin' AND plugin_id=? AND kind_key=?", strings.TrimSpace(plugin), strings.TrimSpace(kind))
+	if err != nil {
+		return core.Library{}, err
+	}
+	s.gen.Add(1)
+	return s.UpsertPluginLibrary(ctx, plugin, kind, decl)
+}
+
+// Purge removes an automatically withdrawn declaration, but retains owner
+// tombstones even across uninstall/reinstall of the same plugin identity.
+func (s *Service) Purge(ctx context.Context, id core.LibraryID) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM libraries WHERE id=? AND deleted=0", int64(id))
+	if err == nil {
+		s.gen.Add(1)
+	}
+	return err
+}
+
+// Retained returns declaration identity for plugin cleanup, including tombstones.
+func (s *Service) Retained(ctx context.Context, id core.LibraryID) (core.Library, error) {
+	return scanLibrary(s.db.QueryRowContext(ctx, "SELECT "+libraryCols+" FROM libraries WHERE id=?", int64(id)))
+}
+
+// ListRetained includes deleted declarations solely for already admitted media.
+// Their original membership lets current viewer restrictions keep applying.
+func (s *Service) ListRetained(ctx context.Context) ([]core.Library, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+libraryCols+" FROM libraries ORDER BY sort,id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Library
+	for rows.Next() {
+		lib, err := scanLibrary(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lib)
+	}
+	return out, rows.Err()
 }

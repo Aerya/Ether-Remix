@@ -189,6 +189,7 @@ function ShowOrderDrawer({ show, onClose }: { show: TitleCard | null; onClose: (
         </div>
       ) : (
         <div className="space-y-6">
+          <ReleaseNumberingEditor key={show.key} showKey={show.key} groups={groups.data ?? []} />
           <section className="space-y-4" aria-label={t("Default order")}>
             <div>
               <h3 className="text-sm font-semibold text-fg">{t("Default for every viewer")}</h3>
@@ -472,5 +473,66 @@ function OrderEditor({
         </div>
       ) : null}
     </div>
+  );
+}
+
+type ReleasePreference = { mode: "automatic" | "tmdb" | "group"; groupId: string };
+function ReleaseNumberingEditor({ showKey, groups }: { showKey: string; groups: Group[] }) {
+  const path = `/metadata/shows/${showKey}/release-numbering`;
+  const saved = useAsync((signal) => apiFetch<ReleasePreference>(path, { signal }), [path]);
+  const [pref, setPref] = useState<ReleasePreference>({ mode: "automatic", groupId: "" });
+  const [adopted, setAdopted] = useState<typeof saved.data>(undefined);
+  const [busy, setBusy] = useState(false);
+  if (saved.data && saved.data !== adopted) {
+    setAdopted(saved.data);
+    setPref(saved.data);
+  }
+  if (saved.error) return <ErrorPanel error={saved.error} onRetry={() => void saved.reload()} />;
+  return (
+    <section className="space-y-3" aria-label={t("Release numbering")}>
+      <label htmlFor="release-numbering" className="block text-sm font-semibold text-fg">
+        {t("Release numbering")}
+      </label>
+      <p className="text-xs text-fg-muted">
+        {t("Release numbering is automatic and separate from display order.")}
+      </p>
+      <select
+        id="release-numbering"
+        className={nativeSelect}
+        disabled={!saved.data || busy}
+        value={pref.mode === "group" ? `group:${pref.groupId}` : pref.mode}
+        onChange={(e) => {
+          const value = e.currentTarget.value;
+          setPref(
+            value.startsWith("group:")
+              ? { mode: "group", groupId: value.slice(6) }
+              : { mode: value as "automatic" | "tmdb", groupId: "" },
+          );
+        }}
+      >
+        <option value="automatic">{t("Automatic")}</option>
+        <option value="tmdb">{t("TMDB as shown")}</option>
+        {groups.map((g) => (
+          <option key={g.id} value={`group:${g.id}`}>
+            {g.name}
+          </option>
+        ))}
+      </select>
+      <Button
+        disabled={!saved.data || busy}
+        onClick={() => {
+          setBusy(true);
+          void apiFetch<ReleasePreference>(path, { method: "PUT", body: JSON.stringify(pref) })
+            .then((next) => {
+              saved.setData(next);
+              toast.success(t("Release numbering saved"));
+            })
+            .catch((e: unknown) => toast.error(errorMessage(e)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        {t("Save")}
+      </Button>
+    </section>
   );
 }

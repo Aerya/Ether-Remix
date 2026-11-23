@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,12 +26,13 @@ import (
 // differently, and a plan that is an index seek on SQLite can be a scan of
 // the whole catalogue there. TestPostgresHotPlans replays the hot client
 // paths (Home, Continue Watching and On Deck, section pages sorted and
-// filtered, search, detail) against a small library on PostgreSQL, with
-// the catalogue's planner statistics scaled to a full TMDB mirror, and
-// fails on any plan that would read a catalogue or watch table whole: a
-// sequential scan, a bitmap heap scan without an index condition, or a
-// hashed subplan over one without an index condition. It runs in the
-// PostgreSQL CI job (ETHER_TEST_POSTGRES) in about a minute.
+// filtered, search, detail, multi-key metadata detail batches, episode release
+// joins and counts, and restricted remote artwork lookups) against a small
+// library on PostgreSQL, with the catalogue's planner statistics scaled to a
+// full TMDB mirror, and fails on any plan that would read a catalogue or watch
+// table whole: a sequential scan, a bitmap heap scan without an index
+// condition, or a hashed subplan over one without an index condition. It runs
+// in the PostgreSQL CI job (ETHER_TEST_POSTGRES) in about a minute.
 
 // plansClients are the replayed paths: Plex for Apple TV's Home, section
 // pages, filters, search and detail, and Infuse's resume and next-up.
@@ -42,6 +44,99 @@ var plansSteps = map[string][]string{
 	"infuse-jellyfin": {"/UserItems/Resume", "/Shows/NextUp", "/UserViews", "movies p1 SortName", "movies p1 Genres=Drama", "movies deep Genres=Drama", "movies p1 Years", "search items star"},
 }
 
+// plansExtraPlexSteps adds the #598 episode release browse/shelf and multi-key
+// metadata detail batch paths to the unrestricted Plex client replay.
+func plansExtraPlexSteps() []perfharness.Step {
+	return []perfharness.Step{
+		{Name: "shows episodes releasedAt desc", Class: "browse", Path: "/library/sections/{showSection}/all?type=4&sort=originallyAvailableAt:desc&includeGuids=1&X-Plex-Container-Start=0&X-Plex-Container-Size=60"},
+		{Name: "shows episodes addedAt desc", Class: "browse", Path: "/library/sections/{showSection}/all?type=4&sort=addedAt:desc&includeGuids=1&X-Plex-Container-Start=0&X-Plex-Container-Size=60"},
+		{Name: "/library/recentlyAdded", Class: "home", Path: "/library/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=50"},
+		{Name: "/hubs/home/recentlyAdded tv", Class: "home", Path: "/hubs/home/recentlyAdded?type=2&X-Plex-Container-Start=0&X-Plex-Container-Size=20"},
+		{Name: "metadata detail batch", Class: "detail", Path: "/library/metadata/{batchMetadataKeys}?includeExtras=1&includeRelated=1&includeOnDeck=1&includeChapters=1&includeGuids=1&includeMarkers=1&includePreferences=1&includeReviews=1&asyncAugmentMetadata=1"},
+	}
+}
+
+// plansRestrictedSteps replays the #598 paths under the restricted fixture
+// viewer (rating cap + share filter): remote artwork lookup, episode release
+// join and count, recentlyAdded, and multi-key metadata detail batch.
+func plansRestrictedSteps(base []perfharness.Step) []perfharness.Step {
+	want := map[string]int{
+		"/library/sections":       0,
+		"movies all titleSort p1": 4,
+		"shows all titleSort p1":  4,
+		"shows allLeaves p1":      6,
+		"show children":           2,
+	}
+	var out []perfharness.Step
+	for _, st := range base {
+		limit, ok := want[st.Name]
+		if !ok {
+			continue
+		}
+		if limit > 0 {
+			st.Discover = plansChainDiscover(st.Discover, plansDiscoverBatchKeys(limit))
+		}
+		out = append(out, st)
+	}
+	return append(out,
+		perfharness.Step{Name: "restricted artwork lookup", Class: "playback", Path: "/photo/:/transcode?width=300&height=450&url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Frestricted-probe.jpg"},
+		perfharness.Step{Name: "restricted shows episodes releasedAt desc", Class: "browse", Path: "/library/sections/{showSection}/all?type=4&sort=originallyAvailableAt:desc&includeGuids=1&X-Plex-Container-Start=0&X-Plex-Container-Size=60"},
+		perfharness.Step{Name: "restricted recentlyAdded", Class: "home", Path: "/library/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=50"},
+		perfharness.Step{Name: "restricted metadata detail batch", Class: "detail", Path: "/library/metadata/{batchMetadataKeys}?includeExtras=1&includeRelated=1&includeOnDeck=1&includeChapters=1&includeGuids=1&includeMarkers=1&includePreferences=1&includeReviews=1&asyncAugmentMetadata=1"},
+	)
+}
+
+func plansChainDiscover(a, b func(map[string]string, []byte)) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		if a != nil {
+			a(vars, body)
+		}
+		if b != nil {
+			b(vars, body)
+		}
+	}
+}
+
+func plansDiscoverBatchKeys(limit int) func(map[string]string, []byte) {
+	return func(vars map[string]string, body []byte) {
+		var c struct {
+			MediaContainer struct {
+				Metadata []struct {
+					RatingKey string `json:"ratingKey"`
+				} `json:"Metadata"`
+			} `json:"MediaContainer"`
+		}
+		if json.Unmarshal(body, &c) != nil {
+			return
+		}
+		seen := map[string]bool{}
+		var keys []string
+		if cur := vars["batchMetadataKeys"]; cur != "" {
+			for _, k := range strings.Split(cur, ",") {
+				if k != "" && !seen[k] {
+					seen[k] = true
+					keys = append(keys, k)
+				}
+			}
+		}
+		added := 0
+		for _, m := range c.MediaContainer.Metadata {
+			if m.RatingKey == "" || seen[m.RatingKey] {
+				continue
+			}
+			seen[m.RatingKey] = true
+			keys = append(keys, m.RatingKey)
+			added++
+			if added >= limit {
+				break
+			}
+		}
+		if len(keys) > 0 {
+			vars["batchMetadataKeys"] = strings.Join(keys, ",")
+		}
+	}
+}
+
 // plansFullMirror is the catalogue size the statistics are scaled to.
 const plansFullMirror = 1_300_000
 
@@ -51,6 +146,11 @@ const plansHousehold = 200_000
 
 // plansWatched are the tables a plan must never read whole.
 var plansWatched = regexp.MustCompile(`^(catalog_(titles|credits|genres|keywords|studios|countries|alt_titles|genre_pairs|person_names|people|crowd|home_release|home_release_dates|release_names|studio_names)|state_(watch|history|history_events|history_rank|playlist_items))$`)
+
+type planTracedStmt struct {
+	sites map[string]bool
+	steps map[string]bool
+}
 
 func TestPostgresHotPlans(t *testing.T) {
 	pgURL := os.Getenv("ETHER_TEST_POSTGRES")
@@ -78,18 +178,40 @@ func TestPostgresHotPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scale := perfharness.Scale{Movies: 2000, Shows: 100, SeasonsPerShow: 2, EpisodesPerSeason: 4, Viewers: 1, HistoryPerViewer: 1500, InProgressPerViewer: 20}
+	scale := perfharness.Scale{Movies: 2000, Shows: 100, SeasonsPerShow: 2, EpisodesPerSeason: 4, Viewers: 2, HistoryPerViewer: 1500, InProgressPerViewer: 20}
 	if err := perfharness.Generate(ctx, db, scale, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	viewers, err := perfharness.MintCredentials(ctx, db, 2)
+	// Seed restricted-only artwork on two TV-MA shows so a restricted viewer's
+	// /photo/:/transcode check runs artworkPolicyLookupSQL and PreloadStored
+	// without dialling an external image host.
+	if _, err := db.ExecContext(ctx, `UPDATE catalog_titles SET poster='/restricted-probe.jpg' WHERE key IN (SELECT key FROM catalog_titles WHERE type='show' AND content_rating='TV-MA' LIMIT 2)`); err != nil {
+		t.Fatal(err)
+	}
+	viewers, err := perfharness.MintCredentials(ctx, db, 3)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var restricted []perfharness.Viewer
+	for _, v := range viewers {
+		if !v.Owner && v.Username == "viewer02" {
+			restricted = append(restricted, v)
+		}
+	}
+	if len(restricted) == 0 {
+		t.Fatal("expected restricted viewer02 in minted credentials")
 	}
 	db.Close()
 	defer perfGatePostgres(t, ctx, dir, "plans", pgURL)()
 	pg, schema := plansConn(t, dir)
 	defer pg.Close()
+
+	batchDiscover := map[string]int{
+		"movies all titleSort p1": 4,
+		"shows all titleSort p1":  4,
+		"shows allLeaves p1":      6,
+		"show children":           2,
+	}
 
 	// Each release mode once: the default (playable) and digital, whose
 	// home-release gate adds its own predicates to listings and rows.
@@ -110,16 +232,28 @@ func TestPostgresHotPlans(t *testing.T) {
 		server := httptest.NewServer(a.Handler())
 		a.frontends.start(ctx, server.Listener.Addr())
 		var cs []perfharness.Client
+		var restrictedClients []perfharness.Client
 		for _, c := range perfharness.Only(perfharness.Clients(), []string{"plex-appletv", "infuse-jellyfin"}) {
+			rawSteps := c.Steps
 			keep := map[string]bool{}
 			for _, n := range plansSteps[c.Name] {
 				keep[n] = true
 			}
 			var steps []perfharness.Step
-			for _, st := range c.Steps {
+			for _, st := range rawSteps {
 				if keep[st.Name] {
+					if limit := batchDiscover[st.Name]; c.Name == "plex-appletv" && limit > 0 {
+						st.Discover = plansChainDiscover(st.Discover, plansDiscoverBatchKeys(limit))
+					}
 					steps = append(steps, st)
 				}
+			}
+			if c.Name == "plex-appletv" {
+				steps = append(steps, plansExtraPlexSteps()...)
+				rc := c
+				rc.Name = "plex-appletv-restricted"
+				rc.Steps = plansRestrictedSteps(rawSteps)
+				restrictedClients = append(restrictedClients, rc)
 			}
 			c.Steps = steps
 			cs = append(cs, c)
@@ -128,6 +262,8 @@ func TestPostgresHotPlans(t *testing.T) {
 		r.SetTimeout(30 * time.Second)
 		r.Sequential(ctx, "cold", viewers[:1], cs)
 		r.Sequential(ctx, "warm", viewers[:1], cs)
+		r.Sequential(ctx, "cold", restricted, restrictedClients)
+		r.Sequential(ctx, "warm", restricted, restrictedClients)
 		server.Close()
 		a.Close()
 		got, _, err := perfharness.ReadTrace(trace)
@@ -138,11 +274,7 @@ func TestPostgresHotPlans(t *testing.T) {
 			byTag[mode+"|"+tag] = rec
 		}
 	}
-	type stmt struct {
-		sites map[string]bool
-		steps map[string]bool
-	}
-	stmts := map[string]*stmt{}
+	stmts := map[string]*planTracedStmt{}
 	for tag, rec := range byTag {
 		parts := strings.SplitN(tag, "|", 5)[1:]
 		if len(parts) < 3 {
@@ -151,7 +283,7 @@ func TestPostgresHotPlans(t *testing.T) {
 		for _, st := range rec.Statements {
 			e := stmts[st.SQL]
 			if e == nil {
-				e = &stmt{sites: map[string]bool{}, steps: map[string]bool{}}
+				e = &planTracedStmt{sites: map[string]bool{}, steps: map[string]bool{}}
 				stmts[st.SQL] = e
 			}
 			e.sites[strings.SplitN(st.Site, " < ", 2)[0]] = true
@@ -170,6 +302,7 @@ func TestPostgresHotPlans(t *testing.T) {
 	// catalogue small next to a heavy viewer's history, where PostgreSQL
 	// hashes a whole catalogue subquery), and scaled to a full mirror.
 	checked, skipped := 0, 0
+	fullMirrorPlans := map[string][]string{}
 	for _, state := range []string{"analysed", "full mirror"} {
 		if state == "full mirror" {
 			plansSeedStatistics(t, ctx, pg, scale)
@@ -183,6 +316,9 @@ func TestPostgresHotPlans(t *testing.T) {
 				}
 				continue
 			}
+			if state == "full mirror" {
+				fullMirrorPlans[q] = plan
+			}
 			checked++
 			for _, issue := range plansIssues(plan, state == "full mirror") {
 				e := stmts[q]
@@ -190,6 +326,7 @@ func TestPostgresHotPlans(t *testing.T) {
 			}
 		}
 	}
+	plansCheckCatalog598(t, stmts, fullMirrorPlans)
 	covered := map[string]bool{}
 	for _, e := range stmts {
 		for site := range e.sites {
@@ -198,6 +335,119 @@ func TestPostgresHotPlans(t *testing.T) {
 	}
 	t.Logf("call sites covered: %s", keysOf(covered))
 	t.Logf("checked %d statements of %d steps' requests, %d not explainable", checked, len(byTag), skipped)
+}
+
+// plansCheckCatalog598 asserts plan properties (index use and no sequential
+// scan or whole-table hash on catalog_titles) for the three #598 paths:
+// restricted artwork lookup, episode release join and count, and metadata
+// detail batch. It checks plans only — never query counts or timings.
+func plansCheckCatalog598(t *testing.T, stmts map[string]*planTracedStmt, plans map[string][]string) {
+	t.Helper()
+	tracedSteps := map[string]bool{}
+	for _, e := range stmts {
+		for step := range e.steps {
+			tracedSteps[step] = true
+		}
+	}
+	for _, wantStep := range []string{
+		"plex-appletv shows episodes releasedAt desc",
+		"plex-appletv /library/recentlyAdded",
+		"plex-appletv metadata detail batch",
+		"plex-appletv-restricted restricted artwork lookup",
+		"plex-appletv-restricted restricted shows episodes releasedAt desc",
+		"plex-appletv-restricted restricted metadata detail batch",
+	} {
+		if !tracedSteps[wantStep] {
+			t.Errorf("expected step %q to be replayed and traced", wantStep)
+		}
+	}
+
+	hasShowKeyProbe := func(joined string) bool {
+		return strings.Contains(joined, "key = e.show_key") &&
+			(strings.Contains(joined, "catalog_titles_pkey") || strings.Contains(joined, "catalog_titles_type_key_page"))
+	}
+
+	var artworkChecked, episodeCountChecked, episodeJoinChecked, batchTitlesChecked int
+	for q, plan := range plans {
+		e := stmts[q]
+		joined := strings.Join(plan, "\n")
+
+		// 1. Restricted remote artwork lookup: all four partial artwork indexes,
+		// no Seq Scan on catalog_titles.
+		if strings.Contains(q, "WHERE adult=0 AND poster<>'' AND poster=?") {
+			artworkChecked++
+			for _, idx := range []string{
+				"catalog_titles_artwork_poster",
+				"catalog_titles_artwork_backdrop",
+				"catalog_titles_artwork_still",
+				"catalog_titles_artwork_logo",
+			} {
+				if !strings.Contains(joined, idx) {
+					t.Errorf("artwork lookup plan missing index %s:\n  sql: %.400s\n  plan:\n%s", idx, q, joined)
+				}
+			}
+			if strings.Contains(joined, "Seq Scan on catalog_titles") {
+				t.Errorf("artwork lookup plan sequentially scans catalog_titles:\n  plan:\n%s", joined)
+			}
+		}
+
+		// 2a. Episode release subtraction counts (unaired and availability gate
+		// cutoff): seek a partial episode-release index on e and probe show by
+		// key, no Hash Join or Seq Scan on catalog_titles.
+		if strings.HasPrefix(q, "SELECT COUNT(*) FROM catalog_titles e") && strings.Contains(q, "e.released_ts>?") {
+			episodeCountChecked++
+			if !(strings.Contains(joined, "catalog_titles_episode_release") || strings.Contains(joined, "catalog_titles_episode_recent")) {
+				t.Errorf("episode release count plan missing partial episode release index:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+			if !hasShowKeyProbe(joined) {
+				t.Errorf("episode release count plan missing indexed show key probe:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+			if strings.Contains(joined, "Hash Join") || strings.Contains(joined, "Seq Scan on catalog_titles") {
+				t.Errorf("episode release count plan hashes or sequentially scans catalog_titles:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+		}
+
+		// 2b. Episode release-ordered browse and RecentPage: walk
+		// catalog_titles_episode_release on e and probe show by key, never Hash
+		// Join, Seq Scan, or full-type catalog_plex_shelf_order on episodes.
+		if strings.Contains(q, "ORDER BY e.released_ts DESC, e.key ASC") || strings.Contains(q, "recent_ep") {
+			episodeJoinChecked++
+			if !strings.Contains(joined, "catalog_titles_episode_release on catalog_titles e") {
+				t.Errorf("episode release page plan missing catalog_titles_episode_release on e:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+			if !hasShowKeyProbe(joined) {
+				t.Errorf("episode release page plan missing indexed show key probe:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+			if strings.Contains(joined, "Hash Join") || strings.Contains(joined, "Seq Scan on catalog_titles") || strings.Contains(joined, "catalog_plex_shelf_order on catalog_titles e") {
+				t.Errorf("episode release page plan uses Hash Join, Seq Scan, or unselective shelf index on episodes:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+		}
+
+		// 3. Multi-key metadata detail batch: every read touching catalog_titles
+		// must use an index and never Seq Scan catalog_titles.
+		if (e.steps["plex-appletv metadata detail batch"] || e.steps["plex-appletv-restricted restricted metadata detail batch"]) && strings.Contains(q, "catalog_titles") {
+			batchTitlesChecked++
+			if strings.Contains(joined, "Seq Scan on catalog_titles") {
+				t.Errorf("metadata detail batch plan sequentially scans catalog_titles:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+			if !(strings.Contains(joined, "Index Scan") || strings.Contains(joined, "Index Only Scan") || strings.Contains(joined, "Bitmap Index Scan")) {
+				t.Errorf("metadata detail batch plan on catalog_titles uses no index:\n  steps: %s\n  sql: %.400s\n  plan:\n%s", keysOf(e.steps), q, joined)
+			}
+		}
+	}
+
+	if artworkChecked == 0 {
+		t.Error("artwork lookup SQL was not plan-checked")
+	}
+	if episodeCountChecked == 0 {
+		t.Error("episode release count SQL was not plan-checked")
+	}
+	if episodeJoinChecked == 0 {
+		t.Error("episode release page/join SQL was not plan-checked")
+	}
+	if batchTitlesChecked == 0 {
+		t.Error("metadata detail batch catalog_titles SQL was not plan-checked")
+	}
 }
 
 func keysOf(m map[string]bool) string {
@@ -293,6 +543,9 @@ func plansSeedStatistics(t *testing.T, ctx context.Context, db *sql.DB, s perfha
 // on PostgreSQL 14 (EXPLAIN (GENERIC_PLAN) needs 16): no parameter value
 // steers it.
 func plansExplain(ctx context.Context, db *sql.DB, schema, q string) ([]string, error) {
+	if strings.HasPrefix(q, store.SQLiteOnly) {
+		return nil, fmt.Errorf("SQLite-only statement")
+	}
 	upper := strings.ToUpper(strings.TrimSpace(q))
 	if !(strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH")) {
 		return nil, fmt.Errorf("not a read")

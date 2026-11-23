@@ -2,6 +2,7 @@ package etherplugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,19 @@ type KindItem struct {
 	ETag        string                     `json:"etag,omitempty"`
 }
 
+// KindItemPart describes one declared or resolve-time file/part on a multi-file
+// KindItem (#576). Ether passes the zero-based index back in
+// KindResolveRequest.PartIndex when resolving each part, or targets FileIndex
+// inside a resolved multi-file release.
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+	FileIndex   *int    `json:"fileIndex,omitempty"`
+}
+
 // KindArtRef is one artwork reference on a KindItem.
 type KindArtRef struct {
 	Role   string `json:"role"`
@@ -65,14 +79,49 @@ type KindPage struct {
 
 // KindBrowseRequest is Ether's browse/search request for one kind level.
 type KindBrowseRequest struct {
-	Kind     string              `json:"-"` // filled from the route, never on the wire
-	ParentID string              `json:"parentId,omitempty"`
-	Level    string              `json:"level,omitempty"`
-	Cursor   string              `json:"cursor,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-	Sort     string              `json:"sort,omitempty"`
-	Facets   map[string][]string `json:"facets,omitempty"`
-	Query    string              `json:"query,omitempty"`
+	Kind     string `json:"-"` // filled from the route, never on the wire
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Sort     string `json:"sort,omitempty"`
+	Desc     bool   `json:"desc,omitempty"`
+	// Facets requires any of the listed values per field; AllFacets
+	// requires every listed value and ExcludeFacets drops items having
+	// any listed value. All three combine with AND.
+	Facets        map[string][]string `json:"facets,omitempty"`
+	AllFacets     map[string][]string `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
+	Query         string              `json:"query,omitempty"`
+	// Total controls whether kinds.browse computes KindPage.Total:
+	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
+	// and "exact" computes an exact Total (cached per library generation).
+	Total string `json:"total,omitempty"`
+}
+
+// KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).
+type KindBrowseQuery = KindBrowseRequest
+
+// KindExpandRequest asks a plugin to expand one declared facet bucket,
+// plugin person slice, or container's children via POST /ether/v1/kinds/{kind}/expand.
+type KindExpandRequest struct {
+	Kind     string `json:"-"`
+	Facet    string `json:"facet,omitempty"`
+	Value    string `json:"value,omitempty"`
+	ValueID  int64  `json:"valueId,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+}
+
+// KindExpandResponse is returned by POST /ether/v1/kinds/{kind}/expand.
+// Either Items (with optional Cursor/NextCursor for further pages) or Job
+// ("/ether/job/...") is populated.
+type KindExpandResponse struct {
+	Items      []KindItem `json:"items,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Job        string     `json:"job,omitempty"`
 }
 
 // KindChangePage is one delta page for pull sync.
@@ -92,26 +141,279 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
-	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// Category accepts comma-separated Newznab IDs or standard family names;
+	// when set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile string `json:"profile,omitempty"`
+	// Stream (indexer_search only), when true, starts the fan-out and returns
+	// immediately with a SearchID handle to poll via indexer_search_results or
+	// stop via indexer_search_cancel (#733).
+	Stream bool `json:"stream,omitempty"`
+	// SearchID identifies a streaming search started by indexer_search with
+	// Stream: true; required on indexer_search_results and indexer_search_cancel.
+	SearchID string `json:"searchId,omitempty"`
+	// WaitMS (indexer_search_results only) sets how long in milliseconds to
+	// wait for at least one new arrival or search completion (capped at
+	// 10000 ms; 0 returns immediately).
+	WaitMS int `json:"waitMs,omitempty"`
+	// FirstResults (indexer_search only), when true, returns as soon as the
+	// fastest indexers produce results plus SettleMS (default 250 ms), while
+	// slower indexers keep populating Ether's search cache in the background (#733).
+	FirstResults bool `json:"firstResults,omitempty"`
+	// SettleMS (indexer_search only) sets the post-first-result grace window in
+	// milliseconds (nil uses 250 ms when FirstResults is true; 0 returns
+	// immediately). Also applies when MinResults is met if explicitly set.
+	// Capped at 30000 ms.
+	SettleMS *int `json:"settleMs,omitempty"`
+	// MinResults (indexer_search only) is the minimum deduplicated candidate
+	// count required before returning early.
+	MinResults int `json:"minResults,omitempty"`
+	// SkipIndexers (indexer_search only) excludes matching indexer IDs or
+	// display names (case-insensitive). Precedence over OnlyIndexers.
+	SkipIndexers []string `json:"skipIndexers,omitempty"`
+	// OnlyIndexers (indexer_search only) restricts the search to matching
+	// indexer IDs or display names (case-insensitive).
+	OnlyIndexers []string `json:"onlyIndexers,omitempty"`
+	// TimeoutMS (indexer_search only) caps how long the call waits in
+	// milliseconds, bounded by Ether's 30000 ms ceiling (and any shorter parent
+	// request deadline). When shorter than the ceiling, slow indexers still
+	// running in the background are reported as pending (and listed in Pending);
+	// indexers that hit the ceiling are reported as timed_out.
+	TimeoutMS  int      `json:"timeoutMs,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// TorrentURL carries a torrent download or details page link when an
+	// indexer did not supply an infoHash or magnet.
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files
+	// or usenet_check.
+	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when passing
+	// a magnet or infoHash without a file list (e.g. large collection torrents
+	// held as zip-only caches on TorBox).
+	FileCount int `json:"fileCount,omitempty"`
+}
+
+// Per-indexer search outcome status values reported in IndexerSearchStatus.Status.
+const (
+	IndexerStatusAnswered = "answered"
+	IndexerStatusPending  = "pending"
+	IndexerStatusTimedOut = "timed_out"
+	IndexerStatusSkipped  = "skipped"
+	IndexerStatusError    = "error"
+)
+
+// Reason values for IndexerSearchStatus.Reason when Status is IndexerStatusSkipped.
+const (
+	// IndexerSkipReasonPaused reports an indexer skipped because its circuit
+	// breaker paused it in backoff after repeated failures or timeouts.
+	IndexerSkipReasonPaused = "paused_backoff"
+)
+
+// IndexerRef identifies one enabled indexer by ID and display name in the
+// top-level Pending list on early-returning and streaming search responses.
+type IndexerRef struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+}
+
+// IndexerSearchStatus reports either one enabled indexer's outcome during an
+// indexer_search / indexer_search_results / indexer_search_cancel call (Status,
+// Results, MS, Reason, Error) or an enabled indexer summary on kind:"indexers"
+// (Kind, MedianMS, LastMS, LastError) (#733).
+type IndexerSearchStatus struct {
+	IndexerID string `json:"indexerId"`
+	Indexer   string `json:"indexer"`
+	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
+	Results   int    `json:"results,omitempty"`
+	MS        int64  `json:"ms"`
+	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
+	Error     string `json:"error,omitempty"`
+	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
+	MedianMS  *int64 `json:"medianMs,omitempty"`
+	LastMS    *int64 `json:"lastMs,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+
+// MarshalJSON preserves ms:0 on search status entries (Status != "") while
+// omitting status/results/ms/reason/error on kind:"indexers" entries (Status == "").
+func (s IndexerSearchStatus) MarshalJSON() ([]byte, error) {
+	if s.Status == "" {
+		type listing struct {
+			IndexerID string `json:"indexerId"`
+			Indexer   string `json:"indexer"`
+			Kind      string `json:"kind,omitempty"`
+			MedianMS  *int64 `json:"medianMs,omitempty"`
+			LastMS    *int64 `json:"lastMs,omitempty"`
+			LastError string `json:"lastError,omitempty"`
+		}
+		return json.Marshal(listing{
+			IndexerID: s.IndexerID,
+			Indexer:   s.Indexer,
+			Kind:      s.Kind,
+			MedianMS:  s.MedianMS,
+			LastMS:    s.LastMS,
+			LastError: s.LastError,
+		})
+	}
+	type searchStatus struct {
+		IndexerID string `json:"indexerId"`
+		Indexer   string `json:"indexer"`
+		Status    string `json:"status"`
+		Results   int    `json:"results,omitempty"`
+		MS        int64  `json:"ms"`
+		Reason    string `json:"reason,omitempty"`
+		Error     string `json:"error,omitempty"`
+		Kind      string `json:"kind,omitempty"`
+		MedianMS  *int64 `json:"medianMs,omitempty"`
+		LastMS    *int64 `json:"lastMs,omitempty"`
+		LastError string `json:"lastError,omitempty"`
+	}
+	return json.Marshal(searchStatus{
+		IndexerID: s.IndexerID,
+		Indexer:   s.Indexer,
+		Status:    s.Status,
+		Results:   s.Results,
+		MS:        s.MS,
+		Reason:    s.Reason,
+		Error:     s.Error,
+		Kind:      s.Kind,
+		MedianMS:  s.MedianMS,
+		LastMS:    s.LastMS,
+		LastError: s.LastError,
+	})
+}
+
+// SourceResolveResult is the full response envelope from sources.resolve (#733).
+type SourceResolveResult struct {
+	Candidates []SourceCandidate     `json:"candidates"`
+	Indexers   []IndexerSearchStatus `json:"indexers,omitempty"`
+	Pending    []IndexerRef          `json:"pending,omitempty"`
+	SearchID   string                `json:"searchId,omitempty"`
+	Done       *bool                 `json:"done,omitempty"`
+}
+
+// MarshalJSON preserves non-nil empty Indexers and Pending slices as [] while
+// omitting nil slices.
+func (r SourceResolveResult) MarshalJSON() ([]byte, error) {
+	cands := r.Candidates
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	wire := struct {
+		Candidates []SourceCandidate      `json:"candidates"`
+		Indexers   *[]IndexerSearchStatus `json:"indexers,omitempty"`
+		Pending    *[]IndexerRef          `json:"pending,omitempty"`
+		SearchID   string                 `json:"searchId,omitempty"`
+		Done       *bool                  `json:"done,omitempty"`
+	}{
+		Candidates: cands,
+		SearchID:   r.SearchID,
+		Done:       r.Done,
+	}
+	if r.Indexers != nil {
+		s := r.Indexers
+		wire.Indexers = &s
+	}
+	if r.Pending != nil {
+		s := r.Pending
+		wire.Pending = &s
+	}
+	return json.Marshal(wire)
+}
+
+// ReleaseMember is one non-directory file inside an archive (RAR, 7z, ZIP)
+// returned by a release_files source query.
+type ReleaseMember struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Stored bool   `json:"stored,omitempty"`
+}
+
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release (usenet_check).
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a prior real playback attempt against this
+	// NZB failed with an article or release error.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false.
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
+}
+
+// ReleaseFile is one file inside a candidate release (release_files).
+type ReleaseFile struct {
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
+	// SizeApproximate is true when Size is a segment-derived decoded estimate
+	// rather than an exact byte length (e.g. an NZB without readable PAR2/yEnc
+	// headers). Exact sizes leave it false/omitted.
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	Members         []ReleaseMember `json:"members,omitempty"`
+}
+
+// DebridServiceRef identifies one owner-configured debrid service (without
+// exposing credentials) that holds a cached torrent or served an acquisition.
+type DebridServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank.
+// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
+// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
+// indexer_search are stripped of indexer API keys and secrets so candidates
+// can be cached safely; Ether re-attaches credentials at fetch time on the
+// originating indexer's origin using indexerId.
 type SourceCandidate struct {
-	InfoHash string `json:"infoHash,omitempty"`
-	Magnet   string `json:"magnet,omitempty"`
-	NZBURL   string `json:"nzbUrl,omitempty"`
+	InfoHash   string `json:"infoHash,omitempty"`
+	Magnet     string `json:"magnet,omitempty"`
+	TorrentURL string `json:"torrentUrl,omitempty"`
+	NZBURL     string `json:"nzbUrl,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	// CachedBy lists the configured debrid services holding this torrent in
+	// acquisition order (or the service that served debrid_acquire); omitted when uncached.
+	CachedBy  []DebridServiceRef `json:"cachedBy,omitempty"`
+	Indexer   string             `json:"indexer,omitempty"`
+	IndexerID string             `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
+	// Files is populated only by a release_files query.
+	Files []ReleaseFile `json:"files,omitempty"`
+	// FileCount is the torrent's known file count when reported by an indexer
+	// or release_files query.
+	FileCount int `json:"fileCount,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -127,6 +429,8 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
 	default:
@@ -151,28 +455,61 @@ type KindMatchScore struct {
 
 // KindMatchResponse is a matcher's answer, best first.
 type KindMatchResponse struct {
-	Matches []KindMatchScore `json:"matches"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Matches   []KindMatchScore `json:"matches"`
 }
 
 // PlayableSource is one candidate way to acquire an item's bytes. URL may
 // carry {itemIndex}, {pageNumber}, {byteStart}, {byteEnd} and {byteRange}
 // placeholders that Ether substitutes.
 type PlayableSource struct {
-	Path        string            `json:"path,omitempty"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Pattern     string            `json:"pattern"` // range|download|direct|container|release|file
-	MIME        string            `json:"mime"`
-	Size        int64             `json:"size,omitempty"`
-	DurationSec float64           `json:"durationSec,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BlobRef     string            `json:"blobRef,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
-	MaxBytes    int64             `json:"maxBytes,omitempty"`
-	ExpiresAt   int64             `json:"expiresAt,omitempty"`
-	Container   *ContainerRef     `json:"container,omitempty"`
-	Release     *ReleaseHint      `json:"release,omitempty"`
+	Path    string `json:"path,omitempty"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Pattern string `json:"pattern"` // range|download|direct|container|release|file
+	MIME    string `json:"mime"`
+	// Tier optionally marks interchangeable sources of the same quality tier.
+	// Sources sharing a non-nil Tier may be reordered by Ether's source routing
+	// (auto/usenet/debrid, measured startup, and stall demotion) and may
+	// overtake each other after the ranked open grace period. Distinct tiers
+	// keep the plugin's tier order; omitting Tier keeps exact plugin order.
+	Tier *int  `json:"tier,omitempty"`
+	Size int64 `json:"size,omitempty"`
+	// SizeApproximate marks Size as an approximate hint (for example from a
+	// Usenet release_files estimate) rather than an exact byte count.
+	SizeApproximate bool    `json:"sizeApproximate,omitempty"`
+	DurationSec     float64 `json:"durationSec,omitempty"`
+	// DurationToleranceSec opts into open-time container duration verification
+	// when DurationSec > 0: Ether reads the container duration (reusing the
+	// durable release_probes cache) and refuses the source as wrong content
+	// when the observed duration differs from DurationSec by more than this
+	// tolerance, trying the next candidate and flagging the plugin answer.
+	DurationToleranceSec  float64           `json:"durationToleranceSec,omitempty"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	SHA256                string            `json:"sha256,omitempty"`
+	// SHA1 and CRC32 are hex digests checked against the served bytes,
+	// including a release's selected file or container member; Size too.
+	SHA1      string         `json:"sha1,omitempty"`
+	CRC32     string         `json:"crc32,omitempty"`
+	MaxBytes  int64          `json:"maxBytes,omitempty"`
+	ExpiresAt int64          `json:"expiresAt,omitempty"`
+	Container *ContainerRef  `json:"container,omitempty"`
+	Release   *ReleaseHint   `json:"release,omitempty"`
+	Parts     []KindItemPart `json:"parts,omitempty"`
+}
+
+// MediaProbeResult is the container metadata summary returned by media.probe.
+type MediaProbeResult struct {
+	DurationSec float64 `json:"durationSec"`
+	Container   string  `json:"container"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	SizeBytes   int64   `json:"sizeBytes"`
 }
 
 // ContainerRef describes an archive member inside ordered volumes.
@@ -186,24 +523,43 @@ type ContainerRef struct {
 
 // VolumeRef locates one archive volume by URL or blob cache reference.
 type VolumeRef struct {
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	BlobRef string            `json:"blobRef,omitempty"`
-	Size    int64             `json:"size"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	Size                  int64             `json:"size"`
+}
+
+// TrackHint identifies one track inside a multi-track audio release or archive
+// when exact inner filenames are unknown before opening.
+type TrackHint struct {
+	Disc   int    `json:"disc,omitempty"`
+	Number int    `json:"number,omitempty"`
+	Title  string `json:"title,omitempty"`
 }
 
 // ReleaseHint hands a release to Ether's Usenet/debrid/torrent pipeline.
 type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
-	FileIndex *int             `json:"fileIndex,omitempty"`
-	NZBURL    string           `json:"nzbUrl,omitempty"`
-	Magnet    string           `json:"magnet,omitempty"`
-	InfoHash  string           `json:"infoHash,omitempty"`
-	Candidate *SourceCandidate `json:"candidate,omitempty"`
+	FileIndex  *int             `json:"fileIndex,omitempty"`
+	NZBURL     string           `json:"nzbUrl,omitempty"`
+	Magnet     string           `json:"magnet,omitempty"`
+	InfoHash   string           `json:"infoHash,omitempty"`
+	TorrentURL string           `json:"torrentUrl,omitempty"`
+	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
-	File           string `json:"file,omitempty"`
-	FileHint       string `json:"fileHint,omitempty"`
-	PasswordSecret string `json:"passwordSecret,omitempty"`
+	File           string     `json:"file,omitempty"`
+	FileHint       string     `json:"fileHint,omitempty"`
+	Track          *TrackHint `json:"track,omitempty"`
+	PasswordSecret string     `json:"passwordSecret,omitempty"`
+	// CachedOnly requires an already-cached debrid copy even when the owner turned
+	// "Cached torrents only" off. Omit or leave false to follow the owner's debrid setting.
+	CachedOnly bool `json:"cachedOnly,omitempty"`
+	// FileCount optionally hints how many files a torrent contains when Ether has
+	// not seen its file list yet (e.g. a magnet for one entry of a large collection),
+	// so providers whose cache check cannot see zip-only 100+-file torrents (TorBox)
+	// try a cached-only add instead of trusting a checkcached miss.
+	FileCount int `json:"fileCount,omitempty"`
 }
 
 // KindResolveRequest asks a resolver for playable sources for one item.
@@ -212,13 +568,76 @@ type KindResolveRequest struct {
 	LibraryKey string         `json:"libraryKey"`
 	Item       KindItem       `json:"item"`
 	PartIndex  *int           `json:"partIndex,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	Client     map[string]any `json:"client,omitempty"`
+}
+
+// StreamURLOptions scopes a frontend adapter stream ticket to a specific
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+type StreamURLOptions struct {
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // KindResolveResponse is a resolver's ordered sources.
 type KindResolveResponse struct {
-	Sources []PlayableSource `json:"sources"`
-	TTLSec  int              `json:"ttlSec,omitempty"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Sources   []PlayableSource `json:"sources"`
+	Parts     []KindItemPart   `json:"parts,omitempty"`
+	TTLSec    int              `json:"ttlSec,omitempty"`
+}
+
+// KindLiveRequest asks a kind live provider for currently live items on a
+// declared "live" library tab (POST /ether/v1/kinds/{kind}/live).
+type KindLiveRequest struct {
+	Kind   string `json:"-"`
+	Tab    string `json:"tab,omitempty"`
+	Q      string `json:"q,omitempty"`
+	Filter string `json:"filter,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// KindLiveItem is one live stream item returned by POST /ether/v1/kinds/{kind}/live.
+type KindLiveItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle,omitempty"`
+	Badge    string   `json:"badge,omitempty"`
+	Viewers  *int     `json:"viewers,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Thumb    string   `json:"thumb,omitempty"`
+	Live     *bool    `json:"live,omitempty"`
+}
+
+// KindLiveFilter is one optional filter option returned by a live tab.
+type KindLiveFilter struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// KindLivePage is returned by POST /ether/v1/kinds/{kind}/live.
+type KindLivePage struct {
+	Items      []KindLiveItem   `json:"items"`
+	Filters    []KindLiveFilter `json:"filters,omitempty"`
+	NextCursor string           `json:"nextCursor,omitempty"`
+}
+
+// KindLiveResolveRequest asks a kind live provider to resolve one live item ID
+// into a playable stream URL (POST /ether/v1/kinds/{kind}/live/resolve).
+type KindLiveResolveRequest struct {
+	Kind string `json:"-"`
+	ID   string `json:"id"`
+}
+
+// KindLiveResolveResponse is returned by POST /ether/v1/kinds/{kind}/live/resolve.
+type KindLiveResolveResponse struct {
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+	MIME    string            `json:"mime,omitempty"`
+	Title   string            `json:"title,omitempty"`
 }
 
 // SetupTestRequest is Ether's setup-step test call: the step key plus the
@@ -258,6 +677,12 @@ type SearchProvider interface {
 	Search(ctx *Context, req KindBrowseRequest) (KindPage, error)
 }
 
+// ExpandProvider is the optional on-demand facet/person slice expander for
+// kinds that declare browse.expand.
+type ExpandProvider interface {
+	Expand(ctx *Context, req KindExpandRequest) (KindExpandResponse, error)
+}
+
 // KindResolver turns a playable item into ordered playable sources.
 type KindResolver interface {
 	Resolve(ctx *Context, req KindResolveRequest) (KindResolveResponse, error)
@@ -266,6 +691,13 @@ type KindResolver interface {
 // KindMatcher scores source candidates for one item.
 type KindMatcher interface {
 	Match(ctx *Context, req KindMatchRequest) (KindMatchResponse, error)
+}
+
+// KindLiveProvider serves a kind's declared "live" library tab: listing
+// currently live streams and resolving an item ID into a playable stream URL.
+type KindLiveProvider interface {
+	Live(ctx *Context, req KindLiveRequest) (KindLivePage, error)
+	ResolveLive(ctx *Context, req KindLiveResolveRequest) (KindLiveResolveResponse, error)
 }
 
 // FrontendAdapter is a plugin-provided protocol surface (OPDS, Subsonic,
@@ -282,18 +714,21 @@ type SetupTester interface {
 }
 
 type kindHandlers struct {
-	catalog  map[string]CatalogProvider
-	resolve  map[string]KindResolver
-	match    map[string]KindMatcher
-	frontend map[string]FrontendAdapter
-	setup    SetupTester
+	catalog   map[string]CatalogProvider
+	resolve   map[string]KindResolver
+	match     map[string]KindMatcher
+	live      map[string]KindLiveProvider
+	liveFeeds map[string]LiveFeedProvider
+	frontend  map[string]FrontendAdapter
+	setup     SetupTester
 }
 
 func (p *Plugin) kinds() *kindHandlers {
 	if p.kindHandlers == nil {
 		p.kindHandlers = &kindHandlers{
 			catalog: map[string]CatalogProvider{}, resolve: map[string]KindResolver{},
-			match: map[string]KindMatcher{}, frontend: map[string]FrontendAdapter{},
+			match: map[string]KindMatcher{}, live: map[string]KindLiveProvider{},
+			liveFeeds: map[string]LiveFeedProvider{}, frontend: map[string]FrontendAdapter{},
 		}
 	}
 	return p.kindHandlers
@@ -307,6 +742,9 @@ func (p *Plugin) OnResolve(kind string, r KindResolver) { p.kinds().resolve[kind
 
 // OnMatch registers the matcher for one declared kind.
 func (p *Plugin) OnMatch(kind string, m KindMatcher) { p.kinds().match[kind] = m }
+
+// OnLive registers the live-tab provider for one declared kind.
+func (p *Plugin) OnLive(kind string, l KindLiveProvider) { p.kinds().live[kind] = l }
 
 // OnFrontend registers one declared frontend adapter.
 func (p *Plugin) OnFrontend(key string, a FrontendAdapter) { p.kinds().frontend[key] = a }
@@ -328,6 +766,125 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
 	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+
+// StreamPartURL mints a short-lived, scoped ticket for one zero-based part of
+// a multi-file kind item (#576) and returns the Ether stream URL to embed in a
+// frontend adapter response.
+func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	return c.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+
+// StreamURLWithOptions mints a short-lived, scoped ticket for one of this
+// plugin's own kind items, optionally pinned to a zero-based part and/or a
+// specific resolver PlayableSource.ID (#576, #661).
+func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
+	if c.Ether == nil {
+		return "", errors.New("stream url: no host service available")
+	}
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", errors.New("stream url: source must not be blank")
+	}
+	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
+	if err != nil || viewerID <= 0 {
+		return "", errors.New("stream url: no authenticated viewer on this request")
+	}
+	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
+		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
+	}
+	if opts.Source != "" {
+		return "", errors.New("stream url: host does not support source-scoped stream tickets")
+	}
+	if opts.PartIndex != nil {
+		if ph, ok := c.Ether.(PartStreamHost); ok {
+			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+		}
+		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		if err != nil {
+			return "", err
+		}
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
+	}
+	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+
+// ResolveSourcesWithResult runs sources.resolve and returns both the candidate
+// list and per-indexer search statuses for indexer_search queries (#733).
+// Falls back to Host.ResolveSources when the host does not implement
+// ResolveSourcesResultHost.
+func (c *Context) ResolveSourcesWithResult(q SourceQuery) (SourceResolveResult, error) {
+	if c.Ether == nil {
+		return SourceResolveResult{}, errors.New("resolve sources: no host service available")
+	}
+	if rh, ok := c.Ether.(ResolveSourcesResultHost); ok {
+		return rh.ResolveSourcesWithResult(c.Context, q)
+	}
+	cands, err := c.Ether.ResolveSources(c.Context, q)
+	if err != nil {
+		return SourceResolveResult{}, err
+	}
+	if cands == nil {
+		cands = []SourceCandidate{}
+	}
+	return SourceResolveResult{Candidates: cands}, nil
+}
+
+func (c *Context) viewerToken() string {
+	if tok := strings.TrimSpace(headerValue(c.Headers, HeaderViewerToken)); tok != "" {
+		return tok
+	}
+	if tok, ok := ViewerTokenFromContext(c.Context); ok {
+		return tok
+	}
+	return ""
+}
+
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindVisible(kindKey string, ids []string) ([]string, error) {
+	if c.Ether == nil {
+		return nil, errors.New("kinds.visible: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return nil, errors.New("kinds.visible: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return nil, errors.New("kinds.visible: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindVisible(WithViewerToken(c.Context, tok), kindKey, ids)
+}
+
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindBrowse(kindKey string, query KindBrowseQuery) (KindPage, error) {
+	if c.Ether == nil {
+		return KindPage{}, errors.New("kinds.browse: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return KindPage{}, errors.New("kinds.browse: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return KindPage{}, errors.New("kinds.browse: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindBrowse(WithViewerToken(c.Context, tok), kindKey, query)
 }
 
 // dispatchKinds handles the /ether/v1/kinds, /ether/v1/setup and
@@ -355,6 +912,9 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 2 && parts[0] == "kinds":
 		kind, _ := url.PathUnescape(parts[1])
 		return p.dispatchKind(pctx, kind, parts[2:], req), true
+	case len(parts) >= 3 && parts[0] == "live":
+		feed, _ := url.PathUnescape(parts[1])
+		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true
@@ -412,6 +972,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		page, err := prov.Browse(pctx, in)
 		return kindPageResponse(page, err, in.Limit)
+	case len(tail) == 1 && tail[0] == "expand":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		ep, isExpand := prov.(ExpandProvider)
+		if prov == nil || !isExpand {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider does not expand facets.")
+		}
+		var in KindExpandRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := ep.Expand(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Job == "" && res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":
 		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
 		if prov == nil {
@@ -467,6 +1046,51 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 			res.Sources = []PlayableSource{}
 		}
 		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "live":
+		var lp KindLiveProvider
+		if h != nil {
+			lp = h.live[kind]
+		}
+		if lp == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No live provider is registered for kind %q.", kind))
+		}
+		var in KindLiveRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		if in.Limit <= 0 {
+			in.Limit = 50
+		}
+		page, err := lp.Live(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if page.Items == nil {
+			page.Items = []KindLiveItem{}
+		}
+		if in.Limit > 0 && len(page.Items) > in.Limit {
+			page.Items = page.Items[:in.Limit]
+		}
+		return okJSON(page, http.StatusOK)
+	case len(tail) == 2 && tail[0] == "live" && tail[1] == "resolve":
+		var lp KindLiveProvider
+		if h != nil {
+			lp = h.live[kind]
+		}
+		if lp == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No live provider is registered for kind %q.", kind))
+		}
+		var in KindLiveResolveRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := lp.ResolveLive(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(res, http.StatusOK)
 	case len(tail) == 1 && tail[0] == "match":
 		var m KindMatcher
 		if h != nil {
@@ -514,6 +1138,19 @@ func kindPageResponse(page KindPage, err error, limit int) RawResponse {
 	return okJSON(page, http.StatusOK)
 }
 
+type frontendContextKey struct{}
+
+// FrontendContext returns the Ether plugin Context attached to a
+// FrontendAdapter http.Request during dispatch, so ServeHTTP handlers can
+// call pctx.KindVisible, pctx.KindBrowse, pctx.StreamURL, etc. directly (#615).
+func FrontendContext(ctx context.Context) (*Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	pctx, ok := ctx.Value(frontendContextKey{}).(*Context)
+	return pctx, ok && pctx != nil
+}
+
 const maxFrontendBody = 10 << 20
 
 func (p *Plugin) dispatchFrontend(pctx *Context, method, key, subPath string, req RawRequest) RawResponse {
@@ -536,7 +1173,13 @@ func (p *Plugin) dispatchFrontend(pctx *Context, method, key, subPath string, re
 	if len(query) > 0 {
 		target += "?" + encodeQuery(query)
 	}
-	httpReq := httptest.NewRequestWithContext(pctx.Context, method, target, bytes.NewReader(req.Body))
+	reqCtx := pctx.Context
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		reqCtx = WithViewerToken(reqCtx, tok)
+		pctx.Context = reqCtx
+	}
+	reqCtx = context.WithValue(reqCtx, frontendContextKey{}, pctx)
+	httpReq := httptest.NewRequestWithContext(reqCtx, method, target, bytes.NewReader(req.Body))
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}

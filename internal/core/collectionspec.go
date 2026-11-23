@@ -47,6 +47,28 @@ type CollectionSpec struct {
 	// OwnerUserID is set for private collections created by a Plex user
 	// (core.Collections.CreateSmart); 0 = server-wide.
 	OwnerUserID int64 `json:"ownerUserId,omitempty"`
+	// Folder optionally groups collections in the console and anchors their
+	// display order across frontends (for example, collections imported from a
+	// Stremio catalogue add-on).
+	Folder string `json:"folder,omitempty"`
+	// SortOrder optionally orders collections within a folder or add-on import
+	// (1-based; 0 preserves creation order).
+	SortOrder int `json:"sortOrder,omitempty"`
+	// AddonSync links a collection to the installed Stremio add-on catalogue it
+	// was imported from so manifest sync can keep names, order and removal
+	// status up to date without overwriting owner customizations.
+	AddonSync *CollectionAddonSync `json:"addonSync,omitempty"`
+}
+
+// CollectionAddonSync records the add-on catalogue a collection tracks.
+type CollectionAddonSync struct {
+	AddonID     string `json:"addonId"`
+	AddonName   string `json:"addonName,omitempty"`
+	CatalogType string `json:"catalogType"`
+	CatalogID   string `json:"catalogId"`
+	CatalogKey  string `json:"catalogKey"`
+	ManagedName string `json:"managedName,omitempty"`
+	Removed     bool   `json:"removed,omitempty"`
 }
 
 // CollectionSource is one place candidates come from. Kind selects which
@@ -83,13 +105,14 @@ type CollectionSource struct {
 	MaxItems int `json:"maxItems,omitempty"`
 }
 
-// CollectionRule is one condition. Value is typed by Field; Label is display
-// text for ids.
+// CollectionRule is one condition. Value is typed by Field; Label and Labels
+// are display text for ids.
 type CollectionRule struct {
-	Field string          `json:"field"`
-	Op    string          `json:"op"`
-	Value json.RawMessage `json:"value"`
-	Label string          `json:"label,omitempty"`
+	Field  string          `json:"field"`
+	Op     string          `json:"op"`
+	Value  json.RawMessage `json:"value"`
+	Label  string          `json:"label,omitempty"`
+	Labels []string        `json:"labels,omitempty"`
 }
 
 // CollectionRotate shows a rotating subset of the members.

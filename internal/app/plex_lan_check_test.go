@@ -41,6 +41,21 @@ func TestLANProbeIdentity(t *testing.T) {
 	if got := probeLAN(context.Background(), []lanTarget{{uri: "http://192.0.2.1:32400"}}, "server-id"); got.state != "unknown" || got.reason != "container" {
 		t.Fatalf("missing: %+v", got)
 	}
+
+	// A working local listener stays reachable even if a secondary interface or
+	// unbound address fails to respond.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<MediaContainer machineIdentifier="server-id"/>`)
+	}))
+	defer live.Close()
+	mixed := probeLAN(context.Background(), []lanTarget{
+		{live.URL, net.ParseIP("127.0.0.1")},
+		{"http://" + address, net.ParseIP("127.0.0.1")},
+		{uri: "http://192.0.2.1:32400"},
+	}, "server-id")
+	if mixed.state != "reachable" || mixed.reason != "verified" {
+		t.Fatalf("mixed: %+v", mixed)
+	}
 }
 
 func TestLANTargetsOnlyAdvertisedLocalInterfaces(t *testing.T) {

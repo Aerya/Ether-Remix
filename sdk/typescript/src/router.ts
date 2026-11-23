@@ -10,6 +10,8 @@ import type {
   EtherEvent,
   EventResponse,
   FieldOption,
+  FlowActionRequest,
+  FlowActionResponse,
   GuideRequest,
   GuideResponse,
   HealthResponse,
@@ -44,13 +46,17 @@ import {
   dispatchKinds,
   type CatalogProvider,
   type FrontendAdapter,
+  type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
+  type LiveFeedProvider,
   type SetupTester,
 } from "./kinds.ts";
 import {
   createHostedClient,
   createRemoteHostClient,
+  HEADER_IDEMPOTENCY_KEY,
+  HEADER_VIEWER_TOKEN,
   isHostedRuntime,
   type EtherHost,
   type RemoteHostOptions,
@@ -104,6 +110,10 @@ export interface PluginRoutes<S = Record<string, unknown>> {
   health?: (ctx: PluginContext<S>) => MaybePromise<HealthResponse>;
   notify?: (req: NotifyRequest, ctx: PluginContext<S>) => MaybePromise<NotifyResponse>;
   event?: (events: EtherEvent[], ctx: PluginContext<S>) => MaybePromise<EventResponse | void>;
+  flowAction?: (
+    req: FlowActionRequest,
+    ctx: PluginContext<S>,
+  ) => MaybePromise<FlowActionResponse>;
   view?: (req: ViewRequest, ctx: PluginContext<S>) => MaybePromise<ViewResponse>;
   action?: (req: ActionRequest, ctx: PluginContext<S>) => MaybePromise<ActionResponse>;
   tool?: (req: ToolRequest, ctx: PluginContext<S>) => MaybePromise<ToolResponse>;
@@ -135,7 +145,9 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onCatalog(kind: string, provider: CatalogProvider<S>): void;
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
-  onFrontend(key: string, adapter: FrontendAdapter): void;
+  onLive(kind: string, provider: KindLiveProvider<S>): void;
+  onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
+  onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -339,6 +351,15 @@ export function plugin<S = Record<string, unknown>>(
     }
   }
 
+  const flowActionRoutes = new Map<string, string>();
+  if (manifest.ether?.contributes?.flowActions) {
+    for (const fa of manifest.ether.contributes.flowActions) {
+      if (fa.route && fa.key) {
+        flowActionRoutes.set(fa.route, fa.key);
+      }
+    }
+  }
+
   let settingsFailureLogged = false;
   function buildContext(req: RawRequest): MaybePromise<PluginContext<S>> {
     const { query } = parseUrlPathAndQuery(req.path, req.query);
@@ -352,11 +373,16 @@ export function plugin<S = Record<string, unknown>>(
     const locale = localeHeader.split(",")[0]?.trim() || "en";
     const pickToken = getHeader(req.headers, "X-Ether-Pick");
     const requestId = getHeader(req.headers, "X-Ether-Request-ID");
+    const viewerToken = getHeader(req.headers, HEADER_VIEWER_TOKEN);
     const hostClient =
       def.host ??
       (isHostedRuntime()
         ? createHostedClient()
-        : createRemoteHostClient(def.remoteHostOptions));
+        : createRemoteHostClient(
+            viewerToken
+              ? { ...(def.remoteHostOptions ?? {}), viewerToken }
+              : def.remoteHostOptions,
+          ));
     const makeContext = (settings: S): PluginContext<S> => ({
       manifest,
       settings,
@@ -559,6 +585,33 @@ export function plugin<S = Record<string, unknown>>(
           path === "/ether/view" ? "home" : decodeURIComponent(path.slice("/ether/view/".length));
       }
       return mapResult(routes.view({ page, query }, ctx));
+    }
+
+    if (method === "POST") {
+      let flowKey = flowActionRoutes.get(path);
+      if (!flowKey && path.startsWith("/ether/v1/flow-actions/")) {
+        flowKey = decodeURIComponent(path.slice("/ether/v1/flow-actions/".length));
+      }
+      if (flowKey) {
+        if (!routes.flowAction) {
+          return errorResponse(404, "not_found", "Flow action handler is not registered.");
+        }
+        const bodyObj = parseJsonBody(req.body);
+        const headerIdem = getHeader(req.headers, HEADER_IDEMPOTENCY_KEY);
+        const faReq: FlowActionRequest = {
+          key: flowKey,
+          flowId: String(bodyObj.flowId ?? ""),
+          runId: String(bodyObj.runId ?? ""),
+          nodeId: String(bodyObj.nodeId ?? ""),
+          idempotencyKey: String(headerIdem || bodyObj.idempotencyKey || ""),
+          dryRun: Boolean(bodyObj.dryRun),
+          params:
+            bodyObj.params && typeof bodyObj.params === "object" && !Array.isArray(bodyObj.params)
+              ? (bodyObj.params as Record<string, unknown>)
+              : {},
+        };
+        return mapResult(routes.flowAction(faReq, ctx));
+      }
     }
 
     if (method === "POST" && path.startsWith("/ether/action/")) {
@@ -780,6 +833,8 @@ export function plugin<S = Record<string, unknown>>(
     onCatalog: (kind, provider) => { kindHandlers.catalog.set(kind, provider); },
     onResolve: (kind, resolver) => { kindHandlers.resolve.set(kind, resolver); },
     onMatch: (kind, matcher) => { kindHandlers.match.set(kind, matcher); },
+    onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
+    onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };

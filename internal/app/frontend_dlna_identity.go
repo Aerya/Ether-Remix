@@ -10,7 +10,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/identity"
 )
 
-func (a *App) dlnaViewer(ctx context.Context, req *http.Request, settings frontend.Settings) (*core.Viewer, error) {
+// lanViewer shares the DLNA trust rule across credential-free LAN surfaces.
+// Every surface requires its own explicit viewer selection; there is no owner fallback.
+func (a *App) lanViewer(ctx context.Context, req *http.Request, settings frontend.Settings) (*core.Viewer, error) {
 	_, lan := identity.ClientNet(req, identity.ProxyPrefixes(a.cfg.Read().Server.TrustedProxyCIDRs)...)
 	if !lan {
 		return nil, core.ErrUnauthorized

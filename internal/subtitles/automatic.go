@@ -182,7 +182,7 @@ func (s *Service) RunAutomatic(ctx context.Context, budget *AutomaticBudget, tar
 	}
 	raw, _ := json.Marshal(sel)
 	s.pickMu.Lock()
-	err = writeFileAtomic(path, raw)
+	err = s.writeIndexFile(path, raw)
 	s.pickMu.Unlock()
 	if err != nil {
 		finish("error")

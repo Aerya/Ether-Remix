@@ -1,8 +1,11 @@
 package transcode
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +70,9 @@ func TestContinuousHardwareRecovery(t *testing.T) {
 	}
 	t.Run("launch failure", func(t *testing.T) {
 		runner := &continuousHardwareRunner{fakeRunner: newFakeRunner(), failLaunch: true}
+		var logs bytes.Buffer
 		m := newTestManager(t, runner.fakeRunner, config.Transcode{}, WithoutHWDetection(), WithRunner(runner))
+		m.log = slog.New(slog.NewJSONHandler(&logs, nil))
 		m.hw = core.HWAccel{Name: AccelQSV, Encoders: []string{"h264_qsv"}}
 		enc, err := m.StartEncoder(t.Context(), EncoderRequest{Source: RawFormat{Width: 320, Height: 180, FPSNum: 30, FPSDen: 1, SampleRate: 48000, Channels: 2, PixelFormat: "yuv420p"}})
 		if err != nil {
@@ -77,7 +82,98 @@ func TestContinuousHardwareRecovery(t *testing.T) {
 		if len(runner.args) != 2 || !strings.Contains(strings.Join(runner.args[1], " "), "-c:v libx264") {
 			t.Fatal("launch did not fall back once")
 		}
+		if !strings.Contains(logs.String(), `"hwaccel":"qsv"`) || !strings.Contains(logs.String(), `"encoder":"h264_qsv"`) {
+			t.Fatalf("fallback log missing hwaccel/encoder: %s", logs.String())
+		}
 	})
+}
+
+func TestContinuousVAAPIArgsAndLowLatencySegment(t *testing.T) {
+	for _, dev := range []string{"", "/dev/dri/renderD129"} {
+		wantDev := dev
+		if wantDev == "" {
+			wantDev = DefaultVAAPIDevice
+		}
+		t.Run("device="+wantDev, func(t *testing.T) {
+			runner := &continuousHardwareRunner{fakeRunner: newFakeRunner()}
+			m := newTestManager(t, runner.fakeRunner, config.Transcode{}, WithoutHWDetection(), WithRunner(runner))
+			m.hw = core.HWAccel{Name: AccelVAAPI, Device: dev, Encoders: []string{"h264_vaapi"}}
+			enc, err := m.StartEncoder(t.Context(), EncoderRequest{
+				Source:          RawFormat{Width: 1280, Height: 720, FPSNum: 30, FPSDen: 1, SampleRate: 48000, Channels: 2, PixelFormat: "yuv420p"},
+				Decision:        core.Decision{VideoCodec: "h264", AudioCodec: "aac", BitrateKbps: 5000},
+				SegmentDuration: time.Second,
+				LiveSource:      true,
+			})
+			if err != nil {
+				t.Fatalf("StartEncoder(1s) failed: %v", err)
+			}
+			enc.Close()
+			if len(runner.args) == 0 {
+				t.Fatal("encoder did not start")
+			}
+			args := runner.args[0]
+			vaIdx := slices.Index(args, "-vaapi_device")
+			inIdx := slices.Index(args, "-i")
+			if vaIdx < 0 || inIdx < 0 || vaIdx >= inIdx || args[vaIdx+1] != wantDev {
+				t.Fatalf("-vaapi_device must precede -i with device %s: %v", wantDev, args)
+			}
+			joined := strings.Join(args, " ")
+			for _, bad := range []string{"-color_primaries", "-color_trc", "-colorspace", "-pix_fmt", "scale=1280:720", "format=yuv420p"} {
+				if strings.Contains(joined, bad) {
+					t.Errorf("VAAPI continuous args must not contain %q:\n%s", bad, joined)
+				}
+			}
+			for _, want := range []string{"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", "format=nv12,hwupload", "-c:v h264_vaapi"} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("VAAPI continuous args missing %q:\n%s", want, joined)
+				}
+			}
+		})
+	}
+
+	// Regular VAAPI software-filter paths (e.g. interlaced IPTV without
+	// subtitle burn) also end in hwupload and must omit output colour flags.
+	spec := runSpec{
+		Input:     "http://127.0.0.1/live.ts",
+		LiveInput: true,
+		Protocol:  core.ProtocolHLS,
+		Info: core.MediaInfo{
+			Container: "mpegts",
+			Streams: []core.StreamInfo{
+				{Index: 0, Type: "video", Codec: "mpeg2video", Width: 1920, Height: 1080, Interlaced: true},
+				{Index: 1, Type: "audio", Codec: "mp2", Channels: 2, SampleRate: 48000},
+			},
+		},
+		Decision: core.Decision{Kind: core.DecisionTranscode, VideoCodec: "h264", AudioCodec: "aac", AudioStream: 1, SubtitleStream: -1, Container: ContainerMPEGTS},
+		Accel:    core.HWAccel{Name: AccelVAAPI, Encoders: []string{"h264_vaapi"}},
+		Features: features{filters: map[string]bool{"yadif": true, "hwupload": true, "scale": true, "format": true}},
+	}
+	args := strings.Join(buildArgs(spec), " ")
+	for _, bad := range []string{"-color_primaries", "-color_trc", "-colorspace"} {
+		if strings.Contains(args, bad) {
+			t.Errorf("VAAPI interlaced software-filter args must not emit %q:\n%s", bad, args)
+		}
+	}
+
+	// Direct DASH copy of MPEG-TS AAC requires aac_adtstoasc for fMP4.
+	dashSpec := runSpec{
+		Input:     "http://127.0.0.1/live.ts",
+		LiveInput: true,
+		Protocol:  core.ProtocolDASH,
+		Info: core.MediaInfo{
+			Container: "mpegts",
+			Streams: []core.StreamInfo{
+				{Index: 0, Type: "video", Codec: "h264", Width: 1280, Height: 720},
+				{Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000},
+			},
+		},
+		Decision: core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, VideoCodec: "h264", AudioCodec: "aac", AudioStream: 1, SubtitleStream: -1, Container: ContainerFMP4},
+		Dir:      t.TempDir(),
+	}
+	dashArgs := strings.Join(buildArgs(dashSpec), " ")
+	if !strings.Contains(dashArgs, "aac_adtstoasc") {
+		t.Fatalf("DASH fMP4 MPEG-TS AAC copy missing aac_adtstoasc:\n%s", dashArgs)
+	}
 }
 
 type continuousHardwareRunner struct {

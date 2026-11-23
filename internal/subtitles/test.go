@@ -28,6 +28,33 @@ func TestSubDL(ctx context.Context, cfg config.SubDL) error {
 	return testSubDL(ctx, &http.Client{Timeout: 10 * time.Second}, subdlBaseURL, cfg)
 }
 
+// TestSubSource validates the owner's SubSource API key with one search request.
+func TestSubSource(ctx context.Context, cfg config.SubSource) error {
+	return testSubSource(ctx, &http.Client{Timeout: 10 * time.Second}, subsourceBaseURL, cfg)
+}
+
+func testSubSource(ctx context.Context, hc *http.Client, base string, cfg config.SubSource) error {
+	key := strings.TrimSpace(cfg.APIKey)
+	if key == "" {
+		return errors.New("a SubSource API key is required")
+	}
+	req, err := subsourceMoviesSearchRequest(ctx, base, key, "Ether v1", url.Values{
+		"searchType": {"text"},
+		"q":          {"inception"},
+		"type":       {"movie"},
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return logredact.TransportError(err, "subsource", nil)
+	}
+	defer resp.Body.Close()
+	_, err = readSubSourceMoviesSearch(resp)
+	return err
+}
+
 func testSubDL(ctx context.Context, hc *http.Client, base string, cfg config.SubDL) error {
 	key := strings.TrimSpace(cfg.APIKey)
 	if key == "" {

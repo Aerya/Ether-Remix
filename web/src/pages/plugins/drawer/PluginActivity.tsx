@@ -7,7 +7,12 @@ import { Section } from "../../../components/layout";
 import { t, tn } from "../../../i18n";
 import { apiFetch } from "../../../lib/api";
 import { formatDateTime, formatNumber, relativeTime } from "../../../lib/format";
-import { journalOpLabel, type JournalEntry, type PluginDetail } from "../types";
+import {
+  journalOpLabel,
+  type JournalEntry,
+  type PluginDetail,
+  type PluginFeedOverview,
+} from "../types";
 import {
   SLOW_CALL_MS,
   callImdb,
@@ -17,6 +22,7 @@ import {
   type PluginCall,
   type TitleCardLite,
 } from "./calls";
+import { ActionJobs } from "./ActionJobs";
 import { HealthTiles } from "./HealthTiles";
 
 type Filter = "all" | "errors" | "slow";
@@ -29,6 +35,7 @@ type Filter = "all" | "errors" | "slow";
 export function PluginActivity({
   detail,
   calls,
+  liveFeeds,
   onReloadCalls,
   journal,
   onReloadJournal,
@@ -38,6 +45,7 @@ export function PluginActivity({
 }: {
   detail: PluginDetail;
   calls: PluginCall[] | null;
+  liveFeeds?: PluginFeedOverview[];
   onReloadCalls: () => Promise<void>;
   journal: JournalEntry[];
   onReloadJournal: () => Promise<void>;
@@ -47,7 +55,8 @@ export function PluginActivity({
 }) {
   return (
     <div className="space-y-5">
-      <HealthTiles detail={detail} />
+      <HealthTiles detail={detail} liveFeeds={liveFeeds} />
+      <ActionJobs id={detail.id} />
       <CallsTable detail={detail} calls={calls} onReload={onReloadCalls} />
       <Changes
         detail={detail}

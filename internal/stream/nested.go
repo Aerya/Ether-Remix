@@ -159,10 +159,17 @@ func sniffRARMembers(ctx context.Context, b *builder, outerVols []archive.Volume
 // resolveConcat rewrites the extents of 7z and ZIP members, which address the
 // concatenation of the volumes, as extents of the individual volumes.
 func resolveConcat(members []archive.Member, vols []*postedFile) ([]archive.Member, error) {
+	sizes := make([]int64, len(vols))
+	for i, pf := range vols {
+		sizes[i] = pf.Size()
+	}
+	return resolveConcatSizes(members, sizes)
+}
+
+func resolveConcatSizes(members []archive.Member, sizes []int64) ([]archive.Member, error) {
 	raw := &layout{}
 	var total int64
-	for i, pf := range vols {
-		s := pf.Size()
+	for i, s := range sizes {
 		if s < 0 || s > math.MaxInt64-total {
 			return nil, fmt.Errorf("stream: concatenated archive size overflows: %w", ErrCorrupt)
 		}

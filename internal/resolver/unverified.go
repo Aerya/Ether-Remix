@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/sockerr"
@@ -16,6 +17,11 @@ import (
 // timed out: nothing contradicted it, but nothing confirmed it either.
 const unverifiedReason = "played unverified after health checks timed out"
 
+// minForegroundHealthCheck is the minimum Usenet health-check window granted
+// to a candidate on an interactive play even when indexer discovery already
+// consumed playStartDeadline.
+const minForegroundHealthCheck = 1500 * time.Millisecond
+
 // unverifiedPool collects, for one Resolve call, the candidates whose NZB
 // was fetched but whose health check timed out. A congested provider can
 // time out every check while it is still serving articles; when nothing
@@ -23,15 +29,62 @@ const unverifiedReason = "played unverified after health checks timed out"
 // mid-stream failover covers the rest. An unreachable provider is not
 // congestion: those checks never qualify, so an outage still fails fast.
 type unverifiedPool struct {
-	mu   sync.Mutex
-	nzbs map[string][]byte // release id -> fetched NZB
+	mu           sync.Mutex
+	nzbs         map[string][]byte // release id -> fetched NZB
+	playDeadline time.Time         // zero for speculative/background resolves
 }
 
 type unverifiedPoolKey struct{}
 
 func withUnverifiedPool(ctx context.Context) (context.Context, *unverifiedPool) {
 	p := &unverifiedPool{nzbs: map[string][]byte{}}
+	if !core.IsSpeculative(ctx) && !core.IsBackgroundCheck(ctx) {
+		p.playDeadline = time.Now().Add(playStartDeadline)
+	}
 	return context.WithValue(ctx, unverifiedPoolKey{}, p), p
+}
+
+// withForegroundHealthDeadline caps an interactive Usenet health check to
+// the play-start target (with a minForegroundHealthCheck floor so a healthy
+// candidate still gets a fair chance to verify after slow discovery).
+// Never extends an earlier parent deadline.
+func withForegroundHealthDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	p, _ := ctx.Value(unverifiedPoolKey{}).(*unverifiedPool)
+	if p == nil || p.playDeadline.IsZero() {
+		return ctx, func() {}
+	}
+	cutoff := p.playDeadline
+	if floor := time.Now().Add(minForegroundHealthCheck); cutoff.Before(floor) {
+		cutoff = floor
+	}
+	if parent, ok := ctx.Deadline(); ok && !parent.After(cutoff) {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, cutoff)
+}
+
+func pastPlayDeadline(ctx context.Context) bool {
+	p, _ := ctx.Value(unverifiedPoolKey{}).(*unverifiedPool)
+	return p != nil && !p.playDeadline.IsZero() && !time.Now().Before(p.playDeadline)
+}
+
+func hasUnverified(ctx context.Context) bool {
+	p, _ := ctx.Value(unverifiedPoolKey{}).(*unverifiedPool)
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	n := len(p.nzbs)
+	p.mu.Unlock()
+	return n > 0
+}
+
+// pastPlayDeadlineWithUnverified reports that the interactive cold-start
+// budget has elapsed and at least one fetched NZB timed out inconclusively,
+// so launching further validation waves would push cold start toward the
+// 25 s validationBudget instead of handing off to lastResort.
+func pastPlayDeadlineWithUnverified(ctx context.Context) bool {
+	return pastPlayDeadline(ctx) && hasUnverified(ctx)
 }
 
 // noteValidation keeps a timed-out candidate's NZB for the last resort.
@@ -53,10 +106,23 @@ func drainValidations(ctx context.Context, cands []candidate, results <-chan val
 	for {
 		select {
 		case v := <-results:
-			noteValidation(ctx, cands[v.index].rel, v)
+			noteDroppedValidation(ctx, cands, v)
 		default:
 			return
 		}
+	}
+}
+
+func noteDroppedValidation(ctx context.Context, cands []candidate, v validation) {
+	for _, fv := range v.fallbacks {
+		noteValidation(ctx, fv.rel, fv.val)
+	}
+	if v.promoted == nil {
+		rel := cands[v.index].rel
+		if v.rel.ID != "" {
+			rel = v.rel
+		}
+		noteValidation(ctx, rel, v)
 	}
 }
 
@@ -107,14 +173,27 @@ func (s *Service) lastResort(ctx context.Context, p *unverifiedPool, key core.Ra
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var expanded []candidate
 	for _, c := range ranked {
+		base := c
+		base.fallbacks = nil
+		expanded = append(expanded, base)
+		for _, fb := range c.fallbacks {
+			if _, ok := p.nzbs[fb.rel.ID]; ok {
+				fbCopy := fb
+				fbCopy.fallbacks = nil
+				expanded = append(expanded, fbCopy)
+			}
+		}
+	}
+	for _, c := range expanded {
 		nzb, ok := p.nzbs[c.rel.ID]
 		// Another Resolve may have confirmed this release dead meanwhile.
-		if !ok || s.recentlyFailedHealth(c.rel.ID) || s.isBad(c.rel.ID) {
+		if !ok || s.recentlyFailedRelease(c.rel) || s.isBadRelease(c.rel) {
 			continue
 		}
 		var keep []candidate
-		for _, o := range ranked {
+		for _, o := range expanded {
 			if !slices.ContainsFunc(keep, func(k candidate) bool { return k.rel.ID == o.rel.ID }) {
 				keep = append(keep, o)
 			}

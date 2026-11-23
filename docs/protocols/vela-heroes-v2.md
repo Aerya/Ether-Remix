@@ -12,8 +12,12 @@ slots alternate personal, trending, personal, recent release/addition and
 trending, falling back to the next eligible candidate when a category runs out.
 Cards keep their original item receipt and preview opt-in. Episodes display
 the authorized episode metadata and target that exact episode. Series use
-`details`; playable movies and episodes use `play` or persisted-position
-`resume`. No title-pin source exists, so production does not emit `featured`.
+`details`; playable movies and episodes use `play` or `resume`. Resume actions
+omit the optional `positionSeconds`: Home snapshots may contain old progress, so
+Play reads the current server watch state. Title `watch.positionSeconds` remains
+display metadata, not a playback offset. Explicit playback offsets still support
+start-over (`0`) and deliberate seeks. No title-pin source exists, so production
+does not emit `featured`.
 Labels are omitted when the source provides none.
 
 Only real signed backdrop sources qualify. Known dimensions must be landscape;

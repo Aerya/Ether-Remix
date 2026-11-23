@@ -28,6 +28,8 @@ type clusterEntry struct {
 	SourceID        string         `json:"sourceID,omitempty"`
 	Channel         string         `json:"channel,omitempty"`
 	ClientSessionID string         `json:"clientSessionID,omitempty"`
+	MultiviewGroup  string         `json:"multiviewGroup,omitempty"`
+	MultiviewTile   int            `json:"multiviewTile,omitempty"`
 }
 
 func (c clusterStore) put(ctx context.Context, s frontend.Session, sourceID string, viewer core.Viewer, now time.Time) error {
@@ -81,7 +83,16 @@ func (c clusterStore) putOnce(ctx context.Context, s frontend.Session, sourceID 
 	// Persist neither a media grant nor credential.
 	d := s.Device
 	d.Client = ""
-	data, err := json.Marshal(clusterEntry{ID: s.ID, ViewerID: viewer.ID, Item: s.Item, StartedAt: s.StartedAt, SourceID: sourceID, Channel: s.Channel, ClientSessionID: s.ClientSessionID})
+	mvGroup := ""
+	mvTile := -1
+	entry := clusterEntry{ID: s.ID, ViewerID: viewer.ID, Item: s.Item, StartedAt: s.StartedAt, SourceID: sourceID, Channel: s.Channel, ClientSessionID: s.ClientSessionID}
+	if s.Multiview != nil && s.Multiview.GroupID != "" {
+		mvGroup = s.Multiview.GroupID
+		mvTile = s.Multiview.Tile
+		entry.MultiviewGroup = mvGroup
+		entry.MultiviewTile = mvTile
+	}
+	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
@@ -90,8 +101,14 @@ func (c clusterStore) putOnce(ctx context.Context, s frontend.Session, sourceID 
 		return err
 	}
 	if c.policy == nil || !c.policy(s.Protocol).ExternalAdmission {
-		if _, err = tx.ExecContext(ctx, `UPDATE plex_sessions SET active=0 WHERE active=1 AND user_id=? AND surface=? AND device_id=? AND protocol=?`, s.ViewerID, s.Protocol, d.ID, s.Protocol); err != nil {
-			return err
+		if mvGroup == "" {
+			if _, err = tx.ExecContext(ctx, `UPDATE plex_sessions SET active=0 WHERE active=1 AND user_id=? AND surface=? AND device_id=? AND protocol=?`, s.ViewerID, s.Protocol, d.ID, s.Protocol); err != nil {
+				return err
+			}
+		} else {
+			if _, err = tx.ExecContext(ctx, `UPDATE plex_sessions SET active=0 WHERE active=1 AND user_id=? AND surface=? AND device_id=? AND protocol=? AND (multiview_group<>? OR multiview_tile=?)`, s.ViewerID, s.Protocol, d.ID, s.Protocol, mvGroup, mvTile); err != nil {
+				return err
+			}
 		}
 	}
 	if c.policy != nil && c.policy(s.Protocol).ExternalAdmission {
@@ -130,10 +147,24 @@ func (c clusterStore) putOnce(ctx context.Context, s frontend.Session, sourceID 
 	if c.policy != nil && c.policy(s.Protocol).ExternalAdmission {
 		managed = 0
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO plex_sessions(id,node_id,user_id,session_key,data,updated_at,protocol,surface,device_id,device_data,active,broker_managed) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)`, s.ID, c.node, s.ViewerID, key, string(data), now.UnixMilli(), s.Protocol, s.Protocol, d.ID, string(device), managed); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO plex_sessions(id,node_id,user_id,session_key,data,updated_at,protocol,surface,device_id,device_data,active,broker_managed,multiview_group,multiview_tile) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)`, s.ID, c.node, s.ViewerID, key, string(data), now.UnixMilli(), s.Protocol, s.Protocol, d.ID, string(device), managed, mvGroup, mvTile); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (c clusterStore) updateSource(ctx context.Context, s frontend.Session, sourceID string, viewer core.Viewer, now time.Time) error {
+	entry := clusterEntry{ID: s.ID, ViewerID: viewer.ID, Item: s.Item, StartedAt: s.StartedAt, SourceID: sourceID, Channel: s.Channel, ClientSessionID: s.ClientSessionID}
+	if s.Multiview != nil && s.Multiview.GroupID != "" {
+		entry.MultiviewGroup = s.Multiview.GroupID
+		entry.MultiviewTile = s.Multiview.Tile
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `UPDATE plex_sessions SET data=?, updated_at=? WHERE id=? AND node_id=? AND protocol IS NOT NULL AND active=1`, string(data), now.UnixMilli(), s.ID, c.node)
+	return err
 }
 
 // cleanup never removes Plex rows, including legacy rows with NULL protocol.
@@ -203,7 +234,11 @@ func (c clusterStore) list(ctx context.Context, cutoff time.Time, live map[strin
 			continue
 		}
 		d.Client = ""
-		out = append(out, remoteSession{node: node, sourceID: e.SourceID, session: frontend.Session{ID: e.ID, ViewerID: viewer, Protocol: frontend.Protocol(protocol), Item: e.Item, Channel: e.Channel, ClientSessionID: e.ClientSessionID, Device: d, StartedAt: e.StartedAt}})
+		sess := frontend.Session{ID: e.ID, ViewerID: viewer, Protocol: frontend.Protocol(protocol), Item: e.Item, Channel: e.Channel, ClientSessionID: e.ClientSessionID, Device: d, StartedAt: e.StartedAt}
+		if e.MultiviewGroup != "" {
+			sess.Multiview = &frontend.MultiviewTarget{GroupID: e.MultiviewGroup, Tile: e.MultiviewTile}
+		}
+		out = append(out, remoteSession{node: node, sourceID: e.SourceID, session: sess})
 	}
 	return out, rows.Err()
 }

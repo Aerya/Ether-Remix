@@ -18,10 +18,11 @@ type Status = {
   found: number;
   folderLimited: boolean;
 };
-export function OwnerPosters({ locked }: { locked: boolean }) {
+export function OwnerPosters({ locked, onSaved }: { locked: boolean; onSaved?: () => void }) {
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const config = useAsync(async () => normalizePosters((await api.getConfig()).posters), []);
   const status = useAsync(
@@ -39,6 +40,8 @@ export function OwnerPosters({ locked }: { locked: boolean }) {
         body: JSON.stringify(posterPayload({ ...latest, ownerEnabled: on })),
       });
       config.setData(normalizePosters(result.value));
+      setSaved(true);
+      onSaved?.();
       return true;
     } catch (e) {
       setError(e);
@@ -56,6 +59,8 @@ export function OwnerPosters({ locked }: { locked: boolean }) {
         ({ more } = await apiFetch<{ more: boolean }>("/posters/clear", { method: "POST" }));
       } while (more);
       setConfirm(false);
+      setSaved(true);
+      onSaved?.();
       await status.reload();
     } catch (e) {
       setError(e);
@@ -226,12 +231,21 @@ export function OwnerPosters({ locked }: { locked: boolean }) {
                       body: JSON.stringify(posterPayload({ ...latest, assetFolder })),
                     });
                     config.setData(normalizePosters(result.value));
+                    setSaved(true);
+                    onSaved?.();
                     await status.reload();
                   }}
                 />
               )}
             </div>
           </SettingsSection>
+          {saved ? (
+            <p className="text-sm text-fg-muted" role="status">
+              {t(
+                "Apps reload posters the next time they open a library; some may need to be restarted.",
+              )}
+            </p>
+          ) : null}
         </div>
       </Drawer>
     </>

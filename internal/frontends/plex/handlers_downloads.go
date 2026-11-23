@@ -1,11 +1,13 @@
 package plex
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -288,6 +291,20 @@ func (s *Server) downloadCaps(r *http.Request, pr *Request) frontend.ClientCaps 
 	if mh := s.cfg().Downloads.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
 		caps.MaxHeight = mh
 	}
+	// Download conversion is independent of playback's per-viewer
+	// VideoTranscodingDisabled switch: apply only the download-conversion
+	// setting (server-wide or per-viewer) and per-viewer height cap.
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok && pr != nil {
+		allowance := policy.DownloadAllowance(pr.User)
+		if mh := allowance.MaxHeight; mh > 0 && (caps.MaxHeight == 0 || caps.MaxHeight > mh) {
+			caps.MaxHeight = mh
+		}
+		if allowance.NoTranscode {
+			caps.NoVideoTranscode = true
+		}
+	} else if s.cfg().Downloads.NoTranscode {
+		caps.NoVideoTranscode = true
+	}
 	return caps
 }
 
@@ -364,11 +381,105 @@ func (s *Server) handleDownloadQueueAdd(w http.ResponseWriter, r *http.Request) 
 		}
 		for _, t := range titles {
 			it := s.addDownloadItem(q, pr.User, t, caps, burn)
+			est := s.estimateDownloadBytes(ctx, &t, caps)
+			if msg := s.admitDownload(ctx, it, est); msg != "" {
+				// Over the viewer's limit: the item is listed with the
+				// reason, as a failed download is, and never starts.
+				s.downloads.Fail(ctx, it, msg)
+			}
 			added = append(added, addedQueueItemModel{ID: it.ID, Key: keyPath(t.Key)})
 		}
 	}
 	s.scheduleDownloads()
 	s.write(w, r, &downloadContainer{Size: len(added), Added: added})
+}
+
+type downloadLimitError struct {
+	Decision frontend.DownloadLimitDecision
+}
+
+func (e *downloadLimitError) Error() string {
+	return frontend.DownloadLimitMessage(e.Decision)
+}
+
+// estimateDownloadBytes returns a conservative size estimate for reserving GB
+// quota before the title has been resolved and probed.
+func (s *Server) estimateDownloadBytes(ctx context.Context, t *frontend.Title, caps frontend.ClientCaps) int64 {
+	if s.playback() == nil || t == nil {
+		return 0
+	}
+	info := s.playback().Estimate(ctx, t, caps)
+	if caps.MaxBitrateKbps > 0 && info.Duration > 0 && (info.BitrateKbps == 0 || caps.MaxBitrateKbps < info.BitrateKbps) {
+		return int64(caps.MaxBitrateKbps) * 1000 / 8 * int64(info.Duration.Seconds())
+	}
+	if info.Size > 0 {
+		return info.Size
+	}
+	if info.BitrateKbps > 0 && info.Duration > 0 {
+		return int64(info.BitrateKbps) * 1000 / 8 * int64(info.Duration.Seconds())
+	}
+	return 0
+}
+
+// preparedDownloadBytes estimates the download output size once the source
+// media has been probed, honoring an explicit bitrate cap when lower.
+func preparedDownloadBytes(info frontend.MediaInfo, opts frontend.DecideOptions) int64 {
+	if opts.MaxBitrateKbps > 0 && info.Duration > 0 && (info.BitrateKbps == 0 || opts.MaxBitrateKbps < info.BitrateKbps) {
+		return int64(opts.MaxBitrateKbps) * 1000 / 8 * int64(info.Duration.Seconds())
+	}
+	if info.Size > 0 {
+		return info.Size
+	}
+	if info.BitrateKbps > 0 && info.Duration > 0 {
+		return int64(info.BitrateKbps) * 1000 / 8 * int64(info.Duration.Seconds())
+	}
+	return 0
+}
+
+// admitDownload reserves estimatedBytes against it.User's download quota and
+// returns the message to show when over limit, or "" when admitted.
+func (s *Server) admitDownload(ctx context.Context, it *downloadItem, estimatedBytes int64) string {
+	policy, ok := s.policy().(frontend.DownloadLimitPolicy)
+	if !ok || it == nil || it.User == nil {
+		return ""
+	}
+	dec := policy.AdmitDownload(ctx, it.User, it.Key, estimatedBytes)
+	if !dec.Allowed {
+		return frontend.DownloadLimitMessage(dec)
+	}
+	if dec.Reserved {
+		s.downloads.Lock()
+		it.LimitReserved = true
+		s.downloads.Unlock()
+	}
+	return ""
+}
+
+// releaseDownloadLimit frees an uncompleted item's fresh usage reservation.
+func (s *Server) releaseDownloadLimit(ctx context.Context, it *downloadItem) {
+	if it == nil || it.User == nil {
+		return
+	}
+	s.downloads.Lock()
+	reserved := it.LimitReserved
+	it.LimitReserved = false
+	s.downloads.Unlock()
+	if !reserved {
+		return
+	}
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok {
+		policy.ReleaseDownloadReservation(ctx, it.User, it.Key)
+	}
+}
+
+func (s *Server) downloadTranscodingOffMessage(it *downloadItem) string {
+	if s.cfg().Downloads.NoTranscode {
+		return frontend.MsgDownloadTranscodingOff
+	}
+	if it != nil && it.Caps.NoVideoTranscode {
+		return frontend.MsgViewerDownloadTranscodingOff
+	}
+	return frontend.MsgVideoTranscodingOff
 }
 
 // addDownloadItem appends an item, or returns the existing one when the
@@ -466,15 +577,44 @@ func (s *Server) handleDownloadQueueItemRestart(w http.ResponseWriter, r *http.R
 	if q == nil {
 		return
 	}
-	s.downloads.Restart(q, parseItemIDs(r), s.sessionRuntime().Downloads().ReleaseDownload)
+	ids := parseItemIDs(r)
+	s.downloads.Restart(q, ids, s.sessionRuntime().Downloads().ReleaseDownload)
+	// A restart must not be a way around the daily cap: an item that was
+	// refused for it is refused again unless today's tally has room.
+	if pr := FromContext(r.Context()); pr != nil && pr.User != nil {
+		var restarted []*downloadItem
+		s.downloads.Lock()
+		for _, it := range q.Items {
+			for _, id := range ids {
+				if it.ID == id {
+					restarted = append(restarted, it)
+					break
+				}
+			}
+		}
+		s.downloads.Unlock()
+		for _, it := range restarted {
+			// Release any uncompleted reservation from the previous attempt
+			// before re-checking against current usage and policy.
+			s.releaseDownloadLimit(r.Context(), it)
+			var est int64
+			if t, err := s.catalog().Get(r.Context(), it.Key); err == nil && t != nil {
+				est = s.estimateDownloadBytes(r.Context(), t, it.Caps)
+			}
+			if msg := s.admitDownload(r.Context(), it, est); msg != "" {
+				s.downloads.Fail(r.Context(), it, msg)
+			}
+		}
+	}
 	s.scheduleDownloads()
 	w.WriteHeader(http.StatusOK)
 }
 
-// cancelDownloadItem stops an item's remux (if running) and releases its
-// finished file (if any).
+// cancelDownloadItem stops an item's remux (if running), frees its uncompleted
+// quota reservation (if any), and releases its finished file (if any).
 func (s *Server) cancelDownloadItem(it *downloadItem) {
 	p := s.downloads.CancelItem(it)
+	s.releaseDownloadLimit(context.Background(), it)
 	if rt := s.sessionRuntime(); p != "" && rt != nil && rt.Downloads() != nil {
 		rt.Downloads().ReleaseDownload(p)
 	}
@@ -524,12 +664,92 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 	}
 	s.downloads.Lock()
 	m := itemModel(it)
+	status, size, dur, vCodec, aCodec := it.Status, it.Size, it.Duration, it.VideoCodec, it.AudioCodec
 	s.downloads.Unlock()
 	mc := s.itemContainer(t.Type)
-	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true})
+	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true, session: true})
 	decisionItem(&md)
+	if len(md.Media) > 0 {
+		chosen := md.Media[0]
+		chosen.Selected = model.Ptr(true)
+		chosen.SetAlphabetical()
+		if len(chosen.Part) > 0 {
+			chosen.Part[0].Selected = model.Ptr(true)
+			chosen.Part[0].SetAlphabetical()
+			for i := range chosen.Part[0].Stream {
+				chosen.Part[0].Stream[i].SetAlphabetical()
+			}
+		}
+		if status != downloadDeciding && status != downloadError {
+			chosen.Container = "mp4"
+			chosen.Protocol = "http"
+			chosen.OptimizedForStreaming = model.Ptr(1)
+			if dur > 0 {
+				chosen.Duration = ms(dur)
+				md.Duration = chosen.Duration
+			}
+			if vCodec != "" {
+				chosen.VideoCodec = plexCodec(vCodec)
+			}
+			if aCodec != "" {
+				chosen.AudioCodec = plexCodec(aCodec)
+			}
+			if size > 0 && dur > 0 {
+				if sec := dur.Seconds(); sec > 0 {
+					if kbps := int(float64(size*8) / 1000 / sec); kbps > 0 {
+						chosen.Bitrate = kbps
+					}
+				}
+			}
+			if len(chosen.Part) > 0 {
+				part := &chosen.Part[0]
+				part.Decision = "transcode"
+				part.Protocol = "http"
+				part.Container = "mp4"
+				part.Key = ""
+				part.File = ""
+				part.OptimizedForStreaming = model.Ptr(true)
+				if size > 0 {
+					part.Size = size
+				} else {
+					part.Size = 0
+				}
+				if dur > 0 {
+					part.Duration = ms(dur)
+				}
+				videoMarked, audioMarked := false, false
+				for i := range part.Stream {
+					switch part.Stream[i].StreamType {
+					case 1:
+						if !videoMarked {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							videoMarked = true
+						}
+					case 2:
+						if part.Stream[i].Selected != nil && *part.Stream[i].Selected {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							audioMarked = true
+						}
+					}
+				}
+				if !audioMarked {
+					for i := range part.Stream {
+						if part.Stream[i].StreamType == 2 {
+							part.Stream[i].Decision = "copy"
+							part.Stream[i].Location = "direct"
+							break
+						}
+					}
+				}
+			}
+		}
+		md.Media = []model.Media{chosen}
+	}
 	mc.Metadata = []model.Metadata{md}
 	mc.Size = 1
+	mc.SetDecision()
 	dr := m.Decision
 	mc.Extra = []model.Attr{
 		model.A("directPlayDecisionCode", dr.DirectPlayDecisionCode),
@@ -541,11 +761,15 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 		model.A("mdeDecisionCode", dr.MDEDecisionCode),
 		model.A("mdeDecisionText", dr.MDEDecisionText),
 	}
+	if rs := cmp.Or(pr.SessionID, pr.ClientID); rs != "" {
+		mc.Extra = append(mc.Extra, model.A("resourceSession", rs))
+	}
 	s.write(w, r, mc)
 }
 
 // GET /downloadQueue/{queue}/item/{item}/media — the remuxed MP4 with
-// Range support; 503 + Retry-After while it is still being produced.
+// Range support and stable validators; 503 + Retry-After while it is still
+// being produced.
 func (s *Server) handleDownloadItemMedia(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDownloads(w, r) {
 		return
@@ -586,7 +810,10 @@ func (s *Server) handleDownloadItemMedia(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Content-Disposition", contentDisposition(name))
 	cw := s.newCountWriter(w, r)
-	http.ServeContent(cw, r, name, readyAt, f)
+	if err := rangefile.ServeFile(cw, r, name, filepath.Base(p), readyAt, f); err != nil {
+		writeHTTPError(w, http.StatusGone)
+		return
+	}
 	cw.finish()
 }
 
@@ -659,48 +886,96 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			if it.User != nil {
 				viewerID = it.User.ID
 			}
-			subtitle := -1
-			sel := resolveSelection(s.selections.get(viewerID, int64(it.Key)), ps.Info)
+			prefCtx := withRequest(ctx, &Request{User: it.User, ClientID: it.Caps.ClientID})
+			original := ""
 			if title, err := s.catalog().Get(ctx, it.Key); err == nil && title != nil {
-				sel = s.preferredSelection(ctx, it.User, it.Key, ps.Info, title.Language, sel)
+				original = title.Language
 			}
+			sel := resolveSelection(s.selections.get(viewerID, int64(it.Key)), ps.Info)
+			sel = s.preferredSelection(prefCtx, it.User, it.Key, ps.Info, original, sel)
+			audioPos := -1
+			if sel.audioSet {
+				audioPos = sel.audio
+			}
+			if audioPos < 0 || audioPos >= len(ps.Info.Streams) {
+				audioPos = pickAudio(ps.Info, s.audioLanguages(it.User))
+			}
+			audio := -1
+			if audioPos >= 0 && audioPos < len(ps.Info.Streams) && ps.Info.Streams[audioPos].Type == "audio" {
+				st := ps.Info.Streams[audioPos]
+				audio = st.Index
+				if st.Codec != "" {
+					s.downloads.Lock()
+					if ctx.Err() == nil {
+						it.AudioCodec = st.Codec
+					}
+					s.downloads.Unlock()
+				}
+			}
+			subtitle := -1
 			if sel.subtitleSet && sel.subtitle >= 0 && sel.subtitle < len(ps.Info.Streams) {
 				st := ps.Info.Streams[sel.subtitle]
 				if st.Type == "subtitle" && !st.External {
 					subtitle = st.Index
 				}
 			}
-			return frontend.DecideOptions{
+			opts := frontend.DecideOptions{
 				DirectPlay: false, DirectStream: true,
-				MaxBitrateKbps: it.Bandwidth, MaxHeight: it.Caps.MaxHeight, AudioStream: -1, SubtitleStream: subtitle,
+				MaxBitrateKbps: it.Bandwidth, MaxHeight: it.Caps.MaxHeight, AudioStream: audio, SubtitleStream: subtitle,
 				BurnSubtitles: it.Burn,
-			}, nil
+			}
+			if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok && it.User != nil {
+				if est := preparedDownloadBytes(ps.Info, opts); est > 0 {
+					if dec := policy.ReconcileDownloadBytes(ctx, it.User, it.Key, est); !dec.Allowed {
+						return frontend.DecideOptions{}, &downloadLimitError{Decision: dec}
+					}
+				}
+			}
+			return opts, nil
 		}, Progress: func(f float64) {
 			s.downloads.Progress(ctx, it, f)
 		}})
 
 	if err != nil {
+		var limitErr *downloadLimitError
+		if errors.As(err, &limitErr) {
+			s.releaseDownloadLimit(context.Background(), it)
+			fail(limitErr.Error())
+			return
+		}
 		var preparation *frontend.DownloadPreparationError
 		if errors.As(err, &preparation) {
 			if ctx.Err() != nil {
 				return
 			}
+			s.releaseDownloadLimit(context.Background(), it)
 			s.log.Warn("download preparation failed", "key", it.Key, "err", err)
-			if noRelease(err) {
+			var reqLang *frontend.RequiredAudioLanguageError
+			if errors.As(err, &reqLang) {
+				fail(reqLang.Error())
+			} else if noRelease(err) {
 				fail("No release available for download at this quality.")
+			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+				fail(s.downloadTranscodingOffMessage(it))
 			} else {
 				fail(playbackMessage(err))
 			}
 			return
 		}
 		if ctx.Err() == nil {
+			s.releaseDownloadLimit(context.Background(), it)
 			s.log.Warn("download processing failed", "key", it.Key, "err", err)
 		}
+		var reqLang *frontend.RequiredAudioLanguageError
 		switch {
 		case ctx.Err() != nil:
 			// Deleted, restarted or shutting down; state already reset.
+		case errors.As(err, &reqLang):
+			fail(reqLang.Error())
 		case errors.Is(err, frontend.ErrDownloadNeedsTranscode):
 			fail("This title cannot be downloaded: it cannot be converted to a playable MP4.")
+		case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
+			fail(s.downloadTranscodingOffMessage(it))
 		case errors.Is(err, frontend.ErrDownloadBudget):
 			fail("Not enough temporary disk space on the server for this download.")
 		default:
@@ -709,8 +984,15 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 		return
 	}
 	if !s.downloads.Complete(ctx, it, p, size, s.now()) {
+		s.releaseDownloadLimit(context.Background(), it)
 		s.sessionRuntime().Downloads().ReleaseDownload(p)
 		return
+	}
+	s.downloads.Lock()
+	it.LimitReserved = false
+	s.downloads.Unlock()
+	if policy, ok := s.policy().(frontend.DownloadLimitPolicy); ok {
+		policy.RecordDownloadBytes(ctx, it.User, it.Key, size)
 	}
 	s.retainDownload(p, it.ReadyAt)
 }

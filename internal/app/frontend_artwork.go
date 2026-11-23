@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // newSharedArtwork composes domain services without constructing a protocol server.
@@ -26,7 +28,12 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		imageURL = func(path, size string) string { return "https://image.tmdb.org/t/p/" + size + path }
 		paletteDB = nil
 	}
-	images := artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
+	var images *artworkservice.RemoteCache
+	if a.images != nil {
+		images = artworkservice.NewBackedRemoteCache(128<<20, a.images)
+	} else {
+		images = artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
+	}
 	var workers sync.WaitGroup
 	queue := artworkservice.NewQueue(ctx, &workers, 2, 512)
 	collections := a.discoveryPersonal.ReviewCollections(a.collections)
@@ -48,7 +55,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		}
 		return a.playback.Sessions()
 	}, []experience.Library{{ID: 1, Type: core.TypeMovie}, {ID: 2, Type: core.TypeShow}})
-	source := &artworkservice.Source{OwnerEnabled: func() bool { enabled := a.cfg.Read().Posters.OwnerEnabled; return enabled == nil || *enabled }, Assets: &artwork.LocalAssets{}, AssetFolder: func() string { return a.cfg.Read().Posters.AssetFolder }, OwnerDir: filepath.Join(a.opts.DataDir, "artwork", "owner"), Catalog: a.catalog, Collections: collections, Playlists: a.playlists, Visibility: visibility, Discovery: a.discoveryFeatures.Frontend(), Images: images, ImageURL: imageURL, Palettes: palettes, Now: now, Raster: artwork.NewSVGRasterizer()}
+	source := &artworkservice.Source{OwnerEnabled: func() bool { enabled := a.cfg.Read().Posters.OwnerEnabled; return enabled == nil || *enabled }, PosterGen: func() uint64 { return a.cfg.Read().Posters.Generation }, Assets: &artwork.LocalAssets{}, AssetFolder: func() string { return a.cfg.Read().Posters.AssetFolder }, OwnerDir: filepath.Join(a.opts.DataDir, "artwork", "owner"), Catalog: pluginArtworkTitles{catalog: a.catalog, app: a}, Collections: collections, Playlists: a.playlists, Visibility: visibility, Discovery: a.discoveryFeatures.Frontend(), Images: images, ImageURL: imageURL, Palettes: palettes, Now: now, Raster: artwork.NewSVGRasterizer()}
 	if a.livetv != nil {
 		source.LiveTV = a.livetv
 	}
@@ -61,8 +68,24 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	if a.episodeorder != nil {
 		source.VirtualSeason = a.episodeorder.CachedVirtualSeason
 	}
-	if a.images != nil {
+	if a.opts.urlImages != nil {
+		source.URLImages = a.opts.urlImages
+	} else if a.images != nil {
 		source.URLImages = a.images
+	}
+	source.PluginItem = a.sharedPluginArtworkItem
+	source.LibraryLiveThumb = func(ctx context.Context, viewer *core.Viewer, viewID string, path string) (string, error) {
+		return surfaceLibraryLive{app: a}.AuthorizeLibraryLiveThumb(ctx, viewer, viewID, path)
+	}
+	source.ViewerAvatar = func(ctx context.Context, viewer *core.Viewer) ([]byte, string, error) {
+		if viewer == nil || viewer.ID <= 0 || viewer.PlexID <= 0 || strings.TrimSpace(viewer.Thumb) == "" {
+			return nil, "", core.ErrNotFound
+		}
+		token := ""
+		if a.cfg != nil {
+			token = strings.TrimSpace(a.cfg.Read().Plex.Token)
+		}
+		return a.cachedPlexAvatar(ctx, token, viewer.Thumb)
 	}
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
 	source.Variants = variants.Get
@@ -73,12 +96,47 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	if a.spikeLibrary == nil {
 		// Search and list hits with no row keep their artwork facts in
 		// memory: a search page writes nothing.
-		metadata.PersistFor(a.catalog.PersistsArtwork)
-		palettes.PersistFor(a.catalog.PersistsArtwork)
+		persists := func(ctx context.Context, key core.RatingKey) bool {
+			if key.IsPluginKey() {
+				return false
+			}
+			return a.catalog.PersistsArtwork(ctx, key)
+		}
+		metadata.PersistFor(persists)
+		palettes.PersistFor(persists)
 	}
 	source.Metadata = metadata.Get
 	source.BindMetadata(metadata)
 	return source, func() { variants.Wait(); metadata.Wait(); workers.Wait() }
+}
+
+func (a *App) sharedPluginArtworkItem(ctx context.Context, viewer *core.User, _ core.Device, key core.RatingKey) (*core.Title, []frontend.Image, error) {
+	if a == nil || viewer == nil || !key.IsPluginKey() {
+		return nil, nil, core.ErrUnauthorized
+	}
+	active := viewer
+	if a.users != nil {
+		resolved, err := a.users.PolicyUser(ctx, viewer.ID)
+		if err != nil || resolved == nil || resolved.ID != viewer.ID {
+			return nil, nil, core.ErrUnauthorized
+		}
+		active = resolved
+	}
+	if a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+		return nil, nil, core.ErrNotFound
+	}
+	piv, err := a.pluginsRT.kindCatalog.Item(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if piv.Library.Hidden || !a.pluginsRT.kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
+		return nil, nil, core.ErrNotFound
+	}
+	if !experience.SectionAllowed(active, int(piv.Library.ID)) || !experience.TitleAllowed(a.safety, active, &piv.Title) {
+		return nil, nil, core.ErrNotFound
+	}
+	t := piv.Title
+	return &t, piv.Images, nil
 }
 
 // serverLibraries preserves the canonical section IDs/order without a Plex server.
@@ -102,4 +160,28 @@ func (a *App) titlePosters() *artwork.Renderer {
 		a.titlePosterRenderer = artwork.NewRenderer(nil, dir, a.log.With("component", "artwork"))
 	})
 	return a.titlePosterRenderer
+}
+
+// pluginArtworkTitles lets the shared artwork reader find plugin library
+// items, whose keys are not in the catalogue. The viewer's grant for the
+// image was issued by the experience layer, which already applied library
+// access to the item.
+type pluginArtworkTitles struct {
+	catalog core.StoredTitleLookup
+	app     *App
+}
+
+func (p pluginArtworkTitles) StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if key.IsPluginKey() {
+		if p.app == nil || p.app.pluginsRT == nil || p.app.pluginsRT.kindCatalog == nil {
+			return nil, core.ErrNotFound
+		}
+		piv, err := p.app.pluginsRT.kindCatalog.Item(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		t := piv.Title
+		return &t, nil
+	}
+	return p.catalog.StoredTitle(ctx, key)
 }

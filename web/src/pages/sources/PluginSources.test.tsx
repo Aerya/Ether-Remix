@@ -90,10 +90,17 @@ describe("PluginSources", () => {
         );
       }
       if (url.endsWith("/api/plugins/org.ether.fixture-source/test") && init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true, durationMs: 12 }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            durationMs: 12,
+            message: "Anonymous mode active; add a key for higher limits.",
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
       }
       return new Response(JSON.stringify({}), {
         status: 200,
@@ -140,6 +147,9 @@ describe("PluginSources", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    expect(
+      (await screen.findAllByText("Anonymous mode active; add a key for higher limits.")).length,
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it("filters debrid plugin sources on the Debrid tab and renders usage summary", async () => {

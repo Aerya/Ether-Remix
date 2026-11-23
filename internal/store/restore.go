@@ -36,6 +36,20 @@ import (
 // function it returns runs after every row is restored, before commit.
 type RestoreHook func(ctx context.Context, tx *sql.Tx) (after func(context.Context, *sql.Tx) error, err error)
 
+type restoreDialectKey struct{}
+
+func withRestoreDialect(ctx context.Context, d Dialect) context.Context {
+	return context.WithValue(ctx, restoreDialectKey{}, d)
+}
+
+// RestoreDialect reports the target database dialect inside a RestoreHook.
+func RestoreDialect(ctx context.Context) Dialect {
+	if d, ok := ctx.Value(restoreDialectKey{}).(Dialect); ok {
+		return d
+	}
+	return SQLite
+}
+
 var (
 	restoreHooks     = map[string]RestoreHook{}
 	restoreMaintains = map[string]bool{}
@@ -102,7 +116,7 @@ type suspendedTrigger struct {
 const pgTriggerInsert = 4
 
 var (
-	rePLWrite        = regexp.MustCompile(`(?i)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:ONLY\s+)?(?:"?[A-Za-z_][A-Za-z0-9_]*"?\.)?"?([A-Za-z_][A-Za-z0-9_]*)`)
+	rePLWrite        = regexp.MustCompile(`(?i)\b(?:INSERT(?:\s+OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK))?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK))?|DELETE\s+FROM)\s+(?:ONLY\s+)?(?:"?[A-Za-z_][A-Za-z0-9_]*"?\.)?"?([A-Za-z_][A-Za-z0-9_]*)`)
 	rePLCall         = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
 	reSQLiteOnInsert = regexp.MustCompile(`(?is)^\s*CREATE\s+TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"[^"]*"|\S+)\s+(?:BEFORE\s+|AFTER\s+|INSTEAD\s+OF\s+)?INSERT\s+ON\b`)
 	reSQLiteCreate   = regexp.MustCompile(`(?i)^\s*CREATE\s+TRIGGER\b`)
@@ -333,12 +347,67 @@ func replayInserts(ctx context.Context, tx *sql.Tx, d Dialect, table string, tri
 			return fmt.Errorf("trigger %s: %w", t.name, err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO `+replica+` SELECT * FROM `+quoteIdent(table)); err != nil {
+	insertSQL := `INSERT INTO ` + replica + ` SELECT * FROM ` + quoteIdent(table)
+	if d != Postgres {
+		q, err := sqliteReplayInsertSQL(ctx, tx, replica, table)
+		if err != nil {
+			return err
+		}
+		insertSQL = q
+	}
+	if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
 		return err
 	}
 	// Dropping the table drops the triggers just made on it.
 	_, err := tx.ExecContext(ctx, `DROP TABLE `+replica)
 	return err
+}
+
+// sqliteReplayInsertSQL copies table's rows into replica while preserving the
+// source rowid for rowid tables. CREATE TEMP TABLE ... AS SELECT strips
+// INTEGER PRIMARY KEY (losing sparse docid/rowid gaps), and a plain SELECT *
+// on a table with a covering primary-key autoindex can return rows in PK order
+// rather than rowid order — either would make triggers referencing new.rowid
+// (such as external-content FTS5 triggers) index under the wrong rowid.
+func sqliteReplayInsertSQL(ctx context.Context, tx *sql.Tx, replica, table string) (string, error) {
+	fallback := `INSERT INTO ` + replica + ` SELECT * FROM ` + quoteIdent(table)
+	var withoutRowid int
+	if err := tx.QueryRowContext(ctx, `SELECT wr FROM pragma_table_list WHERE schema='main' AND LOWER(name)=LOWER(?)`, table).Scan(&withoutRowid); err != nil {
+		return "", err
+	}
+	if withoutRowid != 0 {
+		return fallback, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT * FROM `+quoteIdent(table)+` WHERE 0`)
+	if err != nil {
+		return "", err
+	}
+	cols, err := rows.Columns()
+	rows.Close()
+	if err != nil {
+		return "", err
+	}
+	lower := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		lower[strings.ToLower(c)] = true
+	}
+	rowidCol := ""
+	for _, cand := range []string{"_rowid_", "oid", "rowid"} {
+		if !lower[cand] {
+			rowidCol = cand
+			break
+		}
+	}
+	if rowidCol == "" {
+		return fallback, nil
+	}
+	quoted := make([]string, 0, len(cols)+1)
+	quoted = append(quoted, rowidCol)
+	for _, c := range cols {
+		quoted = append(quoted, quoteIdent(c))
+	}
+	list := strings.Join(quoted, ",")
+	return `INSERT INTO ` + replica + `(` + list + `) SELECT ` + list + ` FROM ` + quoteIdent(table), nil
 }
 
 // retarget rewrites a trigger definition onto the replay table.

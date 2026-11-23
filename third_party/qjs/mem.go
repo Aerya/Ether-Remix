@@ -241,6 +241,9 @@ func (m *Mem) ReadString(addr, maxlen uint32) (string, error) {
 // WriteString writes a null-terminated string to WebAssembly memory.
 // It copies the string content to the specified memory address and appends a null terminator.
 func (m *Mem) WriteString(ptr uint32, s string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	size := uint64(len(s) + 1) // +1 for null terminator
 
 	// Validates address and bounds through Read call

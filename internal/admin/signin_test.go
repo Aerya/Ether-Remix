@@ -263,3 +263,40 @@ func TestConsoleSessionExchangeAndSignOut(t *testing.T) {
 		t.Fatalf("second sign-out: %d", rec.Code)
 	}
 }
+
+func TestSignInStartHonoursTrustedProxyHeaders(t *testing.T) {
+	store := newStore(t, func(c *config.Config) {
+		seededConfig(c)
+		c.SetupComplete = true
+		c.Server.AllowRemoteConsole = true
+		c.Server.TrustedProxyCIDRs = []string{"10.0.0.0/8"}
+	})
+	si := &fakeSignIn{tokens: map[string]string{}}
+	sessions := newFakeSessions(store)
+	h := admin.NewHandler(admin.Deps{Config: store, IsOwnerToken: sessions.owner, SignIn: si, Sessions: sessions})
+
+	r := req(http.MethodPost, "/ether/api/auth/pin", "{}")
+	r.RemoteAddr, r.Host = "10.0.0.2:41000", "127.0.0.1:32400"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Host", "media.example.com")
+	r.Header.Set("X-Forwarded-Prefix", "/home")
+	if rec := serve(h, r); rec.Code != 200 {
+		t.Fatalf("trusted proxy pin start: %d %s", rec.Code, rec.Body)
+	}
+	if si.forward != "https://media.example.com/home/ether/" {
+		t.Fatalf("trusted forward = %q, want https://media.example.com/home/ether/", si.forward)
+	}
+
+	// Untrusted proxy headers must be ignored.
+	spoof := req(http.MethodPost, "/ether/api/auth/pin", "{}")
+	spoof.RemoteAddr, spoof.Host = "192.168.1.20:41000", "192.168.1.5:32400"
+	spoof.Header.Set("X-Forwarded-Proto", "https")
+	spoof.Header.Set("X-Forwarded-Host", "evil.example.com")
+	spoof.Header.Set("X-Forwarded-Prefix", "/evil")
+	if rec := serve(h, spoof); rec.Code != 200 {
+		t.Fatalf("untrusted pin start: %d %s", rec.Code, rec.Body)
+	}
+	if si.forward != "http://192.168.1.5:32400/ether/" {
+		t.Fatalf("untrusted forward = %q, want http://192.168.1.5:32400/ether/", si.forward)
+	}
+}

@@ -100,3 +100,86 @@ func TestMovieSingleAddonStream(t *testing.T) {
 		t.Fatal(src.Name())
 	}
 }
+
+func TestMoviePackAudioLanguagePreference(t *testing.T) {
+	const gb = int64(1 << 30)
+	const mb = int64(1 << 20)
+
+	dual := []File{
+		{ID: "en", Path: "The.Mummy.1999.Pack/The.Mummy.1999.ENGLISH.1080p.mkv", Size: 6 * gb},
+		{ID: "fr", Path: "The.Mummy.1999.Pack/The.Mummy.1999.FRENCH.1080p.mkv", Size: 5 * gb},
+		{ID: "fr-clip", Path: "The.Mummy.1999.Pack/The.Mummy.1999.FRENCH.mkv", Size: 100 * mb},
+	}
+
+	// French profile prefers the 5 GiB French feature over the larger 6 GiB English file.
+	gotFR, err := ChooseFile(dual, &core.ReleaseTarget{
+		MovieTitles:      []string{"The Mummy"},
+		MovieYear:        1999,
+		WantedLanguages:  []string{"french", "english"},
+		OriginalLanguage: "english",
+	})
+	if err != nil || gotFR.ID != "fr" {
+		t.Fatalf("French preference: got %+v err=%v, want fr", gotFR, err)
+	}
+
+	// Unmatched language falls back to largest full-length file.
+	gotFallback, err := ChooseFile([]File{dual[0], dual[1]}, &core.ReleaseTarget{
+		MovieTitles:     []string{"The Mummy"},
+		MovieYear:       1999,
+		WantedLanguages: []string{"japanese"},
+	})
+	if err != nil || gotFallback.ID != "en" {
+		t.Fatalf("Fallback to largest: got %+v err=%v, want en", gotFallback, err)
+	}
+
+	// A tiny clip (<35% of feature size) never wins over a full-length feature.
+	gotClipGuard, err := ChooseFile([]File{dual[0], dual[2]}, &core.ReleaseTarget{
+		MovieTitles:      []string{"The Mummy"},
+		MovieYear:        1999,
+		WantedLanguages:  []string{"french"},
+		OriginalLanguage: "english",
+	})
+	if err != nil || gotClipGuard.ID != "en" {
+		t.Fatalf("Tiny clip guard: got %+v err=%v, want en", gotClipGuard, err)
+	}
+
+	// Foreign film with untagged original + larger English dub: "Original"
+	// preference picks the untagged Japanese file; English preference picks the dub.
+	foreign := []File{
+		{ID: "dub", Path: "Spirited.Away.2001.ENGLISH.DUBBED.1080p.mkv", Size: 6 * gb},
+		{ID: "orig", Path: "Spirited.Away.2001.1080p.mkv", Size: 5 * gb},
+	}
+	gotOrig, err := ChooseFile(foreign, &core.ReleaseTarget{
+		MovieTitles:      []string{"Spirited Away"},
+		MovieYear:        2001,
+		WantedLanguages:  []string{"japanese", "english"},
+		OriginalLanguage: "japanese",
+	})
+	if err != nil || gotOrig.ID != "orig" {
+		t.Fatalf("Original Japanese preference: got %+v err=%v, want orig", gotOrig, err)
+	}
+	gotDub, err := ChooseFile(foreign, &core.ReleaseTarget{
+		MovieTitles:      []string{"Spirited Away"},
+		MovieYear:        2001,
+		WantedLanguages:  []string{"english", "japanese"},
+		OriginalLanguage: "japanese",
+	})
+	if err != nil || gotDub.ID != "dub" {
+		t.Fatalf("English dub preference: got %+v err=%v, want dub", gotDub, err)
+	}
+
+	// Subfolder language layout and title-word language ("The French Dispatch").
+	subfolders := []File{
+		{ID: "de", Path: "The French Dispatch (2021)/German/The.French.Dispatch.2021.1080p.mkv", Size: 6 * gb},
+		{ID: "en", Path: "The French Dispatch (2021)/English/The.French.Dispatch.2021.1080p.mkv", Size: 5 * gb},
+	}
+	gotDispatch, err := ChooseFile(subfolders, &core.ReleaseTarget{
+		MovieTitles:      []string{"The French Dispatch"},
+		MovieYear:        2021,
+		WantedLanguages:  []string{"french", "english"},
+		OriginalLanguage: "english",
+	})
+	if err != nil || gotDispatch.ID != "en" {
+		t.Fatalf("Title-word language protection: got %+v err=%v, want en", gotDispatch, err)
+	}
+}

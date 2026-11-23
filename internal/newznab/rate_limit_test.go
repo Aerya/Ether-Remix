@@ -46,7 +46,7 @@ func TestServiceThrottleSurvivesRestartAndRetriesAutomatically(t *testing.T) {
 			}))
 			defer srv.Close()
 			cfg := testConfig(srv.URL) // no personal cap
-			opts := Options{Now: clock.now, NZBDir: t.TempDir()}
+			opts := Options{Now: clock.now, Vault: &testVault{}}
 			c := New(cfg, db, opts)
 			rel := core.Release{ID: "test", GUID: "test", Indexer: c.Name()}
 			if _, err := c.FetchNZB(ctx, rel); !errors.Is(err, core.ErrBudgetExhausted) {

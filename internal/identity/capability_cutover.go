@@ -1,6 +1,9 @@
 package identity
 
 import (
+	"context"
+	"database/sql"
+
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -29,6 +32,28 @@ CREATE TRIGGER image_immutable BEFORE UPDATE ON frontend_image_grants FOR EACH R
 CREATE FUNCTION image_header_immutable_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.namespace='image' THEN RAISE EXCEPTION 'issued header is immutable'; END IF; RETURN NEW; END $$;
 CREATE TRIGGER image_header_immutable BEFORE UPDATE ON capability_headers FOR EACH ROW EXECUTE FUNCTION image_header_immutable_fn();
 CREATE FUNCTION image_header_delete_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.namespace='image' THEN DELETE FROM frontend_image_grants WHERE hash=OLD.digest; END IF; RETURN OLD; END $$; CREATE TRIGGER image_header_delete AFTER DELETE ON capability_headers FOR EACH ROW EXECUTE FUNCTION image_header_delete_fn();`)
+	store.Register("frontend_image_grants", 8, `DROP TRIGGER IF EXISTS image_header_delete;
+DROP TRIGGER IF EXISTS image_header_immutable;
+DROP TRIGGER IF EXISTS image_admitted_insert;
+DROP TRIGGER IF EXISTS image_immutable;
+DELETE FROM capability_headers WHERE namespace='image';
+DROP TABLE IF EXISTS frontend_image_grants;`)
+	store.RegisterDialect("frontend_image_grants", 8, store.Postgres, `DROP TRIGGER IF EXISTS image_header_delete ON capability_headers;
+DROP FUNCTION IF EXISTS image_header_delete_fn();
+DROP TRIGGER IF EXISTS image_header_immutable ON capability_headers;
+DROP FUNCTION IF EXISTS image_header_immutable_fn();
+DROP TRIGGER IF EXISTS image_admitted_insert ON frontend_image_grants;
+DROP FUNCTION IF EXISTS image_admitted_insert_fn();
+DROP TRIGGER IF EXISTS image_immutable ON frontend_image_grants;
+DROP FUNCTION IF EXISTS image_immutable_fn();
+DELETE FROM capability_headers WHERE namespace='image';
+DROP TABLE IF EXISTS frontend_image_grants;`)
+	store.RegisterRestore("frontend_image_grants", func(context.Context, *sql.Tx) (func(context.Context, *sql.Tx) error, error) {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `DELETE FROM capability_headers WHERE namespace='image'`)
+			return err
+		}, nil
+	})
 	store.Register("frontend_tickets", 3, `DELETE FROM capability_headers WHERE namespace='ticket' AND (digest IN (SELECT hash FROM frontend_tickets) OR digest IN (SELECT digest FROM capability_tickets WHERE namespace='ticket' AND legacy_mirror=1));
 INSERT INTO capability_headers(namespace,digest,shard,viewer_id,surface,device_id,expires)
 SELECT 'ticket',i.hash,i.viewer_id%64,i.viewer_id,i.surface,COALESCE(json_extract(i.device,'$.ID'),''),i.expires FROM frontend_tickets i JOIN identity_grants g ON g.hash=i.source_hash JOIN auth_users u ON u.id=i.viewer_id WHERE g.revoked=0 AND g.viewer_id=i.viewer_id AND g.surface=i.surface AND g.device_id=COALESCE(json_extract(i.device,'$.ID'),'') AND u.active=1 AND i.expires>0;

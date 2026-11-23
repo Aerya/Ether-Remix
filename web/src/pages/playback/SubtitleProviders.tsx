@@ -13,6 +13,12 @@ import type { EtherConfig } from "../../lib/types";
 
 type Provider = { id: string; kind: string; name?: string; enabled: boolean };
 
+const BUILTIN_NAMES: Record<string, string> = {
+  opensubtitles: "OpenSubtitles",
+  subdl: "SubDL",
+  subsource: "SubSource",
+};
+
 export function SubtitleProviders() {
   const config = useAsync(() => api.getConfig(), []);
   const registry = useRegistry("subtitleProvider");
@@ -20,8 +26,23 @@ export function SubtitleProviders() {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const configured: Provider[] = config.data?.subtitles?.providers ?? [
-    { id: "opensubtitles", kind: "opensubtitles", enabled: true },
+  const cfg = config.data;
+  const saved: Provider[] = cfg?.subtitles?.providers ?? [];
+  // Built-in accounts set up under Integrations are searched even when the
+  // saved order does not name them (the server appends them), so list them
+  // here too and let the owner move them.
+  const has = (kind: string) => saved.some((p) => p.kind === kind);
+  const configured: Provider[] = [
+    ...(!has("opensubtitles") && (cfg?.openSubtitles?.enabled ?? true)
+      ? [{ id: "opensubtitles", kind: "opensubtitles", enabled: true }]
+      : []),
+    ...saved,
+    ...(!has("subdl") && cfg?.subdl?.enabled && cfg.subdl.apiKey
+      ? [{ id: "subdl", kind: "subdl", enabled: true }]
+      : []),
+    ...(!has("subsource") && cfg?.subsource?.enabled && cfg.subsource.apiKey
+      ? [{ id: "subsource", kind: "subsource", enabled: true }]
+      : []),
   ];
   const providers: Provider[] = [
     ...configured,
@@ -54,7 +75,9 @@ export function SubtitleProviders() {
       <div>
         <h2 className="text-lg font-semibold">{t("Subtitle providers")}</h2>
         <p className="text-sm text-fg-muted">
-          {t("Searches use this order when results are equally suitable.")}
+          {t(
+            "Every provider here is searched each time, and one failing does not stop the others. Results are ranked by language and how well they match your file; this order only breaks ties.",
+          )}
         </p>
       </div>
       {config.error ? (
@@ -71,6 +94,7 @@ export function SubtitleProviders() {
               <span className="min-w-0 flex-1 truncate">
                 {p.name ||
                   textOf(registry.descriptors.find((d) => d.id === p.kind)?.label) ||
+                  BUILTIN_NAMES[p.kind] ||
                   p.kind}
               </span>
               <Button

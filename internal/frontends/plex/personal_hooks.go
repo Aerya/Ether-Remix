@@ -100,7 +100,7 @@ func (s *Server) decorateDetail(ctx context.Context, pr *Request, t *frontend.Ti
 // recordDetailIntent feeds a single-item detail open to the live
 // session-intent store (#32). Hub/list renders never call this.
 func (s *Server) recordDetailIntent(ctx context.Context, pr *Request, t *frontend.Title) {
-	if s.recommender() == nil || pr.User == nil || t == nil {
+	if s.recommender() == nil || pr.User == nil || t == nil || libraryToolClient(pr) {
 		return
 	}
 	if !s.cfg().Personalize.SessionIntent {

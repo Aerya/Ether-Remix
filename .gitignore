@@ -24,6 +24,7 @@ node_modules/
 !/LEGAL.md
 !/THIRD_PARTY_NOTICES.md
 !/docs/install.md
+!/docs/indexer-operators.md
 !/docs/performance.md
 !/docs/yenc-simd-validation.md
 !/docs/yenc-backend-benchmarks.md

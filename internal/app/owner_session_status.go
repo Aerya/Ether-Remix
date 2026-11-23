@@ -5,20 +5,41 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 // ownerSessionStatus adds console-only fields without changing protocol wire responses.
 type ownerSessionStatus struct {
 	*core.PlaySession
-	IP          string         `json:"ip"`
-	BitrateKbps int64          `json:"bitrateKbps"`
-	SourceVideo string         `json:"sourceVideo"`
-	OutputVideo string         `json:"outputVideo"`
-	SourceAudio string         `json:"sourceAudio"`
-	OutputAudio string         `json:"outputAudio"`
-	Container   string         `json:"container"`
-	RatingKey   core.RatingKey `json:"ratingKey"`
-	Subtitle    string         `json:"subtitle"`
+	IP               string         `json:"ip"`
+	NetworkReason    string         `json:"networkReason,omitempty"`
+	BitrateKbps      int64          `json:"bitrateKbps"`
+	BitrateCapKbps   int            `json:"bitrateCapKbps,omitempty"`
+	BitrateCapSource string         `json:"bitrateCapSource,omitempty"`
+	SourceVideo      string         `json:"sourceVideo"`
+	OutputVideo      string         `json:"outputVideo"`
+	SourceAudio      string         `json:"sourceAudio"`
+	OutputAudio      string         `json:"outputAudio"`
+	Container        string         `json:"container"`
+	RatingKey        core.RatingKey `json:"ratingKey"`
+	Subtitle         string         `json:"subtitle"`
+}
+
+func (a *App) ownerSessionStatusesWithBudget(sessions []*core.PlaySession) []ownerSessionStatus {
+	out := ownerSessionStatuses(sessions)
+	if a == nil {
+		return out
+	}
+	for i := range out {
+		if capKbps, src := a.sessionBudgetCapInfo(out[i].PlaySession); src != "" && capKbps > 0 {
+			out[i].BitrateCapKbps = capKbps
+			out[i].BitrateCapSource = src
+			if out[i].PlaySession != nil && out[i].PlaySession.Decision == core.DecisionTranscode && (out[i].BitrateKbps == 0 || out[i].BitrateKbps > int64(capKbps)) {
+				out[i].BitrateKbps = int64(capKbps)
+			}
+		}
+	}
+	return out
 }
 
 func ownerSessionStatuses(sessions []*core.PlaySession) []ownerSessionStatus {
@@ -31,7 +52,12 @@ func ownerSessionStatuses(sessions []*core.PlaySession) []ownerSessionStatus {
 	return out
 }
 func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
-	out := ownerSessionStatus{PlaySession: p, IP: p.Client.ClientIP, RatingKey: p.Key}
+	out := ownerSessionStatus{
+		PlaySession:   p,
+		IP:            p.Client.ClientIP,
+		NetworkReason: clientnet.LocalityReason(p.Client.ClientIP, p.Client.Remote),
+		RatingKey:     p.Key,
+	}
 	// Direct play and copies carry the source's own bitrate. Delivery speed
 	// (SpeedBps) is bursty — zero while the player's buffer is full, hundreds
 	// of Mbps while it refills — so it is never shown as the stream bitrate.
@@ -70,25 +96,40 @@ func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
 			}
 		}
 	}
+	if audio == nil && !p.Info.Estimated {
+		for i := range p.Info.Streams {
+			st := &p.Info.Streams[i]
+			if st.Type == "audio" {
+				if audio == nil || st.Default {
+					audio = st
+					if st.Default {
+						break
+					}
+				}
+			}
+		}
+	}
 	if audio != nil {
 		out.SourceAudio = audioLabel(audio.Codec, audio.ChannelLayout, audio.Channels)
 	}
-	if p.Decision == core.DecisionDirectPlay || (d != nil && d.VideoCopy) {
-		out.OutputVideo = out.SourceVideo
-	} else if d != nil {
-		h := 0
-		if video != nil && video.Height > 0 {
-			h = video.Height
-			if d.MaxHeight > 0 && d.MaxHeight < h {
-				h = d.MaxHeight
+	if video != nil {
+		if p.Decision == core.DecisionDirectPlay || (d != nil && d.VideoCopy) {
+			out.OutputVideo = out.SourceVideo
+		} else if d != nil {
+			h := 0
+			if video.Height > 0 {
+				h = video.Height
+				if d.MaxHeight > 0 && d.MaxHeight < h {
+					h = d.MaxHeight
+				}
+				h -= h % 2
 			}
-			h -= h % 2
+			rng := ""
+			if d.ToneMap {
+				rng = "SDR"
+			}
+			out.OutputVideo = videoLabel(d.VideoCodec, h, rng)
 		}
-		rng := ""
-		if d.ToneMap {
-			rng = "SDR"
-		}
-		out.OutputVideo = videoLabel(d.VideoCodec, h, rng)
 	}
 	if p.Decision == core.DecisionDirectPlay || (d != nil && d.AudioCopy) {
 		out.OutputAudio = out.SourceAudio

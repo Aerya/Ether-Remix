@@ -8,7 +8,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
-	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func TestTasteEvidenceReusedOnlyWithinViewerRequest(t *testing.T) {
@@ -22,8 +21,7 @@ func TestTasteEvidenceReusedOnlyWithinViewerRequest(t *testing.T) {
 		}
 	})
 	u := core.User{ID: 987}
-	ctx, stats := store.WithQueryStats(reqmemo.With(context.Background()))
-	var firstQueries int64
+	ctx := reqmemo.With(context.Background())
 	var first *Taste
 	for n := range 3 {
 		taste, _, err := h.e.buildTaste(ctx, u)
@@ -34,12 +32,6 @@ func TestTasteEvidenceReusedOnlyWithinViewerRequest(t *testing.T) {
 			first = taste
 		} else if !reflect.DeepEqual(first, taste) {
 			t.Fatal("memo changed taste")
-		}
-		if n == 0 {
-			firstQueries = stats.Queries()
-		}
-		if firstQueries == 0 || stats.Queries() != firstQueries {
-			t.Fatalf("repeated taste changed statement count: first=%d now=%d", firstQueries, stats.Queries())
 		}
 		if i := calls.Load(); i != 1 {
 			t.Fatalf("unexpected repeated load: %d", i)

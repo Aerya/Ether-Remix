@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -39,7 +40,42 @@ func (s *Server) catalogBrowse(ctx context.Context, q frontend.BrowseQuery) (fro
 }
 
 func (s *Server) visibleTitles(u *frontend.User, ts []frontend.Title) []frontend.Title {
-	out := s.visibility().TitlesAllowed(u, ts)
+	return s.visibleTitlesWith(s.visibility(), u, ts)
+}
+
+func (s *Server) visibleTitlesWith(vis frontend.Visibility, u *frontend.User, ts []frontend.Title) []frontend.Title {
+	hasPlugin := false
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() {
+			hasPlugin = true
+			break
+		}
+	}
+	if hasPlugin {
+		catalog := make([]frontend.Title, 0, len(ts))
+		for i := range ts {
+			if !ts[i].Key.IsPluginKey() {
+				catalog = append(catalog, ts[i])
+			}
+		}
+		allowedCat := s.visibleTitlesWith(vis, u, catalog)
+		catOK := make(map[frontend.RatingKey]bool, len(allowedCat))
+		for i := range allowedCat {
+			catOK[allowedCat[i].Key] = true
+		}
+		out := make([]frontend.Title, 0, len(ts))
+		for i := range ts {
+			if ts[i].Key.IsPluginKey() {
+				if s.canSeePluginTitle(u, &ts[i]) {
+					out = append(out, ts[i])
+				}
+			} else if catOK[ts[i].Key] {
+				out = append(out, ts[i])
+			}
+		}
+		return out
+	}
+	out := vis.TitlesAllowed(u, ts)
 	metaSrc := s.libraryMetadata()
 	if !s.needPlexRatingFilter(u) || metaSrc == nil {
 		return out
@@ -66,9 +102,24 @@ func (s *Server) titleAllowed(u *frontend.User, t *frontend.Title) bool {
 	return frontend.TitleAllowed(s.policy(), u, t) && s.plexMetaRatingAllowed(u, t)
 }
 
-func (s *Server) visibility() frontend.Visibility {
-	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(), ThemeGrant: frontend.PSEThemeGrant, // PSE-HOOK: titre ouvert par une bibliothèque Remix accordée — voir docs/pse/FORK.fr.md
-		SectionFor: func(t frontend.MediaType) (int, bool) { sec, ok := s.untitledSectionFor(t); return sec.ID, ok }}
+func titleInSectionType(titleType, sectionType frontend.MediaType) bool {
+	switch sectionType {
+	case frontend.TypeMovie:
+		return titleType == frontend.TypeMovie
+	case frontend.TypeShow:
+		switch titleType {
+		case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+			return true
+		}
+		return false
+	default:
+		return sectionType != "" && titleType == sectionType
+	}
+}
+
+func (s *Server) visibilityWithSectionFor(sectionFor func(frontend.MediaType) (int, bool)) frontend.Visibility {
+	v := frontend.Visibility{ThemeGrant: frontend.PSEThemeGrant, Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(),
+		SectionFor: sectionFor}
 	if s.catalog() != nil {
 		v.GetTitle = s.seriesTitle
 	}
@@ -78,12 +129,76 @@ func (s *Server) visibility() frontend.Visibility {
 	return v
 }
 
+func (s *Server) visibility() frontend.Visibility {
+	return s.visibilityCtx(context.Background())
+}
+
+func (s *Server) visibilityCtx(ctx context.Context) frontend.Visibility {
+	// Resolve the published sections once per Visibility (and per request
+	// via reqmemo when ctx carries one): title checks run for every row of a
+	// hub or batch, and each section listing reads published libraries again.
+	var once sync.Once
+	var movie, show Section
+	var movieOK, showOK bool
+	sectionFor := func(t frontend.MediaType) (int, bool) {
+		once.Do(func() {
+			secs := s.getSectionsCtx(ctx)
+			for _, sec := range secs {
+				if isKindSection(sec) {
+					continue
+				}
+				if !movieOK && sec.Type == frontend.TypeMovie {
+					movie, movieOK = sec, true
+				}
+				if !showOK && sec.Type == frontend.TypeShow {
+					show, showOK = sec, true
+				}
+			}
+			for _, sec := range secs {
+				if !movieOK && sec.Type == frontend.TypeMovie {
+					movie, movieOK = sec, true
+				}
+				if !showOK && sec.Type == frontend.TypeShow {
+					show, showOK = sec, true
+				}
+			}
+		})
+		switch t {
+		case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+			return show.ID, showOK
+		}
+		return movie.ID, movieOK
+	}
+	return s.visibilityWithSectionFor(sectionFor)
+}
+
+// sectionVisibility scopes visibility to one section's media type and library
+// authorization: titles of any other media type are rejected, and library
+// access is checked against sec.ID rather than the canonical section for that
+// media type.
+func (s *Server) sectionVisibility(sec Section) frontend.Visibility {
+	if sec.ID == 0 {
+		return s.visibility()
+	}
+	return s.visibilityWithSectionFor(func(t frontend.MediaType) (int, bool) {
+		if titleInSectionType(t, sec.Type) {
+			return sec.ID, true
+		}
+		return 0, false
+	})
+}
+
 // openableTitles is the common row/detail admission decision. A pinned shelf
 // retains its availability cut, but never bypasses current authorization.
 func (s *Server) openableTitles(ctx context.Context, u *frontend.User, ts []frontend.Title, pinned bool) []frontend.Title {
+	return s.openableTitlesWith(ctx, s.visibility(), u, ts, pinned)
+}
+
+func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility, u *frontend.User, ts []frontend.Title, pinned bool) []frontend.Title {
 	// Plugin items are authorized by the Experience when projected; the
 	// catalogue openability and built-in visibility checks do not know them,
 	// so keep them without those filters (spec §6.4).
+	orig := ts
 	var kind, catalog []frontend.Title
 	for i := range ts {
 		if ts[i].Key.IsPluginKey() {
@@ -92,29 +207,53 @@ func (s *Server) openableTitles(ctx context.Context, u *frontend.User, ts []fron
 			catalog = append(catalog, ts[i])
 		}
 	}
-	out := kind[:0]
-	for i := range kind {
-		if s.plexMetaRatingAllowed(u, &kind[i]) {
-			out = append(out, kind[i])
+	if len(kind) > 0 && len(catalog) == 0 {
+		out := kind[:0]
+		for i := range kind {
+			if s.canSeePluginTitle(u, &kind[i]) {
+				out = append(out, kind[i])
+			}
 		}
+		return out
 	}
 	ts = catalog
-	ts = s.visibleTitles(u, ts)
+	ts = s.visibleTitlesWith(vis, u, ts)
 	ctx = s.withSeriesRows(ctx, u, ts)
 	if !pinned {
-		ts = s.availableForViewer(ctx, u, ts)
+		ts = vis.Available(ctx, u, ts)
 	}
+	if len(kind) == 0 {
+		out := make([]frontend.Title, 0, len(ts))
+		for _, t := range ts {
+			_, admitted := shelfMember(ctx, t.Key)
+			if (admitted || s.admittedTitle(&t)) && vis.Playable(ctx, u, &t) && s.plexMetaRatingAllowed(u, &t) {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	catOK := make(map[frontend.RatingKey]bool, len(ts))
 	for _, t := range ts {
 		_, admitted := shelfMember(ctx, t.Key)
-		if (admitted || s.admittedTitle(&t)) && s.playableTitle(ctx, u, &t) {
-			out = append(out, t)
+		if (admitted || s.admittedTitle(&t)) && vis.Playable(ctx, u, &t) && s.plexMetaRatingAllowed(u, &t) {
+			catOK[t.Key] = true
+		}
+	}
+	out := make([]frontend.Title, 0, len(orig))
+	for i := range orig {
+		if orig[i].Key.IsPluginKey() {
+			if s.canSeePluginTitle(u, &orig[i]) {
+				out = append(out, orig[i])
+			}
+		} else if catOK[orig[i].Key] {
+			out = append(out, orig[i])
 		}
 	}
 	return out
 }
 
 func (s *Server) visibleTitle(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
-	return s.visibleTitleWith(ctx, s.visibility(), u, t)
+	return s.visibleTitleWith(ctx, s.visibilityCtx(ctx), u, t)
 }
 
 // visibleTitleWith is visibleTitle through vis (s.visibility() with a
@@ -144,7 +283,10 @@ func (s *Server) admittedTitle(t *frontend.Title) bool {
 }
 
 func (s *Server) playableTitle(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
-	return s.visibility().Playable(ctx, u, t) && s.plexMetaRatingAllowed(u, t)
+	if t != nil && (t.MediaClass == frontend.MediaClassBook || t.MBItemType == "Book") {
+		return false
+	}
+	return s.visibilityCtx(ctx).Playable(ctx, u, t) && s.plexMetaRatingAllowed(u, t)
 }
 
 // pluginAwarePlayable is playableTitle for plugin items. A plugin item's
@@ -154,13 +296,43 @@ func (s *Server) playableTitle(ctx context.Context, u *frontend.User, t *fronten
 // the Experience when the metadata lookup succeeds (it checks the viewer
 // against the owning library), so no built-in section check applies.
 func (s *Server) pluginAwarePlayable(ctx context.Context, u *frontend.User, t *frontend.Title) bool {
+	if t != nil && (t.MediaClass == frontend.MediaClassBook || t.MBItemType == "Book") {
+		return false
+	}
 	if t != nil && t.Key.IsPluginKey() {
 		return s.plexMetaRatingAllowed(u, t)
 	}
 	return s.playableTitle(ctx, u, t)
 }
 func (s *Server) availableForViewer(ctx context.Context, u *frontend.User, ts []frontend.Title) []frontend.Title {
-	return s.visibility().Available(ctx, u, ts)
+	hasPlugin := false
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() {
+			hasPlugin = true
+			break
+		}
+	}
+	if !hasPlugin {
+		return s.visibility().Available(ctx, u, ts)
+	}
+	catalog := make([]frontend.Title, 0, len(ts))
+	for i := range ts {
+		if !ts[i].Key.IsPluginKey() {
+			catalog = append(catalog, ts[i])
+		}
+	}
+	avail := s.visibility().Available(ctx, u, catalog)
+	catOK := make(map[frontend.RatingKey]bool, len(avail))
+	for i := range avail {
+		catOK[avail[i].Key] = true
+	}
+	out := make([]frontend.Title, 0, len(ts))
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() || catOK[ts[i].Key] {
+			out = append(out, ts[i])
+		}
+	}
+	return out
 }
 
 func (s *Server) viewerRestricted(u *frontend.User) bool {

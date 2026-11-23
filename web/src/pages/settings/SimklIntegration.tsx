@@ -13,7 +13,7 @@ const FIELDS = localized<FieldDef[]>(() => [
 /**
  * Simkl's app credentials (Integrations › Simkl and its setup drawer). The
  * on/off switch is the Integrations overview card; each viewer connects their
- * own account from their Limits tab.
+ * own account from their Sign-in & devices tab.
  */
 export function SimklSettings({
   value,
@@ -29,7 +29,9 @@ export function SimklSettings({
   return (
     <SettingsSection
       title={undefined}
-      description={t("Each viewer connects their own Simkl account from their Limits tab.")}
+      description={t(
+        "Each viewer connects their own Simkl account from their Sign-in & devices tab.",
+      )}
       footer={footer ?? undefined}
     >
       {FIELDS.map((f) => (

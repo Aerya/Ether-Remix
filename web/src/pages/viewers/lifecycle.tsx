@@ -22,10 +22,10 @@ export function lifecycleOf(viewer: Viewer): ViewerLifecycle {
   const fromPlex = viewer.plexId > 0;
   return {
     source: fromPlex ? "plex" : "local",
-    paused: viewerStatus(viewer) === "inactive",
+    paused: !fromPlex && viewerStatus(viewer) === "inactive",
     plexShared: fromPlex ? viewerStatus(viewer) === "active" : undefined,
     managedBy: fromPlex ? "plex" : "",
-    canPause: !fromPlex,
+    canPause: true,
     canRemove: !fromPlex,
     canMerge: !fromPlex,
   };
@@ -57,9 +57,9 @@ export function isActiveViewer(viewer: Viewer): boolean {
 }
 
 /**
- * Status and source badges for one person. Plex accounts are managed on
- * plex.tv, so they never show Ether-controlled states like Paused; a Plex
- * share that ended reads "No longer shared".
+ * Status and source badges for one person. Plex accounts distinguish the
+ * owner's pause ("Paused by owner") from plex.tv share status
+ * ("Not shared on plex.tv" / "Managed on plex.tv").
  */
 export function LifecycleBadges({
   viewer,
@@ -72,17 +72,20 @@ export function LifecycleBadges({
   if (viewer.isOwner) {
     return <Badge variant="default">{t("Owner")}</Badge>;
   }
-  const badges: { label: string; variant: "success" | "warning" | "default" | "secondary" }[] = [];
-  if (isPlexSource(life.source)) {
-    if (!plexConnected) {
-      // Without Plex nothing Plex-related shows; fall through to plain status.
-    } else if (life.plexShared === false) {
-      badges.push({ label: t("No longer shared"), variant: "warning" });
+  const badges: {
+    label: string;
+    variant: "success" | "warning" | "default" | "secondary" | "outline";
+  }[] = [];
+  if (isPlexSource(life.source) && plexConnected) {
+    if (life.paused) {
+      badges.push({ label: t("Paused by owner"), variant: "warning" });
+    }
+    if (life.plexShared === false) {
+      badges.push({ label: t("Not shared on plex.tv"), variant: "outline" });
     } else {
       badges.push({ label: t("Managed on plex.tv"), variant: "secondary" });
     }
-  }
-  if (!isPlexSource(life.source) || !plexConnected) {
+  } else {
     if (viewerStatus(viewer) === "imported") {
       badges.push({ label: t("Imported history"), variant: "default" });
     } else if (life.paused) {

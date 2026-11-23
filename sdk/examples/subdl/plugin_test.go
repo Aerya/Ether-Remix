@@ -3,6 +3,7 @@ package subdl_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -17,11 +18,15 @@ type fixtureHost struct {
 	plugins.Host
 	calls      []string
 	badArchive bool
+	missingKey bool
 }
 
 func (h *fixtureHost) SecretGet(_ context.Context, name string) (string, error) {
 	if name != "apiKey" {
 		return "", nil
+	}
+	if h.missingKey {
+		return "", fmt.Errorf("%w: secret %s is not saved", plugins.ErrUnavailable, name)
 	}
 	return "fixture-key", nil
 }
@@ -46,7 +51,7 @@ func TestHostedSearchAndPick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := &fixtureHost{}
+	host := &fixtureHost{missingKey: true}
 	eng := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer eng.Close()
 	rt, err := plugins.HostedRuntimeFactory(eng)(plugins.Installed{ID: man.ID, Manifest: man, Host: host, Files: func(path string) ([]byte, bool) { b, e := os.ReadFile(path); return b, e == nil }})
@@ -62,6 +67,17 @@ func TestHostedSearchAndPick(t *testing.T) {
 		}
 		return r
 	}
+	// Before an API key is saved, test and search degrade cleanly instead of throwing.
+	unconfiguredTest := call(plugins.Request{Method: "POST", Path: "/ether/test"})
+	if unconfiguredTest.Status != 200 || !strings.Contains(string(unconfiguredTest.Body), `"ok":false`) {
+		t.Fatalf("unconfigured test: %d %s", unconfiguredTest.Status, unconfiguredTest.Body)
+	}
+	unconfiguredList := call(plugins.Request{Method: "GET", Path: "/subtitles/movie/tt1234567.json"})
+	if unconfiguredList.Status != 200 || !strings.Contains(string(unconfiguredList.Body), `"subtitles":[]`) || len(host.calls) != 0 {
+		t.Fatalf("unconfigured list: %d %s calls=%v", unconfiguredList.Status, unconfiguredList.Body, host.calls)
+	}
+
+	host.missingKey = false
 	configure := call(plugins.Request{Method: "POST", Path: "/ether/configure", Body: []byte(`{"apiKey":"fixture-key"}`)})
 	if configure.Status != 200 {
 		t.Fatal(string(configure.Body))
@@ -96,5 +112,4 @@ func TestHostedSearchAndPick(t *testing.T) {
 	if invalid.Status < 400 {
 		t.Fatalf("invalid archive accepted: %d %s", invalid.Status, invalid.Body)
 	}
-
 }

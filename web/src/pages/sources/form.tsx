@@ -237,15 +237,18 @@ export function RecordItem({
 export function useTests() {
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const runTest = useCallback(
-    (key: string, fn: () => Promise<{ ok: boolean; error?: string; durationMs: number }>) => {
+    (
+      key: string,
+      fn: () => Promise<{ ok: boolean; message?: string; error?: string; durationMs: number }>,
+    ) => {
       setTests((s) => ({ ...s, [key]: { status: "running" } }));
       fn().then(
         (r) =>
           setTests((s) => ({
             ...s,
             [key]: r.ok
-              ? { status: "ok", durationMs: r.durationMs }
-              : { status: "fail", message: r.error ?? t("failed") },
+              ? { status: "ok", durationMs: r.durationMs, message: r.message }
+              : { status: "fail", message: r.error ?? r.message ?? t("failed") },
           })),
         (e) =>
           setTests((s) => ({ ...s, [key]: { status: "fail", message: (e as Error).message } })),
@@ -323,6 +326,7 @@ export function RecordDrawer({
   onRemove,
   removeLabel = t("Remove"),
   removeDisabled,
+  subtabs,
   tools,
   error,
   children,
@@ -343,6 +347,7 @@ export function RecordDrawer({
   onRemove?: () => void;
   removeLabel?: string;
   removeDisabled?: boolean;
+  subtabs?: ReactNode;
   /** Extra footer controls on the left, e.g. a connection test. */
   tools?: ReactNode;
   error?: unknown;
@@ -354,6 +359,7 @@ export function RecordDrawer({
       onClose={onClose}
       title={title}
       description={description}
+      subtabs={subtabs}
       size="lg"
       footer={
         <div className="flex w-full flex-wrap items-center gap-2">

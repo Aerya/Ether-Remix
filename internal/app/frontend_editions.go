@@ -85,10 +85,38 @@ func (s surfaceEditions) EditionsMany(ctx context.Context, _ *core.Viewer, _ cor
 }
 
 func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil {
+		return nil, nil
+	}
+	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
+		vctx := ctx
+		if core.IndexerPurpose(vctx) == "" {
+			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
+		}
+		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)
+		if err != nil || len(variants) == 0 {
+			return nil, err
+		}
+		if s.app.playback != nil {
+			variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
+		}
+		if max > 0 && len(variants) > max {
+			variants = variants[:max]
+		}
+		return variants, nil
+	}
+	if s.app.resolver == nil {
 		return nil, nil
 	}
 	req.User = s.app.withEffectiveAudioLanguages(ctx, req.User)
+	if req.PlayedRelease == "" && s.app.playback != nil && req.User != nil && req.User.ID > 0 && req.Title != nil {
+		if _, played, sel, ok := s.app.playback.ResumedVersion(ctx, req.User, req.Title.Key, req.Client); ok {
+			req.PlayedRelease = played.ID
+			req.PlayedSelector = sel
+			relCopy := played
+			req.PlayedReleaseRecord = &relCopy
+		}
+	}
 	variants, err := s.app.resolver.Variants(ctx, req, max)
 	if err == nil && s.app.playback != nil {
 		variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
@@ -97,7 +125,7 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 }
 
 func (s surfaceEditions) RefillSearchCache(t *core.Title) <-chan struct{} {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil || s.app.resolver == nil || t == nil || t.Key.IsPluginKey() {
 		return nil
 	}
 	return s.app.resolver.RefillSearchCache(t)
@@ -111,15 +139,72 @@ func (s surfaceEditions) Available(ctx context.Context, key core.RatingKey) (boo
 }
 
 func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveRequest, max int, labels bool) ([]core.ReleaseVariant, error) {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil {
+		return nil, nil
+	}
+	// A plugin kind item's version menu is its /resolve sources (Auto +
+	// remaining releases), listed through the KindResolver cache. Never call
+	// plugin /resolve on list renders (labels == false); only on detail or
+	// play intent (labels == true).
+	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
+		if !labels {
+			return nil, nil
+		}
+		vctx := ctx
+		if core.IndexerPurpose(vctx) == "" {
+			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
+		}
+		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)
+		if err != nil || len(variants) == 0 {
+			return nil, err
+		}
+		if s.app.playback != nil {
+			variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
+		}
+		if max > 0 && len(variants) > max {
+			variants = variants[:max]
+		}
+		return variants, nil
+	}
+	if req.Title != nil {
+		if vs, ok := labMediaVariants(s.app.opts.DataDir, req.Title); ok {
+			for i := range vs {
+				vs[i].Availability = core.VersionInstant
+			}
+			return vs, nil
+		}
+	}
+	if s.app.resolver == nil {
 		return nil, nil
 	}
 	if labels {
 		req.User = s.app.withEffectiveAudioLanguages(ctx, req.User)
+		if req.PlayedRelease == "" && s.app.playback != nil && req.User != nil && req.User.ID > 0 && req.Title != nil {
+			if _, played, sel, ok := s.app.playback.ResumedVersion(ctx, req.User, req.Title.Key, req.Client); ok {
+				req.PlayedRelease = played.ID
+				req.PlayedSelector = sel
+				relCopy := played
+				req.PlayedReleaseRecord = &relCopy
+			}
+		}
 	}
 	versions, err := s.app.resolver.VersionSlots(ctx, req, max, labels)
 	if err == nil && labels && s.app.playback != nil {
 		versions = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, versions)
 	}
 	return versions, err
+}
+
+func (s surfaceEditions) ViewerChoiceFor(ctx context.Context, viewer *core.Viewer, title *core.Title) (*core.ViewerChoiceSummary, error) {
+	if s.app == nil || s.app.resolver == nil {
+		return nil, nil
+	}
+	return s.app.resolver.ViewerChoiceSummary(ctx, viewer, title)
+}
+
+func (s surfaceEditions) ClearViewerChoice(ctx context.Context, viewer *core.Viewer, title *core.Title, scope string) (bool, error) {
+	if s.app == nil || s.app.resolver == nil || viewer == nil {
+		return false, nil
+	}
+	return s.app.resolver.ClearViewerChoice(ctx, viewer.ID, title, scope)
 }

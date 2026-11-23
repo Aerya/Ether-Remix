@@ -130,7 +130,7 @@ func init() {
 
 // Every browse now filters on release_known=1 as well (pre-1970 dates are
 // known), and release_known is a generated column the count index did not
-// hold, so a library total read every title row again. The index now holds
+// hold, so a library-wide count read every title row again. The index now holds
 // it, and sort_title, so the Plex jump bar's per-letter counts read the
 // index alone too.
 func init() {
@@ -176,12 +176,11 @@ func (c *Catalog) MatchPeople(ctx context.Context, terms []string, limit int) ([
 	if limit <= 0 {
 		return nil, nil
 	}
-	// No name: the most credited people, from the credit-count order.
-	q, args := `SELECT person_tmdb, name, credits FROM catalog_person_names WHERE credits>0 ORDER BY credits DESC, person_tmdb LIMIT ?`, []any{limit}
 	if len(terms) > 0 {
-		q, args = c.matchPeopleSQL(terms, limit)
+		return c.matchPeople(ctx, terms, limit)
 	}
-	rows, err := c.db.QueryContext(ctx, q, args...)
+	// No name: the most credited people, from catalog_person_names_credits.
+	rows, err := c.db.QueryContext(ctx, `SELECT person_tmdb, name, credits FROM catalog_person_names WHERE credits>0 ORDER BY credits DESC, person_tmdb LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -201,18 +200,32 @@ func (c *Catalog) matchPeopleSQL(terms []string, limit int) (string, []any) {
 	var q string
 	var args []any
 	if store.DialectOf(c.db) == store.Postgres {
-		conds := make([]string, len(terms))
-		for i, term := range terms {
-			conds[i] = "name ILIKE ? ESCAPE '\\'"
-			args = append(args, "%"+escapeLike(term)+"%")
+		var conds []string
+		for _, term := range terms {
+			folded := foldPersonQueryTerm(term)
+			if folded == "" {
+				continue
+			}
+			if utf8.RuneCountInString(folded) < 3 {
+				conds = append(conds, `(catalog_fold_person_name(name) COLLATE "C") LIKE ? ESCAPE '\'`)
+				args = append(args, escapeLike(folded)+"%")
+			} else {
+				conds = append(conds, `catalog_fold_person_name(name) LIKE ? ESCAPE '\'`)
+				args = append(args, "%"+escapeLike(folded)+"%")
+			}
 		}
-		q = `SELECT person_tmdb, name, credits FROM catalog_person_names WHERE credits>0 AND ` + strings.Join(conds, " AND ") + ` ORDER BY credits DESC, person_tmdb LIMIT ?`
+		if len(conds) == 0 {
+			return `SELECT person_tmdb, name, credits FROM catalog_person_names WHERE FALSE LIMIT ?`, []any{limit}
+		}
+		q = `SELECT person_tmdb, name, credits FROM catalog_person_names WHERE credits>0 AND ` + strings.Join(conds, " AND ") + ` LIMIT ?`
 	} else {
 		// The index keeps no positions (detail=none), so every quoted
 		// string must be one token: a term the tokenizer would split, such
 		// as "o’brien" typed with a curly apostrophe, becomes a prefix per
 		// word instead of a phrase FTS5 refuses. Splitting on more than
 		// unicode61 does only widens the candidate set callers recheck.
+		// Sorting happens in Go on the bounded candidate set so SQLite never
+		// materializes a temp B-tree over all FTS postings for broad terms.
 		var parts []string
 		for _, term := range terms {
 			for _, word := range strings.FieldsFunc(term, func(r rune) bool {
@@ -226,7 +239,7 @@ func (c *Catalog) matchPeopleSQL(terms []string, limit int) (string, []any) {
 		}
 		args = append(args, strings.Join(parts, " "))
 		q = `SELECT p.person_tmdb, p.name, p.credits FROM catalog_person_names_fts f JOIN catalog_person_names p ON p.person_tmdb=f.rowid
-			WHERE catalog_person_names_fts MATCH ? AND p.credits>0 ORDER BY p.credits DESC, p.person_tmdb LIMIT ?`
+			WHERE catalog_person_names_fts MATCH ? AND p.credits>0 LIMIT ?`
 	}
 	args = append(args, limit)
 	return q, args

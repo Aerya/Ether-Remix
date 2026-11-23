@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,25 +35,29 @@ CREATE TABLE livetv_policies(user_id INTEGER PRIMARY KEY, data TEXT NOT NULL);`)
 }
 
 type Service struct {
-	guideRatingsMu                            sync.Mutex
-	guideRatings                              *guideRatingIndex
 	searchDemanded                            atomic.Bool
 	searchVirtualMu                           sync.Mutex
 	searchVirtualSnapshots                    map[string]virtualSearchIndexedSnapshot
 	searchMu                                  sync.Mutex
 	searchBuilding, searchReady, searchClosed bool
+	searchDone                                chan struct{}
 
-	ownerGuidesMu    sync.Mutex
-	ownerGuideGroups []guideChoice
-	ownerGuideRev    int64
-	loginPool        loginPool
-	closeOnce        sync.Once
-	lifetimeStop     chan struct{}
-	lifetimeDone     chan struct{}
-	lifetimeWake     chan struct{}
-	hasChannels      atomic.Bool
-	lifecycleMu      sync.Mutex
-	running          bool
+	ownerGroupsMu        sync.Mutex
+	ownerGroupsIndex     *ownerGroupIndex
+	ownerGroupsIndexRev  int64
+	ownerGroupChoices    []OwnerGroupChoice
+	ownerGroupChoicesRev int64
+	inputMergeMu         sync.Mutex
+	inputMergeIdx        *inputMergeIndex
+	inputMergeRev        int64
+	loginPool            loginPool
+	closeOnce            sync.Once
+	lifetimeStop         chan struct{}
+	lifetimeDone         chan struct{}
+	lifetimeWake         chan struct{}
+	hasChannels          atomic.Bool
+	lifecycleMu          sync.Mutex
+	running              bool
 
 	readinessWake         chan struct{}
 	readiness             map[string]channelReadiness
@@ -60,6 +65,7 @@ type Service struct {
 	programmeSubs         map[string]Programme
 	activityWake          chan struct{}
 	noActivitySources     atomic.Bool
+	hasOnDemand           atomic.Bool
 	sourceWake            chan struct{}
 	vodWake               chan struct{}
 	maintainWake          chan struct{}
@@ -67,7 +73,8 @@ type Service struct {
 	personalWake          chan struct{}
 	sweepWake             chan struct{}
 	showcasePendingTotals map[string][2]int
-	lastClientActivity    time.Time // guarded by mu
+	lastClientActivity    time.Time            // guarded by mu
+	sourceUsed            map[string]time.Time // guarded by mu
 	vodRefreshMu          sync.Mutex
 	maintenance           maintenanceHealth
 	virtualGuide          virtualGuideCache
@@ -95,6 +102,8 @@ type Service struct {
 	probeWait             map[string]*liveProbeFlight
 	healthMu              sync.RWMutex
 	channelHealth         map[string]sweepResult
+	healthRev             atomic.Uint64
+	nextHealthExpiry      atomic.Int64 // earliest future UnixNano cooldown/failure expiry, 0 if none
 	sourceMu              sync.Mutex
 	sourceHealth          map[string]streamSourceHealth
 	history               sourceHistoryStore // learned per-source evidence (source_history.go)
@@ -110,11 +119,15 @@ type Service struct {
 	sessions              map[string]*session
 	// watched is when each channel was last tuned or playing (guarded by
 	// mu). activeWatched tracks channels with an active viewer right now.
-	watched       map[string]time.Time
-	activeWatched map[string]time.Time
-	warmMu        sync.Mutex
-	warmed        map[warmTarget]time.Time
-	vis           broadcastVisibilityState
+	// viewerWatched tracks bounded per-viewer recent channel tunes for
+	// sports watch-target preference ranking.
+	watched          map[string]time.Time
+	activeWatched    map[string]time.Time
+	viewerWatched    map[int64]map[string]time.Time
+	viewerWatchedGen map[int64]uint64
+	warmMu           sync.Mutex
+	warmed           map[warmTarget]time.Time
+	vis              broadcastVisibilityState
 
 	progressMu       sync.Mutex
 	progress         map[string]*progressTracker
@@ -255,6 +268,9 @@ func (s *Service) ReconcileEnabled() {
 		s.sessions = map[string]*session{}
 		s.watched = nil
 		s.activeWatched = nil
+		s.viewerWatched = nil
+		s.viewerWatchedGen = nil
+		s.sourceUsed = nil
 		s.mu.Unlock()
 		for _, ss := range all {
 			ss.close(s)
@@ -395,6 +411,9 @@ func (s *Service) invalidate(channelID, sourceID string) {
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
 		ss.close(s)
+		if s.o.SessionExpired != nil {
+			s.o.SessionExpired(ss.info.ID)
+		}
 	}
 	if len(stale) > 0 {
 		s.notifySessionsChanged()
@@ -477,25 +496,31 @@ func (s *Service) maintain() {
 				steps("warmProgrammes", s.warmProgrammes)
 			}
 		}
-		timer.Reset(15 * time.Second)
-		select {
-		case <-s.serviceContext().Done():
-			return
-		case <-s.graphicsWake:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
+		lastSlow := s.o.Now()
+		for s.maintainActive() {
+			timer.Reset(5 * time.Second)
+			select {
+			case <-s.serviceContext().Done():
+				return
+			case <-s.graphicsWake:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
-			}
-			steps("refreshReels", s.refreshReels)
-		case <-timer.C:
-			steps("expireSessions", s.expireSessions)
-			steps("expireBroadcasts", func() { s.broadcasts.expire(s.o.Now()) })
-			steps("refreshReels", s.refreshReels)
-			steps("ensureGraphics", s.ensureGraphics)
-			if s.o.Warm != nil {
-				steps("warmProgrammes", s.warmProgrammes)
+				steps("refreshReels", s.refreshReels)
+			case <-timer.C:
+				steps("expireSessions", s.expireSessions)
+				steps("expireBroadcasts", func() { s.broadcasts.expire(s.o.Now()) })
+				if now := s.o.Now(); now.Sub(lastSlow) >= 15*time.Second {
+					lastSlow = now
+					steps("refreshReels", s.refreshReels)
+					steps("ensureGraphics", s.ensureGraphics)
+					if s.o.Warm != nil {
+						steps("warmProgrammes", s.warmProgrammes)
+					}
+				}
 			}
 		}
 	}
@@ -573,6 +598,7 @@ func (s *Service) warmProgrammes() {
 }
 
 func (s *Service) expireSessions() {
+	now := s.o.Now()
 	s.mu.Lock()
 	var stale []*session
 	for id, ss := range s.sessions {
@@ -581,11 +607,7 @@ func (s *Service) expireSessions() {
 		if !ss.mu.TryLock() {
 			continue
 		}
-		ttl := 2 * time.Minute
-		if !ss.mediaStarted {
-			ttl = 30 * time.Second
-		}
-		expired := s.o.Now().Sub(ss.last) > ttl
+		expired := s.sessionLivenessLocked(ss, now).Expired
 		ss.mu.Unlock()
 		if expired {
 			stale = append(stale, ss)
@@ -595,7 +617,10 @@ func (s *Service) expireSessions() {
 	s.mu.Unlock()
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
-		ss.close(s)
+		ss.closeExpired(s)
+		if s.o.SessionExpired != nil {
+			s.o.SessionExpired(ss.info.ID)
+		}
 	}
 	if len(stale) > 0 {
 		s.notifySessionsChanged()
@@ -662,7 +687,8 @@ func itemFromTitle(t core.Title) Item {
 	if !t.Released.IsZero() {
 		released = t.Released.UnixMilli()
 	}
-	return Item{Key: t.Key, Title: t.Title, DurationMS: t.Runtime.Milliseconds(), Summary: t.Summary, Rating: t.ContentRating, Thumb: t.PosterPath, ShowKey: t.ShowKey, Season: t.Season, Episode: t.Episode, ReleasedMS: released}
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	return Item{Key: t.Key, Title: t.Title, DurationMS: t.Runtime.Milliseconds(), Summary: t.Summary, Rating: t.ContentRating, EnforcementRating: enf, Thumb: t.PosterPath, ShowKey: t.ShowKey, Season: t.Season, Episode: t.Episode, ReleasedMS: released}
 }
 func (s *Service) expand(ctx context.Context, c *Channel) error {
 	var prepare func([]ProgramSource, string)
@@ -933,6 +959,17 @@ func validateChannel(c *Channel) error {
 		return err
 	}
 	c.HiddenApps = apps
+	shown, err := normalizeHiddenApps(c.ShownApps)
+	if err != nil {
+		return err
+	}
+	if len(shown) > 0 && len(apps) > 0 {
+		shown = slices.DeleteFunc(shown, func(app string) bool { return slices.Contains(apps, app) })
+		if len(shown) == 0 {
+			shown = nil
+		}
+	}
+	c.ShownApps = shown
 	if c.Look != nil {
 		if err := c.Look.Bug.Validate(); err != nil {
 			return err
@@ -977,9 +1014,19 @@ func validateChannel(c *Channel) error {
 		return fmt.Errorf("kind must be virtual or iptv")
 	}
 	if c.Kind == "iptv" {
+		m, err := normalizeChannelInputMerge(c.InputMerge)
+		if err != nil {
+			return err
+		}
+		c.InputMerge = m
 		if err := normalizeStreamSources(c); err != nil {
 			return err
 		}
+	} else {
+		c.InputMerge = nil
+		c.MergedInto = ""
+		c.SuppressedAutoBackups = nil
+		c.OwnerStreamSources = false
 	}
 	if c.Personal == nil && c.Kind == "virtual" && len(c.Items) == 0 && len(c.Blocks) == 0 && len(c.Pins) == 0 && !c.OffAir && len(c.Fallback) == 0 {
 		return fmt.Errorf("virtual channel needs base programming")
@@ -1094,12 +1141,17 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 	if c.ID == "" {
 		c.ID = randomID()
 	}
+	var old Channel
+	var hasOld bool
 	if c.LogoMatched || c.Kind == "iptv" {
-		old, err := s.Channel(ctx, c.ID)
-		if err == nil {
+		if prev, err := s.Channel(ctx, c.ID); err == nil {
+			old = prev
+			hasOld = true
 			c.ProviderAdult = old.ProviderAdult
+			c.ProviderNumber = old.ProviderNumber
+			c.ProviderGuideID = old.ProviderGuideID
 		}
-		if err != nil || !old.LogoMatched || old.Logo != c.Logo {
+		if !hasOld || !old.LogoMatched || old.Logo != c.Logo {
 			c.LogoMatched = false
 		}
 	}
@@ -1113,20 +1165,19 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 			return c, err
 		}
 	}
+	reconcileSavedAutoBackups(&c, old, hasOld)
 	if err := validateChannel(&c); err != nil {
 		return c, err
 	}
-	b, err := json.Marshal(c)
-	if err != nil {
-		return c, err
-	}
-	_, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_channels(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, c.ID, b)
+	invalidated, err := s.saveChannelWithMerges(ctx, &c)
 	if err == nil {
 		if !c.Enabled {
 			s.cancelGraphics(c.ID)
 		}
 		s.captureBreakOwner(ctx, c.ID)
-		s.invalidate(c.ID, "")
+		for _, cid := range invalidated {
+			s.invalidate(cid, "")
+		}
 		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return c, err
 		}
@@ -1149,8 +1200,34 @@ func (s *Service) cancelGraphics(channelID string) {
 }
 
 func (s *Service) DeleteChannel(ctx context.Context, id string) error {
-	_, err := s.o.DB.ExecContext(ctx, `DELETE FROM livetv_channels WHERE id=?`, id)
+	tx, err := s.o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var invalidated []string
+	if _, err = tx.ExecContext(ctx, `DELETE FROM livetv_channels WHERE id=?`, id); err != nil {
+		return err
+	}
+	mergedChanged, inv, err := s.reconcileInputMergesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	autoChanged, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+	if err != nil {
+		return err
+	}
+	invalidated = append(inv, autoInv...)
+	if mergedChanged || autoChanged {
+		if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+			return err
+		}
+	}
+	err = tx.Commit()
 	if err == nil {
+		for _, cid := range invalidated {
+			s.invalidate(cid, "")
+		}
 		s.cancelGraphics(id)
 		s.mu.Lock()
 		delete(s.breakOwners, id)
@@ -1229,6 +1306,14 @@ func (s *Service) SavePolicy(ctx context.Context, p Policy) error {
 	return err
 }
 func (s *Service) allowed(ctx context.Context, u *core.User, c Channel, p *Programme) bool {
+	return s.allowedOpts(ctx, u, c, p, false)
+}
+
+func (s *Service) allowedForWatch(ctx context.Context, u *core.User, c Channel, p *Programme) bool {
+	return s.allowedOpts(ctx, u, c, p, true)
+}
+
+func (s *Service) allowedOpts(ctx context.Context, u *core.User, c Channel, p *Programme, skipSweep bool) bool {
 	if !s.Enabled() {
 		return false
 	}
@@ -1243,7 +1328,7 @@ func (s *Service) allowed(ctx context.Context, u *core.User, c Channel, p *Progr
 			}
 		}
 	}
-	return s.allowedWithLookup(ctx, u, c, p, lookup, false)
+	return s.allowedWithLookupOpts(ctx, u, c, p, lookup, false, skipSweep)
 }
 
 type loadedPolicyKey struct{}
@@ -1254,8 +1339,8 @@ type loadedPolicy struct {
 	pol  Policy
 }
 
-// withPolicy reads the viewer's Live TV policy once and reuses it for every
-// channel check on this request.
+// withPolicy reads the viewer's Live TV policy and validates the compiled
+// owner-group rule index in one statement, reusing both for the request.
 func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context, Policy, error) {
 	if u == nil {
 		return ctx, Policy{}, nil
@@ -1263,22 +1348,69 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 	if loaded, ok := ctx.Value(loadedPolicyKey{}).(loadedPolicy); ok && loaded.id == u.ID {
 		return ctx, loaded.pol, nil
 	}
-	pol, err := s.Policy(ctx, u.ID)
-	if err != nil {
-		return ctx, Policy{}, err
+	s.policyReads.Add(1)
+	prevGroupRev, prevGroupIdx := s.getOwnerGroupCacheState()
+	prevHasGroups := 0
+	if prevGroupIdx != nil && len(prevGroupIdx.groups) > 0 {
+		prevHasGroups = 1
 	}
+	var rev int64
+	var rawPolicy, rawGroups string
+	err := s.o.DB.QueryRowContext(
+		ctx,
+		`SELECT generation,COALESCE((SELECT data FROM livetv_policies WHERE user_id=?),''),CASE WHEN generation=? THEN '' ELSE COALESCE((SELECT data FROM livetv_owner_groups WHERE id=1),'[]') END FROM livetv_channel_epoch WHERE id=1 AND (EXISTS(SELECT 1 FROM livetv_policies WHERE user_id=?) OR (generation!=? AND (?=1 OR EXISTS(SELECT 1 FROM livetv_owner_groups WHERE id=1))))`,
+		u.ID, prevGroupRev, u.ID, prevGroupRev, prevHasGroups,
+	).Scan(&rev, &rawPolicy, &rawGroups)
+	pol := Policy{UserID: u.ID}
+	groupIdx := prevGroupIdx
+	if errors.Is(err, sql.ErrNoRows) {
+		if groupIdx == nil {
+			groupIdx = compileOwnerGroupIndex(nil)
+		}
+	} else if err != nil {
+		return ctx, Policy{}, err
+	} else {
+		if rawPolicy != "" {
+			if err := json.Unmarshal([]byte(rawPolicy), &pol); err != nil {
+				return ctx, Policy{}, err
+			}
+			pol.UserID = u.ID
+		}
+		if groupIdx == nil || rev != prevGroupRev {
+			decoded, err := s.loadOwnerGroupIndex(ctx, rev, rawGroups)
+			if err != nil {
+				return ctx, Policy{}, err
+			}
+			groupIdx = decoded
+			s.setOwnerGroupCacheState(rev, groupIdx)
+		}
+	}
+	pol.indexChannels()
+	ctx = contextWithOwnerGroupIndex(ctx, groupIdx)
 	return context.WithValue(ctx, loadedPolicyKey{}, loadedPolicy{id: u.ID, user: u, pol: pol}), pol, nil
 }
 
 func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
-	if u == nil || !c.Enabled || !publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
+	return s.allowedWithLookupOpts(ctx, u, c, p, lookup, strict, false)
+}
+
+func (s *Service) allowedWithLookupOpts(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict, skipSweep bool) bool {
+	if u == nil || !c.Enabled || c.MergedInto != "" {
 		return false
 	}
-	if !u.IsOwner && s.sweepState(c) == "unavailable" {
+	if app := core.LiveApp(ctx); app != "" && slices.Contains(c.HiddenApps, app) {
 		return false
 	}
-	_, pol, err := s.withPolicy(ctx, u)
+	if !skipSweep && !u.IsOwner && s.sweepState(c) == "unavailable" {
+		return false
+	}
+	var pol Policy
+	var err error
+	ctx, pol, err = s.withPolicy(ctx, u)
 	if err != nil {
+		return false
+	}
+	if !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
 		return false
 	}
 	if c.Personal != nil && (s.o.Picker == nil || (pol.Personal != nil && pol.Personal.Enabled != nil && !*pol.Personal.Enabled)) {
@@ -1287,12 +1419,15 @@ func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel
 	if !u.IsOwner && !pol.Permits(c.ID, c.Private) {
 		return false
 	}
-	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && p.Item.Rating == "" && (u.MaxContentRating != "" || pol.MaxRating != "") {
+	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && contentrating.EnforceLevelOf(p.Item.Rating) == contentrating.Unrated && (u.MaxContentRating != "" || pol.MaxRating != "") {
 		return false
 	}
 	if u.MaxContentRating != "" || pol.MaxRating != "" {
 		rating := s.channelContentRating(ctx, c, p)
-		if contentrating.Exceeds(rating, u.MaxContentRating) || contentrating.Exceeds(rating, pol.MaxRating) {
+		if p != nil && p.Item.EnforcementRating != "" && (p.Item.EnforcementRating == contentrating.UncertifiedAdult || contentrating.EnforceLevelOf(p.Item.EnforcementRating) > contentrating.EnforceLevelOf(rating)) {
+			rating = p.Item.EnforcementRating
+		}
+		if contentrating.EnforceExceeds(rating, u.MaxContentRating) || contentrating.EnforceExceeds(rating, pol.MaxRating) {
 			return false
 		}
 	}
@@ -1301,7 +1436,11 @@ func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel
 			return false
 		}
 		checkTitle := func(t *core.Title) bool {
-			if t == nil || t.Adult || contentrating.Exceeds(t.ContentRating, u.MaxContentRating) || contentrating.Exceeds(t.ContentRating, pol.MaxRating) {
+			if t == nil || t.Adult {
+				return false
+			}
+			enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+			if contentrating.EnforceExceeds(enf, u.MaxContentRating) || contentrating.EnforceExceeds(enf, pol.MaxRating) {
 				return false
 			}
 			if len(u.AllowedLibraries) > 0 {
@@ -1364,7 +1503,7 @@ func (s *Service) AllowedChannels(ctx context.Context, u *core.User) ([]Channel,
 	return s.allowedChannels(ctx, u, nil)
 }
 
-// AllowedChannelsForIDs checks a guide's selected channels without waiting for
+// AllowedChannelsForIDs checks a group's selected channels without waiting for
 // unrelated channels to finish their background preparation.
 func (s *Service) AllowedChannelsForIDs(ctx context.Context, u *core.User, ids []string) ([]Channel, error) {
 	return s.allowedChannels(ctx, u, ids)
@@ -1381,6 +1520,11 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 	var cs []Channel
 	if ids == nil {
 		cs, err = s.Channels(ctx)
+		if err == nil {
+			if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+				ctx = contextWithOwnerGroupIndex(ctx, idx)
+			}
+		}
 	} else {
 		var selected map[string]Channel
 		selected, err = s.channelsByIDs(ctx, ids)
@@ -1468,7 +1612,7 @@ func (s *Service) AllowedChannel(ctx context.Context, u *core.User, key string) 
 		return Channel{}, err
 	}
 	for _, summary := range all {
-		if summary.Number != key || !summary.Enabled {
+		if summary.Number != key || !summary.Enabled || summary.MergedInto != "" {
 			continue
 		}
 		c, err = s.Channel(ctx, summary.ID)
@@ -1578,6 +1722,43 @@ func (s *Service) programmeAt(ctx context.Context, c Channel, at time.Time) (Pro
 	p.ChannelID = c.ID
 	p.ID = fmt.Sprintf("%s-%d", c.ID, p.Start.UnixMilli())
 	return p, true, nil
+}
+
+// LiveProgrammes returns every guide programme currently airing on channel c
+// at time at, ordered by start_ms ascending. Uses the (source_id, channel_id,
+// end_ms, start_ms) index so cost depends only on concurrent programmes on c.
+func (s *Service) LiveProgrammes(ctx context.Context, c Channel, at time.Time) ([]Programme, error) {
+	if c.GuideID == "" {
+		return nil, nil
+	}
+	srcID := guideSource(c)
+	if srcID == "" {
+		return nil, nil
+	}
+	// Allow up to 999ms past at so simultaneous events staggered by +1ms
+	// within the same second are all seen as live right at kickoff.
+	rows, err := s.o.DB.QueryContext(ctx,
+		`SELECT data FROM livetv_programmes WHERE source_id=? AND channel_id=? AND end_ms>? AND start_ms<=? ORDER BY start_ms ASC`,
+		srcID, c.GuideID, at.UnixMilli(), at.UnixMilli()+999)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Programme
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		var p Programme
+		if err := json.Unmarshal(b, &p); err != nil {
+			continue
+		}
+		p.ChannelID = c.ID
+		p.ID = fmt.Sprintf("%s-%d", c.ID, p.Start.UnixMilli())
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // programmesAtBatch bounds the channels one programmesAt statement covers
@@ -1733,9 +1914,13 @@ func (s *Service) GuideForChannels(ctx context.Context, u *core.User, from, unti
 }
 
 func channelFromSummary(c ChannelSummary) Channel {
+	hidden := c.rawHiddenApps
+	if hidden == nil && c.ShownApps == nil {
+		hidden = c.HiddenApps
+	}
 	return Channel{
 		ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, sweepKey: c.sweepKey,
-		Private: c.Private, Enabled: c.Enabled, Favorite: c.Favorite, HiddenApps: c.HiddenApps,
+		Private: c.Private, Enabled: c.Enabled, Favorite: c.Favorite, HiddenApps: hidden, ShownApps: c.ShownApps,
 		Rating: c.Rating, Logo: c.Logo, SourceID: c.SourceID,
 		GuideID: c.GuideID, GuideSourceID: c.GuideSourceID, Group: c.Group,
 	}
@@ -1771,6 +1956,9 @@ func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time
 		all, err := s.channelSummaries(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+			ctx = contextWithOwnerGroupIndex(ctx, idx)
 		}
 		virtualIDs := make([]string, 0)
 		for _, c := range all {
@@ -1970,6 +2158,9 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	if err != nil {
 		return nil, nil, err
 	}
+	if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+		ctx = contextWithOwnerGroupIndex(ctx, idx)
+	}
 	ctx, err = s.withVirtualGuide(ctx, cs)
 	if err != nil {
 		return nil, nil, err
@@ -2068,7 +2259,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 			return nil, err
 		}
 		v.HasPlaylist = v.Playlist != "" || v.PlaylistURL != ""
-		v.HasGuide = s.sourceGuideFeatures(v).Remote || v.Guide != "" || v.GuideURL != ""
+		v.HasGuide = s.sourceGuideFeatures(v).Remote || v.Guide != "" || v.GuideURL != "" || v.PlaylistGuide
 		v.Playlist = ""
 		v.Guide = ""
 		redactSourceAuth(&v)
@@ -2078,6 +2269,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 		return nil, err
 	}
 	rows.Close()
+	sortSourcesByPriority(out)
 	for i := range out {
 		s.fillVODStatus(ctx, &out[i])
 	}
@@ -2096,8 +2288,9 @@ func (s *Service) ImportSource(ctx context.Context, src Source) (Source, error) 
 	if src.ID == "" {
 		src.ID = randomID()
 	}
-	release, err := s.acquireRefresh(ctx, src.ID)
+	release, err := s.acquireRefreshWait(ctx, src.ID, ownerEditLeaseWait)
 	if err != nil {
+		s.o.Logger.Warn("Live TV source import failed", "sourceId", src.ID, "source", src.Name, "error", err)
 		return src, err
 	}
 	defer release()
@@ -2106,15 +2299,32 @@ func (s *Service) ImportSource(ctx context.Context, src Source) (Source, error) 
 
 // importSourceLogged is called only while the source refresh lease is held.
 func (s *Service) importSourceLogged(ctx context.Context, src Source) (Source, error) {
+	started := s.o.Now()
 	v, err := s.importSource(ctx, src)
 	if err != nil {
 		s.o.Logger.Warn("Live TV source import failed",
 			"sourceId", v.ID, "source", v.Name, "url", sourceOrigin(v), "error", err)
+		eventSrc := v
+		if eventSrc.ID == "" {
+			eventSrc.ID = src.ID
+		}
+		if eventSrc.Name == "" {
+			eventSrc.Name = src.Name
+		}
+		if eventSrc.UpdatedAt.IsZero() {
+			eventSrc.UpdatedAt = src.UpdatedAt
+		}
+		var authErr *providerAuthError
+		if errors.As(err, &authErr) {
+			s.emitProviderAuthFailed(eventSrc.ID, eventSrc.Name, "", authErr.StatusCode, err)
+		}
+		s.emitGuideFailed(eventSrc, err)
 		return v, err
 	}
 	s.o.Logger.Info("Live TV source imported",
 		"sourceId", v.ID, "source", v.Name, "url", sourceOrigin(v),
 		"channels", v.ChannelCount, "guideChannels", v.GuideChannelCount)
+	s.emitGuideRefreshed(v, s.o.Now().Sub(started))
 	return v, nil
 }
 
@@ -2126,7 +2336,29 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		if err != nil {
 			return old, err
 		}
-		_, err = s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, b, old.ID)
+		tx, err := s.o.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return old, err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, b, old.ID); err != nil {
+			return old, err
+		}
+		autoChanged, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+		if err != nil {
+			return old, err
+		}
+		if autoChanged {
+			if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+				return old, err
+			}
+		}
+		err = tx.Commit()
+		if err == nil {
+			for _, cid := range autoInv {
+				s.invalidate(cid, "")
+			}
+		}
 		s.forgetSourceAuth(old.ID)
 		s.wakeSourceRefresh()
 		s.notifySourcesChanged()
@@ -2172,6 +2404,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	}
 	progress := importProgress(ctx)
 	src.SkippedVOD = 0
+	src.PlaylistGuide = false
 	// Account and groups are what this fetch reports; a source body from the
 	// owner API carries stale read-only copies.
 	src.Account, src.Groups = nil, nil
@@ -2211,7 +2444,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	// transaction cannot be lost. The source row itself is written only when
 	// it changed.
 	src.UpdatedAt = s.o.Now()
-	sourceWritten, err := s.writeImportedSource(ctx, tx, src)
+	sourceWritten, err := s.writeImportedSource(ctx, tx, &src)
 	if err != nil {
 		return src, err
 	}
@@ -2231,7 +2464,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			keepNumber[c.ID] = previous
 		}
 	}
-	if err := assignImportedNumbers(ctx, tx, src.ID, cs, keepNumber, old, s.o.Now()); err != nil {
+	if err := assignImportedNumbers(ctx, tx, src.ID, cs, keepNumber, old, s.o.Now(), strings.HasPrefix(src.Kind, "plugin:")); err != nil {
 		return src, err
 	}
 	// Write in batches: one statement per row also fires the database's
@@ -2250,18 +2483,31 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	encoded := make([][]byte, 0, len(cs))
 	{
 		for _, c := range cs {
+			if !fetched.cachedLineup {
+				c.ProviderGuideID = c.GuideID
+			}
 			if previous, ok := oldByID[c.ID]; ok {
 				if _, keep := keepNumber[c.ID]; keep {
 					c.Number = previous.Number
 				}
 				c.Enabled = previous.Enabled
 				c.HiddenApps = previous.HiddenApps
+				c.ShownApps = previous.ShownApps
 				c.Favorite = previous.Favorite
+				c.Private = previous.Private
 				c.Rating = previous.Rating
-				c.GuideID = previous.GuideID
-				c.GuideSourceID = previous.GuideSourceID
+				if guidePinned(previous) {
+					c.GuideID = previous.GuideID
+					c.GuideSourceID = previous.GuideSourceID
+				}
 				c.Transcode = previous.Transcode
 				c.Stability = previous.Stability
+				c.Screens = previous.Screens
+				c.Look = previous.Look
+				c.DVRMinutes = previous.DVRMinutes
+				c.InputMerge = previous.InputMerge
+				c.SuppressedAutoBackups = slices.Clone(previous.SuppressedAutoBackups)
+				c.OwnerStreamSources = previous.OwnerStreamSources
 				if previous.CustomGroup {
 					c.Group, c.CustomGroup = previous.Group, true
 				}
@@ -2279,13 +2525,19 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			if guide, ok := g.Channels[c.GuideID]; ok && c.Logo == "" {
 				c.Logo = guide.Logo
 			}
-			b, e := json.Marshal(c)
-			if e != nil {
-				return src, e
-			}
-			ids, encoded = append(ids, c.ID), append(encoded, b)
 			stored = append(stored, c)
 		}
+	}
+	crossChanged, crossInvalidated, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
+	if err != nil {
+		return src, err
+	}
+	for _, c := range stored {
+		b, e := json.Marshal(c)
+		if e != nil {
+			return src, e
+		}
+		ids, encoded = append(ids, c.ID), append(encoded, b)
 	}
 	var savedChannels, savedProgrammes func(int)
 	if progress != nil {
@@ -2305,11 +2557,16 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		return src, err
 	}
 	writes.GuideChannelsWritten, writes.GuideChannelsDeleted = gw.GuideChannelsWritten, gw.GuideChannelsDeleted
+	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsTx(ctx, tx, batch, stored)
+	if err != nil {
+		return src, err
+	}
+	crossInvalidated = append(crossInvalidated, autoInvalidated...)
 	if progress != nil {
 		progress.setSavedChannels(len(stored))
 		progress.setSavedProgrammes(len(g.Programmes))
 	}
-	changed := sourceWritten || writes.changed()
+	changed := sourceWritten || writes.changed() || crossChanged || autoChanged
 	if changed {
 		// Guide-only sources change coverage without touching any channel
 		// rows. Publish that change transactionally to every cluster node's
@@ -2348,6 +2605,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		for _, id := range changedStreams(oldByID, stored) {
 			s.invalidate(id, "")
 		}
+		for _, id := range crossInvalidated {
+			s.invalidate(id, "")
+		}
 	}
 	if err == nil && src.Auth != nil && src.Auth.Type == "xtream" {
 		_, _ = s.o.DB.ExecContext(ctx, `UPDATE xtream_vod_refresh SET next=0 WHERE provider=?`, src.ID)
@@ -2358,7 +2618,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	}
 	src = storedSource(src)
 	src.HasPlaylist = src.Playlist != "" || src.PlaylistURL != ""
-	src.HasGuide = s.sourceGuideFeatures(src).Remote || src.Guide != "" || src.GuideURL != ""
+	src.HasGuide = s.sourceGuideFeatures(src).Remote || src.Guide != "" || src.GuideURL != "" || src.PlaylistGuide
 	src.Playlist = ""
 	src.Guide = ""
 	redactSourceAuth(&src)
@@ -2383,6 +2643,18 @@ func numberPinned(previous Channel, providerNumbered bool) bool {
 	return previous.Number != previous.ProviderNumber
 }
 
+// guidePinned reports whether a stored channel's guide mapping is the owner's
+// rather than the provider's. A cross-source mapping or any edit (including an
+// explicit clear) makes GuideID differ from ProviderGuideID and sticks across
+// refreshes; channels stored before ProviderGuideID was recorded keep their
+// existing mapping until a matching refresh records the provider baseline.
+func guidePinned(previous Channel) bool {
+	if previous.GuideSourceID != "" && previous.GuideSourceID != previous.SourceID {
+		return true
+	}
+	return previous.GuideID != previous.ProviderGuideID
+}
+
 // guideAllow is the set of XMLTV channel ids a playlist source keeps.
 // Nil means every channel (a guide-only source). Stored guide ids are
 // included so an owner mapping survives the next refresh.
@@ -2397,7 +2669,9 @@ func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel
 			ids[id] = struct{}{}
 		}
 	}
+	inPlaylist := make(map[string]bool, len(playlist))
 	for _, c := range playlist {
+		inPlaylist[c.ID] = true
 		add(c.GuideID)
 	}
 	stored, err := s.allChannels(ctx)
@@ -2405,7 +2679,10 @@ func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel
 		return nil, err
 	}
 	for _, c := range stored {
-		if c.SourceID == src.ID || guideSource(c) == src.ID {
+		if c.SourceID == src.ID && inPlaylist[c.ID] && !guidePinned(c) {
+			continue
+		}
+		if guideSource(c) == src.ID {
 			add(c.GuideID)
 		}
 	}
@@ -2472,9 +2749,13 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 		return s.ImportSource(ctx, src)
 	}
 	old, err := s.storedSourceByID(ctx, src.ID)
+	renamed := err == nil && old.Name != src.Name
 	if err == nil {
 		src.Playlist, src.PlaylistURL = old.Playlist, old.PlaylistURL
 		src.Guide, src.GuideURL = old.Guide, old.GuideURL
+		if src.Priority == 0 {
+			src.Priority = old.Priority
+		}
 		if src.Auth == nil {
 			src.Auth = old.Auth
 		}
@@ -2491,6 +2772,10 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 	}
 	if _, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
 		return src, err
+	}
+	if renamed {
+		_, _ = s.o.DB.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`)
+		s.bumpLineup()
 	}
 	s.forgetSourceAuth(src.ID)
 	s.wakeSourceRefresh()
@@ -2595,10 +2880,24 @@ func (s *Service) DeleteSource(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	_, delInv, err := s.reconcileInputMergesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	_, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+	if err != nil {
+		return err
+	}
+	delInv = append(delInv, autoInv...)
 	if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
 		return err
 	}
 	err = tx.Commit()
+	if err == nil {
+		for _, cid := range delInv {
+			s.invalidate(cid, "")
+		}
+	}
 	s.forgetSourceAuth(id)
 	if err == nil {
 		s.invalidate("", id)

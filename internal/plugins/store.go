@@ -23,6 +23,25 @@ import (
 func init() {
 	store.Register("plugins", 7, `ALTER TABLE plugins_installed ADD COLUMN manifest_refresh_hours INTEGER NOT NULL DEFAULT 1;`)
 
+	// v10: sealed derived secrets written by plugins (#660). Kept separate from
+	// plugins_settings.secrets so plugins can never overwrite owner-configured
+	// credentials and derived session tokens stay out of settings UI/caches.
+	store.Register("plugins", 10, `
+CREATE TABLE IF NOT EXISTS plugins_derived_secrets(plugin TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,expires_at INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(plugin,name));
+`)
+
+	// v9: pushed poster overlay badges owned by plugins (#594).
+	store.Register("plugins", 9, `
+CREATE TABLE IF NOT EXISTS plugin_poster_badges(plugin_id TEXT NOT NULL,set_key TEXT NOT NULL,title_key TEXT NOT NULL,labels_json TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(plugin_id,set_key,title_key));
+CREATE INDEX IF NOT EXISTS plugin_poster_badges_title_key ON plugin_poster_badges(title_key);
+`)
+
+	// Keep cadence across restarts; retained calls also seed existing installs.
+	store.Register("plugins", 11, `
+CREATE TABLE plugins_schedule_runs(plugin TEXT NOT NULL,call TEXT NOT NULL,last_run INTEGER NOT NULL,PRIMARY KEY(plugin,call));
+INSERT INTO plugins_schedule_runs(plugin,call,last_run) SELECT plugin,route,MAX(created)*1000 FROM plugins_calls GROUP BY plugin,route;
+`)
+
 	// Host-owned digests are separate from plugin KV quotas and cannot be forged by plugins.
 	store.Register("plugins", 6, `CREATE TABLE plugins_hash_cache(plugin TEXT NOT NULL,kkey TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(plugin,kkey));`)
 
@@ -55,13 +74,33 @@ CREATE INDEX plugins_logs_plugin ON plugins_logs(plugin,id);
 `)
 }
 
+// scheduleLastRun is host-owned state, independent of plugin KV and call retention.
+func (s *storage) scheduleLastRun(ctx context.Context, plugin, call string) (time.Time, error) {
+	var at int64
+	err := s.db.QueryRowContext(ctx, `SELECT last_run FROM plugins_schedule_runs WHERE plugin=? AND call=?`, plugin, call).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMilli(at), nil
+}
+
+func (s *storage) markScheduleRun(ctx context.Context, plugin, call string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plugins_schedule_runs(plugin,call,last_run) VALUES(?,?,?) ON CONFLICT(plugin,call) DO UPDATE SET last_run=excluded.last_run`, plugin, call, at.UnixMilli())
+	return err
+}
+
 // Limits from SPEC §5.1.5, §5.7 and §5.13.
 const (
-	KVQuotaBytes   = 50 << 20
-	OutboxCap      = 1000
-	CallsCap       = 200
-	LogsCap        = 200
-	EventLogMaxAge = 7 * 24 * time.Hour
+	KVQuotaBytes     = 50 << 20
+	KVQuotaKeys      = 10000
+	KVKeyChargeBytes = 256
+	OutboxCap        = 1000
+	CallsCap         = 200
+	LogsCap          = 200
+	EventLogMaxAge   = 7 * 24 * time.Hour
 	// JournalSettledMaxAge is how long an undone or shadow journal entry
 	// (one undo can no longer act on) stays in the activity history.
 	JournalSettledMaxAge = 90 * 24 * time.Hour
@@ -74,10 +113,12 @@ const (
 // "viewers.write_watch_state", "collections", "folders", "secrets",
 // "events").
 type Grants struct {
-	Viewers []int64  `json:"viewers,omitempty"`
-	Folders []string `json:"folders,omitempty"`
-	Revoked []string `json:"revoked,omitempty"`
-	LAN     bool     `json:"lan,omitempty"`
+	Viewers       []int64  `json:"viewers,omitempty"`
+	Folders       []string `json:"folders,omitempty"`
+	LocalHosts    []string `json:"localHosts,omitempty"`
+	OperatorHosts []string `json:"operatorHosts,omitempty"`
+	Revoked       []string `json:"revoked,omitempty"`
+	LAN           bool     `json:"lan,omitempty"`
 }
 
 func (g Grants) revoked(key string) bool {
@@ -147,6 +188,25 @@ type Health struct {
 	// (a remote plugin with no URL endpoint) has no sidecar connected.
 	// It is computed live for the console, never stored.
 	Sidecar string `json:"sidecar,omitempty"`
+	// Pool is a live snapshot of the hosted plugin's instance pool (never stored).
+	Pool *PoolHealth `json:"pool,omitempty"`
+}
+
+// PoolHolderHealth identifies one active route holding a hosted plugin instance.
+type PoolHolderHealth struct {
+	Route  string `json:"route"`
+	HeldMS int64  `json:"heldMs"`
+}
+
+// PoolHealth reports live instance-pool health for a hosted plugin.
+type PoolHealth struct {
+	Size        int                `json:"size"`
+	InUse       int                `json:"inUse"`
+	Idle        int                `json:"idle"`
+	Building    int                `json:"building"`
+	Waiting     int                `json:"waiting"`
+	Exhaustions int64              `json:"exhaustions"`
+	Holders     []PoolHolderHealth `json:"holders,omitempty"`
 }
 
 // JournalEntry is one recorded write and its inverse.
@@ -340,6 +400,12 @@ func (s *storage) file(ctx context.Context, plugin, version, path string) ([]byt
 	return b, true
 }
 
+func (s *storage) hasFile(ctx context.Context, plugin, version, path string) bool {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugins_artifacts WHERE plugin=? AND version=? AND path=?`, plugin, version, path).Scan(&one)
+	return err == nil
+}
+
 func (s *storage) grants(ctx context.Context, plugin string) (Grants, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT grants FROM plugins_grants WHERE plugin=?`, plugin).Scan(&raw)
@@ -435,12 +501,112 @@ func (s *storage) openSecret(plugin, name, stored string) (string, error) {
 	return plain, err
 }
 
+func derivedSealContext(plugin, name string) []string {
+	return []string{"plugins_derived_secrets", "secrets", plugin, name}
+}
+
+func (s *storage) sealDerivedSecret(plugin, name, plain string) (string, error) {
+	return config.SealWith(s.sealer, plain, derivedSealContext(plugin, name)...)
+}
+
+func (s *storage) openDerivedSecret(plugin, name, stored string) (string, error) {
+	plain, _, err := config.OpenWith(s.sealer, stored, derivedSealContext(plugin, name)...)
+	return plain, err
+}
+
+func (s *storage) derivedSecret(ctx context.Context, plugin, name string) (string, bool, error) {
+	var stored string
+	var expiresAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT value,expires_at FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name).Scan(&stored, &expiresAt)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if expiresAt > 0 && s.now().Unix() >= expiresAt {
+		return "", false, nil
+	}
+	plain, err := s.openDerivedSecret(plugin, name, stored)
+	if err != nil {
+		return "", false, err
+	}
+	return plain, true, nil
+}
+
+func (s *storage) derivedSecretCount(ctx context.Context, plugin string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugins_derived_secrets WHERE plugin=? AND (expires_at=0 OR expires_at>?)`, plugin, s.now().Unix()).Scan(&n)
+	return n, err
+}
+
+func (s *storage) hasDerivedSecret(ctx context.Context, plugin, name string) (bool, error) {
+	var dummy int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *storage) putDerivedSecret(ctx context.Context, plugin, name, plain string, expiresAt int64) error {
+	sealed, err := s.sealDerivedSecret(plugin, name, plain)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_derived_secrets(plugin,name,value,expires_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(plugin,name) DO UPDATE SET value=excluded.value,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
+		plugin, name, sealed, expiresAt, s.now().Unix())
+	return err
+}
+
+func (s *storage) deleteDerivedSecret(ctx context.Context, plugin, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plugins_derived_secrets WHERE plugin=? AND name=?`, plugin, name)
+	return err
+}
+
+func (s *storage) allDerivedSecrets(ctx context.Context, plugin string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name,value FROM plugins_derived_secrets WHERE plugin=?`, plugin)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, stored string
+		if err := rows.Scan(&name, &stored); err != nil {
+			return nil, err
+		}
+		plain, err := s.openDerivedSecret(plugin, name, stored)
+		if err != nil {
+			return nil, err
+		}
+		if plain != "" {
+			out[name] = plain
+		}
+	}
+	return out, rows.Err()
+}
+
 // --- KV ---
 
 func (s *storage) kvUsed(ctx context.Context, plugin string) (int64, error) {
 	var n sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&n)
 	return n.Int64, err
+}
+
+func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
+	var used int64
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+		return KVUsage{}, err
+	}
+	return KVUsage{
+		Bytes:      used + count*KVKeyChargeBytes,
+		Keys:       count,
+		QuotaBytes: KVQuotaBytes,
+		QuotaKeys:  KVQuotaKeys,
+	}, nil
 }
 
 func (s *storage) kvGet(ctx context.Context, plugin, key string) ([]byte, bool, error) {
@@ -488,7 +654,7 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if !exists {
 		count++
 	}
-	if count > 10000 || used-old+int64(len(value))+count*256 > KVQuotaBytes {
+	if count > KVQuotaKeys || used-old+int64(len(value))+count*KVKeyChargeBytes > KVQuotaBytes {
 		return ErrQuotaExceeded
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO plugins_kv(plugin,kkey,value,size) VALUES(?,?,?,?) ON CONFLICT(plugin,kkey) DO UPDATE SET value=excluded.value,size=excluded.size`, plugin, key, value, len(value))
@@ -748,6 +914,17 @@ func (s *storage) redactKnown(ctx context.Context, plugin, value string) string 
 			value = strings.ReplaceAll(value, string(encoded[1:len(encoded)-1]), "[redacted]")
 		}
 	}
+	derived, err := s.allDerivedSecrets(ctx, plugin)
+	if err != nil {
+		return "[redacted]"
+	}
+	for _, secret := range derived {
+		value = strings.ReplaceAll(value, secret, "[redacted]")
+		encoded, _ := json.Marshal(secret)
+		if len(encoded) > 2 {
+			value = strings.ReplaceAll(value, string(encoded[1:len(encoded)-1]), "[redacted]")
+		}
+	}
 	return logredact.String(value)
 }
 
@@ -843,9 +1020,14 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM onair_feed_values WHERE plugin=?`,
 		`DELETE FROM plugins_grants WHERE plugin=?`,
 		`DELETE FROM plugins_settings WHERE plugin=?`,
+		`DELETE FROM plugins_derived_secrets WHERE plugin=?`,
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
+		`DELETE FROM plugin_poster_badges WHERE plugin_id=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
+		`DELETE FROM plugins_remote_hashes WHERE plugin=?`,
+		`DELETE FROM plugins_remote_hash_budget WHERE plugin=?`,
+		`DELETE FROM plugins_schedule_runs WHERE plugin=?`,
 		`DELETE FROM plugins_health WHERE plugin=?`,
 		`DELETE FROM plugins_outbox WHERE plugin=?`,
 		`DELETE FROM plugins_proposals WHERE plugin=?`,

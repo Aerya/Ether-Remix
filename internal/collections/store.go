@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -19,6 +21,7 @@ func init() {
 	store.Register("collections", 9, `ALTER TABLE collections_members ADD COLUMN origins_json TEXT NOT NULL DEFAULT 'null';
  UPDATE collections_specs SET build_hash='' WHERE spec_json LIKE '%localFiles%';`)
 
+	libraryfilter.RegisterMediaTypeMigration("collections", 10, "collections_specs", "spec_json", "id")
 	// Profile membership checks seek one title within a collection, independent of its size.
 	store.Register("collections", 8, `CREATE INDEX collections_members_profile_lookup ON collections_members(spec_id,key,shared);`)
 
@@ -219,6 +222,11 @@ func (s *Service) loadRows(ctx context.Context) ([]*specRow, error) {
 	return append([]*specRow(nil), rows...), err
 }
 
+func (s *Service) forgetRowMemo(ctx context.Context) {
+	reqmemo.Forget(ctx, fmt.Sprintf("collections-rows:%p", s))
+	reqmemo.ForgetPrefix(ctx, fmt.Sprintf("collections-lastchance:%p:", s))
+}
+
 func (s *Service) readRows(ctx context.Context) ([]*specRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+specCols+` FROM collections_specs ORDER BY builtin ASC, id ASC`)
 	if err != nil {
@@ -234,7 +242,72 @@ func (s *Service) readRows(ctx context.Context) ([]*specRow, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	orderRowsForDisplay(out)
+	return out, nil
+}
+
+// orderRowsForDisplay keeps built-ins partitioned after owner collections while
+// keeping collections from the same add-on import or folder grouped at their
+// earliest member's position and ordered by SortOrder (1-based) then id.
+// Collections without a folder or add-on sync preserve exact id order.
+func orderRowsForDisplay(rows []*specRow) {
+	if len(rows) < 2 {
+		return
+	}
+	groupOf := func(r *specRow) string {
+		if r.builtin {
+			return ""
+		}
+		if r.spec.AddonSync != nil && r.spec.AddonSync.AddonID != "" {
+			return "addon:" + r.spec.AddonSync.AddonID
+		}
+		if r.spec.Folder != "" {
+			return "folder:" + strings.ToLower(r.spec.Folder)
+		}
+		return ""
+	}
+	hasGrouped := false
+	anchors := map[string]int64{}
+	for _, r := range rows {
+		g := groupOf(r)
+		if g == "" {
+			continue
+		}
+		hasGrouped = true
+		if cur, ok := anchors[g]; !ok || r.id < cur {
+			anchors[g] = r.id
+		}
+	}
+	if !hasGrouped {
+		return
+	}
+	anchorOf := func(r *specRow) int64 {
+		if g := groupOf(r); g != "" {
+			return anchors[g]
+		}
+		return r.id
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.builtin != b.builtin {
+			return !a.builtin
+		}
+		aa, ab := anchorOf(a), anchorOf(b)
+		if aa != ab {
+			return aa < ab
+		}
+		ao, bo := a.spec.SortOrder, b.spec.SortOrder
+		if (ao > 0) != (bo > 0) {
+			return ao > 0
+		}
+		if ao != bo {
+			return ao < bo
+		}
+		return a.id < b.id
+	})
 }
 
 // rowByID finds a row by public id (number or built-in slug).
@@ -253,6 +326,111 @@ func (s *Service) rowByID(ctx context.Context, id string) (*specRow, error) {
 		return nil, core.ErrNotFound
 	}
 	return r, err
+}
+
+// rowsByIDs reads multiple spec rows by integer ID in one query per chunk.
+func (s *Service) rowsByIDs(ctx context.Context, ids []int64) (map[int64]*specRow, error) {
+	out := make(map[int64]*specRow, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	unique := make([]any, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	for chunk := range store.Chunks(unique, 400) {
+		rows, err := s.db.QueryContext(ctx, `SELECT `+specCols+` FROM collections_specs WHERE id IN (`+store.Placeholders(len(chunk))+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			r, err := scanSpecRow(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[r.id] = r
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ensurePluginLayoutRow finds or provisions a hidden backing specRow for a
+// plugin list source placed directly in Home Designer ("plugin:<id>/<key>").
+func (s *Service) ensurePluginLayoutRow(ctx context.Context, kindID string) (*specRow, error) {
+	kind, ok := s.kindRegistry().Lookup(kindID)
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+	r, err := scanSpecRow(s.db.QueryRowContext(ctx, `SELECT `+specCols+` FROM collections_specs WHERE slug=? AND builtin=0 LIMIT 1`, kindID))
+	if err == nil {
+		return r, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	desc := kind.Describe()
+	name := strings.TrimSpace(desc.Label.Resolved)
+	if name == "" {
+		name = kindID
+	}
+	mediaType := MediaMixed
+	if len(desc.MediaTypes) == 1 {
+		switch desc.MediaTypes[0] {
+		case "movie":
+			mediaType = MediaMovie
+		case "show":
+			mediaType = MediaShow
+		}
+	}
+	sp := core.CollectionSpec{
+		Name:      name,
+		MediaType: mediaType,
+		Sources:   []core.CollectionSource{{Kind: kindID}},
+		Match:     MatchAll,
+		Sort:      "source",
+		Refresh:   RefreshDaily,
+		Enabled:   true,
+		Targets:   core.CollectionTargets{Users: core.AllUsers()},
+	}
+	Normalize(&sp)
+	js, err := specJSON(sp)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var existingID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM collections_specs WHERE slug=? AND builtin=0 LIMIT 1`, kindID).Scan(&existingID); err == nil {
+		_ = tx.Rollback()
+		return s.rowByID(ctx, strconv.FormatInt(existingID, 10))
+	}
+	id, err := s.nextID(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().Unix()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO collections_specs(id,slug,builtin,owner_user_id,spec_json,enabled,created_at,updated_at)
+		VALUES(?, ?, 0, 0, ?, 1, ?, ?)`, id, kindID, js, now, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.forgetRowMemo(ctx)
+	return s.rowByID(ctx, strconv.FormatInt(id, 10))
 }
 
 func (s *Service) rowByKey(ctx context.Context, key core.RatingKey) (*specRow, error) {
@@ -313,6 +491,7 @@ func (s *Service) insertRow(ctx context.Context, sp core.CollectionSpec, owner i
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.forgetRowMemo(ctx)
 	return s.rowByID(ctx, strconv.FormatInt(id, 10))
 }
 
@@ -334,19 +513,40 @@ func (s *Service) insertSpecTx(ctx context.Context, tx *sql.Tx, sp core.Collecti
 	return id, nil
 }
 
-func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpec) error {
+func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpec, keepBuild bool) error {
+	return s.updateRowWarnings(ctx, id, sp, keepBuild, nil, false)
+}
+
+func (s *Service) updateRowWarnings(ctx context.Context, id int64, sp core.CollectionSpec, keepBuild bool, warnings []string, setWarnings bool) error {
 	js, err := specJSON(sp)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`,
-		js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
+	var res sql.Result
+	if setWarnings {
+		wj, _ := json.Marshal(warnings)
+		if warnings == nil {
+			wj = []byte("[]")
+		}
+		q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, warnings_json=?, build_hash='' WHERE id=?`
+		if keepBuild {
+			q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, warnings_json=? WHERE id=?`
+		}
+		res, err = s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), string(wj), id)
+	} else {
+		q := `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=?, build_hash='' WHERE id=?`
+		if keepBuild {
+			q = `UPDATE collections_specs SET spec_json=?, enabled=?, updated_at=? WHERE id=?`
+		}
+		res, err = s.db.ExecContext(ctx, q, js, store.BoolInt(sp.Enabled), s.now().Unix(), id)
+	}
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return core.ErrNotFound
 	}
+	s.forgetRowMemo(ctx)
 	return nil
 }
 
@@ -366,7 +566,11 @@ func (s *Service) deleteRow(ctx context.Context, id int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id=?`, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	return nil
 }
 
 // saveBuild persists a build's members and report.
@@ -412,7 +616,11 @@ func (s *Service) saveBuild(ctx context.Context, id int64, expected, resolved st
 		hash, at.Unix(), at.Unix(), itemCount, string(wj), hash, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	return nil
 }
 
 func (s *Service) loadMembers(ctx context.Context, id int64) ([]core.RatingKey, map[core.RatingKey]bool, error) {
@@ -438,6 +646,64 @@ func (s *Service) loadMembers(ctx context.Context, id int64) ([]core.RatingKey, 
 		}
 	}
 	return out, unshared, rows.Err()
+}
+
+func (s *Service) loadMembersMany(ctx context.Context, ids []int64) (map[int64][]core.RatingKey, map[int64]map[core.RatingKey]bool, error) {
+	keysByID := make(map[int64][]core.RatingKey, len(ids))
+	unsharedByID := make(map[int64]map[core.RatingKey]bool)
+	if len(ids) == 0 {
+		return keysByID, unsharedByID, nil
+	}
+	uniq := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	for chunk := range store.Chunks(uniq, 500) {
+		var q strings.Builder
+		q.WriteString(`SELECT spec_id,key,shared FROM collections_members WHERE spec_id IN (`)
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			if i > 0 {
+				q.WriteByte(',')
+			}
+			q.WriteByte('?')
+			args[i] = id
+		}
+		q.WriteString(`) ORDER BY spec_id,pos`)
+		rows, err := s.db.QueryContext(ctx, q.String(), args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			var specID, k int64
+			var shared int
+			if err := rows.Scan(&specID, &k, &shared); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			rk := core.RatingKey(k)
+			keysByID[specID] = append(keysByID[specID], rk)
+			if shared == 0 {
+				m := unsharedByID[specID]
+				if m == nil {
+					m = map[core.RatingKey]bool{}
+					unsharedByID[specID] = m
+				}
+				m[rk] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		rows.Close()
+	}
+	return keysByID, unsharedByID, nil
 }
 
 func (s *Service) meta(ctx context.Context, k string) string {

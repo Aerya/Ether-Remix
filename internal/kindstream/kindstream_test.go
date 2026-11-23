@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,66 +67,6 @@ func buildTestZIP(t *testing.T, name string, payload []byte, method uint16) []by
 	return buf.Bytes()
 }
 
-// buildMinimalCompressedRAR constructs a valid RAR4 archive header + file
-// header with compression method m3 (non-store) so ListRAR marks Stored=false.
-func buildMinimalCompressedRAR() []byte {
-	var buf bytes.Buffer
-	// RAR4 signature
-	buf.WriteString("Rar!\x1a\x07\x00")
-	// Archive block (type 0x73)
-	archHdr := []byte{
-		0x73,       // type = MAIN_HEAD
-		0x00, 0x00, // flags
-		0x0d, 0x00, // size = 13
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	}
-	buf.Write(prependRAR4CRC(archHdr))
-
-	// File block (type 0x74) with method 0x33 ('3' = normal compression, != 0x30 store)
-	name := "compressed.bin"
-	packed := []byte("compressed-data-bytes")
-	fileBody := make([]byte, 0, 32+len(name))
-	fileBody = append(fileBody,
-		0x74,       // type = FILE_HEAD
-		0x00, 0x80, // flags (LONG_BLOCK)
-	)
-	hdrSize := uint16(7 + 25 + len(name))
-	fileBody = append(fileBody, byte(hdrSize), byte(hdrSize>>8))
-	// packSize (4), unpSize (4), hostOS (1), fileCRC (4), ftime (4), unpVer (1), method (1), nameSize (2), attr (4)
-	var meta [25]byte
-	meta[0] = byte(len(packed))
-	meta[4] = 100   // unpSize = 100
-	meta[17] = 29   // unpVer
-	meta[18] = 0x33 // method = m3 (compressed!)
-	meta[19] = byte(len(name))
-	fileBody = append(fileBody, meta[:]...)
-	fileBody = append(fileBody, []byte(name)...)
-	buf.Write(prependRAR4CRC(fileBody))
-	buf.Write(packed)
-	return buf.Bytes()
-}
-
-func prependRAR4CRC(body []byte) []byte {
-	const poly = 0xedb88320
-	crc := uint32(0xffffffff)
-	for _, b := range body {
-		crc ^= uint32(b)
-		for range 8 {
-			if crc&1 != 0 {
-				crc = (crc >> 1) ^ poly
-			} else {
-				crc >>= 1
-			}
-		}
-	}
-	crc = ^crc
-	out := make([]byte, 2+len(body))
-	out[0] = byte(crc)
-	out[1] = byte(crc >> 8)
-	copy(out[2:], body)
-	return out
-}
-
 func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 	ctx := context.Background()
 
@@ -147,11 +88,14 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read archive.part02.rar: %v", err)
 	}
+	rarEncryptedBytes, err := os.ReadFile(filepath.Join(fixtureDir, "encrypted.rar"))
+	if err != nil {
+		t.Fatalf("read encrypted.rar: %v", err)
+	}
 
 	// Build a stored ZIP and a deflate-compressed ZIP of wantPayload.
 	zipStoredBytes := buildTestZIP(t, "book/payload_a.bin", wantPayload, zip.Store)
 	zipDeflateBytes := buildTestZIP(t, "book/payload_a.bin", wantPayload, zip.Deflate)
-	rarCompressedBytes := buildMinimalCompressedRAR()
 
 	var seenAuthHeader atomic.Value
 	var lastTemplatedPath atomic.Value
@@ -215,8 +159,8 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 	mux.HandleFunc("/archive/deflate.zip", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeContent(w, r, "deflate.zip", time.Time{}, bytes.NewReader(zipDeflateBytes))
 	})
-	mux.HandleFunc("/archive/compressed.rar", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeContent(w, r, "compressed.rar", time.Time{}, bytes.NewReader(rarCompressedBytes))
+	mux.HandleFunc("/archive/encrypted.rar", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "encrypted.rar", time.Time{}, bytes.NewReader(rarEncryptedBytes))
 	})
 	mux.HandleFunc("/error/html", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", "bytes 0-43/44")
@@ -496,7 +440,7 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 		}
 	})
 
-	// 4. Compressed-zip member extraction into blobcache + undecodable compressed RAR fallback + HTML MIME mismatch fallback.
+	// 4. Compressed-zip member extraction into blobcache + unstreamable encrypted RAR fallback + HTML MIME mismatch fallback.
 	t.Run("CompressedZIPExtractionAndFallback", func(t *testing.T) {
 		sources := []core.PlayableSource{
 			// Candidate 1: Upstream returns an HTML error page for an image/binary source -> ErrMIMEMismatch
@@ -506,17 +450,17 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 				MIME:    "image/jpeg",
 				URL:     srv.URL + "/error/html",
 			},
-			// Candidate 2: Compressed RAR member -> ErrMemberUndecodable
+			// Candidate 2: Encrypted RAR member -> ErrMemberUndecodable (wrapping core.ErrArchiveUnstreamable)
 			{
-				ID:      "undecodable-rar",
+				ID:      "encrypted-rar",
 				Pattern: PatternContainer,
 				MIME:    "application/octet-stream",
 				Container: &core.ContainerRef{
 					Format: "rar",
 					Volumes: []core.VolumeRef{
-						{URL: srv.URL + "/archive/compressed.rar", Size: int64(len(rarCompressedBytes))},
+						{URL: srv.URL + "/archive/encrypted.rar", Size: int64(len(rarEncryptedBytes))},
 					},
-					Member: "compressed.bin",
+					MemberIndex: new(0),
 				},
 			},
 			// Candidate 3: Deflate-compressed ZIP member -> extracted into blobcache!
@@ -534,9 +478,9 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 			},
 		}
 
-		// Verify candidate 2 alone returns ErrMemberUndecodable.
-		if _, err := Open(ctx, sources[1], deps); !errors.Is(err, ErrMemberUndecodable) {
-			t.Fatalf("Open(compressed RAR) = %v, want ErrMemberUndecodable", err)
+		// Verify candidate 2 alone returns ErrMemberUndecodable and core.ErrArchiveUnstreamable.
+		if _, err := Open(ctx, sources[1], deps); !errors.Is(err, ErrMemberUndecodable) || !errors.Is(err, core.ErrArchiveUnstreamable) {
+			t.Fatalf("Open(encrypted RAR) = %v, want ErrMemberUndecodable + ErrArchiveUnstreamable", err)
 		}
 
 		// Verify OpenSources skips candidates 1 and 2 and succeeds on candidate 3.
@@ -686,4 +630,126 @@ func TestKindStreamAllPatternsAndAcceptance(t *testing.T) {
 			t.Fatalf("loopback range body mismatch")
 		}
 	})
+}
+
+type concurrentCountingMediaSource struct {
+	data           []byte
+	concurrentHits atomic.Int32
+	contextHits    atomic.Int32
+}
+
+func (s *concurrentCountingMediaSource) ReadAt(p []byte, off int64) (int, error) {
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) ReadAtContext(_ context.Context, p []byte, off int64) (int, error) {
+	s.contextHits.Add(1)
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) ReadAtConcurrentContext(_ context.Context, p []byte, off int64) (int, error) {
+	s.concurrentHits.Add(1)
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+
+func (s *concurrentCountingMediaSource) Size() int64       { return int64(len(s.data)) }
+func (s *concurrentCountingMediaSource) Name() string      { return "concert.mp4" }
+func (s *concurrentCountingMediaSource) ReleaseID() string { return "rel-concert" }
+func (s *concurrentCountingMediaSource) Close() error      { return nil }
+
+type unwrapTestByteSource struct {
+	ByteSource
+}
+
+func (u *unwrapTestByteSource) UnwrapByteSource() ByteSource { return u.ByteSource }
+
+func TestHTTPReaderAtAndReadAheadConcurrentRanges(t *testing.T) {
+	payload := make([]byte, 256<<10)
+	for i := range payload {
+		payload[i] = byte((i*31 + 7) & 0xff)
+	}
+	// Fake MP4 header so verifyAndResolveMIME recognizes video/mp4.
+	copy(payload[:12], []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "concert.mp4", time.Unix(1_700_000_000, 0), bytes.NewReader(payload))
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	bs, err := Open(ctx, core.PlayableSource{
+		ID:      "mp4-range",
+		Pattern: PatternRange,
+		MIME:    "video/mp4",
+		URL:     srv.URL + "/concert.mp4",
+		Size:    int64(len(payload)),
+	}, Deps{HTTP: srv.Client()})
+	if err != nil {
+		t.Fatalf("Open range: %v", err)
+	}
+	defer bs.Close()
+
+	cr, ok := bs.(core.ConcurrentRangeReaderAt)
+	if !ok {
+		t.Fatalf("HTTPReaderAt (%T) must implement core.ConcurrentRangeReaderAt", bs)
+	}
+
+	// Simulate ExoPlayer opening overlapping concurrent range reads: head, tail, middle.
+	spans := []struct {
+		off int64
+		n   int
+	}{
+		{0, 16 << 10},
+		{int64(len(payload)) - (32 << 10), 32 << 10},
+		{96 << 10, 24 << 10},
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(spans))
+	for _, sp := range spans {
+		wg.Add(1)
+		go func(off int64, n int) {
+			defer wg.Done()
+			got := make([]byte, n)
+			readN, rerr := cr.ReadAtConcurrentContext(ctx, got, off)
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				errs <- fmt.Errorf("offset %d: %w", off, rerr)
+				return
+			}
+			if readN != n || !bytes.Equal(got, payload[off:off+int64(n)]) {
+				errs <- fmt.Errorf("offset %d: read %d mismatch", off, readN)
+			}
+		}(sp.off, sp.n)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+
+	// ReadAhead over a mediaSourceByteSource (including through an unwrapping
+	// wrapper such as partDefaultByteSource) must route reads through
+	// ReadAtConcurrentContext so parallel HTTP range connections never cancel a
+	// shared debrid read-ahead epoch.
+	ms := &concurrentCountingMediaSource{data: payload}
+	wrapped := &unwrapTestByteSource{ByteSource: &renamedByteSource{
+		ByteSource: &mediaSourceByteSource{ms: ms, name: "concert.mp4", mime: "video/mp4"},
+		name:       "concert.mp4",
+		mime:       "video/mp4",
+	}}
+	if UnwrapMediaSource(wrapped) != ms {
+		t.Fatalf("UnwrapMediaSource did not unwrap through UnwrapByteSource")
+	}
+	ra := ReadAhead(ctx, wrapped, int64(len(payload)))
+	buf := make([]byte, 4096)
+	if _, err := ra.ReadAt(buf, 8192); err != nil {
+		t.Fatalf("ReadAhead ReadAt: %v", err)
+	}
+	if !bytes.Equal(buf, payload[8192:8192+4096]) {
+		t.Fatalf("ReadAhead payload mismatch")
+	}
+	if ms.concurrentHits.Load() == 0 || ms.contextHits.Load() != 0 {
+		t.Fatalf("ReadAhead hits: concurrent=%d context=%d, want >0 concurrent and 0 context",
+			ms.concurrentHits.Load(), ms.contextHits.Load())
+	}
 }

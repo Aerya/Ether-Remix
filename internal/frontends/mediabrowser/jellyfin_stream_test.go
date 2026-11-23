@@ -126,12 +126,18 @@ func TestPlannedAudioReplacesTheFileDefault(t *testing.T) {
 		{Type: "subtitle", Index: 3, Language: "tur", Default: true},
 		{Type: "subtitle", Index: 4, Language: "eng", Forced: true},
 	}}
-	applyPlannedStreamIndexes(source, media, frontend.Decision{AudioStream: 2, SubtitleStream: 4})
+	applyPlannedStreamIndexes(source, media, frontend.Decision{AudioStream: 2, SubtitleStream: 4}, 4)
 	if source["DefaultAudioStreamIndex"] != 2 || source["DefaultSubtitleStreamIndex"] != 4 {
 		t.Fatal(source)
 	}
-	applyPlannedStreamIndexes(source, media, frontend.Decision{AudioStream: 2, SubtitleStream: -1})
+	applyPlannedStreamIndexes(source, media, frontend.Decision{AudioStream: 2, SubtitleStream: -1}, -1)
 	if source["DefaultAudioStreamIndex"] != 2 || source["DefaultSubtitleStreamIndex"] != -1 {
+		t.Fatal(source)
+	}
+	// Side-rendered text subtitle: Decision.SubtitleStream is -1 (no burn-in)
+	// while plan.SubtitleStream() preserves the chosen track.
+	applyPlannedStreamIndexes(source, media, frontend.Decision{AudioStream: 2, SubtitleStream: -1}, 4)
+	if source["DefaultAudioStreamIndex"] != 2 || source["DefaultSubtitleStreamIndex"] != 4 {
 		t.Fatal(source)
 	}
 }

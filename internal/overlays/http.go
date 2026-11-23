@@ -49,7 +49,7 @@ func (s *Service) Router(cat core.Catalog, users func(*http.Request, int64) (*co
 		cfg := Settings{Enabled: true, Status: true, Quality: true, Ratings: true}
 		if raw := r.URL.Query().Get("settings"); raw != "" {
 			cfg = Settings{}
-			if len(raw) > 2048 || json.Unmarshal([]byte(raw), &cfg) != nil {
+			if len(raw) > 8192 || json.Unmarshal([]byte(raw), &cfg) != nil {
 				http.Error(w, "Invalid preview settings", 400)
 				return
 			}
@@ -151,7 +151,7 @@ func (s *Service) Router(cat core.Catalog, users func(*http.Request, int64) (*co
 		ctx := r.Context()
 		if raw := r.URL.Query().Get("settings"); raw != "" {
 			var cfg Settings
-			if len(raw) > 2048 || json.Unmarshal([]byte(raw), &cfg) != nil {
+			if len(raw) > 8192 || json.Unmarshal([]byte(raw), &cfg) != nil {
 				http.Error(w, "Invalid preview settings", 400)
 				return
 			}
@@ -190,6 +190,10 @@ func (s *Service) Router(cat core.Catalog, users func(*http.Request, int64) (*co
 	}
 	r.Get("/preview/{key}", preview)
 	r.Get("/explain/{key}", preview)
+	r.Get("/badge-sets", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		reply(w, map[string]any{"sets": s.PluginBadgeSets(r.Context())})
+	})
 	r.Get("/cache", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, no-store")
 		reply(w, s.CacheStats())

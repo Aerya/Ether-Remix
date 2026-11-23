@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -77,10 +78,10 @@ func (p *Plugin) hotCallState(ctx context.Context, start time.Time) *callState {
 
 // hotInstance waits for an idle hot instance. Waiting is not plugin time,
 // but it is the resolve's time, so it is bounded by the given budget.
-func (p *Plugin) hotInstance(ctx context.Context, wait time.Duration) (instance, error) {
+func (p *Plugin) hotInstance(ctx context.Context, route string, wait time.Duration) (instance, uint64, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	return p.hot.get(waitCtx)
+	return p.hot.getForRoute(waitCtx, route)
 }
 
 // fatal reports whether a call error leaves the instance unusable: it
@@ -174,12 +175,23 @@ func (p *Plugin) RankBatch(ctx context.Context, cands []Candidate, config json.R
 	if len(pending) == 0 {
 		return scores, out, nil
 	}
-	in, gerr := p.hotInstance(ctx, p.lim.RankBatch)
+	in, leaseID, gerr := p.hotInstance(ctx, "rank_key", p.lim.RankBatch)
 	if gerr != nil {
 		out.SlowCandidates = len(pending)
 		out.Status = StatusTimeout
 		return scores, out, nil // neutral for the rest; health sees the counters
 	}
+	healthy := false
+	defer func() {
+		if r := recover(); r != nil {
+			healthy = false
+			out.Status = StatusError
+			out.Trap = true
+			out.SlowCandidates = len(pending)
+			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin rank panic: %v", r), Trap: true}
+		}
+		p.hot.putLease(in, leaseID, healthy)
+	}()
 	cs := p.hotCallState(ctx, start)
 	facts := make([][]byte, len(pending))
 	for j, i := range pending {
@@ -197,7 +209,7 @@ func (p *Plugin) RankBatch(ctx context.Context, cands []Candidate, config json.R
 			callErr = nil // a failed candidate is neutral, like a slow one
 		}
 	}
-	p.hot.put(in, !fatal(callErr))
+	healthy = !fatal(callErr) && ctx.Err() == nil
 	out.Units = cs.finishUnits()
 	if callErr != nil {
 		out.Status, out.Trap = callErr.Status, callErr.Trap
@@ -238,15 +250,27 @@ func (p *Plugin) CondMatch(ctx context.Context, cand Candidate, operator string,
 		out.MemoHits = 1
 		return v != 0, out, nil
 	}
-	in, gerr := p.hotInstance(ctx, p.lim.RankPerCandidate)
+	in, leaseID, gerr := p.hotInstance(ctx, "cond_match", p.lim.RankPerCandidate)
 	if gerr != nil {
 		out.Status = StatusTimeout
 		out.SlowCandidates = 1
 		return false, out, nil
 	}
+	healthy := false
+	defer func() {
+		if r := recover(); r != nil {
+			healthy = false
+			match = false
+			out.Status = StatusError
+			out.Trap = true
+			out.SlowCandidates = 1
+			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin cond panic: %v", r), Trap: true}
+		}
+		p.hot.putLease(in, leaseID, healthy)
+	}()
 	cs := p.hotCallState(ctx, start)
 	got, callErr := p.condRun(ctx, cs, in, [][]byte{cand.Facts}, operator, value)
-	p.hot.put(in, !fatal(callErr))
+	healthy = !fatal(callErr) && ctx.Err() == nil
 	out.Units = cs.finishUnits()
 	if callErr != nil {
 		out.Status, out.Trap = callErr.Status, callErr.Trap
@@ -278,9 +302,9 @@ func (p *Plugin) condRun(ctx context.Context, cs *callState, in instance, facts 
 
 // CondBatch checks a batch without memoization, suitable for conformance
 // testing. It applies the same per-candidate and batch limits as ranking.
-func (p *Plugin) CondBatch(ctx context.Context, cands []Candidate, operator string, value json.RawMessage) ([]bool, Outcome, error) {
-	out := Outcome{Status: StatusOK}
-	results := make([]bool, len(cands))
+func (p *Plugin) CondBatch(ctx context.Context, cands []Candidate, operator string, value json.RawMessage) (results []bool, out Outcome, err error) {
+	out = Outcome{Status: StatusOK}
+	results = make([]bool, len(cands))
 	if !p.caps.CondMatch {
 		return results, out, &Error{Status: StatusError, Message: "plugin does not export cond_match"}
 	}
@@ -288,18 +312,29 @@ func (p *Plugin) CondBatch(ctx context.Context, cands []Candidate, operator stri
 		value = json.RawMessage("null")
 	}
 	start := time.Now()
-	in, err := p.hotInstance(ctx, p.lim.RankBatch)
-	if err != nil {
+	in, leaseID, gerr := p.hotInstance(ctx, "cond_batch", p.lim.RankBatch)
+	if gerr != nil {
 		out.SlowCandidates = len(cands)
-		return results, out, err
+		return results, out, gerr
 	}
+	healthy := false
+	defer func() {
+		if r := recover(); r != nil {
+			healthy = false
+			out.Status = StatusError
+			out.Trap = true
+			out.SlowCandidates = len(cands)
+			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin cond batch panic: %v", r), Trap: true}
+		}
+		p.hot.putLease(in, leaseID, healthy)
+	}()
 	cs := p.hotCallState(ctx, start)
 	facts := make([][]byte, len(cands))
 	for i := range cands {
 		facts[i] = cands[i].Facts
 	}
 	got, callErr := p.condRun(ctx, cs, in, facts, operator, value)
-	p.hot.put(in, !fatal(callErr))
+	healthy = !fatal(callErr) && ctx.Err() == nil
 	out.Units = cs.finishUnits()
 	if callErr != nil {
 		out.Status = callErr.Status

@@ -12,7 +12,7 @@ import (
 // video's maxrate plus an unrestricted eight-second reservoir. Fit both the
 // nominal video rate and reservoir into the published peak measurement window.
 func (s *Session) boundHLSRateLocked(rp *runPlan) {
-	if s.proto != core.ProtocolHLS || s.liveInput || rp.decision.VideoCopy ||
+	if s.proto != core.ProtocolHLS || s.liveInput || !rp.decision.EncodesVideo(s.info) ||
 		(s.container != ContainerMPEGTS && s.container != ContainerFMP4) || s.wantTrack < 0 || s.wantTrack >= len(s.rungs) {
 		return
 	}

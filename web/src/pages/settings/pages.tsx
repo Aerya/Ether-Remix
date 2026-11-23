@@ -8,16 +8,19 @@ import { DomainPage, useRouteTab } from "../../components/layout";
 import { RestartButton } from "../../components/RestartDrawer";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t } from "../../i18n";
-import { api } from "../../lib/api";
+import { api, apiFetch } from "../../lib/api";
+import { useAsync } from "../../lib/hooks";
+import { ServerAddressPanel, type HubFrontendInfo } from "../apps/ConnectionHub";
+import type { UpdateStatus } from "../../lib/types";
 import Logs from "../Logs";
 import { BackupsAndImport } from "./Backups";
 import { ClusterOverview, useClustered } from "./Cluster";
-import { AppConnections } from "./AppConnections";
+import { ConsolePortSection } from "./ConsolePortDrawer";
 import { OutboundInternet } from "./OutboundInternet";
 import { ServerProtection } from "./ServerProtection";
 import { ConnectedServices, integrationTabs, type ServiceTab } from "./ConnectedServices";
 import * as S from "./schema";
-import { UpdatesStatus } from "./sections";
+import { buildCannotCheckUpdates, UpdatesStatus } from "./sections";
 
 function ServerStatus() {
   const { boot } = useApp();
@@ -31,7 +34,7 @@ function ServerStatus() {
   );
 }
 
-/** Names, how apps reach this computer, how it reaches the internet, and setup. */
+/** Names, how Ether reaches the internet, and setup. */
 export function GeneralPage() {
   const { reloadBoot } = useApp();
   const clustered = useClustered();
@@ -49,13 +52,20 @@ export function GeneralPage() {
           )}
         label={t("General")}
         before={() => <ServerStatus />}
+        afterGroup={(group) => (group.id === "identity" ? <GeneralServerAddress /> : null)}
         onSaved={() => void reloadBoot()}
       />
-      <AppConnections />
+      <ConsolePortSection />
       <OutboundInternet />
       <RunSetupWizard />
     </DomainPage>
   );
+}
+
+/** Server address (main port, local/remote/Tailscale, remote console). */
+function GeneralServerAddress() {
+  const state = useAsync((signal) => apiFetch<HubFrontendInfo[]>("/frontends", { signal }), []);
+  return <ServerAddressPanel frontends={state.data ?? []} />;
 }
 
 function RunSetupWizard() {
@@ -130,6 +140,35 @@ const MAINTENANCE_TABS = localized(
     ] as const,
 );
 
+function UpdatesTab() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const cannotCheck = buildCannotCheckUpdates(status);
+  const groups = cannotCheck
+    ? S.UPDATES.map((group) => ({
+        ...group,
+        fields: group.fields.map((field) =>
+          field.key === "enabled" && field.kind === "bool"
+            ? {
+                ...field,
+                disabled: true,
+                disabledValue: false,
+                help: t("Unavailable in this build."),
+              }
+            : field,
+        ),
+      }))
+    : S.UPDATES;
+  return (
+    <ConfigSection
+      configKey="updates"
+      endpoint="updates"
+      groups={groups}
+      label={t("Updates")}
+      before={() => <UpdatesStatus onStatus={setStatus} />}
+    />
+  );
+}
+
 export function MaintenancePage() {
   const tab = useRouteTab(MAINTENANCE_TABS);
   return (
@@ -141,15 +180,7 @@ export function MaintenancePage() {
       active={tab}
     >
       {tab === "backups" ? <BackupsSettings /> : null}
-      {tab === "updates" ? (
-        <ConfigSection
-          configKey="updates"
-          endpoint="updates"
-          groups={S.UPDATES}
-          label={t("Updates")}
-          before={() => <UpdatesStatus />}
-        />
-      ) : null}
+      {tab === "updates" ? <UpdatesTab /> : null}
       {tab === "health" ? (
         <>
           <ServerProtection />

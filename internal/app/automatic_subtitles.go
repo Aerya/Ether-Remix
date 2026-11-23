@@ -132,7 +132,17 @@ func (a *App) automaticSubtitleWork(ctx context.Context, b *sessions.Broker, sta
 		if err != nil {
 			return err
 		}
-		access := subtitles.ReleaseAccess{URL: lease.InputURL, Duration: lease.Session.Info.Duration, Info: &lease.Session.Info, Source: lease.Session.Source.ReleaseID(), Hold: lease.Hold}
+		info := core.CloneMediaInfo(lease.Session.Info)
+		srcKey := lease.Session.Source.ReleaseID()
+		access := subtitles.ReleaseAccess{
+			URL:          lease.InputURL,
+			Duration:     info.Duration,
+			Info:         &info,
+			Release:      latest.Release,
+			Source:       srcKey,
+			EmbeddedCues: a.cachedEmbeddedCues(srcKey, &info),
+			Hold:         lease.Hold,
+		}
 		if a.transcoder != nil {
 			access.FFmpeg = a.transcoder.FFmpegPath()
 		}

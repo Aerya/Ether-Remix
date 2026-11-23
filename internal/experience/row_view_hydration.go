@@ -8,7 +8,6 @@ import (
 )
 
 const (
-	rowViewHydrationChunk  = 200
 	rowViewMemberPage      = 100
 	rowViewMemberScanLimit = 10000
 )
@@ -125,8 +124,8 @@ func RowViewHydrateLegacy(ctx context.Context, viewer *core.User, refs []core.Ne
 // fallback and is not shared with any other viewer, device or pass. A
 // home-release read failure is not-found and does not fall back. Non-title
 // and virtual-season entries use the legacy port. Batch-built title entries
-// leave Handle empty. Visibility is copied per chunk so a parent read cannot
-// leak into the caller's policy or a later chunk.
+// leave Handle empty. Visibility is copied for this page so a parent read cannot
+// leak into the caller's policy or a later request.
 func RowViewHydrateEntries(ctx context.Context, viewer *core.User, refs []core.NeutralEntryRef, one RowViewEntry, batch RowViewTitleBatch, read RowViewTitleRead, visibility Visibility, guide RowViewGuide) ([]frontend.RowEntry, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	out := make([]frontend.RowEntry, len(refs))
@@ -140,8 +139,8 @@ func RowViewHydrateEntries(ctx context.Context, viewer *core.User, refs []core.N
 		}
 		return guideRows, guideErr
 	}
-	for start := 0; start < len(refs); start += rowViewHydrationChunk {
-		part := refs[start:min(start+rowViewHydrationChunk, len(refs))]
+	if len(refs) > 0 {
+		part := refs
 		keys := make([]core.RatingKey, 0, len(part))
 		for _, ref := range part {
 			if ref.Kind == string(frontend.RowEntryTitle) {
@@ -210,7 +209,7 @@ func RowViewHydrateEntries(ctx context.Context, viewer *core.User, refs []core.N
 				return nil, core.ErrNotFound
 			}
 			copy := t
-			out[start+i] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &copy}
+			out[i] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &copy}
 		}
 		if len(otherRefs) > 0 {
 			entries, e := RowViewHydrateLegacy(ctx, viewer, otherRefs, one, cached)
@@ -218,7 +217,7 @@ func RowViewHydrateEntries(ctx context.Context, viewer *core.User, refs []core.N
 				return nil, e
 			}
 			for i, entry := range entries {
-				out[start+otherIndexes[i]] = entry
+				out[otherIndexes[i]] = entry
 			}
 		}
 	}

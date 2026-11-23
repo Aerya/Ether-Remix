@@ -48,7 +48,7 @@ func TestLiveSearchAcrossGuidesScale(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.SaveOwnerGuides(ctx, []OwnerGuide{{ID: "news", Name: "News", Groups: []GuideGroup{{"provider", "News"}}}, {ID: "overlap", Name: "Overlap", Channels: []string{"c00042"}}, {ID: "hidden", Name: "Hidden", Hidden: true, Groups: []GuideGroup{{"provider", "Hidden"}}}}); err != nil {
+	if err = s.SaveOwnerGroups(ctx, []OwnerGroup{{ID: "news", Name: "News", Groups: []OwnerGroupSource{{SourceID: "provider", Name: "News"}}}, {ID: "overlap", Name: "Overlap", Channels: []string{"c00042"}}, {ID: "hidden", Name: "Hidden", Hidden: true, Groups: []OwnerGroupSource{{SourceID: "provider", Name: "Hidden"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	host := liveTVHost{s: s}
@@ -158,7 +158,7 @@ func TestLiveSearchAcrossGuidesScale(t *testing.T) {
 			t.Fatal(err)
 		}
 		var plan string
-		if err := tx.QueryRowContext(ctx, `EXPLAIN (FORMAT JSON) SELECT id FROM livetv_channels WHERE to_tsvector('simple',coalesce(data::jsonb->>'name','') || ' ' || coalesce(data::jsonb->>'number','') || ' ' || coalesce(data::jsonb->>'guideId','')) @@ to_tsquery('simple','c00042:*') ORDER BY id LIMIT 400`).Scan(&plan); err != nil {
+		if err := tx.QueryRowContext(ctx, `EXPLAIN (FORMAT JSON) SELECT id FROM livetv_channels WHERE to_tsvector('simple', livetv_channel_search_text(data::jsonb->>'name', data::jsonb->>'number', data::jsonb->>'guideId')) @@ to_tsquery('simple','c00042:*') ORDER BY id LIMIT 400`).Scan(&plan); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(plan, `"Index Name": "livetv_search_channels"`) {
@@ -186,6 +186,108 @@ func TestLiveSearchAcrossGuidesScale(t *testing.T) {
 	}
 	if !indexed {
 		t.Fatal("search lost its FTS index")
+	}
+}
+
+// Space- and punctuation-normalised channel search stays indexed across
+// word-prefix and compact queries (both after backfill and via live triggers).
+func TestLiveSearchSpaceInsensitiveAndIndexed(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	s := testService(t, Options{Now: func() time.Time { return now }})
+	owner := &core.User{ID: 1, IsOwner: true}
+
+	seed := []Channel{
+		{ID: "nfl-redzone", Name: "NFL RedZone", Number: "701", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "nfl.rz", Group: "Sports", StreamURL: "https://example.invalid/rz"},
+		{ID: "fox-5", Name: "FOX 5", Number: "5", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "fox5.us", Group: "Local", StreamURL: "https://example.invalid/fox5"},
+		{ID: "nick-jr", Name: "Nick Jr.", Number: "302", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "nickjr.us", Group: "Kids", StreamURL: "https://example.invalid/nickjr"},
+		{ID: "espn-2", Name: "ESPN 2", Number: "209", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "espn2.us", Group: "Sports", StreamURL: "https://example.invalid/espn2"},
+		{ID: "espn2", Name: "ESPN2", Number: "210", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "espn2hd.us", Group: "Sports", StreamURL: "https://example.invalid/espn2b"},
+		{ID: "a-and-e", Name: "A&E", Number: "118", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "ae.us", Group: "Entertainment", StreamURL: "https://example.invalid/ae"},
+		{ID: "hbo", Name: "HBO", Number: "501", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "hbo.us", Group: "Movies", StreamURL: "https://example.invalid/hbo"},
+	}
+	for _, c := range seed {
+		if _, err := s.SaveChannel(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := liveTVHost{s: s}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		hits, err := host.SearchLiveTV(ctx, owner, "redzone", 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hits.Partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("index not ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Also verify live trigger indexing after the index is active.
+	if _, err := s.SaveChannel(ctx, Channel{ID: "us-fox-5", Name: "US | FOX 5 HD", Number: "505", Kind: "iptv", Enabled: true, SourceID: "p", GuideID: "us.fox5", Group: "Local", StreamURL: "https://example.invalid/usfox5"}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertContains := func(query string, wantIDs []string, forbidID string) {
+		t.Helper()
+		hits, err := host.SearchLiveTV(ctx, owner, query, 20)
+		if err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		got := map[string]bool{}
+		for _, c := range hits.Channels {
+			got[c.ID] = true
+		}
+		for _, id := range wantIDs {
+			if !got[id] {
+				t.Fatalf("query %q missing %q in %+v", query, id, hits.Channels)
+			}
+		}
+		if forbidID != "" && got[forbidID] {
+			t.Fatalf("query %q unexpectedly matched %q: %+v", query, forbidID, hits.Channels)
+		}
+	}
+
+	for _, q := range []string{"red zone", "redzone", "redz", "nfl red", "nfl red zone", "nflredzone", "red z"} {
+		assertContains(q, []string{"nfl-redzone"}, "hbo")
+	}
+	assertContains("fox5", []string{"fox-5", "us-fox-5"}, "hbo")
+	assertContains("fox 5", []string{"fox-5", "us-fox-5"}, "hbo")
+	assertContains("nickjr", []string{"nick-jr"}, "hbo")
+	assertContains("nick jr", []string{"nick-jr"}, "hbo")
+	assertContains("espn2", []string{"espn-2", "espn2"}, "hbo")
+	assertContains("espn 2", []string{"espn-2", "espn2"}, "hbo")
+	assertContains("ae", []string{"a-and-e"}, "hbo")
+
+	if store.DialectOf(s.o.DB) != store.Postgres {
+		checkPlan := func(q, want string, args ...any) {
+			t.Helper()
+			rows, err := s.o.DB.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var details []string
+			matched := false
+			for rows.Next() {
+				var a, b, c int
+				var detail string
+				if err := rows.Scan(&a, &b, &c, &detail); err != nil {
+					t.Fatal(err)
+				}
+				details = append(details, detail)
+				if strings.Contains(detail, want) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Fatalf("plan for %q missing %q: %v", q, want, details)
+			}
+		}
+		checkPlan(`SELECT id FROM livetv_search_channels_compact WHERE livetv_search_channels_compact MATCH ? ORDER BY rank LIMIT 400`, "VIRTUAL TABLE INDEX", `"redzone"`)
+		checkPlan(`SELECT id FROM livetv_channels WHERE `+sqliteCompactNameExpr+`>=? AND `+sqliteCompactNameExpr+`<? LIMIT 400`, "livetv_search_compact_fallback", "ae", "ae\uffff")
 	}
 }
 

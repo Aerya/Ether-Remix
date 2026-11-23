@@ -44,7 +44,7 @@ func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	runtime := a.deployment.playback.(*clusterplayback.Runtime)
-	a.brokerPlayback, err = clusterplayback.NewRemotePlayback(runtime, clusterplayback.RemotePlaybackOptions{IdleTimeout: specialistPlaybackIdleTimeout, Capacity: 4096, SelectSource: a.selectPrivateSource, Estimate: func(_ context.Context, t *core.Title, caps core.ClientCaps) core.MediaInfo {
+	a.brokerPlayback, err = clusterplayback.NewRemotePlayback(runtime, clusterplayback.RemotePlaybackOptions{IdleTimeout: specialistPlaybackIdleTimeout, PauseRetention: cfg.Server.PausedStreamRetention(), Capacity: 4096, SelectSource: a.selectPrivateSource, Estimate: func(_ context.Context, t *core.Title, caps core.ClientCaps) core.MediaInfo {
 		return playback.EstimateInfo(t, caps, resolver.SelectProfile(a.cfg.Read().Quality, caps, nil))
 	}})
 	if err != nil {
@@ -64,8 +64,30 @@ func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	a.closers = append(a.closers, a.frontends.close)
+	a.buildFlows()
+	consoleMux := http.NewServeMux()
+	consoleMux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	consoleRedirect := lanOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ether/", http.StatusFound)
+	}), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)
+	consoleMux.Handle("/ether", consoleRedirect)
+	consoleMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			consoleRedirect.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	a.consoleHandler = consoleMux
+
 	mux := http.NewServeMux()
-	mux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	mux.Handle("/ether/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.consoleOnMain() {
+			http.NotFound(w, r)
+			return
+		}
+		consoleMux.ServeHTTP(w, r)
+	}))
 	mux.Handle("/", a.frontends.plexHandler())
 	a.handler = mux
 	// This is a genuine protocol handler; role-specific public media mounting and

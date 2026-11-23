@@ -80,6 +80,14 @@ func (b *Broker) observeSubtitleSelection(ctx context.Context, s *brokerSession,
 	if t.State == "stopped" || !b.policy(s.public.Protocol).DistributedBindings || (t.AudioStreamIndex == nil && t.SubtitleStreamIndex == nil) {
 		return nil
 	}
+	// Routine progress heartbeats echo the active track indices every few
+	// seconds. Skip the failover fence (and post-failover index checks on an
+	// earlier release's indices) when neither reported track changed.
+	changed := (t.AudioStreamIndex != nil && *t.AudioStreamIndex != s.opts.AudioStream) ||
+		(t.SubtitleStreamIndex != nil && *t.SubtitleStreamIndex != s.opts.SubtitleStream)
+	if !changed {
+		return nil
+	}
 	fence, ok := b.deps.Playback.(core.PlaybackSelectionFence)
 	if !ok {
 		return nil

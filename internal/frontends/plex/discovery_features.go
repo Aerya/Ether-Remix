@@ -3,10 +3,10 @@ package plex
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,6 +14,74 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/go-chi/chi/v5"
 )
+
+const discoveryArtworkTokenPrefix = "dp-"
+
+func discoveryArtworkElement(kind string) (element, code string) {
+	switch kind {
+	case "backdrop":
+		return "art", "b"
+	case "logo":
+		return "clearLogo", "l"
+	default:
+		return "thumb", "p"
+	}
+}
+
+func discoveryElementMatchesKind(element, kind string) bool {
+	switch kind {
+	case "backdrop":
+		return element == "art" || element == "background"
+	case "logo":
+		return element == "clearLogo" || element == "logo"
+	case "", "poster":
+		return element == "thumb" || element == "poster"
+	default:
+		return false
+	}
+}
+
+// encodeDiscoveryArtworkToken packs version, kind, and language into an opaque
+// URL-safe token so Plex artwork URLs keep the PMS /library/metadata/{id}/{element}/{token}
+// shape with no query string.
+func encodeDiscoveryArtworkToken(version, kind, lang string) string {
+	_, code := discoveryArtworkElement(kind)
+	version = strings.ReplaceAll(version, "\x00", "")
+	lang = strings.ReplaceAll(lang, "\x00", "")
+	payload := "v1\x00" + code + "\x00" + version + "\x00" + lang
+	return discoveryArtworkTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+func decodeDiscoveryArtworkToken(token string) (version, kind, lang string, ok bool) {
+	encoded, hasPrefix := strings.CutPrefix(token, discoveryArtworkTokenPrefix)
+	if !hasPrefix || encoded == "" {
+		return "", "", "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || base64.RawURLEncoding.EncodeToString(raw) != encoded {
+		return "", "", "", false
+	}
+	parts := strings.Split(string(raw), "\x00")
+	if len(parts) != 4 || parts[0] != "v1" || parts[2] == "" {
+		return "", "", "", false
+	}
+	switch parts[1] {
+	case "p":
+		kind = "poster"
+	case "b":
+		kind = "backdrop"
+	case "l":
+		kind = "logo"
+	default:
+		return "", "", "", false
+	}
+	return parts[2], kind, parts[3], true
+}
+
+func discoveryArtworkURL(key frontend.RatingKey, kind, version, lang string) string {
+	element, _ := discoveryArtworkElement(kind)
+	return "/library/metadata/" + key.String() + "/" + element + "/" + encodeDiscoveryArtworkToken(version, kind, lang)
+}
 
 // DiscoveryFeatures is the shared discovery contract adapted by Plex.
 type DiscoveryFeatures = frontend.DiscoveryFeatures
@@ -63,7 +131,7 @@ func (s *Server) discoveryRemoveContinue(ctx context.Context, pr *Request, key f
 	return s.discovery().Personal.RemoveContinue(ctx, pr.User.ID, key)
 }
 
-func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *frontend.Title, m *model.Metadata, detail bool) {
+func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t, show *frontend.Title, m *model.Metadata, detail bool) {
 	d := s.discovery()
 	if d == nil || t == nil || pr.User == nil || !s.titleAllowed(pr.User, t) {
 		return
@@ -86,10 +154,65 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 		}
 	}
 	if selected.PosterVersion != "" {
-		m.Thumb = fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?lang=%s", t.Key.String(), selected.PosterVersion, url.QueryEscape(pr.Language))
+		m.Thumb = discoveryArtworkURL(t.Key, "poster", selected.PosterVersion, pr.Language)
+		if t.Type != frontend.TypeEpisode {
+			hasPoster := false
+			for i := range m.Image {
+				if m.Image[i].Type == "coverPoster" {
+					m.Image[i].URL = m.Thumb
+					hasPoster = true
+				}
+			}
+			if !hasPoster {
+				m.Image = append(m.Image, model.Image{Alt: m.Title, Type: "coverPoster", URL: m.Thumb})
+			}
+		}
 	}
 	if selected.BackdropVersion != "" {
-		m.Art = fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?kind=backdrop&lang=%s", t.Key.String(), selected.BackdropVersion, url.QueryEscape(pr.Language))
+		m.Art = discoveryArtworkURL(t.Key, "backdrop", selected.BackdropVersion, pr.Language)
+		for i := range m.Image {
+			if m.Image[i].Type == "background" {
+				m.Image[i].URL = m.Art
+			}
+		}
+	}
+	if (t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason) && !selected.Enabled && d.Overlays != nil && d.Overlays.CustomPostersEnabled() {
+		showKey := t.ShowKey
+		if showKey == 0 {
+			showKey = t.Key.Parent()
+			if t.Type == frontend.TypeEpisode {
+				showKey = showKey.Parent()
+			}
+		}
+		if showKey.Kind() == frontend.KindShow && (show == nil || s.titleAllowed(pr.User, show)) {
+			target := show
+			if target == nil {
+				target = &frontend.Title{Key: showKey, Type: frontend.TypeShow}
+			}
+			showSelected := d.SelectArtwork(ctx, pr.User, target, pr.Language)
+			if showSelected.PosterVersion != "" {
+				showThumb := discoveryArtworkURL(showKey, "poster", showSelected.PosterVersion, pr.Language)
+				if t.Type == frontend.TypeEpisode {
+					m.GrandparentThumb = showThumb
+					for i := range m.Image {
+						if m.Image[i].Type == "coverPoster" {
+							m.Image[i].URL = showThumb
+						}
+					}
+				} else {
+					oldParent := m.ParentThumb
+					m.ParentThumb = showThumb
+					if m.Thumb == oldParent {
+						m.Thumb = showThumb
+					}
+					for i := range m.Image {
+						if m.Image[i].Type == "coverPoster" && m.Image[i].URL == oldParent {
+							m.Image[i].URL = showThumb
+						}
+					}
+				}
+			}
+		}
 	}
 	if selected.Enabled {
 		hasLogo := false
@@ -107,12 +230,12 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 			case "clearLogo":
 				hasLogo = true
 				if selected.LogoVersion != "" {
-					m.Image[i].URL = fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?kind=logo&lang=%s", t.Key.String(), selected.LogoVersion, url.QueryEscape(pr.Language))
+					m.Image[i].URL = discoveryArtworkURL(t.Key, "logo", selected.LogoVersion, pr.Language)
 				}
 			}
 		}
 		if !hasLogo && selected.LogoVersion != "" {
-			m.Image = append(m.Image, model.Image{Alt: m.Title, Type: "clearLogo", URL: fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?kind=logo&lang=%s", t.Key.String(), selected.LogoVersion, url.QueryEscape(pr.Language))})
+			m.Image = append(m.Image, model.Image{Alt: m.Title, Type: "clearLogo", URL: discoveryArtworkURL(t.Key, "logo", selected.LogoVersion, pr.Language)})
 		}
 	}
 	if d.Ratings != nil && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {

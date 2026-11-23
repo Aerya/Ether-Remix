@@ -8,9 +8,9 @@ import (
 
 func TestChannelRatingPrecedence(t *testing.T) {
 	c := Channel{ID: "news", Kind: "iptv", SourceID: "provider", Group: "News"}
-	guides := indexGuideRatings([]OwnerGuide{
+	guides := indexGroupRatings([]OwnerGroup{
 		{Hidden: true, All: true, UnratedRating: "R"},
-		{Groups: []GuideGroup{{SourceID: "provider", Name: "News"}}, UnratedRating: "PG"},
+		{Groups: []OwnerGroupSource{{SourceID: "provider", Name: "News"}}, UnratedRating: "PG"},
 		{Channels: []string{"news"}, UnratedRating: "G"},
 	})
 	for _, tc := range []struct {

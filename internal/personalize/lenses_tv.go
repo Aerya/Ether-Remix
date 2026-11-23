@@ -59,13 +59,35 @@ func (b *builder) genNewSeasons() []*candRow {
 	}
 	var cands []cand
 	var firstEps []core.RatingKey
-	for i, e := range b.showEvidence() {
-		if i >= 20 || b.ctx.Err() != nil {
+	evidence := b.showEvidence()
+	if len(evidence) > 20 {
+		evidence = evidence[:20]
+	}
+	var batchedSeasons map[core.RatingKey][]core.Title
+	if cs, ok := b.e.catalog.(interface {
+		CachedSeasons(context.Context, []core.RatingKey) (map[core.RatingKey][]core.Title, error)
+	}); ok && len(evidence) > 0 {
+		keys := make([]core.RatingKey, len(evidence))
+		for i, e := range evidence {
+			keys[i] = e.Key
+		}
+		if got, err := cs.CachedSeasons(b.ctx, keys); err == nil {
+			batchedSeasons = got
+		}
+	}
+	for _, e := range evidence {
+		if b.ctx.Err() != nil {
 			break
 		}
-		seasons, err := b.e.catalog.Children(b.ctx, e.Key)
-		if err != nil {
-			continue
+		var seasons []core.Title
+		if batchedSeasons != nil {
+			seasons = batchedSeasons[e.Key]
+		} else {
+			var err error
+			seasons, err = b.e.catalog.Children(b.ctx, e.Key)
+			if err != nil {
+				continue
+			}
 		}
 		best := core.Title{}
 		for _, s := range seasons {

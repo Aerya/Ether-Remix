@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
@@ -58,7 +59,12 @@ type instance struct {
 func (i *instance) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/webdav" {
-			http.Redirect(w, r, "/webdav/", http.StatusPermanentRedirect)
+			fwdPrefix := ""
+			if origin, ok := i.host.Origin(r); ok {
+				fwdPrefix = origin.Prefix
+			}
+			target := clientnet.RedirectPath(fwdPrefix, "/webdav", "/")
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/webdav/") {

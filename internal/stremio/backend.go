@@ -71,6 +71,7 @@ type Service struct {
 	nzb      *http.Client
 	anime    AnimeIDs
 	specials SpecialEpisodes
+	identity func() config.ClientIdentity
 
 	animeOnce sync.Once
 	mu        sync.Mutex
@@ -97,6 +98,9 @@ type Options struct {
 	Anime AnimeIDs
 	// Specials maps catalogue season zero to IMDb numbering; nil skips IMDb specials.
 	Specials SpecialEpisodes
+	// ClientIdentity returns the current server-wide request identity rules
+	// for NZB downloads; nil uses Ether's honest default.
+	ClientIdentity func() config.ClientIdentity
 }
 
 // NewService returns a Service. client nil uses a default client with a
@@ -113,7 +117,24 @@ func NewServiceWithOptions(o Options) *Service {
 	if o.NZBClient == nil {
 		o.NZBClient = (&safefetch.Guard{}).Client(egress.Client(egress.CapStremio, nzbTimeout))
 	}
-	return &Service{client: o.Client, nzb: o.NZBClient, anime: o.Anime, specials: o.Specials, backends: map[string]*Backend{}}
+	return &Service{client: o.Client, nzb: o.NZBClient, anime: o.Anime, specials: o.Specials, identity: o.ClientIdentity, backends: map[string]*Backend{}}
+}
+
+// SetClientIdentity updates the request-identity lookup used for NZB downloads.
+func (s *Service) SetClientIdentity(fn func() config.ClientIdentity) {
+	s.mu.Lock()
+	s.identity = fn
+	s.mu.Unlock()
+}
+
+func (s *Service) clientIdentity() config.ClientIdentity {
+	s.mu.Lock()
+	fn := s.identity
+	s.mu.Unlock()
+	if fn == nil {
+		return config.ClientIdentity{}
+	}
+	return fn()
 }
 
 // animeIDs returns the anime id map, creating the default one on first use.
@@ -150,10 +171,11 @@ func (s *Service) Test(ctx context.Context, cfg config.Indexer) error {
 }
 
 // Search implements newznab.Backend. Movies are looked up by id and
-// episodes by id, season and episode (lookupID: IMDb, else TMDB, else a
-// mapped anime database id); a season-level request (Episode 0) asks for
-// the season's first episode and keeps whole-season packs. Titles the
-// addon cannot be asked about, and show-level requests, have no answer.
+// episodes by id, season and episode (lookupIDs: IMDb, else TMDB, else a
+// mapped anime database id, plus bounded release aliases); a season-level
+// request (Episode 0) asks for the season's first episode and keeps
+// whole-season packs. Titles the addon cannot be asked about, and
+// show-level requests, have no answer.
 func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve func(context.Context, string) error) ([]core.Release, error) {
 	switch req.Type {
 	case core.TypeMovie:
@@ -164,29 +186,84 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 	default:
 		return nil, nil
 	}
-	look, ok := b.lookupID(ctx, req)
-	if !ok {
+	looks := b.lookupIDs(ctx, req)
+	if len(looks) == 0 {
 		return nil, nil
 	}
-	kind, id, packs := look.kind, look.id, look.packs
-	if err := reserve(ctx, "hit"); err != nil {
-		return nil, err
-	}
-	var answer struct {
-		Streams []stream `json:"streams"`
-	}
-	if err := getJSON(ctx, b.client, b.base, "/stream/"+kind+"/"+url.PathEscape(id)+".json", maxStreams, &answer); err != nil {
-		var he *httpError
-		if errors.As(err, &he) && (he.status == http.StatusTooManyRequests || he.status == http.StatusServiceUnavailable && he.retry != "") {
-			return nil, &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
+	var merged []core.Release
+	seen := map[string]bool{}
+	var totalNoHash, totalAmbiguous int
+	var firstErr error
+	incomplete := false
+	succeeded := 0
+	for _, look := range looks {
+		if len(merged) >= maxResults {
+			break
 		}
-		return nil, err
+		if err := reserve(ctx, "hit"); err != nil {
+			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("stremio: stream lookup skipped", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
+				break
+			}
+			return nil, err
+		}
+		var answer struct {
+			Streams []stream `json:"streams"`
+		}
+		if err := getJSON(ctx, b.client, b.base, "/stream/"+look.kind+"/"+url.PathEscape(look.id)+".json", maxStreams, &answer); err != nil {
+			var he *httpError
+			if errors.As(err, &he) && (he.status == http.StatusTooManyRequests || he.status == http.StatusServiceUnavailable && he.retry != "") {
+				rl := &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
+				if succeeded > 0 {
+					incomplete = true
+					if firstErr == nil {
+						firstErr = rl
+					}
+					newznab.NoteBackendRateLimit(ctx, rl)
+					slog.Default().Warn("stremio: stream lookup rate-limited", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
+					break
+				}
+				return nil, rl
+			}
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			incomplete = true
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Default().Warn("stremio: stream lookup failed", "host", b.base.Host, "kind", look.kind, "id", look.id, "err", err)
+			continue
+		}
+		succeeded++
+		rels, skippedNoHash, skippedAmbiguous := convertWith(answer.Streams, req, look.packs, convertOptions{
+			origin: b.origin(), instance: b.instance, season: look.season, entryEpisode: look.entryEpisode, specialEpisode: look.specialEpisode,
+		})
+		totalNoHash += skippedNoHash
+		totalAmbiguous += skippedAmbiguous
+		for _, rel := range rels {
+			if seen[rel.GUID] {
+				continue
+			}
+			seen[rel.GUID] = true
+			merged = append(merged, rel)
+			if len(merged) >= maxResults {
+				break
+			}
+		}
 	}
-	rels, skippedNoHash, skippedAmbiguous := convertWith(answer.Streams, req, packs, convertOptions{
-		origin: b.origin(), instance: b.instance, entryEpisode: look.entryEpisode, specialEpisode: look.specialEpisode,
-	})
-	b.logSkipped(skippedNoHash, skippedAmbiguous)
-	return rels, nil
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
+	}
+	if len(merged) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	b.logSkipped(totalNoHash, totalAmbiguous)
+	return merged, nil
 }
 
 // logSkipped warns about skipped streams (no usable torrent, NZB or HTTP
@@ -290,6 +367,7 @@ type convertOptions struct {
 	origin string
 	// instance identifies the configured addon in HTTP and NZB GUIDs.
 	instance string
+	season   int
 	// entryEpisode is the episode number inside the anime database entry
 	// the addon was asked for (0 for IMDb and TMDB lookups).
 	entryEpisode   int
@@ -338,7 +416,7 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 		torrent, file := names(text, s.BehaviorHints.Filename)
 		var name string
 		if packs {
-			if !isSeasonPack(torrent, req.Season) {
+			if !isSeasonPack(torrent, cmp.Or(opts.season, req.Season)) {
 				continue
 			}
 			name = torrent
@@ -424,6 +502,10 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 			rel.GUID = "nzb:" + opts.instance + ":" + linkIdentity(name, size, nzbURL, s, req)
 			rel.Protocol = core.ProtocolUsenet
 			rel.NZBURL = nzbURL
+			if !packs && !rel.Info.FullSeason && rel.Target == nil && req.Type == core.TypeEpisode && req.Episode > 0 &&
+				(isSeasonPack(torrent, cmp.Or(opts.season, req.Season)) || (s.FileIdx != nil && *s.FileIdx >= 0)) {
+				rel.Target = &core.ReleaseTarget{Season: req.Season, Episode: req.Episode}
+			}
 			if streamURL != "" && streamURL != nzbURL && !packs {
 				rel.StreamURL, rel.StreamHeaders, rel.StreamOrigin = streamURL, s.requestHeaders(), opts.origin
 			}
@@ -748,7 +830,7 @@ func pickName(req core.SearchRequest, file, torrent string) string {
 				}
 			}
 		}
-		if req.Type != core.TypeMovie && req.Episode > 0 && releaseparse.EpisodeMatches(info, req.Season, req.Episode) {
+		if req.Type != core.TypeMovie && req.Episode > 0 && releaseparse.EpisodeMatchesRequest(info, req) {
 			n += 2
 		}
 		if info.Height > 0 {

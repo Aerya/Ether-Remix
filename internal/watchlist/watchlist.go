@@ -109,20 +109,35 @@ type Options struct {
 	// OnAvailable runs when a watchlist title first becomes playable.
 	// The key is the movie, show, or newly released episode.
 	OnAvailable func(context.Context, int64, core.RatingKey)
+	// OnUnavailable runs when a previously playable watchlist title loses playability.
+	OnUnavailable func(context.Context, int64, core.Title, string)
+	// OnSynced runs after a viewer's watchlist finishes syncing from a provider.
+	OnSynced func(SyncEvent)
 	// OnFriendsRSSChanged runs when the household "Friends' watchlists" set changes.
 	OnFriendsRSSChanged func(context.Context)
 }
+
+// SyncEvent describes a completed external watchlist sync for a viewer.
+type SyncEvent struct {
+	Provider   string
+	ViewerID   int64
+	Added      int
+	Removed    int
+	TotalItems int
+	DurationMS int64
+}
 type Service struct {
-	db              *sql.DB
-	o               Options
-	mu              sync.Mutex
-	rssMu           sync.Mutex
-	rssClient       *http.Client
-	communityMu     sync.Mutex
-	rssCheckMu      sync.Mutex
-	rssCheckPending map[int64]core.User
-	nextCheck       time.Time
-	gen             atomic.Uint64
+	db                 *sql.DB
+	o                  Options
+	mu                 sync.Mutex
+	rssMu              sync.Mutex
+	rssClient          *http.Client
+	communityMu        sync.Mutex
+	rssCheckMu         sync.Mutex
+	rssCheckPending    map[int64]core.User
+	nextCheck          time.Time
+	gen                atomic.Uint64
+	friendsSyncRunning atomic.Bool
 }
 
 // Generation changes when watchlist membership changes.
@@ -296,14 +311,36 @@ func (s *Service) MigrateSecrets(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// FeatureSettings is Settings without the friend/feed status reads: the
+// stored switches alone, memoized per request by settings. Per-item
+// feature gates (recaps, natural search, language features) read this so
+// rendering a page never re-reads the community status rows per item.
+func (s *Service) FeatureSettings(ctx context.Context) (Settings, error) {
+	return s.settings(ctx)
+}
+
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	v, err := s.settings(ctx)
 	if err != nil {
 		return v, err
 	}
-	v.PlexFriendsStatus = s.friendStatuses(ctx)
-	v.PlexFriendsRSSStatus = s.feedStatus(ctx, v.PlexFriendsRSSURL, metaKeyFriendsRSS)
-	v.PlexOwnerRSSStatus = s.feedStatus(ctx, v.PlexOwnerRSSURL, metaKeyOwnerRSS)
+	// Status rows change only on a sync, never within one read request:
+	// read them once per request however many items ask.
+	type statuses struct {
+		friends []FriendFeedStatus
+		feed    *RSSFeedStatus
+		owner   *RSSFeedStatus
+	}
+	st, _ := reqmemo.Do(ctx, s.memoKey()+":status", func() (statuses, error) {
+		return statuses{
+			friends: s.friendStatuses(ctx),
+			feed:    s.feedStatus(ctx, v.PlexFriendsRSSURL, metaKeyFriendsRSS),
+			owner:   s.feedStatus(ctx, v.PlexOwnerRSSURL, metaKeyOwnerRSS),
+		}, nil
+	})
+	v.PlexFriendsStatus = st.friends
+	v.PlexFriendsRSSStatus = st.feed
+	v.PlexOwnerRSSStatus = st.owner
 	if v.PlexFriendsRSSURL != "" {
 		v.PlexFriendsRSSURL = Redacted
 	}
@@ -352,6 +389,16 @@ func (s *Service) SaveSettings(ctx context.Context, v Settings) error {
 		return err
 	}
 	reqmemo.Forget(ctx, s.memoKey())
+	if v.Prewarm && !old.Prewarm {
+		// Warm intents are queued when a title is added. Turning Prewarm on
+		// also covers titles already on watchlists, newest first and bounded.
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO watchlist_warm_intents(user_id,item_key,added) SELECT user_id,item_key,MAX(added) FROM watchlist_items WHERE 1=1 GROUP BY user_id,item_key ORDER BY MAX(added) DESC LIMIT 100 ON CONFLICT(user_id,item_key) DO NOTHING`); err != nil {
+			return err
+		}
+		if s.o.OnAdded != nil {
+			s.o.OnAdded()
+		}
+	}
 	if v.PlexFriendsRSSURL != old.PlexFriendsRSSURL {
 		if v.PlexFriendsRSSURL == "" {
 			if err := s.clearFeedSource(ctx, sourcePlexFriendsRSS, metaKeyFriendsRSS); err != nil {
@@ -499,15 +546,40 @@ func (s *Service) upsert(ctx context.Context, uid int64, source string, t core.T
 	return err
 }
 func (s *Service) replace(ctx context.Context, u *core.User, source string, ts []core.Title) error {
+	started := s.o.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	existing := map[core.RatingKey]bool{}
+	if s.o.OnSynced != nil {
+		erows, err := tx.QueryContext(ctx, `SELECT item_key FROM watchlist_items WHERE user_id=? AND source=?`, u.ID, source)
+		if err != nil {
+			return err
+		}
+		for erows.Next() {
+			var k core.RatingKey
+			if err = erows.Scan(&k); err != nil {
+				erows.Close()
+				return err
+			}
+			existing[k] = true
+		}
+		if err = erows.Err(); err != nil {
+			erows.Close()
+			return err
+		}
+		erows.Close()
+	}
 	keys := map[core.RatingKey]bool{}
+	addedCount := 0
 	for _, t := range ts {
 		if !s.allowed(u, &t) {
 			continue
+		}
+		if !keys[t.Key] && !existing[t.Key] {
+			addedCount++
 		}
 		keys[t.Key] = true
 		raw, err := json.Marshal(t)
@@ -555,6 +627,17 @@ func (s *Service) replace(ctx context.Context, u *core.User, source string, ts [
 	s.gen.Add(1)
 	if s.o.OnAdded != nil {
 		s.o.OnAdded()
+	}
+	if s.o.OnSynced != nil {
+		durMS := max(s.o.Now().Sub(started).Milliseconds(), int64(0))
+		s.o.OnSynced(SyncEvent{
+			Provider:   source,
+			ViewerID:   u.ID,
+			Added:      addedCount,
+			Removed:    len(removed),
+			TotalItems: len(keys),
+			DurationMS: durMS,
+		})
 	}
 	return nil
 }
@@ -815,6 +898,13 @@ func (s *Service) checkSet(ctx context.Context, cfg Settings, userID int64, poli
 			if _, err := s.db.ExecContext(ctx, `UPDATE watchlist_items SET available=0,notified=0,warmed=0 WHERE user_id=? AND item_key=?`, userID, t.Key); err != nil {
 				return err
 			}
+			if wasAvailable && s.o.OnUnavailable != nil {
+				reason := "no playable release"
+				if e != nil {
+					reason = e.Error()
+				}
+				s.o.OnUnavailable(ctx, userID, t, reason)
+			}
 		}
 		if e != nil || res == nil {
 			continue
@@ -876,7 +966,13 @@ func (s *Service) prewarm(ctx context.Context, res *core.Resolution) error {
 	job, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.o.Cache != nil {
-		s.o.Cache.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, Title: res.Release.Name, Source: res.Release.Name, Cause: core.CacheCauseWatchlist})
+		origin := "Usenet"
+		if res.Release.Protocol == core.ProtocolTorrent {
+			origin = "Debrid"
+		} else if res.Release.Protocol == core.ProtocolHTTP {
+			origin = "HTTP"
+		}
+		s.o.Cache.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, RatingKey: res.Title, Title: res.Release.Name, Source: res.Release.Name, Indexer: res.Release.Indexer, Origin: origin, Cause: core.CacheCauseWatchlist})
 	}
 	return s.o.Engine.Prefetch(job, res.Release.ID, res.NZB, 0, s.o.PrewarmBytes)
 }

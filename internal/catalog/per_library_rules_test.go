@@ -92,3 +92,103 @@ func TestPerLibraryPoliciesScopedPreviewAndLegacyExemptions(t *testing.T) {
 		t.Fatalf("filter library browse with ExtraRules = %+v, %v", normalPage, err)
 	}
 }
+
+func TestLibraryScopedTallyTotalsAndFacets(t *testing.T) {
+	db := store.OpenTest(t)
+	ctx := t.Context()
+
+	aotKey := core.ShowKey(1429)
+	narutoKey := core.ShowKey(46260)
+	bbKey := core.ShowKey(1396)
+
+	showRules := []core.LibraryExclusion{
+		{
+			Name: "Keep AoT", Action: "show", MediaType: "show", Match: "all",
+			Rules: []core.CollectionRule{{Field: "title", Op: "is", Value: json.RawMessage(`"` + aotKey.String() + `"`)}},
+		},
+		{
+			Name: "Hide Anime From TV Shows", Action: "hide", MediaType: "show", Match: "all", Scope: core.VisibilityLibrary,
+			Rules: []core.CollectionRule{{Field: "keyword", Op: "in", Value: json.RawMessage(`["anime"]`)}},
+		},
+	}
+	c, err := New(db, nil, config.Catalog{}, nil, WithLibraryPolicies(LibraryPolicies{
+		ShowRules:   showRules,
+		ShowDefault: "show",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rel := time.Now().Add(-72 * time.Hour)
+	for _, title := range []core.Title{
+		{Key: bbKey, Type: core.TypeShow, Title: "Breaking Bad", Year: 2008, Genres: []string{"Drama"}, Countries: []string{"US"}, Keywords: []string{"crime"}, Released: rel},
+		{Key: narutoKey, Type: core.TypeShow, Title: "Naruto", Year: 2002, Genres: []string{"Animation", "Action"}, Countries: []string{"JP"}, Keywords: []string{"anime"}, Released: rel},
+		{Key: aotKey, Type: core.TypeShow, Title: "Attack on Titan", Year: 2013, Genres: []string{"Animation", "Drama"}, Countries: []string{"JP"}, Keywords: []string{"anime"}, Released: rel},
+	} {
+		if err := c.upsert(ctx, title, upsertOpts{browsable: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Canonical catalogue visibility and unscoped browse still include Naruto.
+	if !c.Visible(&core.Title{Key: narutoKey, Type: core.TypeShow, Keywords: []string{"anime"}, Released: rel}) {
+		t.Fatal("library-scoped hide rule must not hide title canonically")
+	}
+	unscoped, err := c.Browse(ctx, core.BrowseQuery{Filter: core.Filter{Type: core.TypeShow}, Limit: 10})
+	if err != nil || unscoped.Total != 3 {
+		t.Fatalf("unscoped show browse total=%d err=%v, want 3", unscoped.Total, err)
+	}
+
+	// Built-in library overlay uses tally subtraction: hides Naruto, keeps Breaking Bad + Attack on Titan.
+	extra := core.BuiltinLibraryExtraRules(showRules)
+	scopedFilter := core.Filter{Type: core.TypeShow, ExtraRules: extra}
+	scoped, err := c.Browse(ctx, core.BrowseQuery{Filter: scopedFilter, Limit: 10})
+	if err != nil || scoped.Total != 2 || len(scoped.Items) != 2 {
+		t.Fatalf("scoped show browse total=%d len=%d err=%v, want 2", scoped.Total, len(scoped.Items), err)
+	}
+	for _, it := range scoped.Items {
+		if it.Key == narutoKey {
+			t.Fatal("Naruto leaked into library-scoped browse")
+		}
+	}
+
+	// Verify tallyTotal directly succeeds (indexed tally path, not full scan).
+	where, args, err := c.browseWhere(scopedFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tallyN, tallyOK, err := c.tallyTotal(ctx, scopedFilter, where, args)
+	if err != nil || !tallyOK || tallyN != 2 {
+		t.Fatalf("tallyTotal = (%d, %v, %v), want (2, true, nil)", tallyN, tallyOK, err)
+	}
+
+	// Facets through facetFromTally subtract Naruto's Action/Animation/JP/2002/N entries.
+	genres, err := c.FacetFilter(ctx, scopedFilter, "genre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	genreCounts := map[string]int{}
+	for _, fv := range genres {
+		genreCounts[fv.Key] = fv.Count
+	}
+	if genreCounts["Drama"] != 2 || genreCounts["Animation"] != 1 || genreCounts["Action"] != 0 {
+		t.Fatalf("scoped genre facets = %v, want Drama=2 Animation=1 Action=0", genreCounts)
+	}
+	firstChars, err := c.FacetFilter(ctx, scopedFilter, "firstCharacter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fv := range firstChars {
+		if fv.Key == "N" {
+			t.Fatalf("scoped firstCharacter should not contain N for hidden Naruto: %v", firstChars)
+		}
+	}
+
+	// Per-viewer custom rules cannot use scope="library".
+	if err := c.PutViewerRules(ctx, 9, ViewerRules{
+		Mode:       "custom",
+		Exclusions: showRules,
+	}); err == nil {
+		t.Fatal("expected custom viewer rules with scope=library to fail")
+	}
+}

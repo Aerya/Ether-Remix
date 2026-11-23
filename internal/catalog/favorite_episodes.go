@@ -18,6 +18,9 @@ const favoritesTitleJoin = ` FROM favorites_items f JOIN catalog_titles e ON e.k
 // favoriteEpisodesWhere is playedEpisodesWhere's filter shape without the
 // watched predicate: the series and episode predicates a browse filter names.
 func (c *Catalog) favoriteEpisodesWhere(ctx context.Context, show core.Filter, showKey core.RatingKey) (string, []any, error) {
+	if err := c.ensureCatalogueSources(ctx, show); err != nil {
+		return "", nil, err
+	}
 	show = c.viewerPaging(ctx, show)
 	where, args, err := c.storedEpisodesWhere(show)
 	if err != nil {

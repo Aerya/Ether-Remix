@@ -194,8 +194,8 @@ func (s *Server) supportClientFacts(pr *Request, effective frontend.ClientCaps, 
 		return nil
 	}
 	wire := pr.wireIdentity()
-	base := frontend.PlaybackDefaultsFor(wire.Product, wire.Platform, pr.Device, pr.Model, pr.Version, nil)
-	owner := frontend.PlaybackDefaultsFor(wire.Product, wire.Platform, pr.Device, pr.Model, pr.Version, s.cfg().Clients.Overrides)
+	base := frontend.PlaybackDefaultsFor(wire.Product, wire.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, nil)
+	owner := frontend.PlaybackDefaultsFor(wire.Product, wire.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, s.cfg().Clients.Overrides)
 	declared := s.declaredCaps(pr)
 	return &frontend.DiagnosticClientFacts{
 		PlayerProfile: resolvedPlayerProfile(pr), TranscodeVideoCodecs: effective.TranscodeVideoCodecs, TranscodeAudioCodecs: effective.TranscodeAudioCodecs,

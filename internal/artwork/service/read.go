@@ -48,12 +48,43 @@ func (a Source) Read(ctx context.Context, req frontend.ArtworkRequest, img front
 		}
 		return a.transform(ctx, img.Path, data, ct, transform)
 	}
+	if strings.HasPrefix(img.Path, frontend.ViewerAvatarPrefix) {
+		if a.ViewerAvatar == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		current, ok := frontend.ViewerAvatarImage(req.Viewer)
+		if !ok || !frontend.SameImage(current, img) {
+			return nil, "", core.ErrUnauthorized
+		}
+		data, ct, err := a.ViewerAvatar(ctx, req.Viewer)
+		if err != nil {
+			return nil, "", err
+		}
+		return a.transform(ctx, img.Path, data, ct, transform)
+	}
+	if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
+		if a.LibraryLiveThumb == nil || a.URLImages == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		rawURL, err := a.LibraryLiveThumb(ctx, req.Viewer, img.Subject, img.Path)
+		if err != nil {
+			return nil, "", err
+		}
+		data, ct, err := a.URLImages.GetUntrustedURL(ctx, rawURL)
+		if err != nil {
+			return nil, "", err
+		}
+		return a.transform(ctx, img.Path, data, ct, transform)
+	}
 	if strings.HasPrefix(img.Path, frontend.LibraryCollagePrefix) {
 		data, err := a.readLibraryCollage(img.Path)
 		if err != nil {
 			return nil, "", err
 		}
 		return a.transform(ctx, img.Path, data, "image/jpeg", transform)
+	}
+	if req.Item.IsPluginKey() && (strings.HasPrefix(img.Path, "https://") || strings.HasPrefix(img.Path, "http://")) {
+		return a.readPluginItemArt(ctx, req, img, transform)
 	}
 	entries, _, err := a.entries(ctx, req)
 	if err != nil {
@@ -158,6 +189,15 @@ func (a Source) readFreshPortrait(ctx context.Context, req frontend.ArtworkReque
 }
 
 func (a Source) remote(ctx context.Context, path string, width int) ([]byte, string, error) {
+	// Plugin items (and any other source) can carry absolute artwork URLs;
+	// fetch those through the untrusted-URL client, like programme and
+	// channel art, instead of treating them as a TMDB path.
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+		if a.URLImages == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		return a.URLImages.GetUntrustedURL(ctx, path)
+	}
 	if a.Images == nil || a.ImageURL == nil {
 		return nil, "", core.ErrNotAvailable
 	}
@@ -283,4 +323,32 @@ func (a Source) transform(ctx context.Context, reference string, data []byte, co
 		return a.Raster.Rasterize(ctx, reference, data, artwork.RasterOptions{Width: transform.Width, Height: transform.Height, Format: transform.Format, Blur: transform.Blur})
 	}
 	return Transform(data, contentType, transform)
+}
+
+// readPluginItemArt serves a plugin library item's own artwork URL. Plugin
+// items grant their images by the URL the plugin returned, not by a
+// catalogue artwork reference; the URL must be one of the item's own.
+func (a Source) readPluginItemArt(ctx context.Context, req frontend.ArtworkRequest, img frontend.Image, transform frontend.ArtworkTransform) ([]byte, string, error) {
+	if req.Viewer == nil {
+		return nil, "", core.ErrUnauthorized
+	}
+	t, err := a.title(ctx, req.Item)
+	if err != nil || t == nil {
+		return nil, "", core.ErrNotFound
+	}
+	own := false
+	for _, p := range []string{t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath} {
+		if p != "" && p == img.Path {
+			own = true
+			break
+		}
+	}
+	if !own {
+		return nil, "", core.ErrUnauthorized
+	}
+	data, ct, err := a.remote(ctx, img.Path, transform.Width)
+	if err != nil || len(data) == 0 || len(data) > MaxImageBytes {
+		return nil, "", core.ErrNotAvailable
+	}
+	return a.transform(ctx, img.Path, data, ct, transform)
 }

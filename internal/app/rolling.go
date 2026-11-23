@@ -94,6 +94,11 @@ func (c *clusterUpdates) ReportFailed(ctx context.Context, version string) error
 // so the leader republishes the connection union without it.
 func (c *clusterUpdates) SetDraining(draining bool) {
 	c.a.draining.Store(draining)
+	if draining {
+		c.a.emitClusterNodeDraining("rolling_update")
+	} else {
+		c.a.resetClusterDrainingFlag()
+	}
 	if remote, ok := c.a.brokerPlayback.(interface{ SetDraining(bool) }); ok {
 		remote.SetDraining(draining)
 	}

@@ -248,6 +248,7 @@ type Sessions struct {
 	MarkersFunc            func(context.Context, frontend.SessionAccess, string) (frontend.SessionMarkers, error)
 	ServeMediaFunc         func(http.ResponseWriter, *http.Request)
 	ReportSampleFunc       func(context.Context, frontend.SessionAccess, string, frontend.ProgressSample) (frontend.ReportOutcome, error)
+	KeepAliveFunc          func(context.Context, frontend.SessionAccess, string) error
 	ReportFunc             func(context.Context, frontend.SessionAccess, string, frontend.Timeline) error
 	ReportItemFunc         func(context.Context, frontend.SessionAccess, core.RatingKey, frontend.Timeline) error
 	StopFunc               func(context.Context, frontend.SessionAccess, string) error
@@ -296,6 +297,12 @@ func (f Sessions) ServeMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+func (f Sessions) KeepAlive(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if f.KeepAliveFunc != nil {
+		return f.KeepAliveFunc(ctx, a, id)
+	}
+	return nil
 }
 func (f Sessions) Report(c context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
 	if f.ReportFunc != nil {
@@ -461,20 +468,22 @@ var _ frontend.Sessions = Sessions{}
 
 // Identity implements a configurable surface-bound identity for protocol tests.
 type Identity struct {
-	IssueRefreshFunc  func(context.Context, string, core.Device) (string, error)
-	RefreshFunc       func(context.Context, string, core.Device) (string, string, error)
-	ResolveFunc       func(context.Context, string) (*core.Viewer, error)
-	ResolveDeviceFunc func(context.Context, string, core.Device) (*core.Viewer, time.Time, error)
-	ViewerTimesFunc   func(context.Context, string, int64) (frontend.ViewerTimes, error)
-	PublicViewersFunc func(context.Context) ([]frontend.PublicViewer, error)
-	SignInFunc        func(context.Context, string, string, core.Device) (string, error)
-	InitiateFunc      func(context.Context, core.Device) (string, string, error)
-	StatusFunc        func(context.Context, string) (bool, error)
-	DetailsFunc       func(context.Context, string) (frontend.QuickConnectDetails, error)
-	PollFunc          func(context.Context, string) (string, error)
-	ApproveFunc       func(context.Context, *core.Viewer, string) error
-	RevokeFunc        func(context.Context, string) error
-	SetupCompleteFunc func() bool
+	IssueRefreshFunc           func(context.Context, string, core.Device) (string, error)
+	RefreshFunc                func(context.Context, string, core.Device) (string, string, error)
+	ResolveFunc                func(context.Context, string) (*core.Viewer, error)
+	ResolveDeviceFunc          func(context.Context, string, core.Device) (*core.Viewer, time.Time, error)
+	ViewerTimesFunc            func(context.Context, string, int64) (frontend.ViewerTimes, error)
+	PublicViewersFunc          func(context.Context) ([]frontend.PublicViewer, error)
+	SignInFunc                 func(context.Context, string, string, core.Device) (string, error)
+	SignInWithPlexFunc         func(context.Context, string, core.Device) (string, error)
+	AuthenticationFeaturesFunc func() frontend.AuthenticationFeatures
+	InitiateFunc               func(context.Context, core.Device) (string, string, error)
+	StatusFunc                 func(context.Context, string) (bool, error)
+	DetailsFunc                func(context.Context, string) (frontend.QuickConnectDetails, error)
+	PollFunc                   func(context.Context, string) (string, error)
+	ApproveFunc                func(context.Context, *core.Viewer, string) error
+	RevokeFunc                 func(context.Context, string) error
+	SetupCompleteFunc          func() bool
 }
 
 func (f Identity) Resolve(ctx context.Context, credential string) (*core.Viewer, error) {
@@ -519,6 +528,18 @@ func (f Identity) SignIn(ctx context.Context, user, password string, d core.Devi
 		return f.SignInFunc(ctx, user, password, d)
 	}
 	return "", frontend.ErrIdentityUnavailable
+}
+func (f Identity) SignInWithPlex(ctx context.Context, token string, d core.Device) (string, error) {
+	if f.SignInWithPlexFunc != nil {
+		return f.SignInWithPlexFunc(ctx, token, d)
+	}
+	return "", frontend.ErrIdentityUnavailable
+}
+func (f Identity) AuthenticationFeatures() frontend.AuthenticationFeatures {
+	if f.AuthenticationFeaturesFunc != nil {
+		return f.AuthenticationFeaturesFunc()
+	}
+	return frontend.AuthenticationFeatures{}
 }
 func (f Identity) QuickConnectInitiate(ctx context.Context, d core.Device) (string, string, error) {
 	if f.InitiateFunc != nil {
@@ -575,6 +596,43 @@ func (f Identity) Users(context.Context) ([]core.User, error) {
 }
 
 var _ frontend.SurfaceIdentity = Identity{}
+
+// PlexHomeIdentity opts a fake identity into the optional Plex Home
+// profile selection API.
+type PlexHomeIdentity struct {
+	Identity
+	HouseholdProfilesFunc          func(context.Context, string) ([]frontend.HouseholdProfile, error)
+	HouseholdProfilesForViewerFunc func(context.Context, *core.Viewer) ([]frontend.HouseholdProfile, error)
+	SignInWithHouseholdProfileFunc func(context.Context, frontend.HouseholdProfileSignIn) (string, error)
+	FetchHouseholdAvatarFunc       func(context.Context, frontend.HouseholdAvatarRequest) ([]byte, string, error)
+}
+
+func (f PlexHomeIdentity) HouseholdProfiles(ctx context.Context, token string) ([]frontend.HouseholdProfile, error) {
+	if f.HouseholdProfilesFunc != nil {
+		return f.HouseholdProfilesFunc(ctx, token)
+	}
+	return nil, frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) HouseholdProfilesForViewer(ctx context.Context, v *core.Viewer) ([]frontend.HouseholdProfile, error) {
+	if f.HouseholdProfilesForViewerFunc != nil {
+		return f.HouseholdProfilesForViewerFunc(ctx, v)
+	}
+	return nil, frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) SignInWithHouseholdProfile(ctx context.Context, req frontend.HouseholdProfileSignIn) (string, error) {
+	if f.SignInWithHouseholdProfileFunc != nil {
+		return f.SignInWithHouseholdProfileFunc(ctx, req)
+	}
+	return "", frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
+	if f.FetchHouseholdAvatarFunc != nil {
+		return f.FetchHouseholdAvatarFunc(ctx, req)
+	}
+	return nil, "", frontend.ErrIdentityUnavailable
+}
+
+var _ frontend.HouseholdProfileAuth = PlexHomeIdentity{}
 
 // Capabilities is a configurable fake for the host capability provider.
 type Capabilities struct {
@@ -656,9 +714,24 @@ var _ frontend.Preferences = Preferences{}
 type LiveTV struct {
 	EnabledFunc          func() bool
 	ChannelsFunc         func(context.Context, *core.Viewer) ([]frontend.LiveChannel, error)
+	GroupsFunc           func(context.Context, *core.Viewer) ([]frontend.LiveGroup, error)
+	GroupChannelsFunc    func(context.Context, *core.Viewer, string) ([]frontend.LiveChannel, error)
 	GuideFunc            func(context.Context, *core.Viewer, frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error)
 	ResolveChannelFunc   func(context.Context, *core.Viewer, string) (frontend.LiveChannel, error)
 	ResolveProgrammeFunc func(context.Context, *core.Viewer, string, frontend.LiveGuideQuery) (frontend.LiveProgramme, error)
+}
+
+func (f LiveTV) Groups(ctx context.Context, v *core.Viewer) ([]frontend.LiveGroup, error) {
+	if f.GroupsFunc != nil {
+		return f.GroupsFunc(ctx, v)
+	}
+	return nil, nil
+}
+func (f LiveTV) GroupChannels(ctx context.Context, v *core.Viewer, id string) ([]frontend.LiveChannel, error) {
+	if f.GroupChannelsFunc != nil {
+		return f.GroupChannelsFunc(ctx, v, id)
+	}
+	return nil, core.ErrNotFound
 }
 
 func (f LiveTV) Enabled() bool {

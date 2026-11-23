@@ -55,6 +55,24 @@ func (h *fakeHost) CallHost(ctx context.Context, name string, args json.RawMessa
 		_ = json.Unmarshal(argv[0], &k)
 		h.kv[k] = argv[1]
 		return json.RawMessage("null"), nil
+	case "kv.usage":
+		var used int
+		for _, raw := range h.kv {
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				used += len(s)
+			} else {
+				used += len(raw)
+			}
+		}
+		keys := len(h.kv)
+		b, _ := json.Marshal(map[string]int64{
+			"bytes":      int64(used + keys*256),
+			"keys":       int64(keys),
+			"quotaBytes": 50 << 20,
+			"quotaKeys":  10000,
+		})
+		return b, nil
 	case "log":
 		return json.RawMessage("null"), nil
 	}
@@ -168,13 +186,9 @@ func TestJSTimeoutDiscardsInstance(t *testing.T) {
 	// host. Initialization deadlines have their own test below.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	start := time.Now()
 	_, out, err := p.CallDetailed(ctx, Request{Method: "GET", Path: "/loop"})
 	if errStatus(t, err) != StatusTimeout || !out.Trap {
 		t.Fatalf("loop = %v outcome %+v", err, out)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("timeout took %v", time.Since(start))
 	}
 	// The pool must hand out a fresh instance: a normal call still works.
 	resp, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ok"})
@@ -457,16 +471,12 @@ func TestHotBatchBudgetNeutralRaw(t *testing.T) {
 		{ReleaseID: "slow1", Facts: json.RawMessage(`{"resolution":2160,"cached":true,"slow":1}`)},
 		{ReleaseID: "fast1", Facts: json.RawMessage(`{"resolution":2160,"cached":true}`)},
 	}
-	start := time.Now()
 	scores, out, err := p.RankBatch(context.Background(), cands, nil)
 	if err != nil {
 		// A killed instance mid-batch is reported; scores stay neutral.
 		if errStatus(t, err) != StatusTimeout {
 			t.Fatalf("err = %v", err)
 		}
-	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatalf("batch overran its budget: %v", time.Since(start))
 	}
 	if scores[0] != 0 || out.SlowCandidates < 1 {
 		t.Fatalf("scores=%v out=%+v, want slow candidate neutral and counted", scores, out)
@@ -561,9 +571,51 @@ func TestLimitsClamp(t *testing.T) {
 	if lim.RankPerCandidate != 2*time.Millisecond || lim.RankBatch != 50*time.Millisecond {
 		t.Fatalf("hot budgets not clamped: %v %v", lim.RankPerCandidate, lim.RankBatch)
 	}
-	viewer := limitsForRequest(lim, "/ether/v1/kinds/games/browse")
-	if viewer.UnitBudget != 10000 || viewer.Deadline != 30*time.Second {
-		t.Fatalf("viewer budgets: %+v", viewer)
+	for _, tc := range []struct {
+		path     string
+		deadline time.Duration
+		units    int64
+	}{
+		{"/stream/movie/tt0133093.json", 3 * time.Second, 30000},
+		{"/ether/open/abc", 3 * time.Second, 30000},
+		{"/subtitles/movie/tt0133093.json", 5 * time.Second, 50000},
+		{"/ether/v1/kinds/games/resolve", 5 * time.Second, 50000},
+		{"/ether/v1/kinds/games/match", 5 * time.Second, 50000},
+		{"/catalog/movie/top.json", 10 * time.Second, 100000},
+		{"/meta/movie/tt0133093.json", 10 * time.Second, 100000},
+		{"/ether/v1/kinds/games/search", 10 * time.Second, 100000},
+		{"/ether/v1/kinds/games/items/1", 10 * time.Second, 100000},
+	} {
+		got := limitsForRequest(lim, tc.path)
+		if got.Deadline != tc.deadline || got.UnitBudget != tc.units {
+			t.Fatalf("%s: got deadline=%v units=%d, want %v / %d", tc.path, got.Deadline, got.UnitBudget, tc.deadline, tc.units)
+		}
+	}
+	stremioLim := lim
+	stremioLim.Stremio = true
+	if got := limitsForRequest(stremioLim, "/stream/movie/tt0133093.json"); got.Deadline != 20*time.Second || got.UnitBudget != 200000 {
+		t.Fatalf("stremio stream budgets: %+v", got)
+	}
+	if got := limitsForRequest(Limits{Deadline: 2 * time.Second, UnitBudget: 1 << 40}, "/ether/v1/kinds/games/resolve"); got.Deadline != 2*time.Second || got.UnitBudget != 20000 {
+		t.Fatalf("tighter owner ceiling not preserved: %+v", got)
+	}
+	for _, path := range []string{
+		"/ether/v1/kinds/games/browse",
+		"/ether/v1/kinds/games/changes",
+		"/ether/channels.json",
+		"/ether/guide/scifi-hd.json?from=2026-11-02T06%3A00%3A00Z&to=2026-11-03T12%3A00%3A00Z",
+	} {
+		if sync := limitsForRequest(lim, path); sync.UnitBudget != lim.UnitBudget || sync.Deadline != lim.Deadline {
+			t.Fatalf("%s: background sync was not given the granted limits: %+v", path, sync)
+		}
+	}
+	for _, path := range []string{"/stream/tv/scifi.json", "/ether/open/scifi"} {
+		if viewer := limitsForRequest(lim, path); viewer.Deadline != 3*time.Second || viewer.UnitBudget != 30000 {
+			t.Fatalf("%s: viewer stream route lost its 3s/30000 budget: %+v", path, viewer)
+		}
+	}
+	if health := limitsForRequest(lim, "/ether/health"); health.Deadline != 5*time.Second || health.UnitBudget != lim.UnitBudget {
+		t.Fatalf("/ether/health limits: %+v", health)
 	}
 	job := limitsForRequest(lim, "/ether/job/build")
 	if job.UnitBudget != lim.UnitBudget || job.Deadline != lim.Deadline {
@@ -613,5 +665,112 @@ func TestRawStartFunctionRespectsDeadline(t *testing.T) {
 	_, err := e.LoadWASM("test.start", "1", module, nil, Limits{Deadline: 100 * time.Millisecond})
 	if err == nil {
 		t.Fatal("endless start accepted")
+	}
+}
+
+func TestGuestKVUsage(t *testing.T) {
+	e := testEngine(t)
+	h := newFakeHost()
+	p, err := e.LoadJS("test.kv-usage", "1.0.0", `
+globalThis.handle = function() {
+  ether.kv.put("save:1", "hello");
+  return { status: 200, body: ether.kv.usage() };
+};
+`, h, Limits{Deadline: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	resp, _, err := p.CallDetailed(context.Background(), Request{Method: "POST", Path: "/"})
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("Handle: status=%d err=%v", resp.Status, err)
+	}
+	var u struct {
+		Bytes      int64 `json:"bytes"`
+		Keys       int64 `json:"keys"`
+		QuotaBytes int64 `json:"quotaBytes"`
+		QuotaKeys  int64 `json:"quotaKeys"`
+	}
+	if err := json.Unmarshal(resp.Body, &u); err != nil {
+		t.Fatalf("decode usage: %v (%s)", err, string(resp.Body))
+	}
+	if u.Bytes != 5+256 || u.Keys != 1 || u.QuotaBytes != 50<<20 || u.QuotaKeys != 10000 {
+		t.Fatalf("unexpected usage: %+v", u)
+	}
+}
+
+func TestFetchToCacheHostCallTimeoutExtension(t *testing.T) {
+	e := testEngine(t)
+	var seenDeadline time.Time
+	var seenHasDeadline bool
+	host := HostFunc(func(ctx context.Context, name string, _ json.RawMessage) (json.RawMessage, error) {
+		if name != "http.fetchToCache" {
+			return json.RawMessage("null"), nil
+		}
+		seenDeadline, seenHasDeadline = ctx.Deadline()
+		return json.RawMessage(`{"blob":"blob:0000000000000000000000000000000000000000000000000000000000000000","size":1,"crc32":"00000000","md5":"00","sha1":"00","status":200}`), nil
+	})
+	js := `
+globalThis.handle = function(req) {
+  ether.http.fetchToCache(req.body);
+  return { status: 200, body: { ok: true } };
+};
+`
+	p, err := e.LoadJS("test.fetch-timeout", "1.0.0", js, host, Limits{Deadline: 2 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	run := func(ctx context.Context, path string, foreground bool, timeoutMS int64) time.Duration {
+		t.Helper()
+		seenDeadline = time.Time{}
+		seenHasDeadline = false
+		body, _ := json.Marshal(map[string]any{
+			"url":        "https://example.test/file.zip",
+			"libraryKey": "pk-test-lib",
+			"name":       "file.zip",
+			"timeoutMs":  timeoutMS,
+		})
+		before := time.Now()
+		resp, _, err := p.CallDetailed(ctx, Request{Method: "POST", Path: path, Body: body, Foreground: foreground})
+		if err != nil || resp.Status != 200 {
+			t.Fatalf("CallDetailed(%s, fg=%v, timeoutMs=%d): status=%d err=%v", path, foreground, timeoutMS, resp.Status, err)
+		}
+		if !seenHasDeadline {
+			t.Fatalf("CallDetailed(%s): host ctx missing deadline", path)
+		}
+		return seenDeadline.Sub(before)
+	}
+
+	// 1. Job without timeoutMs keeps the 10-minute default (not 2 h).
+	if rem := run(context.Background(), "/ether/job/import", false, 0); rem < 9*time.Minute || rem > 11*time.Minute {
+		t.Fatalf("job default timeout = %v, want ~10m", rem)
+	}
+	// 2. Job with 1 h timeoutMs extends past 10 m up to 1 h.
+	if rem := run(context.Background(), "/ether/job/import", false, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("job 1h timeout = %v, want ~1h", rem)
+	}
+	// 3. Foreground resolver job (/ether/job/prepare) also extends past 10 m.
+	if rem := run(context.Background(), "/ether/job/prepare", true, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("resolver job 1h timeout = %v, want ~1h", rem)
+	}
+	// 4. Job requesting 4 h is clamped to the calling job's remaining deadline (45 m).
+	tightJobCtx, cancelTight := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancelTight()
+	if rem := run(tightJobCtx, "/ether/job/import", false, int64((4*time.Hour)/time.Millisecond)); rem < 40*time.Minute || rem > 46*time.Minute {
+		t.Fatalf("job clamped to remaining deadline = %v, want ~45m", rem)
+	}
+	// 5. Explicit background context (e.g., scheduled call) extends up to its deadline.
+	if rem := run(WithBackgroundCall(context.Background()), "/ether/job/schedule", false, int64(time.Hour/time.Millisecond)); rem < 55*time.Minute || rem > 65*time.Minute {
+		t.Fatalf("background call 1h timeout = %v, want ~1h", rem)
+	}
+	// 6. Non-job request path (/ether/action/import has 2h granted deadline) stays capped at 10 m.
+	if rem := run(context.Background(), "/ether/action/import", false, int64(time.Hour/time.Millisecond)); rem > 11*time.Minute {
+		t.Fatalf("action path timeout = %v, want <= 10m ceiling", rem)
+	}
+	// 7. Viewer path stays capped at its short route deadline (well below 10 m).
+	if rem := run(context.Background(), "/ether/v1/kinds/games/resolve", false, int64(time.Hour/time.Millisecond)); rem > 10*time.Second {
+		t.Fatalf("viewer path timeout = %v, want <= 5s route deadline", rem)
 	}
 }

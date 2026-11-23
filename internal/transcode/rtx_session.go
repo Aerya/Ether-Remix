@@ -169,6 +169,7 @@ func (s *Session) fallbackRTXLocked(reason string, seg int) {
 		s.dash.mpd = nil
 	}
 	s.log.Warn("RTX Video fallback", "reason", reason)
+	s.emitTranscodeFallback(rtxBackend, "ffmpeg", reason)
 }
 
 func redactRTXLine(line, input string, headers map[string]string) string {

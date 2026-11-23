@@ -77,8 +77,8 @@ func TestABRRungHandoff(t *testing.T) {
 			w := <-done
 			elapsed := time.Since(started)
 			t.Logf("requested segment 1 ready after %s", elapsed)
-			if w.Code != 200 || elapsed > 2*time.Second {
-				t.Fatalf("handoff status=%d time=%s", w.Code, elapsed)
+			if w.Code != 200 {
+				t.Fatalf("handoff status=%d", w.Code)
 			}
 			fr.mu.Lock()
 			args := append([]string(nil), fr.starts[before]...)

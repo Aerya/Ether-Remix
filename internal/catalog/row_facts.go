@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -21,7 +22,7 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 	seen := map[core.RatingKey]bool{}
 	gen, minute := c.writeGen.Load(), c.minuteBucket()
 	for _, t := range titles {
-		if t.Type != core.TypeMovie && t.Type != core.TypeShow || seen[t.Key] {
+		if t.Key.IsPluginKey() || t.Type != core.TypeMovie && t.Type != core.TypeShow || seen[t.Key] {
 			continue
 		}
 		seen[t.Key] = true
@@ -31,9 +32,10 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 			need = append(need, t)
 		}
 	}
+	enfCol := `CASE WHEN t.enforcement_rating<>'' THEN t.enforcement_rating WHEN t.content_rating='' AND (` + adultKeywordsExistsSQL("t.key") + `) THEN '` + contentrating.UncertifiedAdult + `' ELSE '' END`
 	for chunk := range store.Chunks(need, 200) {
 		args := keyArgs(chunk)
-		rows, err := c.db.QueryContext(ctx, `SELECT t.key,t.released_ts,t.year,t.adult,t.content_rating,COALESCE(h.checked,0),COALESCE(h.earliest_ts,0),COALESCE(h.fallback_admitted,0) FROM catalog_titles t LEFT JOIN catalog_home_release h ON h.key=t.key WHERE t.key IN (`+placeholders(len(args))+`)`, args...)
+		rows, err := c.db.QueryContext(ctx, `SELECT t.key,t.released_ts,t.year,t.adult,t.content_rating,`+enfCol+`,COALESCE(h.checked,0),COALESCE(h.earliest_ts,0),COALESCE(h.fallback_admitted,0) FROM catalog_titles t LEFT JOIN catalog_home_release h ON h.key=t.key WHERE t.key IN (`+placeholders(len(args))+`)`, args...)
 		if err != nil {
 			return nil
 		}
@@ -41,7 +43,7 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 			var t core.Title
 			var released, home int64
 			var adult, checked, fallback int
-			if err := rows.Scan(&t.Key, &released, &t.Year, &adult, &t.ContentRating, &checked, &home, &fallback); err != nil {
+			if err := rows.Scan(&t.Key, &released, &t.Year, &adult, &t.ContentRating, &t.EnforcementRating, &checked, &home, &fallback); err != nil {
 				rows.Close()
 				return nil
 			}
@@ -76,10 +78,11 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 			t.Year = f.Year
 			t.Adult = f.Adult
 			t.ContentRating = f.ContentRating
+			t.EnforcementRating = contentrating.EffectiveEnforcement(f.EnforcementRating, f.ContentRating, f.Adult, f.Keywords)
 			t.HomeReleased = f.HomeReleased
 			t.HomeReleaseChecked = f.HomeReleaseChecked
 			t.HomeReleaseFallbackAdmitted = f.HomeReleaseFallbackAdmitted
-		} else if t.Type == core.TypeMovie || t.Type == core.TypeShow {
+		} else if !t.Key.IsPluginKey() && (t.Type == core.TypeMovie || t.Type == core.TypeShow) {
 			if _, ok := c.listSummary(t.Key); !ok {
 				continue
 			}

@@ -11,6 +11,12 @@
 // eviction never deletes a newer file put concurrently and a reader never
 // observes a file being replaced underneath it.
 //
+// Put never blocks on eviction: a single background worker starts evicting at
+// the 95% high watermark and evicts down to the 90% low watermark. If writers
+// outrun the worker past 110% of budget, Put drops the oldest unprotected
+// entries from the in-memory index and queues their files for the background
+// worker to unlink.
+//
 // A segment larger than the whole budget is rejected by Put with ErrTooLarge.
 // If everything that could be evicted is pinned or protected the cache is
 // allowed to exceed its budget (logged at most once a minute).
@@ -31,6 +37,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -41,6 +48,10 @@ const (
 	defaultTouchEvery  = time.Minute
 	defaultProtectTTL  = 5 * time.Second
 	overBudgetLogEvery = time.Minute
+
+	evictHighPct = 95  // background worker starts evicting at 95% of budget
+	evictLowPct  = 90  // background worker evicts down to 90% of budget
+	evictHardPct = 110 // Put drops oldest entries in-memory above 110% of budget
 )
 
 var (
@@ -49,6 +60,12 @@ var (
 	// ErrClosed is returned by mutating calls after Close.
 	ErrClosed = errors.New("segcache: cache closed")
 )
+
+type protSnapshot struct {
+	set map[string]bool
+	at  time.Time
+	gen uint64
+}
 
 // Cache implements core.SegmentCache.
 type Cache struct {
@@ -62,19 +79,26 @@ type Cache struct {
 	seed    maphash.Seed
 	stripes [numStripes]sync.RWMutex
 
-	mu          sync.Mutex // guards everything below up to saveMu
-	closed      bool
-	budget      int64
-	used        int64
-	segCount    int
-	rels        map[string]*release
-	pins        map[string]map[string]struct{}
-	lru         lruList // evictable candidates, head = most recent
-	parked      lruList // entries found pinned/protected during eviction
-	parkDirty   bool    // protection may have shrunk; merge parked back into lru
-	lastOverLog time.Time
-	policy      Policy
-	metrics     Metrics
+	mu                 sync.Mutex // guards everything below up to saveMu
+	closed             bool
+	budget             int64
+	used               int64
+	segCount           int
+	rels               map[string]*release
+	pins               map[string]map[string]struct{}
+	lru                lruList  // evictable candidates, head = most recent
+	parked             lruList  // entries found pinned/protected during eviction
+	parkDirty          bool     // protection may have shrunk; merge parked back into lru
+	pendingUnlinks     []*entry // entries dropped in Put awaiting background unlink
+	pendingUnlinkBytes int64    // bytes in pendingUnlinks not yet unlinked from disk
+	floorEnabled       bool
+	floorOKSnap        bool
+	floorCapSnap       int64
+	floorAtNs          int64
+	beforeUnlink       func() // tests: runs between victim selection and file unlinks
+	lastOverLog        time.Time
+	policy             Policy
+	metrics            Metrics
 
 	saveMu sync.Mutex // serialises pins.json writes
 
@@ -86,26 +110,44 @@ type Cache struct {
 	pinDone chan struct{}
 	pinOnce sync.Once
 
+	// Background eviction worker: signaled non-blockingly by Put when usage
+	// reaches the high watermark (or exceeds the hard cap / floor).
+	evictNote      chan struct{}
+	evictStop      chan struct{}
+	evictDone      chan struct{}
+	evictStartOnce sync.Once
+	evictStopOnce  sync.Once
+	evictReq       atomic.Uint64
+	evictWaitMu    sync.Mutex
+	evictWaitCond  *sync.Cond
+	evictDoneSeq   uint64
+
 	expMu      sync.Mutex
 	expCond    *sync.Cond
 	expPending map[string][]byte
 	expWriting bool
 
-	evictMu sync.Mutex // serialises passes that free space; taken before floorMu
+	evictMu sync.Mutex // serialises passes that free space; taken before floorMu, never by Put
 	floorMu sync.Mutex // guards diskFn and floor; taken before mu
 	diskFn  DiskUsageFunc
 	floor   floorStat
 
-	protMu    sync.Mutex
-	protFn    func() map[string]bool
-	protSet   map[string]bool
-	protAt    time.Time
-	protValid bool
+	protMu     sync.Mutex
+	protFn     func() map[string]bool
+	protSet    map[string]bool
+	protAt     time.Time
+	protValid  bool
+	protGen    atomic.Uint64
+	protShrank atomic.Bool
+	hasProtFn  atomic.Bool
+	protSnap   atomic.Pointer[protSnapshot]
 
 	// Tunables, overridden by tests.
 	now        func() time.Time
 	touchEvery time.Duration
 	protectTTL time.Duration
+
+	ev cacheEventState
 }
 
 var _ core.SegmentCache = (*Cache)(nil)
@@ -120,8 +162,8 @@ type release struct {
 	head, tail *entry
 	bytes      int64
 	lastUsed   int64
-	deleting   map[int]bool // keys being unlinked; never rediscover between index removal and unlink
-	metaOK     bool         // directory and release.json exist on disk
+	deleting   map[int]int // count of in-flight unlinks per key; never rediscover before unlink completes
+	metaOK     bool        // directory and release.json exist on disk
 	// metaMu serializes writing release.json: concurrent Puts for a new
 	// release would otherwise race their atomic renames onto the same
 	// file, which Windows refuses ("Access is denied").
@@ -142,9 +184,13 @@ type ReleaseUsage struct {
 	LastPlayed time.Time
 
 	// Parsed provenance, rendered into Reason once retention is known.
-	file   string
-	source string
-	causes []core.CacheCause
+	file      string
+	source    string
+	indexer   string
+	origin    string
+	ratingKey core.RatingKey
+	cachedAt  time.Time
+	causes    []core.CacheCause
 
 	Reason *ReleaseReason `json:"reason,omitempty"`
 }
@@ -182,6 +228,7 @@ func Open(dir string, budget int64, logger *slog.Logger) (*Cache, error) {
 	}
 
 	c.expCond = sync.NewCond(&c.expMu)
+	c.initEvictWorker(true)
 	go c.writePinsLoop()
 	used, b := c.Usage()
 	c.logger.Info("segment cache opened", "dir", dir, "segments", c.segCountSafe(),
@@ -232,7 +279,8 @@ func (c *Cache) Get(releaseID string, segment int) ([]byte, bool) {
 		// key, so the file genuinely vanished or was damaged externally.
 		c.mu.Lock()
 		c.metrics.Misses++
-		if r.segs[segment] == e {
+		dropped := r.segs[segment] == e
+		if dropped {
 			c.dropLocked(e)
 		}
 		c.mu.Unlock()
@@ -245,9 +293,11 @@ func (c *Cache) Get(releaseID string, segment int) ([]byte, bool) {
 				c.logger.Warn("remove corrupt segment", "path", path, "err", rerr)
 			}
 		}
-		c.mu.Lock()
-		delete(r.deleting, segment)
-		c.mu.Unlock()
+		if dropped {
+			c.mu.Lock()
+			c.finishDeletingLocked(r, segment)
+			c.mu.Unlock()
+		}
 		return nil, false
 	}
 
@@ -316,14 +366,17 @@ func (c *Cache) Peek(releaseID string, segment, n int) ([]byte, int64, bool) {
 	prefix, err := peekSegment(filepath.Join(dir, segName(segment)), size, n)
 	if err != nil {
 		c.mu.Lock()
-		if r.segs[segment] == e {
+		dropped := r.segs[segment] == e
+		if dropped {
 			c.dropLocked(e)
 		}
 		c.mu.Unlock()
 		_ = os.Remove(filepath.Join(dir, segName(segment)))
-		c.mu.Lock()
-		delete(r.deleting, segment)
-		c.mu.Unlock()
+		if dropped {
+			c.mu.Lock()
+			c.finishDeletingLocked(r, segment)
+			c.mu.Unlock()
+		}
 		return nil, 0, false
 	}
 	return prefix, size, true
@@ -347,9 +400,11 @@ func (c *Cache) Has(releaseID string, segment int) bool {
 }
 
 // Put stores (or replaces) a segment crash-safely (temp file + rename) and
-// then evicts down to the budget. A payload larger than the whole budget is
-// rejected with ErrTooLarge and nothing is stored. Note that a stored segment
-// may be evicted again immediately if everything else is pinned/protected.
+// signals the background eviction worker when usage reaches the high watermark.
+// A payload larger than the whole budget is rejected with ErrTooLarge and
+// nothing is stored. When far over budget, Put may drop the oldest unprotected
+// entries from the index and queue their files for background unlinking, so Put
+// never blocks on eviction.
 func (c *Cache) Put(releaseID string, segment int, data []byte) error {
 	c.ownerMu.RLock()
 	defer c.ownerMu.RUnlock()
@@ -406,12 +461,22 @@ func (c *Cache) Put(releaseID string, segment int, data []byte) error {
 		return fmt.Errorf("segcache: put %q segment %d: rename: %w", releaseID, segment, err)
 	}
 	nowNs := c.now().UnixNano()
+	var pending pendingCacheEvents
 	c.mu.Lock()
 	c.insertLocked(r, segment, int64(len(data)), nowNs)
+	c.checkBudgetTransitionLocked(&pending)
+	overHard := c.overHardBudgetLocked()
+	wake := overHard || c.shouldWakeEvictLocked(nowNs)
 	c.mu.Unlock()
 	st.Unlock()
+	c.publishPendingEvents(pending)
 
-	c.evict()
+	if overHard {
+		c.dropOverHardBudget()
+	}
+	if wake {
+		c.signalEvict()
+	}
 	return nil
 }
 
@@ -525,9 +590,12 @@ func (c *Cache) ReleaseBytes(releaseID string) int64 {
 // SetBudget changes the budget (<=0 = unlimited) and evicts immediately if
 // the cache is now over it.
 func (c *Cache) SetBudget(budget int64) {
+	var pending pendingCacheEvents
 	c.mu.Lock()
 	c.budget = max(budget, 0)
+	c.checkBudgetTransitionLocked(&pending)
 	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 	c.evict()
 }
 
@@ -540,6 +608,9 @@ func (c *Cache) Protect(fn func() map[string]bool) {
 	c.protFn = fn
 	c.protSet = nil
 	c.protValid = false
+	c.protGen.Add(1)
+	c.hasProtFn.Store(fn != nil)
+	c.protSnap.Store(nil)
 	c.protMu.Unlock()
 	c.mu.Lock()
 	c.parkDirty = true
@@ -555,6 +626,7 @@ func (c *Cache) Remove(releaseID string) error {
 	}
 	c.evictMu.Lock() // a floor measurement must not see these bytes half-freed
 	defer c.evictMu.Unlock()
+	c.drainPendingUnlinks()
 	if validKey(releaseID, 0) != nil {
 		return nil
 	}
@@ -591,11 +663,54 @@ func (c *Cache) Remove(releaseID string) error {
 	for _, e := range victims {
 		c.dropLocked(e)
 	}
+	var pending pendingCacheEvents
+	c.checkBudgetTransitionLocked(&pending)
 	c.mu.Unlock()
-	if err := c.deleteFiles(victims); err != nil {
+	c.publishPendingEvents(pending)
+	if err := c.deleteFiles(victims, false); err != nil {
 		return fmt.Errorf("segcache: remove %q: %w", releaseID, err)
 	}
 	return nil
+}
+
+// ReleaseDetail summarizes the cached segment spans for one release. It touches
+// only that release's in-memory index (or indexed rows on a shared pool).
+func (c *Cache) ReleaseDetail(releaseID string) (ReleaseDetail, bool) {
+	if releaseID == "" {
+		return ReleaseDetail{}, false
+	}
+	if c.shared != nil {
+		return c.shared.releaseDetail(releaseID)
+	}
+	c.mu.Lock()
+	r := c.rels[releaseID]
+	if r == nil || (len(r.segs) == 0 && len(c.pins[releaseID]) == 0) {
+		c.mu.Unlock()
+		return ReleaseDetail{}, false
+	}
+	keys := make([]int, 0, len(r.segs))
+	var earliestNs int64
+	for seg, e := range r.segs {
+		keys = append(keys, seg)
+		ts := e.touched
+		if ts <= 0 || (e.lastUsed > 0 && e.lastUsed < ts) {
+			ts = e.lastUsed
+		}
+		if ts > 0 && (earliestNs == 0 || ts < earliestNs) {
+			earliestNs = ts
+		}
+	}
+	bytes, size := r.bytes, r.experience.Size
+	first := earliestTime(r.experience.CachedAt, r.experience.Causes)
+	c.mu.Unlock()
+	if earliestNs > 0 {
+		t := time.Unix(0, earliestNs)
+		if first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	slices.Sort(keys)
+	return buildReleaseDetail(releaseID, keys, bytes, size, first), true
 }
 
 // Releases lists every release that has cached segments or pins, most
@@ -612,7 +727,7 @@ func (c *Cache) Releases() []ReleaseUsage {
 			continue
 		}
 		seen[id] = true
-		u := ReleaseUsage{Title: r.experience.Title, Size: r.experience.Size, Plays: r.experience.Plays, LastPlayed: r.experience.LastPlayed, ReleaseID: id, Bytes: r.bytes, Segments: len(r.segs), Pins: sortedReasons(c.pins[id]), file: r.experience.File, source: r.experience.Source, causes: append([]core.CacheCause(nil), r.experience.Causes...)}
+		u := ReleaseUsage{Title: r.experience.Title, Size: r.experience.Size, Plays: r.experience.Plays, LastPlayed: r.experience.LastPlayed, ReleaseID: id, Bytes: r.bytes, Segments: len(r.segs), Pins: sortedReasons(c.pins[id]), file: r.experience.File, source: r.experience.Source, indexer: r.experience.Indexer, origin: r.experience.Origin, ratingKey: r.experience.RatingKey, cachedAt: r.experience.CachedAt, causes: append([]core.CacheCause(nil), r.experience.Causes...)}
 		if r.lastUsed > 0 {
 			u.LastUsed = time.Unix(0, r.lastUsed)
 		}
@@ -636,12 +751,24 @@ func (c *Cache) Releases() []ReleaseUsage {
 	return out
 }
 
-// Close marks the cache closed and publishes the in-memory pin set. It is
-// idempotent.
+// Close marks the cache closed, stops background workers and publishes the
+// in-memory pin set. It is idempotent.
 func (c *Cache) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
+	if c.evictStop != nil {
+		c.evictStopOnce.Do(func() {
+			close(c.evictStop)
+			c.startEvictWorker()
+			<-c.evictDone
+		})
+	}
+	if c.shared == nil {
+		c.evictMu.Lock()
+		c.drainPendingUnlinks()
+		c.evictMu.Unlock()
+	}
 	if c.pinStop == nil {
 		return nil
 	}
@@ -656,6 +783,17 @@ func (c *Cache) Close() error {
 
 // ---------------------------------------------------------------------------
 // internals
+
+func scalePercent(n, pct int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return (n/100)*pct + ((n%100)*pct)/100
+}
+
+func highWatermark(budget int64) int64 { return scalePercent(budget, evictHighPct) }
+func lowWatermark(budget int64) int64  { return scalePercent(budget, evictLowPct) }
+func hardWatermark(budget int64) int64 { return budget + scalePercent(budget, evictHardPct-100) }
 
 func validKey(releaseID string, segment int) error {
 	if releaseID == "" {
@@ -732,6 +870,12 @@ func (c *Cache) insertLocked(r *release, seg int, size, nowNs int64) {
 	c.used += size
 	r.bytes += size
 	r.lastUsed = max(r.lastUsed, nowNs)
+	if nowNs > 0 {
+		ts := time.Unix(0, nowNs)
+		if r.experience.CachedAt.IsZero() || ts.Before(r.experience.CachedAt) {
+			r.experience.CachedAt = ts
+		}
+	}
 	c.lru.pushFront(e)
 	r.pushEntry(e)
 }
@@ -739,9 +883,9 @@ func (c *Cache) insertLocked(r *release, seg int, size, nowNs int64) {
 // dropLocked removes e from the index and accounting (not from disk).
 func (c *Cache) dropLocked(e *entry) {
 	if e.rel.deleting == nil {
-		e.rel.deleting = make(map[int]bool)
+		e.rel.deleting = make(map[int]int)
 	}
-	e.rel.deleting[e.seg] = true
+	e.rel.deleting[e.seg]++
 	c.listOf(e).remove(e)
 	e.parked = false
 	e.rel.removeEntry(e)
@@ -751,7 +895,21 @@ func (c *Cache) dropLocked(e *entry) {
 	c.segCount--
 }
 
-func (c *Cache) overBudgetLocked() bool { return c.budget > 0 && c.used > c.budget }
+func (c *Cache) finishDeletingLocked(r *release, seg int) {
+	if n := r.deleting[seg]; n <= 1 {
+		delete(r.deleting, seg)
+	} else {
+		r.deleting[seg] = n - 1
+	}
+}
+
+func (c *Cache) queueUnlinkLocked(e *entry) {
+	c.pendingUnlinks = append(c.pendingUnlinks, e)
+	c.pendingUnlinkBytes += e.size
+}
+
+func (c *Cache) overBudgetLocked() bool     { return c.budget > 0 && c.used > c.budget }
+func (c *Cache) overHardBudgetLocked() bool { return c.budget > 0 && c.used > hardWatermark(c.budget) }
 
 // overLimitLocked reports whether usage is above limit (see limitLocked).
 func (c *Cache) overLimitLocked(limit int64) bool { return limit >= 0 && c.used > limit }
@@ -775,37 +933,184 @@ func usageLimit(budget, floorCap int64, floorOK bool) int64 {
 
 func (c *Cache) pinnedLocked(releaseID string) bool { return len(c.pins[releaseID]) > 0 }
 
-// evict brings usage down to the budget, skipping pinned and protected
-// releases. Skipped entries are parked so later passes do not rescan them;
-// they are merged back (by recency) when protection may have shrunk.
-func (c *Cache) evict() {
-	if c.shared != nil {
-		c.shared.sweep(false)
+func (c *Cache) initEvictWorker(eager bool) {
+	c.evictNote = make(chan struct{}, 1)
+	c.evictStop = make(chan struct{})
+	c.evictDone = make(chan struct{})
+	c.evictWaitCond = sync.NewCond(&c.evictWaitMu)
+	if eager {
+		c.startEvictWorker()
+	}
+}
+
+func (c *Cache) startEvictWorker() {
+	if c.evictNote == nil {
 		return
 	}
-	c.evictMu.Lock()
-	defer c.evictMu.Unlock()
-	floorCap, floorOK := c.floorCap(c.localUsed)
+	c.evictStartOnce.Do(func() {
+		select {
+		case <-c.evictStop:
+			close(c.evictDone)
+			return
+		default:
+		}
+		go c.evictLoop()
+	})
+}
+
+func (c *Cache) signalEvict() {
+	if c.evictNote == nil {
+		return
+	}
+	c.startEvictWorker()
+	c.evictReq.Add(1)
+	select {
+	case c.evictNote <- struct{}{}:
+	default:
+	}
+}
+
+// waitEvict blocks until the background eviction worker has completed a pass
+// covering all signals sent before waitEvict was called (used by tests).
+func (c *Cache) waitEvict() {
+	if c.evictNote == nil {
+		return
+	}
+	target := c.evictReq.Load()
+	if target == 0 {
+		return
+	}
+	c.startEvictWorker()
+	select {
+	case c.evictNote <- struct{}{}:
+	default:
+	}
+	c.evictWaitMu.Lock()
+	defer c.evictWaitMu.Unlock()
+	for c.evictDoneSeq < target {
+		select {
+		case <-c.evictDone:
+			return
+		default:
+		}
+		c.evictWaitCond.Wait()
+	}
+}
+
+func (c *Cache) evictLoop() {
+	defer func() {
+		close(c.evictDone)
+		c.evictWaitMu.Lock()
+		if c.evictWaitCond != nil {
+			c.evictWaitCond.Broadcast()
+		}
+		c.evictWaitMu.Unlock()
+	}()
+	for {
+		select {
+		case <-c.evictStop:
+			return
+		case <-c.evictNote:
+		}
+		for {
+			c.mu.Lock()
+			closed := c.closed
+			c.mu.Unlock()
+			if closed {
+				return
+			}
+			seq := c.evictReq.Load()
+			c.evictWorkerPass()
+			c.evictWaitMu.Lock()
+			c.evictDoneSeq = seq
+			if c.evictWaitCond != nil {
+				c.evictWaitCond.Broadcast()
+			}
+			c.evictWaitMu.Unlock()
+			if c.evictReq.Load() == seq {
+				break
+			}
+		}
+	}
+}
+
+func (c *Cache) evictWorkerPass() {
+	if c.shared != nil {
+		c.shared.sweepWatermarked()
+		return
+	}
+	c.evictLocal(true)
+}
+
+func (c *Cache) shouldWakeEvictLocked(nowNs int64) bool {
+	if c.budget > 0 {
+		high := highWatermark(c.budget)
+		low := lowWatermark(c.budget)
+		if c.used >= high && c.used > low && !(c.used <= c.budget && c.segCount <= 1) {
+			return true
+		}
+	}
+	if c.floorEnabled {
+		if !c.floorOKSnap || nowNs-c.floorAtNs >= int64(floorStatEvery) {
+			return true
+		}
+		if c.used > c.floorCapSnap {
+			return true
+		}
+	}
+	return len(c.pendingUnlinks) > 0
+}
+
+func (c *Cache) shouldWakeSharedEvict(used int64) bool {
+	nowNs := c.now().UnixNano()
 	c.mu.Lock()
-	if c.closed || !c.overLimitLocked(c.limitLocked(floorCap, floorOK)) {
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	if c.budget > 0 {
+		high := highWatermark(c.budget)
+		low := lowWatermark(c.budget)
+		if used >= high && used > low {
+			return true
+		}
+	}
+	if c.floorEnabled {
+		if !c.floorOKSnap || nowNs-c.floorAtNs >= int64(floorStatEvery) {
+			return true
+		}
+		if used > c.floorCapSnap {
+			return true
+		}
+	}
+	return false
+}
+
+// dropOverHardBudget cheaply drops the oldest unprotected entries in memory
+// when writers push usage past 110% of budget, queuing file unlinks for the
+// background worker so Put never unlinks files or waits on evictMu.
+func (c *Cache) dropOverHardBudget() {
+	prot, gen, ok := c.tryProtected()
+	if !ok {
+		return
+	}
+	var pending pendingCacheEvents
+	c.mu.Lock()
+	if c.closed || !c.overHardBudgetLocked() || c.protGen.Load() != gen {
 		c.mu.Unlock()
 		return
 	}
-	c.mu.Unlock()
-
-	prot, shrank := c.protected() // user callback; never under c.mu
-
-	c.mu.Lock()
-	if shrank {
+	if c.protShrank.Swap(false) {
 		c.parkDirty = true
 	}
 	if c.parkDirty {
 		c.unparkLocked()
 		c.parkDirty = false
 	}
-	var victims []*entry
-	limit := c.limitLocked(floorCap, floorOK)
-	for c.overLimitLocked(limit) {
+	target := c.budget
+	var evictedBytes int64
+	evictedEntries := 0
+	for c.used > target {
 		e := c.victimLocked(prot)
 		if e == nil {
 			break
@@ -817,9 +1122,131 @@ func (c *Cache) evict() {
 			continue
 		}
 		c.metrics.EvictedBytes += e.size
+		evictedBytes += e.size
+		evictedEntries++
 		c.dropLocked(e)
-		victims = append(victims, e)
+		c.queueUnlinkLocked(e)
 	}
+	c.recordEvictionLocked(evictedBytes, evictedEntries, &pending)
+	c.checkBudgetTransitionLocked(&pending)
+	c.mu.Unlock()
+	c.publishPendingEvents(pending)
+}
+
+// drainPendingUnlinks unlinks any entries previously dropped in Put. Callers
+// hold evictMu so floor measurements see consistent disk space.
+func (c *Cache) drainPendingUnlinks() {
+	for {
+		c.mu.Lock()
+		if len(c.pendingUnlinks) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		batch := c.pendingUnlinks
+		c.pendingUnlinks = nil
+		c.mu.Unlock()
+		if err := c.deleteFiles(batch, true); err != nil {
+			c.logger.Warn("evict segments", "err", err)
+		}
+	}
+}
+
+func (c *Cache) evictThresholdsLocked(floorCap int64, floorOK bool, watermarked bool) (trigger bool, target, limit int64) {
+	limit = c.limitLocked(floorCap, floorOK)
+	if limit < 0 {
+		return false, -1, -1
+	}
+	if !watermarked {
+		return c.used > limit, limit, limit
+	}
+	target = limit
+	if c.budget > 0 {
+		high := highWatermark(c.budget)
+		low := lowWatermark(c.budget)
+		if low < target {
+			target = low
+		}
+		if c.used >= high && !(c.used <= limit && c.segCount <= 1) {
+			trigger = true
+		}
+	}
+	if floorOK && c.used > floorCap {
+		trigger = true
+	}
+	if c.used <= target {
+		return false, target, limit
+	}
+	return trigger, target, limit
+}
+
+// evict brings usage down to the limit synchronously (for SetBudget, Unpin,
+// Protect, SetDiskUsage, Sweep and indexDisk), skipping pinned and protected
+// releases.
+func (c *Cache) evict() {
+	if c.shared != nil {
+		c.shared.sweep(false)
+		return
+	}
+	c.evictLocal(false)
+}
+
+// evictLocal runs one eviction pass under evictMu. When watermarked is true
+// (background worker), budget eviction starts at 95% and evicts down to 90%.
+func (c *Cache) evictLocal(watermarked bool) {
+	c.evictMu.Lock()
+	defer c.evictMu.Unlock()
+	c.drainPendingUnlinks()
+	floorCap, floorOK := c.floorCap(c.localUsed)
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	trigger, _, _ := c.evictThresholdsLocked(floorCap, floorOK, watermarked)
+	if !trigger {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+
+	prot, shrank := c.protected() // user callback; never under c.mu
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	if shrank || c.protShrank.Swap(false) {
+		c.parkDirty = true
+	}
+	if c.parkDirty {
+		c.unparkLocked()
+		c.parkDirty = false
+	}
+	trigger, target, limit := c.evictThresholdsLocked(floorCap, floorOK, watermarked)
+	var victims []*entry
+	var evictedBytes int64
+	if trigger {
+		for c.used > target && !(watermarked && limit >= 0 && c.used <= limit && c.segCount <= 1) {
+			e := c.victimLocked(prot)
+			if e == nil {
+				break
+			}
+			if c.pinnedLocked(e.rel.id) || prot[e.rel.id] {
+				c.lru.remove(e)
+				e.parked = true
+				c.parked.pushFront(e)
+				continue
+			}
+			c.metrics.EvictedBytes += e.size
+			evictedBytes += e.size
+			c.dropLocked(e)
+			victims = append(victims, e)
+		}
+	}
+	var pending pendingCacheEvents
+	c.recordEvictionLocked(evictedBytes, len(victims), &pending)
+	c.checkBudgetTransitionLocked(&pending)
 	if c.overLimitLocked(limit) {
 		if now := c.now(); now.Sub(c.lastOverLog) >= overBudgetLogEvery {
 			c.lastOverLog = now
@@ -832,11 +1259,17 @@ func (c *Cache) evict() {
 			}
 		}
 	}
+	hook := c.beforeUnlink
 	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 
-	if err := c.deleteFiles(victims); err != nil {
+	if hook != nil && len(victims) > 0 {
+		hook()
+	}
+	if err := c.deleteFiles(victims, false); err != nil {
 		c.logger.Warn("evict segments", "err", err)
 	}
+	c.drainPendingUnlinks()
 }
 
 // unparkLocked merges the parked list back into the LRU list, ordered by
@@ -865,7 +1298,7 @@ func (c *Cache) unparkLocked() {
 // deleteFiles unlinks the files of entries already dropped from the index,
 // unless a concurrent Put re-added the key meanwhile (then the file on disk
 // is the new version and must stay).
-func (c *Cache) deleteFiles(victims []*entry) error {
+func (c *Cache) deleteFiles(victims []*entry, fromPending bool) error {
 	var errs []error
 	for _, e := range victims {
 		st := c.stripe(e.rel.id, e.seg)
@@ -880,7 +1313,10 @@ func (c *Cache) deleteFiles(victims []*entry) error {
 			}
 		}
 		c.mu.Lock()
-		delete(e.rel.deleting, e.seg)
+		c.finishDeletingLocked(e.rel, e.seg)
+		if fromPending {
+			c.pendingUnlinkBytes -= e.size
+		}
 		c.mu.Unlock()
 		st.Unlock()
 	}
@@ -892,11 +1328,16 @@ func (c *Cache) deleteFiles(victims []*entry) error {
 func (c *Cache) protected() (map[string]bool, bool) {
 	c.protMu.Lock()
 	defer c.protMu.Unlock()
+	return c.protectedLocked()
+}
+
+func (c *Cache) protectedLocked() (map[string]bool, bool) {
 	if c.protFn == nil {
 		return nil, false
 	}
+	gen := c.protGen.Load()
 	now := c.now()
-	if c.protValid && now.Sub(c.protAt) < c.protectTTL {
+	if c.protValid && now.Sub(c.protAt) < c.protectTTL && !now.Before(c.protAt) {
 		return c.protSet, false
 	}
 	raw := c.protFn()
@@ -915,8 +1356,31 @@ func (c *Cache) protected() (map[string]bool, bool) {
 			}
 		}
 	}
+	if shrank {
+		c.protShrank.Store(true)
+	}
 	c.protSet, c.protAt, c.protValid = set, now, true
+	c.protSnap.Store(&protSnapshot{set: set, at: now, gen: gen})
 	return set, shrank
+}
+
+// tryProtected returns the protected set without blocking if another goroutine
+// is currently inside the protection callback.
+func (c *Cache) tryProtected() (set map[string]bool, gen uint64, ok bool) {
+	if !c.hasProtFn.Load() {
+		return nil, c.protGen.Load(), true
+	}
+	gen = c.protGen.Load()
+	now := c.now()
+	if snap := c.protSnap.Load(); snap != nil && snap.gen == gen && now.Sub(snap.at) < c.protectTTL && !now.Before(snap.at) {
+		return snap.set, gen, true
+	}
+	if !c.protMu.TryLock() {
+		return nil, 0, false
+	}
+	defer c.protMu.Unlock()
+	set, _ = c.protectedLocked()
+	return set, c.protGen.Load(), true
 }
 
 func sortedReasons(set map[string]struct{}) []string {
@@ -1020,7 +1484,7 @@ func (c *Cache) discoverLocked(id string, seg int) *release {
 		return nil
 	}
 	r := c.rels[id]
-	if r != nil && (r.segs[seg] != nil || r.deleting[seg]) {
+	if r != nil && (r.segs[seg] != nil || r.deleting[seg] > 0) {
 		return r
 	}
 	dir := filepath.Join(c.dataDir, releaseDirRel(id))

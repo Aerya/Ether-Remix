@@ -10,6 +10,7 @@ import (
 // asserted owner identity. Unknown values and unavailable services are omitted.
 func (i *instance) userDTOWithTimes(r *http.Request, v *frontend.Viewer, credential string) map[string]any {
 	user := i.userDTO(r, v)
+	i.attachViewerAvatarTag(r, user, v, credential)
 	if credential == "" || i.host.Identity == nil {
 		return user
 	}

@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -139,6 +140,20 @@ func statedConnLimit(err error) int {
 	return 0
 }
 
+// isIPLimitErr reports a refusal caused by another IP address holding the
+// account. Shrinking this pool's socket count cannot clear an IP-sharing lock,
+// so the provider must enter connect backoff instead of reporting healthy.
+func isIPLimitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *ProtocolError
+	if errors.As(err, &pe) {
+		return strings.Contains(strings.ToLower(pe.Msg), "ip address")
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "ip address")
+}
+
 // limitCeiling is the most connections Ether runs against a stated limit.
 func limitCeiling(stated int) int {
 	return max(1, stated-1)
@@ -207,6 +222,9 @@ func (p *pool) teardownLocked(now time.Time) bool {
 // dial excluded). It reports whether the caller should wait for a slot and
 // retry rather than count the provider as failing.
 func (p *pool) refused(err error, live int) bool {
+	if isIPLimitErr(err) {
+		return false
+	}
 	t := &p.o.limits
 	now := time.Now()
 	stated := statedConnLimit(err)

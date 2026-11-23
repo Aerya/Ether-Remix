@@ -48,7 +48,11 @@ func (a *App) favoriteEpisodeCandidates(ctx context.Context, viewer *core.User) 
 }
 
 func (a *App) runFavoriteEpisodeAlerts(ctx context.Context) {
-	detector := notify.FavoriteEpisodeDetector{Preferences: &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser}, Episodes: a.favoriteEpisodeCandidates}
+	detector := notify.FavoriteEpisodeDetector{
+		Preferences: &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser},
+		Episodes:    a.favoriteEpisodeCandidates,
+		OnDetected:  a.onFavoriteEpisodeAired,
+	}
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
 	for {

@@ -213,6 +213,12 @@ func downloadArgs(input string, video, audio *core.StreamInfo, out string) []str
 	}
 	args = append(args, "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
 		"-c", "copy")
+	if audio != nil {
+		args = append(args, "-disposition:a:0", "default")
+		if lang := mp4Language(audio.Language); lang != "" {
+			args = append(args, "-metadata:s:a:0", "language="+lang)
+		}
+	}
 	if strings.EqualFold(video.Codec, "hevc") {
 		// Apple players want the hvc1 sample entry, not hev1.
 		args = append(args, "-tag:v", "hvc1")
@@ -268,6 +274,12 @@ func downloadConvertArgs(input string, info core.MediaInfo, dec core.Decision, a
 			codec = v.Codec
 		}
 	}
+	if a := findStream(info, dec.AudioStream, "audio"); a != nil {
+		args = append(args, "-disposition:a:0", "default")
+		if lang := mp4Language(a.Language); lang != "" {
+			args = append(args, "-metadata:s:a:0", "language="+lang)
+		}
+	}
 	if strings.EqualFold(codec, "hevc") {
 		tagged := false
 		for i := 0; i < len(args)-1; i++ {
@@ -296,8 +308,8 @@ func downloadTextArgs(args []string, info core.MediaInfo, index int, out string)
 		}
 	}
 	filtered = append(filtered, "-map", fmt.Sprintf("0:%d", sub.Index), "-c:s", "mov_text", "-disposition:s:0", "default")
-	if sub.Language != "" {
-		filtered = append(filtered, "-metadata:s:s:0", "language="+sub.Language)
+	if lang := mp4Language(sub.Language); lang != "" {
+		filtered = append(filtered, "-metadata:s:s:0", "language="+lang)
 	}
 	return append(filtered, out)
 }
@@ -338,12 +350,28 @@ func estimateBytes(info core.MediaInfo) int64 {
 	return 0
 }
 
+// downloadAudioStream resolves the requested audio stream index, honoring
+// an explicit req.AudioStream or req.Options.AudioStream without letting a
+// zero-valued DecideOptions override AudioStream: -1.
+func downloadAudioStream(req core.DownloadRemuxRequest) int {
+	if req.AudioStream > 0 {
+		return req.AudioStream
+	}
+	if req.Options.AudioStream > 0 {
+		return req.Options.AudioStream
+	}
+	if req.AudioStream == 0 && findStream(req.Info, 0, "audio") != nil {
+		return 0
+	}
+	return -1
+}
+
 // RemuxDownload implements core.DownloadRemuxer.
 func (d *DownloadRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRemuxRequest, progress func(float64)) (string, int64, error) {
 	if req.InputURL == "" {
 		return "", 0, errors.New("transcode: download: empty input URL")
 	}
-	video, audio, ok := DownloadCopyable(req.Info, req.AudioStream, req.Caps)
+	video, audio, ok := DownloadCopyable(req.Info, downloadAudioStream(req), req.Caps)
 	qualityConversion := video != nil && ((req.Options.MaxHeight > 0 && video.Height > req.Options.MaxHeight) ||
 		(req.Options.MaxBitrateKbps > 0 && req.Info.BitrateKbps > req.Options.MaxBitrateKbps))
 	if ok && !downloadBurnsImage(req) && !qualityConversion {
@@ -353,7 +381,7 @@ func (d *DownloadRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRe
 			})
 	}
 	path, size, err := d.convertDownload(ctx, req, progress)
-	if err != nil && ctx.Err() == nil && !errors.Is(err, core.ErrDownloadBudget) && ok && qualityConversion && !downloadBurnsImage(req) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, core.ErrDownloadBudget) && !errors.Is(err, ErrVideoTranscodingDisabled) && ok && qualityConversion && !downloadBurnsImage(req) {
 		d.m.log.Warn("download quality conversion failed; trying source quality", "err", err)
 		return d.runDownload(ctx, req, progress, estimateBytes(req.Info), "remux",
 			func(part string) []string {
@@ -399,7 +427,7 @@ func (d *DownloadRemuxer) convertDownload(ctx context.Context, req core.Download
 	opts := req.Options
 	opts.DirectPlay = false
 	opts.DirectStream = true
-	opts.AudioStream = req.AudioStream
+	opts.AudioStream = downloadAudioStream(req)
 	if downloadBurnsImage(req) {
 		opts.BurnSubtitles = true
 		if pickSubtitle(req.Info, opts.SubtitleStream) == nil {
@@ -410,17 +438,24 @@ func (d *DownloadRemuxer) convertDownload(ctx context.Context, req core.Download
 	} else if opts.SubtitleStream == 0 {
 		opts.SubtitleStream = -1
 	}
-	dec := d.m.Decide(req.Info, downloadProfile(req.Caps), opts)
+	dlCaps := downloadProfile(req.Caps)
+	if d.m.VideoTranscodingOff() {
+		dlCaps.NoVideoTranscode = true
+	}
+	dec := d.m.Decide(req.Info, dlCaps, opts)
+	if dlCaps.NoVideoTranscode && dec.EncodesVideo(req.Info) {
+		return "", 0, ErrVideoTranscodingDisabled
+	}
 	if dec.Kind == core.DecisionDirectPlay {
 		dec.Kind = core.DecisionRemux
-		dec.VideoCopy, dec.AudioCopy = true, true
+		dec.VideoCopy, dec.AudioCopy = req.Info.Video() != nil, true
 	}
 	dec.Container = ContainerFMP4
 	return d.runDownload(ctx, req, progress, estimateConvertBytes(req.Info, dec), "convert",
 		func(part string) []string {
 			args := downloadConvertArgs(req.InputURL, req.Info, dec, d.m.hw, d.m.feat, part)
 			if !dec.BurnSubtitles {
-				args = downloadTextArgs(args, req.Info, req.Options.SubtitleStream, part)
+				args = downloadTextArgs(args, req.Info, opts.SubtitleStream, part)
 			}
 			return args
 		})

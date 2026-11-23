@@ -2,6 +2,7 @@ package livetv
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -15,9 +16,12 @@ import (
 func (s *Service) relayPlan(ss *session, info core.MediaInfo) (dec core.Decision, cut time.Duration, steady bool) {
 	caps := relayCaps(ss.caps)
 	dec = s.transcoder().Decide(info, caps, core.DecideOptions{DirectStream: !ss.info.Channel.Transcode, AudioStream: -1, SubtitleStream: -1})
-	steady = ss.steadyRefused == "" && s.screenStyle(ss.info.Channel, false) != "error" && (!dec.VideoCopy || !dec.AudioCopy)
+	canSteady := ss.steadyRefused == "" || ss.steadyRefused == steadyRefusedCopy
+	steady = canSteady && s.screenStyle(ss.info.Channel, false) != "error" && !dec.VideoCopy && s.canEscalateSteady(info)
 	if relayTSOnly(ss.caps) {
 		dec.Container = "mpegts"
+	} else if broadcastUsesFMP4(ss.caps) {
+		dec.Container = transcode.ContainerFMP4
 	}
 	// Use the owner segment target. Copy cuts at the first source keyframe
 	// after it, so a long source GOP may raise the playlist target.
@@ -74,11 +78,23 @@ func relayTSOnly(viewer core.ClientCaps) bool {
 func (s *Service) startIPTVRelay(ctx context.Context, ss *session, info core.MediaInfo) error {
 	dec, cut, steady := s.relayPlan(ss, info)
 	if steady {
+		prevTranscode := ss.info.Channel.Transcode
 		s.revokeInput(ss)
 		c := ss.info.Channel
 		c.Transcode = true
 		ss.info.Channel = c
-		return s.startBroadcast(ctx, ss)
+		ss.steadyRefused = ""
+		err := s.startBroadcast(ctx, ss)
+		if err == nil || !errors.Is(err, errSteadyRefused) {
+			return err
+		}
+		// Steady declined (e.g. capacity filled during probe): restore the
+		// direct input grant and run the transcoded relay instead.
+		c.Transcode = prevTranscode
+		ss.info.Channel = c
+		if err := s.grantDirectInput(ss, ss.inputSource, ss.inputHeaders); err != nil {
+			return err
+		}
 	}
 	started := time.Now()
 	attrs := []any{}

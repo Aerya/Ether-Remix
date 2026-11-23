@@ -36,7 +36,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 	}
 	// Explicit source tracks require a generation pin through Open. Detail
 	// planning does not create an openable session, so it cannot promise them.
-	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil {
+	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil {
 		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
 	}
 	viewer, err := b.viewer(ctx, req.Viewer)
@@ -54,7 +54,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, req.Device, req.Item)
+	title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if ctx.Err() != nil {
 		return frontend.PlayPlan{}, ctx.Err()
 	}
@@ -81,6 +81,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 			req.Caps.MaxBitrateKbps = limit
 		}
 	}
+	b.stampViewerTranscoding(viewer, &req.Caps)
 	if limit := b.deps.BitrateLimit(viewer); limit > 0 {
 		if req.Caps.MaxBitrateKbps == 0 || limit < req.Caps.MaxBitrateKbps {
 			req.Caps.MaxBitrateKbps = limit
@@ -228,6 +229,7 @@ func (b *Broker) detailDecision(ctx context.Context, req frontend.PlanRequest, v
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
+	p.SelectedSubtitle = sideSubtitleStream(source, req, p.Decision)
 	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(p.Decision, source.Info) {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
@@ -235,7 +237,9 @@ func (b *Broker) detailDecision(ctx context.Context, req frontend.PlanRequest, v
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	p.DirectPlay, p.DirectStream, p.Transcoding = b.planAlternatives(source, req)
+	p.VideoTranscodingOff = req.Channel == "" && b.videoOff(req.Caps)
 	p.HLS, p.HLSContainer = b.hlsPlanOutput(source, req, p.Decision)
+	p.HTTP, p.HTTPContainer = b.httpPlanOutput(source, req, p.Decision)
 	p.Media = publicMedia(source.Info)
 	p.Decision.AudioFilters = slices.Clone(p.Decision.AudioFilters)
 	return p, nil

@@ -66,20 +66,23 @@ func (s *Service) lookupVideoHash(title *core.Title, releaseName string) (string
 }
 
 // providerList is the effective provider order: the owner's configured
-// order, with OpenSubtitles and SubDL included when enabled and not
-// explicitly listed in s.providers.
+// order, with OpenSubtitles, SubDL and SubSource included when enabled and
+// not explicitly listed in s.providers.
 func (s *Service) providerList() []config.SubtitleProvider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []config.SubtitleProvider
 	hasOpenSubtitles := false
 	hasSubDL := false
+	hasSubSource := false
 	for _, p := range s.providers {
 		switch p.Kind {
 		case config.SubtitleProviderOpenSubtitles:
 			hasOpenSubtitles = true
 		case config.SubtitleProviderSubDL:
 			hasSubDL = true
+		case config.SubtitleProviderSubSource:
+			hasSubSource = true
 		}
 		if p.Enabled {
 			out = append(out, p)
@@ -87,6 +90,9 @@ func (s *Service) providerList() []config.SubtitleProvider {
 	}
 	if !hasSubDL && s.subdl.Enabled && s.subdl.APIKey != "" {
 		out = append(out, config.SubtitleProvider{ID: "subdl", Kind: config.SubtitleProviderSubDL, Enabled: true})
+	}
+	if !hasSubSource && s.subsource.Enabled && strings.TrimSpace(s.subsource.APIKey) != "" {
+		out = append(out, config.SubtitleProvider{ID: "subsource", Kind: config.SubtitleProviderSubSource, Enabled: true})
 	}
 	if !hasOpenSubtitles && s.cfg.Enabled && s.cfg.APIKey != "" {
 		out = append([]config.SubtitleProvider{{ID: "opensubtitles", Kind: config.SubtitleProviderOpenSubtitles, Enabled: true}}, out...)
@@ -113,6 +119,10 @@ func (s *Service) searchEnabled() bool {
 			}
 		case config.SubtitleProviderSubDL:
 			if s.subdlEnabled() {
+				return true
+			}
+		case config.SubtitleProviderSubSource:
+			if s.subsourceEnabled() {
 				return true
 			}
 		}
@@ -155,6 +165,11 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 				continue
 			}
 			cands, err = s.searchSubDL(ctx, title, lang, releaseName)
+		case config.SubtitleProviderSubSource:
+			if !s.subsourceEnabled() {
+				continue
+			}
+			cands, err = s.searchSubSource(ctx, title, lang, releaseName)
 		default:
 			pluginID := strings.TrimSuffix(strings.TrimPrefix(p.Kind, "plugin:"), "/subtitles")
 			s.mu.Lock()

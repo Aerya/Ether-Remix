@@ -72,6 +72,37 @@ func splitCSV(value string) []string {
 	return out
 }
 
+// firstListValue returns the first non-empty entry of a query list that may
+// be comma-joined, repeated, or both.
+func firstListValue(values []string) string {
+	for _, value := range values {
+		if parts := splitCSV(value); len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
+// guidLike reports whether id parses as a UUID the way the Jellyfin
+// Kotlin SDK does: 32 lowercase hex digits, optionally dashed 8-4-4-4-12.
+// jellyfin-sdk-kotlin's UUIDSerializer rejects uppercase hex with an
+// uncaught IllegalArgumentException.
+func guidLike(id string) bool {
+	if len(id) == 36 && id[8] == '-' && id[13] == '-' && id[18] == '-' && id[23] == '-' {
+		id = id[:8] + id[9:13] + id[14:18] + id[19:23] + id[24:]
+	}
+	if len(id) != 32 {
+		return false
+	}
+	for k := 0; k < len(id); k++ {
+		c := id[k]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func dashedGUID(id string) string {
 	if len(id) != 32 {
 		return id
@@ -175,7 +206,10 @@ func jellyfinListFile(r *http.Request) bool {
 // WebDAV uses. Probed streams stay; a row with none still names a video and
 // an audio track so the source is a file rather than an empty remote.
 func (i *instance) presentJellyfinFile(item, source map[string]any, title frontend.Title) {
-	if i == nil || item == nil || source == nil || (title.Type != "movie" && title.Type != "episode") {
+	// A declared audio/book/photo item keeps its own probed streams: this
+	// helper would otherwise stamp it as a video file and invent a video
+	// stream for a source that has none yet.
+	if i == nil || item == nil || source == nil || mbDeclaredNonVideo(title) || (title.Type != "movie" && title.Type != "episode") {
 		return
 	}
 	container, _ := source["Container"].(string)
@@ -245,7 +279,18 @@ func jellyfinMediaSourceShape(source map[string]any, name string) {
 	if name != "" {
 		setMissing(source, "Name", name)
 	}
-	setMissing(source, "VideoType", "VideoFile")
+	// A source whose probed streams hold no video (a music track, an
+	// audiobook) is not a video file; an unprobed source keeps the stamp.
+	if streams, ok := source["MediaStreams"].([]any); !ok || len(streams) == 0 {
+		setMissing(source, "VideoType", "VideoFile")
+	} else {
+		for _, stream := range streams {
+			if dto, ok := stream.(map[string]any); ok && dto["Type"] == "Video" {
+				setMissing(source, "VideoType", "VideoFile")
+				break
+			}
+		}
+	}
 	setMissing(source, "UseMostCompatibleTranscodingProfile", false)
 	if id, _ := source["Id"].(string); id != "" {
 		setMissing(source, "ETag", itemEtag(id))
@@ -263,14 +308,23 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 	setMissing(item, "BackdropImageTags", []string{})
 	setMissing(item, "ImageTags", map[string]string{})
 	setMissing(item, "ImageBlurHashes", map[string]any{})
+	// The type switches below describe the video hierarchy; a declared
+	// music/book/photo item keeps only the generic shell around them.
+	nonVideo := mbDeclaredNonVideo(title)
 	switch title.Type {
 	case "movie", "episode":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "VideoType", "VideoFile")
 		setMissing(item, "Container", "")
 		if title.Type == "movie" {
 			i.attachLibraryParent(r, viewer, item, "movie")
 		}
 	case "show":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "AirDays", []string{})
 		setMissing(item, "MediaType", "Unknown")
 		i.attachLibraryParent(r, viewer, item, "show")
@@ -282,9 +336,12 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 			setMissing(item, "DateLastMediaAdded", wireTime(title.LastAirDate))
 		}
 	case "season":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "MediaType", "Unknown")
 	}
-	if title.Type == "episode" || title.Type == "season" {
+	if !nonVideo && (title.Type == "episode" || title.Type == "season") {
 		setMissing(item, "ParentBackdropImageTags", []string{})
 		for _, key := range []string{"ParentBackdropItemId", "ParentLogoImageTag", "ParentLogoItemId", "ParentPrimaryImageItemId", "ParentPrimaryImageTag", "SeriesPrimaryImageTag"} {
 			setMissing(item, key, nil)
@@ -337,7 +394,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 				}
 			}
 		}
-	} else if fields["mediasources"] && jellyfinListFile(r) && (title.Type == "movie" || title.Type == "episode") && r != nil && viewer != nil {
+	} else if fields["mediasources"] && jellyfinListFile(r) && !mbIsBookItem(title) && (title.Type == "movie" || title.Type == "episode") && r != nil && viewer != nil {
 		source := i.defaultMediaSource(r, viewer, authhdr.MediaBrowserToken(r), title.Key)
 		jellyfinMediaSourceShape(source, title.Title)
 		i.presentJellyfinFile(item, source, title)
@@ -543,18 +600,27 @@ func (i *instance) writeBoxSets(w http.ResponseWriter, r *http.Request, viewer *
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	r = withJellyfinListFiles(withBrowseMemo(r))
+	titles := make([]frontend.Title, 0, len(page.Items))
+	for _, collection := range page.Items {
+		titles = append(titles, frontend.Title{Key: collection.Key, Type: "boxset"})
+	}
+	images := i.gridListImages(r, titles)
 	items := make([]any, 0, len(page.Items))
 	for _, collection := range page.Items {
-		item := i.boxSetDTO(collection)
+		dto := i.boxSetDTO(collection)
+		for key, value := range images[collection.Key] {
+			dto[key] = value
+		}
 		if collection.NavigationGroup != "" {
 			detail := frontend.ItemDetail{Collection: &collection}
 			i.discoveryArtwork(r, viewer, &detail)
 			_, token, _ := i.viewer(r)
 			tags, backs, _ := i.imageTags(r, detail, token)
-			item["ImageTags"] = tags
-			item["BackdropImageTags"] = backs
+			dto["ImageTags"] = tags
+			dto["BackdropImageTags"] = backs
 		}
-		items = append(items, item)
+		items = append(items, dto)
 	}
 	jsonReply(w, i.queryResult(items, page.Total, q.Offset))
 }
@@ -735,9 +801,43 @@ func (i *instance) nameChildSeries(r *http.Request, viewer *frontend.Viewer, par
 // empty. A show key plus a season number encodes the season when the item
 // key does not.
 func attachParentIdentity(m map[string]any, t frontend.Title) {
+	if mbDeclaredNonVideo(t) {
+		// A declared music/book/photo item names its immediate parent in
+		// the kind's hierarchy (track -> album -> artist), never a series
+		// or season. Jellyfin reads a track's album from Album/AlbumId.
+		if t.ParentKey != 0 {
+			parentID := ids.RatingKeyGUID(t.ParentKey)
+			m["ParentId"] = parentID
+			if t.MBItemType == "Audio" {
+				m["AlbumId"] = parentID
+				if t.ParentTitle != "" {
+					m["Album"] = t.ParentTitle
+				}
+			}
+		}
+		if t.ItemIndex > 0 {
+			m["IndexNumber"] = t.ItemIndex
+		}
+		if t.MBItemType == "Audio" {
+			disc := t.Disc
+			if disc <= 0 && t.ItemIndex > 0 {
+				disc = 1
+			}
+			if disc > 0 {
+				m["ParentIndexNumber"] = disc
+			}
+		}
+		return
+	}
 	show := t.ShowKey
 	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
 		show = frontend.ShowKey(t.Key.TMDB())
+	}
+	if show == 0 && t.MBItemType == "Video" && t.ParentKey != 0 {
+		m["ParentId"] = ids.RatingKeyGUID(t.ParentKey)
+		if t.ItemIndex > 0 {
+			m["IndexNumber"] = t.ItemIndex
+		}
 	}
 	if show != 0 {
 		m["SeriesId"] = ids.RatingKeyGUID(show)
@@ -774,6 +874,11 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		season := t.Key.Parent()
 		if season == 0 && show.Kind() == frontend.KindShow && (seasonNumber > 0 || t.SeasonTitle != "") {
 			season = frontend.SeasonKey(show.TMDB(), seasonNumber)
+		}
+		// A plugin library published as TV shows keeps its own item tree:
+		// the season is the episode's parent container item.
+		if season == 0 && t.Key.IsPluginKey() && t.ParentKey != 0 && t.ParentKey != show {
+			season = t.ParentKey
 		}
 		if season != 0 {
 			id := ids.RatingKeyGUID(season)
@@ -1027,17 +1132,10 @@ func (i *instance) jellyfinDetailShell(item map[string]any) {
 // jellyfinStudioFacts records studio names the title already has. Named-facet
 // ids replace this list when the experience issued them.
 func jellyfinStudioFacts(item map[string]any, title frontend.Title) {
-	if _, ok := item["Studios"]; !ok && len(title.Studios) > 0 {
-		pairs := make([]any, 0, len(title.Studios))
-		for _, name := range title.Studios {
-			if name != "" {
-				pairs = append(pairs, map[string]any{"Name": name})
-			}
-		}
-		if len(pairs) > 0 {
-			item["Studios"] = pairs
-		}
-	}
+	// NameGuidPair.Id is a required UUID in the Jellyfin SDK, so a
+	// name-only Studios entry fails decoding of the whole item (#614).
+	// Studios only ever carries the authorized facet pairs addNamedFacets
+	// issued; the plain names stay available as SeriesStudio below.
 	if title.Type == "show" || title.Type == "episode" || title.Type == "season" {
 		for _, name := range title.Studios {
 			if name != "" {
@@ -1072,7 +1170,11 @@ func (i *instance) jellyfinKnownVersionFacts(dto map[string]any, versions []fron
 	if len(version.Media.Chapters) > 0 {
 		chapters := make([]any, 0, len(version.Media.Chapters))
 		for _, chapter := range version.Media.Chapters {
-			entry := map[string]any{"StartPositionTicks": chapter.Start.Nanoseconds() / 100}
+			// ChapterInfo.ImageDateModified is non-null in the Jellyfin
+			// SDK; without it the whole item fails to decode (#614).
+			// Ether has no chapter-image date, so it carries the zero
+			// date Jellyfin itself sends for chapters without images.
+			entry := map[string]any{"StartPositionTicks": chapter.Start.Nanoseconds() / 100, "ImageDateModified": wireTime(time.Time{})}
 			if chapter.Title != "" {
 				entry["Name"] = chapter.Title
 			}

@@ -33,7 +33,7 @@ func NewResolver(validators map[string]Authenticator, grants *Grants) (*Resolver
 }
 func (r *Resolver) Resolve(ctx context.Context, surface, credential string) (*core.Viewer, error) {
 	if validator := r.validators[surface]; validator != nil {
-		if IsGrantCredential(credential) {
+		if IsGrantCredential(credential) || IsAPIKeyCredential(credential) {
 			return nil, core.ErrUnauthorized
 		}
 		return validator.Authenticate(ctx, credential)

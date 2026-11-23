@@ -1,5 +1,5 @@
-import { Button, EmptyState } from "@braedonsaunders/appkit-ui";
-import { ChevronRight, Library as LibraryIcon, Search } from "lucide-react";
+import { Button, EmptyState, cn } from "@braedonsaunders/appkit-ui";
+import { ChevronRight, Library as LibraryIcon, Radio, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -7,8 +7,9 @@ import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { t, tn } from "../../i18n";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
-import { artUrl, librariesApi, type KindItem, type Library } from "./api";
+import { artUrl, formatItemDate, librariesApi, type KindItem, type Library } from "./api";
 import { PluginItemDrawer } from "./PluginItemDrawer";
+import { PluginLiveTab } from "./PluginLiveTab";
 
 const SORT_LABELS: Record<string, () => string> = {
   title: () => t("Title A–Z"),
@@ -39,6 +40,13 @@ export function PluginBrowse({
   const params = controlledParams ?? urlParams;
   const setParams = onParams ?? setUrlParams;
   const kind = library.kind;
+  const liveTabs = useMemo(
+    () => (library.effectiveTabs ?? []).filter((tab) => tab.kind === "live" && !tab.hidden),
+    [library.effectiveTabs],
+  );
+  const activeLiveKey = params.get("liveTab") ?? "";
+  const activeLiveTab = liveTabs.find((tab) => tab.key === activeLiveKey) ?? null;
+  const dateDisplay = kind?.library.dateDisplay;
   const query = params.get("q") ?? "";
   const debouncedQuery = useDebouncedValue(query, 300);
   const parent = params.get("parent") ?? "";
@@ -60,13 +68,14 @@ export function PluginBrowse({
   const requestKey = JSON.stringify([debouncedQuery, parent, sort, facetValues, ruleFilter]);
   const page = useAsync(
     (signal) => {
+      if (activeLiveTab) return Promise.resolve(null);
       const p: Record<string, string> = { sort, limit: "48", ...ruleFilter };
       if (debouncedQuery) p.q = debouncedQuery;
       if (parent) p.parent = parent;
       for (const [k, v] of Object.entries(facetValues)) if (v) p[`facet.${k}`] = v;
       return librariesApi.items(library.id, p, signal);
     },
-    [library.id, requestKey],
+    [library.id, requestKey, activeLiveTab?.key ?? ""],
   );
 
   const update = (patch: Record<string, string>) => {
@@ -121,109 +130,164 @@ export function PluginBrowse({
 
   return (
     <div className="plugin-browse">
-      <div className="plugin-browse-bar">
-        <nav aria-label={t("Inside this library")} className="plugin-crumbs">
-          <button type="button" onClick={() => update({ parent: "", parentTitle: "", item: "" })}>
-            {library.name}
+      {liveTabs.length > 0 ? (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-1.5"
+          role="tablist"
+          aria-label={t("Browse views")}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!activeLiveTab}
+            onClick={() => update({ liveTab: "" })}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+              !activeLiveTab
+                ? "border-primary bg-primary-subtle text-primary"
+                : "border-border bg-surface text-fg-muted hover:text-fg",
+            )}
+          >
+            <LibraryIcon size={14} aria-hidden />
+            {t("Library")}
           </button>
-          {parent ? (
-            <>
-              <ChevronRight size={13} aria-hidden />
-              <span aria-current="page">{parentTitle || t("Inside")}</span>
-            </>
-          ) : null}
-        </nav>
-        <span className="flex-1" />
-        {kind?.browse.search ? (
-          <label className="plugin-search">
-            <Search size={14} aria-hidden />
-            <input
-              value={query}
-              onChange={(e) => update({ q: e.target.value })}
-              placeholder={t("Search {name}", { name: library.name })}
-              aria-label={t("Search {name}", { name: library.name })}
-            />
-          </label>
-        ) : null}
-        {(kind?.browse.facets ?? []).map((field) => (
-          <FacetPicker
-            key={field}
-            library={library}
-            field={field}
-            value={facetValues[field] ?? ""}
-            onChange={(v) => update({ [`facet.${field}`]: v })}
-          />
-        ))}
-        <ToolbarPicker
-          ariaLabel={t("Sort items")}
-          value={sort}
-          options={sorts}
-          onChange={(v) => update({ sort: v })}
-        />
-      </div>
-      <p role="status" className="text-sm text-fg-muted">
-        {page.loading
-          ? t("Loading…")
-          : page.data
-            ? tn(page.data.total, "{count} item", "{count} items", {
-                count: formatNumber(page.data.total, 0),
-              })
-            : ""}
-      </p>
-      {page.error ? <ErrorPanel error={page.error} onRetry={() => void page.reload()} /> : null}
-      {page.loading && !page.data ? <LoadingRows /> : null}
-      {!page.loading && page.data && shown.length === 0 ? (
-        <EmptyState
-          icon={<LibraryIcon size={22} aria-hidden />}
-          title={debouncedQuery ? t("Nothing matches") : t("Nothing here yet")}
-          description={
-            debouncedQuery
-              ? t("Try a different search.")
-              : t(
-                  "Items appear after the plugin syncs. Use Sync now in Settings to fetch them right away.",
-                )
-          }
-        />
-      ) : (
-        <ul className="plugin-grid">
-          {shown.map((item) => (
-            <li key={item.ref}>
-              <button type="button" className="plugin-card" onClick={() => openItem(item)}>
-                {artUrl(item) ? (
-                  <img src={artUrl(item)} alt="" loading="lazy" />
-                ) : (
-                  <span className="plugin-card-fallback" aria-hidden>
-                    {item.title.slice(0, 1)}
-                  </span>
+          {liveTabs.map((liveTab) => {
+            const selectedTab = activeLiveTab?.key === liveTab.key;
+            return (
+              <button
+                key={liveTab.key}
+                type="button"
+                role="tab"
+                aria-selected={selectedTab}
+                onClick={() => update({ liveTab: liveTab.key })}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+                  selectedTab
+                    ? "border-primary bg-primary-subtle text-primary"
+                    : "border-border bg-surface text-fg-muted hover:text-fg",
                 )}
-                <span className="plugin-card-title">{item.title}</span>
-                <span className="plugin-card-meta">
-                  {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
-                  {item.year ? ` · ${item.year}` : ""}
-                  {(item.childCount ?? 0) > 0
-                    ? ` · ${tn(item.childCount ?? 0, "{count} inside", "{count} inside")}`
-                    : ""}
-                </span>
+              >
+                <Radio size={14} aria-hidden />
+                {liveTab.label}
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {nextCursor ? (
-        <div className="mt-4">
-          <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
-            {t("Show more")}
-          </Button>
+            );
+          })}
         </div>
       ) : null}
-      {selected ? (
-        <PluginItemDrawer
-          library={library}
-          itemRef={selected}
-          onClose={() => update({ item: "" })}
-          onOpenItem={(ref) => update({ item: ref })}
-        />
-      ) : null}
+      {activeLiveTab ? (
+        <PluginLiveTab library={library} tab={activeLiveTab} />
+      ) : (
+        <>
+          <div className="plugin-browse-bar">
+            <nav aria-label={t("Inside this library")} className="plugin-crumbs">
+              <button
+                type="button"
+                onClick={() => update({ parent: "", parentTitle: "", item: "" })}
+              >
+                {library.name}
+              </button>
+              {parent ? (
+                <>
+                  <ChevronRight size={13} aria-hidden />
+                  <span aria-current="page">{parentTitle || t("Inside")}</span>
+                </>
+              ) : null}
+            </nav>
+            <span className="flex-1" />
+            {kind?.browse.search ? (
+              <label className="plugin-search">
+                <Search size={14} aria-hidden />
+                <input
+                  value={query}
+                  onChange={(e) => update({ q: e.target.value })}
+                  placeholder={t("Search {name}", { name: library.name })}
+                  aria-label={t("Search {name}", { name: library.name })}
+                />
+              </label>
+            ) : null}
+            {(kind?.browse.facets ?? []).map((field) => (
+              <FacetPicker
+                key={field}
+                library={library}
+                field={field}
+                value={facetValues[field] ?? ""}
+                onChange={(v) => update({ [`facet.${field}`]: v })}
+              />
+            ))}
+            <ToolbarPicker
+              ariaLabel={t("Sort items")}
+              value={sort}
+              options={sorts}
+              onChange={(v) => update({ sort: v })}
+            />
+          </div>
+          <p role="status" className="text-sm text-fg-muted">
+            {page.loading
+              ? t("Loading…")
+              : page.data
+                ? tn(page.data.total, "{count} item", "{count} items", {
+                    count: formatNumber(page.data.total, 0),
+                  })
+                : ""}
+          </p>
+          {page.error ? <ErrorPanel error={page.error} onRetry={() => void page.reload()} /> : null}
+          {page.loading && !page.data ? <LoadingRows /> : null}
+          {!page.loading && page.data && shown.length === 0 ? (
+            <EmptyState
+              icon={<LibraryIcon size={22} aria-hidden />}
+              title={debouncedQuery ? t("Nothing matches") : t("Nothing here yet")}
+              description={
+                debouncedQuery
+                  ? t("Try a different search.")
+                  : t(
+                      "Items appear after the plugin syncs. Use Sync now in Settings to fetch them right away.",
+                    )
+              }
+            />
+          ) : (
+            <ul className="plugin-grid">
+              {shown.map((item) => (
+                <li key={item.ref}>
+                  <button type="button" className="plugin-card" onClick={() => openItem(item)}>
+                    {artUrl(item) ? (
+                      <img src={artUrl(item)} alt="" loading="lazy" />
+                    ) : (
+                      <span className="plugin-card-fallback" aria-hidden>
+                        {item.title.slice(0, 1)}
+                      </span>
+                    )}
+                    <span className="plugin-card-title">{item.title}</span>
+                    <span className="plugin-card-meta">
+                      {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
+                      {formatItemDate(item, dateDisplay)
+                        ? ` · ${formatItemDate(item, dateDisplay)}`
+                        : ""}
+                      {(item.childCount ?? 0) > 0
+                        ? ` · ${tn(item.childCount ?? 0, "{count} inside", "{count} inside")}`
+                        : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {nextCursor ? (
+            <div className="mt-4">
+              <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
+                {t("Show more")}
+              </Button>
+            </div>
+          ) : null}
+          {selected ? (
+            <PluginItemDrawer
+              library={library}
+              itemRef={selected}
+              onClose={() => update({ item: "" })}
+              onOpenItem={(ref) => update({ item: ref })}
+            />
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

@@ -1,0 +1,169 @@
+{
+  "id": "org.ether.smart-lights",
+  "name": "Smart lights",
+  "version": "1.0.0",
+  "description": "Control room lighting scenes from Ether Flows and emit scene change events.",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": [
+      "events",
+      "flow_actions"
+    ],
+    "summary": "$t:summary",
+    "author": {
+      "name": "Ether",
+      "url": "https://github.com/braedonsaunders/ether"
+    },
+    "license": "MIT",
+    "runtime": {
+      "kind": "hosted",
+      "entry": "src/plugin.ts"
+    },
+    "settings": {
+      "fields": [
+        {
+          "key": "defaultRoom",
+          "kind": "text",
+          "label": "$t:setting_room_label",
+          "default": "Living room"
+        },
+        {
+          "key": "defaultBrightness",
+          "kind": "number",
+          "label": "$t:setting_brightness_label",
+          "default": 25,
+          "min": 0,
+          "max": 100
+        }
+      ]
+    },
+    "strings": {
+      "en": "i18n/en.json"
+    },
+    "contributes": {
+      "events": {
+        "subscribe": [
+          "playback.session.started",
+          "playback.session.stopped"
+        ],
+        "publish": [
+          {
+            "key": "scene.changed",
+            "label": "$t:event_scene_changed_label",
+            "description": "$t:event_scene_changed_desc",
+            "fields": [
+              {
+                "name": "room",
+                "type": "string",
+                "label": "$t:field_room_label",
+                "filterable": true,
+                "example": "Living room"
+              },
+              {
+                "name": "scene",
+                "type": "enum",
+                "label": "$t:field_scene_label",
+                "filterable": true,
+                "enum": [
+                  { "value": "cinema", "label": "$t:scene_cinema" },
+                  { "value": "warm", "label": "$t:scene_warm" },
+                  { "value": "bright", "label": "$t:scene_bright" },
+                  { "value": "off", "label": "$t:scene_off" }
+                ],
+                "example": "cinema"
+              },
+              {
+                "name": "brightness",
+                "type": "int",
+                "label": "$t:field_brightness_label",
+                "unit": "%",
+                "filterable": true,
+                "example": 25
+              },
+              {
+                "name": "previousScene",
+                "type": "string",
+                "label": "$t:field_previous_scene_label",
+                "filterable": true,
+                "example": "bright"
+              }
+            ]
+          }
+        ]
+      },
+      "flowActions": [
+        {
+          "key": "set_scene",
+          "label": "$t:action_set_scene_label",
+          "description": "$t:action_set_scene_desc",
+          "route": "/ether/v1/flow-actions/set_scene",
+          "idempotent": true,
+          "timeout": "10s",
+          "params": [
+            {
+              "key": "room",
+              "type": "string",
+              "label": "$t:field_room_label",
+              "required": true,
+              "template": true,
+              "default": "Living room"
+            },
+            {
+              "key": "scene",
+              "type": "enum",
+              "label": "$t:field_scene_label",
+              "required": true,
+              "enum": [
+                { "value": "cinema", "label": "$t:scene_cinema" },
+                { "value": "warm", "label": "$t:scene_warm" },
+                { "value": "bright", "label": "$t:scene_bright" },
+                { "value": "off", "label": "$t:scene_off" }
+              ]
+            },
+            {
+              "key": "brightness",
+              "type": "int",
+              "label": "$t:field_brightness_label",
+              "unit": "%",
+              "default": 25
+            }
+          ],
+          "outputs": [
+            {
+              "name": "room",
+              "type": "string",
+              "label": "$t:field_room_label"
+            },
+            {
+              "name": "scene",
+              "type": "string",
+              "label": "$t:field_scene_label"
+            },
+            {
+              "name": "previousScene",
+              "type": "string",
+              "label": "$t:field_previous_scene_label"
+            },
+            {
+              "name": "brightness",
+              "type": "int",
+              "label": "$t:field_brightness_label",
+              "unit": "%"
+            },
+            {
+              "name": "applied",
+              "type": "bool",
+              "label": "$t:field_applied_label"
+            },
+            {
+              "name": "deduplicated",
+              "type": "bool",
+              "label": "$t:field_deduplicated_label"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -25,7 +25,7 @@ func TestBudgetReserveSharedAcrossNodes(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { db.Close() })
-		clients = append(clients, NewManager(db, []config.Indexer{cfg}, Options{NZBDir: t.TempDir()}).Clients()[0])
+		clients = append(clients, NewManager(db, []config.Indexer{cfg}, Options{Vault: &testVault{}}).Clients()[0])
 	}
 	var wg sync.WaitGroup
 	var granted, refused atomic.Int32

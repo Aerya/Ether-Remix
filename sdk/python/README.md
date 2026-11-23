@@ -7,6 +7,7 @@ Single-file, standard-library-only Python 3.9+ SDK for Ether Plugin Protocol v1 
 - Zero external pip dependencies (`http.server`, `urllib.request`, `json`, `socket`, `base64`).
 - Same declarative `plugin(manifest=..., routes=...)` router shape as `@ether/plugin-sdk` and `sdk/go`.
 - Runs as an HTTP sidecar (`serve(p, mode="http")`) or an outbound WebSocket tunnel sidecar (`serve(p, mode="tunnel")`).
+- Supports Ether Flows custom events (`ctx.ether.events.publish(key, payload, correlation)` -> `POST /ether/plugin-host/events/publish`) and Flow actions (`routes={"flow_action": ...}` with `X-Ether-Idempotency-Key` and `dryRun`).
 - Includes `RemoteHostClient` for `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`, plus `create_test_harness`, `create_mock_host_client`, `fixtures`, and starter capability templates.
 
 ## Usage
@@ -127,10 +128,13 @@ at most 1,024 UTF-8 bytes. The drawer supports progress and cancellation.
 
 Ether uses owner-controlled global/per-plugin ceilings under Plugins: default
 2 GiB memory (up to wasm32 4 GiB), 12 hours, effectively unlimited background
-compute, 8 GiB downloads/member expansion, 32 GiB total expansion and 65,535 ZIP
-members. Downloads also obey library cache quotas. Hosted manifests request
-`ether.runtime.limits` with `memoryBytes`, `deadline`, `unitBudget`, `fetchBytes`,
-`archiveMemberBytes`, `archiveExpandedBytes` and `archiveMembers`. Install preview
+compute, hosted WASM instance pool (`poolSize`, default 2, default owner
+ceiling 4, raisable up to 16; playback resolves keep a reserved lane and
+priority), 8 GiB downloads/member expansion, 32 GiB total
+expansion and 65,535 ZIP members. Downloads also obey library cache quotas.
+Hosted manifests request `ether.runtime.limits` with `memoryBytes`, `deadline`,
+`unitBudget`, `poolSize`, `fetchBytes`, `archiveMemberBytes`,
+`archiveExpandedBytes` and `archiveMembers`. Install preview
 and detail show requested and granted values. Jobs pause during playback/high
 host load and use low CPU/IO priority. A 1,000,000-call sanity bound applies;
 viewer browse/search/resolve/playback calls retain tight time and compute budgets.

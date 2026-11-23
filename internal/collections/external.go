@@ -27,7 +27,8 @@ type ExternalBases struct {
 	TraktAPI        string // https://api.trakt.tv
 	Letterboxd      string // https://letterboxd.com
 	MDBList         string // https://mdblist.com
-	MDBListPageSize int    // optional page size override for tests; defaults to 2000
+	MDBListPageSize int    // optional page size override for tests; defaults to 1000
+	MDBListMaxItems int    // optional item cap override for tests; defaults to maxMembers (5000)
 	AniListAPI      string // https://graphql.anilist.co
 	AnimeIDs        string // the anime id mapping document (anilist -> TMDB/TVDB/IMDb)
 	StevenLu        string // https://popular-movies-data.stevenlu.com
@@ -62,6 +63,7 @@ type extRef struct {
 	MetadataProvider string
 	ProviderID       string
 	TMDB             int64
+	FallbackID       int64 // legacy MDBList id when explicit tmdb_id is absent
 	IMDB             string
 	TVDB             int64
 	Type             string // "movie", "show" or "" (unknown)
@@ -194,12 +196,15 @@ func (w *webClient) do(ctx context.Context, method, rawURL string, reqBody []byt
 		return nil, nil, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
+		now := time.Now()
 		delay := time.Minute
-		if d, ok := retryafter.Parse(resp.Header.Get("Retry-After"), time.Now(), 24*time.Hour); ok {
+		if d, ok := retryafter.Parse(resp.Header.Get("Retry-After"), now, 24*time.Hour); ok {
+			delay = d
+		} else if d, ok := parseRateLimitReset(resp.Header.Get("X-RateLimit-Reset"), now, 24*time.Hour); ok {
 			delay = d
 		}
 		w.mu.Lock()
-		w.last[host] = time.Now().Add(delay - gap)
+		w.last[host] = now.Add(delay - gap)
 		w.mu.Unlock()
 		return nil, nil, fmt.Errorf("%s: rate limited (%s)", u.Host, resp.Status)
 	}
@@ -490,17 +495,52 @@ func (s *Service) letterboxdFilmTMDB(ctx context.Context, slug string) (int64, s
 // ---------------------------------------------------------------------------
 // MDBList
 
-const mdbListDefaultPageSize = 2000
+// mdbListDefaultPageSize matches MDBList's documented 1,000-item page ceiling
+// so lists up to maxMembers (5,000) finish in 5 data pages while staying well
+// under webClient's response cap and MDBList's rate limit.
+const mdbListDefaultPageSize = 1000
+
+func parseRateLimitReset(raw string, now time.Time, maxDelay time.Duration) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	unixSec, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || unixSec <= 0 {
+		return 0, false
+	}
+	d := time.Unix(unixSec, 0).Sub(now)
+	if d <= 0 {
+		return 0, false
+	}
+	if maxDelay > 0 && d > maxDelay {
+		d = maxDelay
+	}
+	return d, true
+}
 
 type mdbListItem struct {
 	ID          json.Number `json:"id"`
 	TMDBID      json.Number `json:"tmdb_id"`
+	TMDBIDAlt   json.Number `json:"tmdbid"`
 	IMDB        string      `json:"imdb_id"`
+	IMDBAlt     string      `json:"imdb"`
 	TVDB        json.Number `json:"tvdb_id"`
+	TVDBAlt     json.Number `json:"tvdbid"`
 	Title       string      `json:"title"`
 	MediaType   string      `json:"mediatype"`
 	ReleaseYear json.Number `json:"release_year"`
+	YearAlt     json.Number `json:"year"`
 	Rank        int         `json:"rank"`
+}
+
+func parseMDBInt64(nums ...json.Number) int64 {
+	for _, num := range nums {
+		if n, err := num.Int64(); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func decodeMDBListPage(body []byte) ([]mdbListItem, error) {
@@ -526,27 +566,33 @@ func decodeMDBListPage(body []byte) ([]mdbListItem, error) {
 }
 
 func mdbListExtRef(it mdbListItem) extRef {
-	r := extRef{IMDB: it.IMDB, Title: it.Title}
-	if n, err := it.TMDBID.Int64(); err == nil && n > 0 {
-		r.TMDB = n
-	} else if n, err := it.ID.Int64(); err == nil && n > 0 {
-		r.TMDB = n
+	r := extRef{
+		IMDB:  firstNonEmpty(it.IMDB, it.IMDBAlt),
+		Title: it.Title,
+		TVDB:  parseMDBInt64(it.TVDB, it.TVDBAlt),
+		Year:  int(parseMDBInt64(it.ReleaseYear, it.YearAlt)),
 	}
-	r.TVDB, _ = it.TVDB.Int64()
-	y, _ := it.ReleaseYear.Int64()
-	r.Year = int(y)
-	switch strings.ToLower(it.MediaType) {
+	if tmdb := parseMDBInt64(it.TMDBID, it.TMDBIDAlt); tmdb > 0 {
+		r.TMDB = tmdb
+	} else if legacyID := parseMDBInt64(it.ID); legacyID > 0 {
+		if r.IMDB == "" && r.TVDB == 0 {
+			r.TMDB = legacyID
+		} else {
+			r.FallbackID = legacyID
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(it.MediaType)) {
 	case "movie":
 		r.Type = "movie"
-	case "show", "tv":
+	case "show", "tv", "series":
 		r.Type = "show"
 	}
 	return r
 }
 
 func mdbListRefKey(r extRef) string {
-	return fmt.Sprintf("%s|tmdb:%d|imdb:%s|tvdb:%d|title:%s|year:%d",
-		r.Type, r.TMDB, strings.ToLower(strings.TrimSpace(r.IMDB)), r.TVDB,
+	return fmt.Sprintf("%s|tmdb:%d|fallback:%d|imdb:%s|tvdb:%d|title:%s|year:%d",
+		r.Type, r.TMDB, r.FallbackID, strings.ToLower(strings.TrimSpace(r.IMDB)), r.TVDB,
 		strings.ToLower(strings.TrimSpace(r.Title)), r.Year)
 }
 
@@ -559,11 +605,19 @@ func (s *Service) fetchMDBList(ctx context.Context, rawURL string) ([]extRef, er
 	if pageSize <= 0 {
 		pageSize = mdbListDefaultPageSize
 	}
+	maxItems := s.bases.MDBListMaxItems
+	if maxItems <= 0 {
+		maxItems = maxMembers
+	}
+	// Allow enough pages to collect maxItems plus one overflow check and
+	// moderate boundary overlap, while bounding pathological upstreams that
+	// drip a single new item per page.
+	maxPages := ((maxItems+pageSize-1)/pageSize)*2 + 2
 	hdr := map[string]string{"Accept": "application/json"}
 	var out []extRef
 	seen := make(map[string]struct{})
 	offset := 0
-	for page := 1; page <= maxExternalPages; page++ {
+	for page := 1; ; page++ {
 		pageURL := fmt.Sprintf("%s%s/json?limit=%d&offset=%d", s.bases.MDBList, path, pageSize, offset)
 		body, _, err := s.web.get(ctx, pageURL, hdr)
 		if err != nil {
@@ -589,18 +643,21 @@ func (s *Service) fetchMDBList(ctx context.Context, rawURL string) ([]extRef, er
 			if _, dup := seen[key]; dup {
 				continue
 			}
+			if len(out) >= maxItems {
+				return out, &partialListError{msg: fmt.Sprintf("MDBList list is incomplete: list exceeds %d items", maxItems)}
+			}
 			seen[key] = struct{}{}
 			out = append(out, r)
 			addedOnPage++
 		}
-		if page > 1 && addedOnPage == 0 {
-			return out, &partialListError{msg: fmt.Sprintf("MDBList list is incomplete: page %d repeated prior items without advancing offset", page)}
-		}
 		if len(items) < pageSize {
 			break
 		}
-		if page == maxExternalPages {
-			return out, &partialListError{msg: fmt.Sprintf("MDBList list is incomplete: list exceeds %d pages (%d items)", maxExternalPages, len(out))}
+		if page > 1 && addedOnPage == 0 {
+			return out, &partialListError{msg: fmt.Sprintf("MDBList list is incomplete: page %d repeated prior items without advancing offset", page)}
+		}
+		if page >= maxPages {
+			return out, &partialListError{msg: fmt.Sprintf("MDBList list is incomplete: exceeded %d pages without reaching end", maxPages)}
 		}
 		offset += len(items)
 	}

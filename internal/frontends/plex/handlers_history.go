@@ -98,21 +98,19 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if n, ok := ids["limit"]; ok && n < int64(maxRows) {
 		maxRows = int(max(n, 0))
 	}
-	if listHistory || !wantHistory || maxRows == 0 || s.state() == nil || pr.User == nil || (!pr.User.IsOwner && q.Has("accountID") && ids["accountID"] != pr.User.PlexID) {
+	if listHistory || !wantHistory || maxRows == 0 || s.state() == nil || pr.User == nil {
 		s.write(w, r, mc)
 		return
 	}
-	accounts := map[int64]int64{pr.User.ID: pr.User.PlexID}
+	dir := s.newPlexAccountDir(ctx, pr.User, pr.User.IsOwner)
 	accountUser := pr.User.ID
-	if pr.User.IsOwner && s.getHost().Identity != nil {
-		users, _ := s.listUsers(ctx)
-		accountUser = -1
-		for _, u := range users {
-			accounts[u.ID] = u.PlexID
-			if u.PlexID == ids["accountID"] {
-				accountUser = u.ID
-			}
+	if q.Has("accountID") {
+		entry, ok := dir.resolve(ctx, ids["accountID"])
+		if !ok {
+			s.write(w, r, mc)
+			return
 		}
+		accountUser = entry.user.ID
 	}
 	var since time.Time
 	if v, ok := ids["viewedAt>"]; ok {
@@ -120,7 +118,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	// The existing 500-record ceiling bounds all joins and policy checks,
 	// including requests whose section or item filter has few matches.
-	hist, err := s.state().History(ctx, pr.User.ID, since, 500)
+	var hist []frontend.HistoryEntry
+	var err error
 	if store, ok := s.state().(frontend.HistoryStore); ok {
 		userID := accountUser
 		if pr.User.IsOwner && !q.Has("accountID") {
@@ -163,6 +162,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			query.DeviceID = &device
 		}
 		hist, err = store.QueryHistory(ctx, query)
+	} else {
+		hist, err = s.state().History(ctx, accountUser, since, 500)
 	}
 	if err != nil {
 		s.writeErr(w, r, err)
@@ -182,7 +183,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := map[frontend.RatingKey]bool{}
 	for _, h := range hist {
-		if q.Has("accountID") && accounts[h.UserID] != ids["accountID"] {
+		if q.Has("accountID") && h.UserID != accountUser {
 			continue
 		}
 		if !viewTypes[h.ViewType] {
@@ -224,7 +225,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		md := model.HistoryMetadata{RatingKey: t.Key.String(), Key: "/library/metadata/" + t.Key.String(), Type: string(t.Type), Title: t.Title, Thumb: s.thumbURL(t), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), ViewedAt: h.ViewedAt.Unix(), LibrarySectionID: historySection(s, t), DeviceID: h.DeviceID, AccountID: accounts[h.UserID]}
+		md := model.HistoryMetadata{RatingKey: t.Key.String(), Key: "/library/metadata/" + t.Key.String(), Type: string(t.Type), Title: t.Title, Thumb: s.thumbURL(t), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), ViewedAt: h.ViewedAt.Unix(), LibrarySectionID: historySection(s, t), DeviceID: h.DeviceID, AccountID: dir.wireID(ctx, h.UserID)}
 
 		if !t.Released.IsZero() {
 			md.OriginallyAvailableAt = t.Released.Format("2006-01-02")
@@ -302,15 +303,8 @@ func (s *Server) handleHistoryItem(w http.ResponseWriter, r *http.Request) {
 		s.write(w, r, &model.MediaContainer{})
 		return
 	}
-	accountID := pr.User.PlexID
-	if pr.User.IsOwner && s.getHost().Identity != nil {
-		users, _ := s.listUsers(r.Context())
-		for _, u := range users {
-			if u.ID == h.UserID {
-				accountID = u.PlexID
-			}
-		}
-	}
+	dir := s.newPlexAccountDir(r.Context(), pr.User, pr.User.IsOwner)
+	accountID := dir.wireID(r.Context(), h.UserID)
 	md := model.HistoryMetadata{Title: t.Title, Type: string(t.Type), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), LibrarySectionID: historySection(s, t), ViewedAt: h.ViewedAt.Unix(), AccountID: accountID, DeviceID: h.DeviceID, ViewType: model.Ptr(1)}
 
 	if !t.Released.IsZero() {

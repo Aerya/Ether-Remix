@@ -2,17 +2,32 @@ package plugins
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
+
+// KindUpsertResult is what one kinds.upsert batch did (#646): Accepted
+// items were taken, of which Added were new, Updated rewrote a stored
+// item, and Unchanged matched the stored item and were skipped.
+type KindUpsertResult struct {
+	Accepted  int
+	Added     int
+	Updated   int
+	Unchanged int
+}
 
 // KindBackends are the Ether services the kind host calls end in: the
 // plugin-item store, the source resolver and the blob cache. Any field
@@ -21,16 +36,40 @@ import (
 // debrid services, blobcache); the plugin id is always the caller's,
 // so a plugin can only ever reach its own kinds and cache.
 type KindBackends struct {
-	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
-	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindUpsert func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	// KindUpsertStats, when set, is preferred over KindUpsert and its
+	// counts ride the host reply.
+	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615).
+	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
-	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
-	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	// ResolveSourcesResult, when set, is preferred over ResolveSources and
+	// carries per-indexer search status alongside candidates (#733).
+	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
+	// before admitting a background check against the plugin's daily allowance.
+	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
+	// AdmitBackgroundUsenetCheck reserves one background usenet_check candidate
+	// check against the plugin's daily allowance in availability_budget.
+	AdmitBackgroundUsenetCheck func(ctx context.Context, pluginID string) (outCtx context.Context, refund func(), resetAt time.Time, err error)
+	CachePut                   func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen                  func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete                func(ctx context.Context, pluginID, blobRef string) error
+	CachePartial               func(ctx context.Context, pluginID, libraryKey, key string) (*blobcache.Partial, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamURL        func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL    func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	StreamURLOptions func(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+	// MediaProbe reads container metadata for a PlayableSource (#712).
+	MediaProbe func(ctx context.Context, pluginID string, src core.PlayableSource) (core.MediaProbeResult, error)
 }
 
 // SetKindBackends wires the kind host services into the Manager's
@@ -38,12 +77,25 @@ type KindBackends struct {
 func (m *Manager) SetKindBackends(b KindBackends) {
 	m.mu.Lock()
 	m.deps.Backends.KindUpsert = b.KindUpsert
+	m.deps.Backends.KindUpsertStats = b.KindUpsertStats
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemsByID = b.KindItemsByID
+	m.deps.Backends.KindItemCount = b.KindItemCount
+	m.deps.Backends.KindVisible = b.KindVisible
+	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
+	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
+	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
+	m.deps.Backends.AdmitBackgroundUsenetCheck = b.AdmitBackgroundUsenetCheck
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
+	m.deps.Backends.CacheDelete = b.CacheDelete
+	m.deps.Backends.CachePartial = b.CachePartial
 	m.deps.Backends.StreamURL = b.StreamURL
+	m.deps.Backends.StreamPartURL = b.StreamPartURL
+	m.deps.Backends.StreamURLOptions = b.StreamURLOptions
+	m.deps.Backends.MediaProbe = b.MediaProbe
 	m.mu.Unlock()
 }
 
@@ -51,21 +103,40 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:     m.deps.Backends.KindUpsert,
-		KindDelete:     m.deps.Backends.KindDelete,
-		KindItems:      m.deps.Backends.KindItems,
-		ResolveSources: m.deps.Backends.ResolveSources,
-		CachePut:       m.deps.Backends.CachePut,
-		CacheOpen:      m.deps.Backends.CacheOpen,
-		StreamURL:      m.deps.Backends.StreamURL,
+		KindUpsert:                 m.deps.Backends.KindUpsert,
+		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
+		KindDelete:                 m.deps.Backends.KindDelete,
+		KindItems:                  m.deps.Backends.KindItems,
+		KindItemsByID:              m.deps.Backends.KindItemsByID,
+		KindItemCount:              m.deps.Backends.KindItemCount,
+		KindVisible:                m.deps.Backends.KindVisible,
+		KindBrowse:                 m.deps.Backends.KindBrowse,
+		ResolveSources:             m.deps.Backends.ResolveSources,
+		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
+		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,
+		AdmitBackgroundUsenetCheck: m.deps.Backends.AdmitBackgroundUsenetCheck,
+		CachePut:                   m.deps.Backends.CachePut,
+		CacheOpen:                  m.deps.Backends.CacheOpen,
+		CacheDelete:                m.deps.Backends.CacheDelete,
+		CachePartial:               m.deps.Backends.CachePartial,
+		StreamURL:                  m.deps.Backends.StreamURL,
+		StreamPartURL:              m.deps.Backends.StreamPartURL,
+		StreamURLOptions:           m.deps.Backends.StreamURLOptions,
+		MediaProbe:                 m.deps.Backends.MediaProbe,
 	}
 }
 
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
-	MaxKindUpsertItems = 1000
-	MaxKindHintsBytes  = 16 << 10
-	MaxKindArtRoles    = 16
+	MaxKindUpsertItems      = 1000
+	MaxKindVisibleIDs       = 500
+	MaxKindHintsBytes       = 16 << 10
+	MaxKindArtRoles         = 16
+	MaxSourceIndexerFilters = 256
+	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
+	// frontend adapter calls so remote plugins can prove the authenticated
+	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
+	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
 )
 
 var externalIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
@@ -169,41 +240,32 @@ type kindInverse struct {
 // are in ids so a live KindUpsert or KindDelete can record a real
 // inverse in the journal.
 func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []string) (existing []core.KindItem, missing []string) {
-	readFn := h.m.kindBackends().KindItems
-	if readFn == nil || len(ids) == 0 {
-		return nil, append([]string(nil), ids...)
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	want := make(map[string]bool, len(ids))
+	unique := make([]string, 0, len(ids))
+	seenID := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		want[id] = true
+		if !seenID[id] {
+			seenID[id] = true
+			unique = append(unique, id)
+		}
 	}
-	found := make(map[string]core.KindItem, len(ids))
-	cursor := ""
-	seenCursor := map[string]bool{}
-	for pageNum := 0; pageNum < 50 && len(found) < len(want); pageNum++ {
-		seenCursor[cursor] = true
-		page, err := readFn(ctx, h.plugin, kindKey, cursor, MaxKindUpsertItems)
-		if err != nil {
-			break
-		}
-		for _, it := range page.Items {
-			if want[it.ID] {
-				if _, dup := found[it.ID]; !dup {
-					found[it.ID] = it
-				}
-			}
-		}
-		if page.NextCursor == "" || seenCursor[page.NextCursor] {
-			break
-		}
-		cursor = page.NextCursor
+	readFn := h.m.kindBackends().KindItemsByID
+	if readFn == nil {
+		return nil, unique
 	}
-	seenID := map[string]bool{}
-	for _, id := range ids {
-		if seenID[id] {
-			continue
+	items, err := readFn(ctx, h.plugin, kindKey, unique)
+	if err != nil {
+		return nil, unique
+	}
+	found := make(map[string]core.KindItem, len(items))
+	for _, it := range items {
+		if _, dup := found[it.ID]; !dup {
+			found[it.ID] = it
 		}
-		seenID[id] = true
+	}
+	for _, id := range unique {
 		if prev, ok := found[id]; ok {
 			existing = append(existing, prev)
 		} else {
@@ -214,37 +276,51 @@ func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []stri
 }
 
 func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.KindItem) (int, error) {
+	result, err := h.KindUpsertWithResult(ctx, kindKey, items)
+	return result.Accepted, err
+}
+
+// KindUpsertWithResult is KindUpsert reporting the added/updated/
+// unchanged split when the backend provides it (#646).
+func (h *host) KindUpsertWithResult(ctx context.Context, kindKey string, items []core.KindItem) (KindUpsertResult, error) {
 	if err := h.requireWritableToolContext(ctx); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	r, decl, err := h.kindCheck(ctx, kindKey, CapCatalogProvider)
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if decl.Sync.Mode != KindSyncPush {
-		return 0, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
+		return KindUpsertResult{}, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
 	}
 	if len(items) > MaxKindUpsertItems {
-		return 0, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
+		return KindUpsertResult{}, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
 	}
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		if msg := CheckKindItem(decl, it); msg != "" {
-			return 0, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
+			return KindUpsertResult{}, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
 		}
 		ids = append(ids, it.ID)
 	}
 	if r.Shadow {
-		return len(items), h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
+		return KindUpsertResult{Accepted: len(items)}, h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
 	}
-	backend := h.m.kindBackends().KindUpsert
-	if backend == nil {
-		return 0, ErrUnavailable
+	backends := h.m.kindBackends()
+	if backends.KindUpsert == nil && backends.KindUpsertStats == nil {
+		return KindUpsertResult{}, ErrUnavailable
 	}
 	prev, created := h.snapshotKindItems(ctx, kindKey, ids)
-	accepted, err := backend(ctx, h.plugin, kindKey, items)
+	var result KindUpsertResult
+	if backends.KindUpsertStats != nil {
+		result, err = backends.KindUpsertStats(ctx, h.plugin, kindKey, items)
+	} else {
+		var accepted int
+		accepted, err = backends.KindUpsert(ctx, h.plugin, kindKey, items)
+		result = KindUpsertResult{Accepted: accepted}
+	}
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if err := h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{
 		Op:       "kinds.upsert",
@@ -252,9 +328,9 @@ func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.Kind
 		Items:    created,
 		Previous: prev,
 	}); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
-	return accepted, nil
+	return result, nil
 }
 
 func (h *host) KindDelete(ctx context.Context, kindKey string, externalIDs []string) error {
@@ -312,46 +388,351 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	return backend(ctx, h.plugin, kindKey, cursor, limit)
 }
 
-func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
-	r, g, err := h.record(ctx)
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (max MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying an authenticated viewer may call it;
+// the viewer comes solely from the host context, never from guest input.
+func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return nil, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return nil, fmt.Errorf("%w: kinds.visible requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "ids",
+			Message: fmt.Sprintf("kinds.visible accepts at most %d ids per call", MaxKindVisibleIDs),
+		}}}
+	}
+	if len(ids) == 0 {
+		return []string{}, nil
+	}
+	backend := h.m.kindBackends().KindVisible
+	if backend == nil {
+		return nil, ErrUnavailable
+	}
+	visible, err := backend(ctx, h.plugin, viewerID, kindKey, ids)
 	if err != nil {
 		return nil, err
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	return visible, nil
+}
+
+// KindBrowse browses or searches kindKey using the same LibraryPolicy path
+// as Ether's console and protocol projectors for the requesting
+// frontend-adapter viewer (#615). Only frontend adapter requests carrying an
+// authenticated viewer may call it; the viewer comes solely from the host
+// context, never from guest input.
+func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return core.KindPage{}, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return core.KindPage{}, fmt.Errorf("%w: kinds.browse requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if q.ParentID != "" && !ValidExternalID(q.ParentID) {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "parentId",
+			Message: "parentId must be a valid external id",
+		}}}
+	}
+	switch q.Total {
+	case "", "cheap", "none", "exact":
+	default:
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "total",
+			Message: `total must be "cheap", "none", or "exact"`,
+		}}}
+	}
+	if q.Limit <= 0 {
+		q.Limit = 200
+	}
+	if q.Limit > MaxKindUpsertItems {
+		q.Limit = MaxKindUpsertItems
+	}
+	backend := h.m.kindBackends().KindBrowse
+	if backend == nil {
+		return core.KindPage{}, ErrUnavailable
+	}
+	page, err := backend(ctx, h.plugin, viewerID, kindKey, q)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	return page, nil
+}
+
+// DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
+// per minute so a resolver cannot flood Usenet indexers or NNTP providers.
+const DefaultUsenetCheckPerMin = 20
+
+type backgroundCallKey struct{}
+
+// SourcesPermissionAllowsSearch reports whether the declared permissions.sources
+// level permits indexer search, release inspection, debrid cache checks, and
+// on-demand Usenet checks.
+func SourcesPermissionAllowsSearch(level string) bool {
+	switch normLevel(level) {
+	case "search", "search+check", "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
+// SourcesPermissionAllowsAcquire reports whether the declared permissions.sources
+// level permits debrid_acquire.
+func SourcesPermissionAllowsAcquire(level string) bool {
+	switch normLevel(level) {
+	case "acquire", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
+// SourcesPermissionAllowsBackgroundCheck reports whether the declared
+// permissions.sources level permits background usenet_check calls within the
+// per-plugin daily allowance.
+func SourcesPermissionAllowsBackgroundCheck(level string) bool {
+	switch normLevel(level) {
+	case "search+check", "acquire+check":
+		return true
+	default:
+		return false
+	}
+}
+
+// WithBackgroundCall marks a plugin invocation context as background work
+// (such as a scheduled job or catalog sync/expand). Background usenet_check
+// calls require permissions.sources "search+check" or "acquire+check" and
+// count against the per-plugin daily allowance.
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(wasm.WithBackgroundCall(ctx), backgroundCallKey{}, true)
+}
+
+func isBackgroundCall(ctx context.Context) bool {
+	if bg, _ := ctx.Value(backgroundCallKey{}).(bool); bg {
+		return true
+	}
+	return wasm.IsBackgroundCall(ctx)
+}
+
+func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
+	res, err := h.ResolveSourcesWithResult(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return res.Candidates, nil
+}
+
+// ResolveSourcesWithResult runs ResolveSources and preserves per-indexer
+// search status alongside candidates when the backend supports it (#733).
+func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery) (core.SourceResolveResult, error) {
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return core.SourceResolveResult{}, err
 	}
 	man := r.Manifest
 	man.Ether = man.EffectiveEther()
 	if !man.HasCapability(CapKindResolver) {
 		h.noteDenied(string(CapKindResolver))
-		return nil, fmt.Errorf("%w: %s", ErrPermissionDenied, CapKindResolver)
+		return core.SourceResolveResult{}, fmt.Errorf("%w: %s", ErrPermissionDenied, CapKindResolver)
 	}
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
-		if strings.TrimSpace(q.Query) == "" {
-			return nil, fmt.Errorf("plugins: indexer_search needs a query")
+		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
 		}
+		if q.SettleMS != nil && *q.SettleMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "settleMs",
+				Message: "settleMs must be non-negative",
+			}}}
+		}
+		if q.MinResults < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "minResults",
+				Message: "minResults must be non-negative",
+			}}}
+		}
+		if q.TimeoutMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "timeoutMs",
+				Message: "timeoutMs must be non-negative",
+			}}}
+		}
+		if len(q.SkipIndexers) > MaxSourceIndexerFilters {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "skipIndexers",
+				Message: fmt.Sprintf("at most %d skipIndexers entries allowed", MaxSourceIndexerFilters),
+			}}}
+		}
+		if len(q.OnlyIndexers) > MaxSourceIndexerFilters {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "onlyIndexers",
+				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
+			}}}
+		}
+	case "indexer_search_results":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_results needs a searchId",
+			}}}
+		}
+		if q.WaitMS < 0 {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "waitMs",
+				Message: "waitMs must be non-negative",
+			}}}
+		}
+	case "indexer_search_cancel":
+		if strings.TrimSpace(q.SearchID) == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "searchId",
+				Message: "indexer_search_cancel needs a searchId",
+			}}}
+		}
+	case "indexers":
+		// Lists the owner's enabled indexers (gated by the same search permission).
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, fmt.Errorf("plugins: debrid_check needs an info hash")
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHashes",
+				Message: "debrid_check needs an info hash",
+			}}}
+		}
+	case "release_files":
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+			}}}
+		}
+	case "usenet_check":
+		nzbURL := strings.TrimSpace(q.NZBURL)
+		if nzbURL == "" && q.Candidate != nil {
+			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
+		}
+		if nzbURL == "" {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "nzbUrl",
+				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" {
-			return nil, fmt.Errorf("plugins: debrid_acquire needs an info hash or magnet")
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
+			}}}
 		}
 	default:
-		return nil, fmt.Errorf("plugins: unknown source query kind %q", q.Kind)
+		return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+			Field:   "kind",
+			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
+		}}}
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
-		return l == "acquire" || (l == "search" && need == "search")
+		return SourcesPermissionAllowsAcquire(l) || (need == "search" && SourcesPermissionAllowsSearch(l))
 	}); err != nil {
-		return nil, err
+		return core.SourceResolveResult{}, err
 	}
-	backend := h.m.kindBackends().ResolveSources
-	if backend == nil {
-		return nil, ErrUnavailable
+	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	if bgUsenetCheck {
+		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
+			return core.SourceResolveResult{}, err
+		}
 	}
-	return backend(ctx, h.plugin, q)
+	backends := h.m.kindBackends()
+	if backends.ResolveSourcesResult == nil && backends.ResolveSources == nil {
+		return core.SourceResolveResult{}, ErrUnavailable
+	}
+	callCtx := ctx
+	var refundCheck func()
+	var resetAt time.Time
+	if q.Kind == "usenet_check" {
+		if bgUsenetCheck {
+			// Reuse a live verdict from the shared cache before spending the
+			// plugin's daily background allowance.
+			if backends.PeekUsenetCheck != nil {
+				if cand, ok := backends.PeekUsenetCheck(q); ok {
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+				}
+			}
+			if backends.AdmitBackgroundUsenetCheck == nil {
+				return core.SourceResolveResult{}, ErrUnavailable
+			}
+			var admitErr error
+			callCtx, refundCheck, resetAt, admitErr = backends.AdmitBackgroundUsenetCheck(ctx, h.plugin)
+			if admitErr != nil {
+				if errors.Is(admitErr, core.ErrBudgetExhausted) {
+					return core.SourceResolveResult{}, h.m.rateLimitError(
+						"background usenet_check daily allowance exhausted",
+						resetAt,
+					)
+				}
+				return core.SourceResolveResult{}, admitErr
+			}
+		} else {
+			// On-demand viewer calls never count against the daily background
+			// allowance; only the per-minute burst limit applies.
+			limit := h.m.usenetCheckLimit
+			if limit <= 0 {
+				limit = DefaultUsenetCheckPerMin
+			}
+			if ok, retryAt := h.m.rateOKRetryAt(h.m.usenetCheckTimes, h.plugin, limit, time.Minute); !ok {
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					fmt.Sprintf("usenet_check is limited to %d per minute", limit),
+					retryAt,
+				)
+			}
+		}
+	}
+	var (
+		res  core.SourceResolveResult
+		rerr error
+	)
+	if backends.ResolveSourcesResult != nil {
+		res, rerr = backends.ResolveSourcesResult(callCtx, h.plugin, q)
+	} else {
+		var cands []core.SourceCandidate
+		cands, rerr = backends.ResolveSources(callCtx, h.plugin, q)
+		res = core.SourceResolveResult{Candidates: cands}
+	}
+	if rerr != nil {
+		if bgUsenetCheck {
+			if errors.Is(rerr, core.ErrNotAvailable) && refundCheck != nil {
+				refundCheck()
+			}
+			if errors.Is(rerr, core.ErrBudgetExhausted) {
+				if refundCheck != nil {
+					refundCheck()
+				}
+				return core.SourceResolveResult{}, h.m.rateLimitError(
+					"background usenet_check daily allowance exhausted",
+					resetAt,
+				)
+			}
+		}
+		return core.SourceResolveResult{}, rerr
+	}
+	return res, nil
 }
 
 func (h *host) CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (string, error) {
@@ -387,22 +768,155 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
-// withViewerHeader reads the X-Ether-Viewer header the frontend adapter
-// proxy injects and attaches that viewer to the context. A missing or
-// malformed header leaves the context unchanged.
-func withViewerHeader(ctx context.Context, headers map[string]string) context.Context {
-	if headers == nil {
-		return ctx
+// AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
+// route policies as hosted plugins.
+type AdapterCallInfo struct {
+	ViewerID    int64
+	Path        string
+	SearchQuery string
+}
+
+type adapterViewerGrant struct {
+	pluginID    string
+	viewerID    int64
+	path        string
+	searchQuery string
+	expires     time.Time
+}
+
+func isFrontendAdapterPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+
+// bindAdapterViewer attaches the authenticated viewer from X-Ether-Viewer to
+// ctx and mints a request-scoped X-Ether-Viewer-Token for remote callbacks,
+// strictly on /ether/v1/frontend/* adapter calls. Non-adapter calls never
+// receive a viewer context or token, and any pre-existing token header is
+// stripped before binding.
+func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *Request, deadline time.Duration) (context.Context, func()) {
+	if req != nil && req.Headers != nil {
+		for k := range req.Headers {
+			if strings.EqualFold(k, HeaderAdapterViewerToken) {
+				delete(req.Headers, k)
+			}
+		}
 	}
-	raw := headers["X-Ether-Viewer"]
+	if req == nil || !isFrontendAdapterPath(req.Path) || req.Headers == nil {
+		return ctx, func() {}
+	}
+	raw := req.Headers["X-Ether-Viewer"]
 	if raw == "" {
-		return ctx
+		return ctx, func() {}
 	}
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
-		return ctx
+		return ctx, func() {}
 	}
-	return WithViewer(ctx, id)
+	ctx = WithViewer(ctx, id)
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ctx, func() {}
+	}
+	token := hex.EncodeToString(b[:])
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	ttl := deadline
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	m.adapterViewerMu.Lock()
+	if m.adapterViewerTokens == nil {
+		m.adapterViewerTokens = make(map[string]adapterViewerGrant)
+	}
+	for k, v := range m.adapterViewerTokens {
+		if !now.Before(v.expires) {
+			delete(m.adapterViewerTokens, k)
+		}
+	}
+	m.adapterViewerTokens[token] = adapterViewerGrant{
+		pluginID:    pluginID,
+		viewerID:    id,
+		path:        req.Path,
+		searchQuery: extractCallSearchQuery(*req),
+		expires:     now.Add(ttl),
+	}
+	m.adapterViewerMu.Unlock()
+	req.Headers[HeaderAdapterViewerToken] = token
+	return ctx, func() { m.revokeAdapterViewerToken(token) }
+}
+
+func (m *Manager) revokeAdapterViewerToken(token string) {
+	if token == "" {
+		return
+	}
+	m.adapterViewerMu.Lock()
+	delete(m.adapterViewerTokens, token)
+	m.adapterViewerMu.Unlock()
+}
+
+// ResolveAdapterCallToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer
+// and active route context.
+func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallInfo, bool) {
+	token = strings.TrimSpace(token)
+	if pluginID == "" || token == "" {
+		return AdapterCallInfo{}, false
+	}
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	m.adapterViewerMu.Lock()
+	defer m.adapterViewerMu.Unlock()
+	grant, ok := m.adapterViewerTokens[token]
+	if !ok {
+		return AdapterCallInfo{}, false
+	}
+	if !now.Before(grant.expires) {
+		delete(m.adapterViewerTokens, token)
+		return AdapterCallInfo{}, false
+	}
+	if grant.pluginID != pluginID || grant.viewerID <= 0 {
+		return AdapterCallInfo{}, false
+	}
+	return AdapterCallInfo{
+		ViewerID:    grant.viewerID,
+		Path:        grant.path,
+		SearchQuery: grant.searchQuery,
+	}, true
+}
+
+// ResolveAdapterViewerToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
+func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+	info, ok := m.ResolveAdapterCallToken(pluginID, token)
+	if !ok {
+		return 0, false
+	}
+	return info.ViewerID, true
+}
+
+const maxStreamSourceIDLen = 1024
+
+func validateStreamSourceID(source string) error {
+	if source == "" {
+		return nil
+	}
+	if strings.TrimSpace(source) == "" {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not be blank"}}}
+	}
+	if len(source) > maxStreamSourceIDLen {
+		return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source exceeds maximum length"}}}
+	}
+	for _, r := range source {
+		if r < 0x20 || r == 0x7f {
+			return &ValidationError{Fields: []FieldError{{Field: "source", Message: "stream url source must not contain control characters"}}}
+		}
+	}
+	return nil
 }
 
 // StreamURL mints a scoped stream ticket for one of the plugin's own kind
@@ -411,6 +925,14 @@ func withViewerHeader(ctx context.Context, headers map[string]string) context.Co
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{})
+}
+
+func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
+	return h.StreamURLWithOptions(ctx, itemRef, StreamURLOptions{PartIndex: partIndex})
+}
+
+func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts StreamURLOptions) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -428,27 +950,88 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	backend := h.m.kindBackends().StreamURL
-	if backend == nil {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
+	}
+	if err := validateStreamSourceID(opts.Source); err != nil {
+		return "", err
+	}
+	backends := h.m.kindBackends()
+	if backends.StreamURLOptions != nil {
+		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
+	}
+	if opts.Source != "" {
 		return "", ErrUnavailable
 	}
-	return backend(ctx, h.plugin, viewerID, itemRef)
+	if backends.StreamPartURL != nil {
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, opts.PartIndex)
+	}
+	if backends.StreamURL == nil {
+		return "", ErrUnavailable
+	}
+	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
+	if err != nil || opts.PartIndex == nil {
+		return u, err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
+}
+
+func validateBlobRef(blobRef string) error {
+	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
+	if !ok || len(hexPart) != 64 {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	if _, err := hex.DecodeString(hexPart); err != nil {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	return nil
 }
 
 func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error) {
-	if _, _, err := h.record(ctx); err != nil {
+	r, err := h.callRecord(ctx)
+	if err != nil {
 		return nil, err
 	}
-	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
-	if !ok || len(hexPart) != 64 {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
+	if !r.Enabled {
+		return nil, ErrDisabled
 	}
-	if _, err := hex.DecodeString(hexPart); err != nil {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
+	if err := validateBlobRef(blobRef); err != nil {
+		return nil, err
 	}
 	backend := h.m.kindBackends().CacheOpen
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	return backend(ctx, h.plugin, blobRef)
+}
+
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting a ref that is absent or
+// already evicted succeeds.
+func (h *host) CacheDelete(ctx context.Context, blobRef string) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	rec, _, err := h.record(ctx)
+	if err != nil {
+		return err
+	}
+	man := rec.Manifest
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 || !(man.HasCapability(CapCatalogProvider) || man.HasCapability(CapKindResolver)) {
+		h.noteDenied("cache")
+		return fmt.Errorf("%w: cache", ErrPermissionDenied)
+	}
+	if err := validateBlobRef(blobRef); err != nil {
+		return err
+	}
+	backend := h.m.kindBackends().CacheDelete
+	if backend == nil {
+		return ErrUnavailable
 	}
 	return backend(ctx, h.plugin, blobRef)
 }
@@ -480,4 +1063,51 @@ func (h *host) cacheWriteCheck(ctx context.Context, libraryKey, name string) (Me
 		return MediaKindMeta{}, fmt.Errorf("plugins: cache put needs a name")
 	}
 	return decl, nil
+}
+
+func (h *host) archiveExtractCheck(ctx context.Context, explicitLibraryKey string) (string, error) {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return "", err
+	}
+	if explicit := strings.TrimSpace(explicitLibraryKey); explicit != "" {
+		if _, err := h.cacheWriteCheck(ctx, explicit, "_"); err != nil {
+			return "", err
+		}
+		return explicit, nil
+	}
+	rec, _, err := h.record(ctx)
+	if err != nil {
+		return "", err
+	}
+	man := rec.Manifest
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 || !(man.HasCapability(CapCatalogProvider) || man.HasCapability(CapKindResolver)) {
+		h.noteDenied("cache")
+		return "", fmt.Errorf("%w: cache", ErrPermissionDenied)
+	}
+	return core.PluginLibraryKey(h.plugin, man.Ether.Contributes.MediaKinds[0].Key), nil
+}
+
+func (h *host) resolveExtractTarget(ctx context.Context, explicitLibraryKey, sourceLibraryKey, name string) (string, int64, error) {
+	if explicit := strings.TrimSpace(explicitLibraryKey); explicit != "" {
+		decl, err := h.cacheWriteCheck(ctx, explicit, name)
+		if err != nil {
+			return "", 0, err
+		}
+		return explicit, decl.Cache.EffectiveMaxBytes(), nil
+	}
+	if src := strings.TrimSpace(sourceLibraryKey); src != "" {
+		if decl, err := h.cacheWriteCheck(ctx, src, name); err == nil {
+			return src, decl.Cache.EffectiveMaxBytes(), nil
+		}
+	}
+	libKey, err := h.archiveExtractCheck(ctx, "")
+	if err != nil {
+		return "", 0, err
+	}
+	decl, err := h.cacheWriteCheck(ctx, libKey, name)
+	if err != nil {
+		return "", 0, err
+	}
+	return libKey, decl.Cache.EffectiveMaxBytes(), nil
 }

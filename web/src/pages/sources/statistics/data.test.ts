@@ -109,4 +109,90 @@ describe("indexer statistics helpers", () => {
     expect(row.success).toBeCloseTo(0.7, 5);
     expect(row.latencyMs).toBeCloseTo(200, 5);
   });
+
+  it("marks missing site definitions, paused indexers, and Usenet IP-limit backoffs in Usage rows", () => {
+    const future = Math.floor(Date.now() / 1000) + 900;
+    const emptyWindow = { hits: 0, grabs: 0, purposes: null };
+    const data: StatsData = {
+      history: {
+        days: 1,
+        since: "2026-11-09",
+        until: "2026-11-09",
+        plays: null,
+        providerDays: null,
+        indexerDays: null,
+        debridDays: null,
+        streamDays: null,
+      },
+      infra: {
+        monthPlays: 0,
+        month: "2026-11",
+        providerMonth: null,
+        costs: null,
+        snapshots: {
+          providers: {
+            at: 1,
+            data: [
+              {
+                id: "giga",
+                name: "Giganews",
+                host: "news.giganews.com",
+                backfill: false,
+                state: "backoff",
+                lastError: "nntp: 481 max number of simultaneous IP addresses reached",
+                bytes: 0,
+                articles: 0,
+                misses: 0,
+                errors: 3,
+                avgLatency: 0,
+              },
+            ],
+          },
+        },
+      },
+      usage: {
+        today: "2026-11-09",
+        weekStart: "2026-11-03",
+        monthStart: "2026-11-01",
+        indexers: [
+          {
+            id: "tgx",
+            name: "TorrentGalaxy",
+            enabled: true,
+            torrent: true,
+            missingDefinition: true,
+            dailyLimit: 0,
+            dailyGrabs: 0,
+            today: emptyWindow,
+            week: emptyWindow,
+            month: emptyWindow,
+            days: null,
+          },
+          {
+            id: "dognzb",
+            name: "DOGnzb",
+            enabled: true,
+            torrent: false,
+            pausedUntil: future,
+            dailyLimit: 100,
+            dailyGrabs: 10,
+            today: emptyWindow,
+            week: emptyWindow,
+            month: emptyWindow,
+            days: null,
+          },
+        ],
+      },
+      debrid: null,
+      iptv: null,
+      usenet: null,
+    };
+
+    const rows = sourceRows(data, []);
+    expect(rows.map((r) => [r.name, r.health, r.healthLabel])).toEqual([
+      ["Giganews", "warning", "Needs attention"],
+      ["TorrentGalaxy", "danger", "Definition missing"],
+      ["DOGnzb", "warning", "Needs attention"],
+    ]);
+  });
 });

@@ -8,8 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
 func init() {
@@ -39,6 +41,13 @@ func (c *Catalog) RegisterMetadataProvider(id string, provider core.MetadataProv
 // Search. Existing canonical titles are reused without replacing their data.
 // New records are available to the requesting collection but are not admitted
 // to the global browse library just because a provider returned them.
+// HasMetadataRef reports whether a provider metadata reference is already
+// cached locally in catalog_metadata_refs.
+func (c *Catalog) HasMetadataRef(ctx context.Context, provider string, typ core.MediaType, resourceID string) bool {
+	var cached int64
+	return c.db.QueryRowContext(ctx, `SELECT key FROM catalog_metadata_refs WHERE provider=? AND type=? AND resource_id=?`, provider, string(typ), resourceID).Scan(&cached) == nil
+}
+
 func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req core.MetadataRequest) (*core.Title, error) {
 	if req.ID == "" || len(req.ID) > 2048 || (req.Type != core.TypeMovie && req.Type != core.TypeShow) {
 		return nil, fmt.Errorf("metadata: unsupported or missing identity")
@@ -64,6 +73,11 @@ func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req 
 		if err == nil {
 			t, err := c.StoredTitle(ctx, core.RatingKey(key))
 			if err == nil {
+				if !c.visibleTitle(t) {
+					if hydrated := c.hydrateMaterializedRelease(ctx, core.RatingKey(key), t); hydrated != nil {
+						t = hydrated
+					}
+				}
 				return c.visibleMetadata(t)
 			}
 			if !errors.Is(err, core.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
@@ -100,6 +114,10 @@ func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req 
 		}
 		record := *title
 		record.Key = canonical
+		var releaseDates *tmdb.ReleaseDates
+		if c.needsMaterializedReleaseHydration(&record) {
+			releaseDates = c.fetchMaterializedRelease(ctx, &record)
+		}
 		// Hold registration through the local commit, never through network I/O.
 		c.metadataMu.RLock()
 		defer c.metadataMu.RUnlock()
@@ -111,13 +129,34 @@ func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req 
 			if (existing.IDs.IMDB != "" && record.IDs.IMDB != "" && existing.IDs.IMDB != record.IDs.IMDB) || (existing.IDs.TVDB > 0 && record.IDs.TVDB > 0 && existing.IDs.TVDB != record.IDs.TVDB) {
 				return nil, fmt.Errorf("metadata: provider conflicts with existing catalogue identity")
 			}
+			if (existing.Released.IsZero() && !record.Released.IsZero()) || (!existing.HomeReleaseChecked && releaseDates != nil) {
+				browsable := false
+				if st, lerr := c.loadByKey(ctx, canonical); lerr == nil {
+					browsable = st.browsable
+				}
+				updated := *existing
+				if updated.Released.IsZero() && !record.Released.IsZero() {
+					updated.Released = record.Released
+					if updated.Year == 0 {
+						updated.Year = record.Year
+					}
+				}
+				if uerr := c.upsert(ctx, updated, upsertOpts{browsable: browsable, detail: true, releaseDates: releaseDates}); uerr == nil {
+					if reloaded, rerr := c.StoredTitle(ctx, canonical); rerr == nil {
+						existing = reloaded
+					}
+				}
+			}
 			record = *existing
 		} else {
 			if !errors.Is(err, core.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 				return nil, err
 			}
-			if err = c.upsert(ctx, record, upsertOpts{detail: true}); err != nil {
+			if err = c.upsert(ctx, record, upsertOpts{detail: true, releaseDates: releaseDates}); err != nil {
 				return nil, err
+			}
+			if reloaded, rerr := c.StoredTitle(ctx, canonical); rerr == nil {
+				record = *reloaded
 			}
 		}
 		_, err = c.db.ExecContext(ctx, `INSERT INTO catalog_metadata_refs(provider,type,resource_id,key) VALUES(?,?,?,?) ON CONFLICT(provider,type,resource_id) DO UPDATE SET key=excluded.key`, provider, string(req.Type), req.ID, int64(canonical))
@@ -135,6 +174,77 @@ func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req 
 		return nil, fmt.Errorf("metadata: returned identity does not match the request")
 	}
 	return title, nil
+}
+
+func (c *Catalog) needsMaterializedReleaseHydration(t *core.Title) bool {
+	if t == nil || c.tmdb() == nil {
+		return false
+	}
+	if t.Released.IsZero() {
+		return true
+	}
+	return t.Type == core.TypeMovie && c.config().ReleaseMode == config.ModeDigital && !t.HomeReleaseChecked && !HomeReleaseAgeAdmitted(t, c.now())
+}
+
+func (c *Catalog) fetchMaterializedRelease(ctx context.Context, record *core.Title) *tmdb.ReleaseDates {
+	if record == nil || c.tmdb() == nil {
+		return nil
+	}
+	switch record.Type {
+	case core.TypeMovie:
+		d, err := c.tmdb().MovieDetails(ctx, record.IDs.TMDB)
+		if err != nil || d == nil {
+			return nil
+		}
+		if record.Released.IsZero() {
+			parsed := c.movieDetailsToTitle(ctx, d)
+			record.Released = parsed.Released
+			if record.Year == 0 {
+				record.Year = parsed.Year
+			}
+		}
+		if d.ReleaseDates != nil {
+			return d.ReleaseDates
+		}
+		return &tmdb.ReleaseDates{}
+	case core.TypeShow:
+		if !record.Released.IsZero() {
+			return nil
+		}
+		d, err := c.tmdb().TVDetails(ctx, record.IDs.TMDB)
+		if err != nil || d == nil {
+			return nil
+		}
+		parsed := c.tvDetailsToTitle(ctx, d)
+		record.Released = parsed.Released
+		if record.Year == 0 {
+			record.Year = parsed.Year
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) hydrateMaterializedRelease(ctx context.Context, key core.RatingKey, current *core.Title) *core.Title {
+	if !c.needsMaterializedReleaseHydration(current) {
+		return nil
+	}
+	updated := *current
+	releaseDates := c.fetchMaterializedRelease(ctx, &updated)
+	if releaseDates == nil && updated.Released.Equal(current.Released) {
+		return nil
+	}
+	browsable := false
+	if st, err := c.loadByKey(ctx, key); err == nil {
+		browsable = st.browsable
+	}
+	if err := c.upsert(ctx, updated, upsertOpts{browsable: browsable, detail: true, releaseDates: releaseDates}); err != nil {
+		return nil
+	}
+	reloaded, err := c.StoredTitle(ctx, key)
+	if err != nil {
+		return nil
+	}
+	return reloaded
 }
 
 // adoptCanonicalTMDB fills a provider title's TMDB ID from its IMDb or TVDB

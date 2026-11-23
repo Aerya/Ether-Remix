@@ -2,6 +2,7 @@ package plex
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -41,21 +42,39 @@ func (s *Server) writeLivePlayQueue(w http.ResponseWriter, r *http.Request, pq p
 // Live channel progress is not watch history for a catalogue movie/episode.
 // Its opaque session key must not go through the numeric rating-key parser.
 func (s *Server) handleLiveTimeline(w http.ResponseWriter, r *http.Request) bool {
-	key := r.URL.Query().Get("key")
-	if !strings.HasPrefix(key, "/livetv/sessions/") {
+	q := r.URL.Query()
+	key := q.Get("key")
+	id := ""
+	explicitLive := false
+	if strings.HasPrefix(key, "/livetv/sessions/") {
+		id = strings.TrimPrefix(key, "/livetv/sessions/")
+		explicitLive = true
+	} else if key == "" {
+		if rk := q.Get("ratingKey"); rk != "" {
+			if _, err := strconv.ParseInt(rk, 10, 64); err != nil {
+				id = rk
+			}
+		}
+	}
+	if id == "" {
 		return false
 	}
 	if !s.liveTVEnabled() {
-		writeHTTPError(w, http.StatusNotFound)
-		return true
+		if explicitLive {
+			writeHTTPError(w, http.StatusNotFound)
+			return true
+		}
+		return false
 	}
-	id := strings.TrimPrefix(key, "/livetv/sessions/")
 	pr := FromContext(r.Context())
 	if _, err := s.svc().liveTV.Session(r.Context(), id, pr.User); err != nil {
-		s.writeErr(w, r, err)
-		return true
+		if explicitLive {
+			s.writeErr(w, r, err)
+			return true
+		}
+		return false
 	}
-	if r.URL.Query().Get("state") == "stopped" {
+	if q.Get("state") == "stopped" {
 		if err := s.svc().liveTV.Stop(r.Context(), id, pr.User); err != nil {
 			s.writeErr(w, r, err)
 			return true

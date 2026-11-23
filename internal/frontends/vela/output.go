@@ -10,7 +10,8 @@ import (
 )
 
 // refreshOutput reads only existing sessions. Codec claims come from real init
-// bytes; planned and unused rungs never start work. Caller holds s.mu.
+// bytes; planned and unused rungs never start work. The session must be
+// unpublished or a private snapshot; never hold the live UI lock here.
 func (i *instance) refreshOutput(ctx context.Context, id string, s *playSession) bool {
 	liveChanged := i.refreshLiveWindow(ctx, id, s)
 	hs, ok := i.host.Sessions.TranscodeFor(ctx, id)

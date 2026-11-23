@@ -23,6 +23,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/yenc"
 )
 
@@ -104,6 +105,8 @@ type Options struct {
 	TraceProtocol bool
 	// OnStateChange is notified when provider pools or circuit-breaker states change.
 	OnStateChange func()
+	// Events receives non-blocking provider.* domain events when set.
+	Events *events.Bus
 
 	// limits paces connection-limit learning and handshake backoff
 	// (defaults in limit.go; tests shorten them).
@@ -184,6 +187,7 @@ type Fetcher struct {
 	pools   []*pool   // every enabled provider, in config order
 	retired []*pool   // removed pools with article windows still finishing
 	tiers   [][]*pool // try order
+	changed chan struct{}
 	closed  bool
 	// share maps a provider's configured connections to this node's part
 	// of them (clustered); nil uses every configured connection.
@@ -208,10 +212,11 @@ var _ core.ArticleFetcher = (*Fetcher)(nil)
 func New(providers []config.UsenetProvider, opts Options) *Fetcher {
 	opts.withDefaults()
 	f := &Fetcher{
-		o:      opts,
-		log:    opts.Logger,
-		misses: newMissCache(opts.MissTTL, opts.MissCacheSize, time.Now),
-		live:   newLiveHedger(),
+		o:       opts,
+		log:     opts.Logger,
+		changed: make(chan struct{}),
+		misses:  newMissCache(opts.MissTTL, opts.MissCacheSize, time.Now),
+		live:    newLiveHedger(),
 	}
 	f.minIdle.Store(int32(opts.MinIdle))
 	f.Update(providers)
@@ -313,6 +318,10 @@ func (f *Fetcher) Update(providers []config.UsenetProvider) {
 	}
 	f.pools = next
 	f.tiers = buildTiers(next)
+	if f.changed != nil {
+		close(f.changed)
+		f.changed = make(chan struct{})
+	}
 	f.mu.Unlock()
 
 	for _, p := range old {
@@ -353,8 +362,9 @@ func buildTiers(pools []*pool) [][]*pool {
 
 // order returns the providers in strict tier order, least loaded first
 // within a tier (then soonest expected delivery; exact ties rotate so equal
-// providers share work). Requests use route, which may spill past a
-// saturated tier.
+// providers share work). Providers with elevated STAT->BODY failure rates carry
+// reduced healthWeight so healthier peers in the tier take precedence.
+// Requests use route, which may spill past a saturated tier.
 func (f *Fetcher) order() []*pool {
 	f.mu.RLock()
 	tiers := f.tiers
@@ -380,9 +390,10 @@ func (f *Fetcher) order() []*pool {
 				w += len(q)
 			}
 			p.bodyMu.Unlock()
+			weight := p.statTrust.healthWeight()
 			loads[p] = load{
-				share:    float64(s.InUse+w) / float64(s.Size),
-				delivery: float64(s.InUse+w+1) * float64(p.avgFetch()),
+				share:    (float64(s.InUse+w)/float64(s.Size) + (1.0 - weight)) / weight,
+				delivery: (float64(s.InUse+w+1) * float64(p.avgFetch())) / weight,
 			}
 		}
 		// Least loaded first; equally loaded providers go to the one that
@@ -460,18 +471,30 @@ func (f *Fetcher) bodyChain(ctx context.Context, id string, groups []string, pri
 // check runs at live priority; a background check (availability, optimistic
 // post-start) runs at prefetch. It returns (false, nil) when
 // every provider able to answer said 430, and an error when that could not
-// be established.
+// be established. Providers whose STAT has been failing real downloads must
+// pass a BODY header check before a 223 is accepted.
 func (f *Fetcher) Stat(ctx context.Context, messageID string) (bool, error) {
 	id, err := normalizeMessageID(messageID)
 	if err != nil {
 		return false, err
 	}
-	err = f.each(ctx, id, "stat", routeReq{prio: commandPriority(ctx)}, func(ctx context.Context, p *pool) error {
+	prio := commandPriority(ctx)
+	err = f.each(ctx, id, "stat", routeReq{prio: prio, health: true}, func(ctx context.Context, p *pool) error {
 		ok, e := p.stat(ctx, id)
-		if e == nil && !ok {
+		if e != nil {
+			return e
+		}
+		if !ok {
 			return ErrNoSuchArticle
 		}
-		return e
+		if p.statTrust.isUntrusted() {
+			verr := p.verifyBodyHeader(ctx, id, nil, prio)
+			if errors.Is(verr, ErrNoSuchArticle) || errors.Is(verr, ErrCorrupt) {
+				return ErrNoSuchArticle
+			}
+			return verr
+		}
+		return nil
 	})
 	switch {
 	case err == nil:
@@ -484,12 +507,12 @@ func (f *Fetcher) Stat(ctx context.Context, messageID string) (bool, error) {
 
 // StatStream checks a set of articles with pipelined STAT, reporting each
 // article to fn as soon as its fate is decided: present=true the moment any
-// provider answers 223, and present=false once every provider that could
-// answer said 430 (primary tiers first, then backfill). Results flow per
-// pipelined chunk as they arrive instead of waiting for the slowest batch,
-// so a caller that only needs the first confirmed miss (a health check)
-// can stop early: fn returning false cancels all outstanding work and
-// StatStream returns nil.
+// STAT-trusted provider answers 223 (or an untrusted provider's 223 passes BODY
+// verification), and present=false once every provider that could answer said
+// 430 (primary tiers first, then backfill). Results flow per pipelined chunk as
+// they arrive instead of waiting for the slowest batch, so a caller that only
+// needs the first confirmed miss (a health check) can stop early: fn returning
+// false cancels all outstanding work and StatStream returns nil.
 //
 // An article is never reported missing on the strength of provider errors:
 // if some provider failed to answer for it, it stays undecided and
@@ -503,12 +526,7 @@ func (f *Fetcher) StatStream(ctx context.Context, messageIDs []string, fn func(i
 	if fn == nil {
 		return errors.New("usenet: StatStream without a result function")
 	}
-	type pending struct {
-		caller    string
-		missed    bool // at least one provider answered 430
-		uncertain bool // at least one provider failed to answer
-	}
-	pend := make(map[string]*pending, len(messageIDs))
+	pend := make(map[string]*statPending, len(messageIDs))
 	var order []string // normalized ids, first-seen order
 	for _, id := range messageIDs {
 		normalized, err := normalizeMessageID(id)
@@ -516,11 +534,11 @@ func (f *Fetcher) StatStream(ctx context.Context, messageIDs []string, fn func(i
 			return err
 		}
 		if _, ok := pend[normalized]; !ok {
-			pend[normalized] = &pending{caller: id}
+			pend[normalized] = &statPending{caller: id}
 			order = append(order, normalized)
 		}
 	}
-	all, spill := f.route(ctx, routeReq{prio: commandPriority(ctx)}, nil)
+	all, spill := f.route(ctx, routeReq{prio: commandPriority(ctx), health: true}, nil)
 	if len(all) == 0 {
 		return ErrNoProviders
 	}
@@ -556,6 +574,11 @@ func (f *Fetcher) StatStream(ctx context.Context, messageIDs []string, fn func(i
 			if _, ok := pend[id]; ok {
 				ids = append(ids, id)
 			}
+		}
+		untrusted := p.statTrust.isUntrusted()
+		var claimedSet map[string]bool
+		if untrusted {
+			claimedSet = make(map[string]bool)
 		}
 		workers := max(1, min(4, p.target(), len(ids)))
 		chunks := make([][]string, workers)
@@ -625,6 +648,10 @@ func (f *Fetcher) StatStream(ctx context.Context, messageIDs []string, fn func(i
 					}
 					continue
 				}
+				if untrusted {
+					claimedSet[id] = true
+					continue
+				}
 				delete(pend, id)
 				if !fn(st.caller, true) {
 					stopped = true
@@ -640,6 +667,20 @@ func (f *Fetcher) StatStream(ctx context.Context, messageIDs []string, fn func(i
 				<-answers
 			}
 			return nil
+		}
+		if untrusted && len(claimedSet) > 0 {
+			claimed := make([]string, 0, len(claimedSet))
+			for _, id := range order {
+				if claimedSet[id] {
+					if _, still := pend[id]; still {
+						claimed = append(claimed, id)
+					}
+				}
+			}
+			if f.verifyUntrustedStatClaims(ctx, p, claimed, lastPool, &firstErr, pend, fn) {
+				cancel()
+				return nil
+			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -1006,6 +1047,10 @@ func (f *Fetcher) Close() error {
 		return nil
 	}
 	f.closed = true
+	if f.changed != nil {
+		close(f.changed)
+		f.changed = nil
+	}
 	pools := append(slices.Clone(f.pools), f.retired...)
 	f.pools, f.tiers, f.retired = nil, nil, nil
 	f.mu.Unlock()
@@ -1051,6 +1096,7 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 				return err
 			}
 		}
+		var bodyStarted bool
 		err := p.withConn(ctx, prio, func(c *Conn) error {
 			if p.o.UseGroup && len(groups) > 0 && !slices.Contains(groups, c.CurrentGroup()) {
 				if err := c.Group(ctx, groups[0]); err != nil && !errors.Is(err, ErrNoSuchGroup) {
@@ -1058,6 +1104,7 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 				}
 			}
 			reader, err := c.Body(ctx, id)
+			bodyStarted = c.bodyStarted
 			if err == nil {
 				err = probeBodyHeader(c, reader, p.o.MaxArticleSize, want)
 			}
@@ -1070,6 +1117,7 @@ func (f *Fetcher) CheckBodyPart(ctx context.Context, messageID string, groups []
 			}
 			return err
 		})
+		p.statTrust.noteBodyResult(id, err, bodyStarted, ctx)
 		if err != nil {
 			return err
 		}

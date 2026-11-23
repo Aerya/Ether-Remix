@@ -86,6 +86,7 @@ func ParseASS(text string) ([]Cue, error) {
 		}
 		body = tagRe.ReplaceAllString(body, "")
 		body = strings.NewReplacer(`\N`, "\n", `\n`, "\n", `\h`, " ").Replace(body)
+		body = CleanCueText(body)
 		if start >= 0 && end > start && strings.TrimSpace(body) != "" {
 			out = append(out, Cue{Start: start, End: end, Text: body})
 		}
@@ -120,8 +121,8 @@ func Shift(cues []Cue, offset time.Duration, rate float64) ([]Cue, error) {
 	}
 	var out []Cue
 	for _, c := range cues {
-		c.Start = time.Duration(float64(c.Start)*rate) + offset
-		c.End = time.Duration(float64(c.End)*rate) + offset
+		c.Start = time.Duration(math.Round(float64(c.Start)*rate)) + offset
+		c.End = time.Duration(math.Round(float64(c.End)*rate)) + offset
 		if c.End <= 0 {
 			continue
 		}
@@ -192,7 +193,7 @@ func (s *Service) handleManualAdjust(w http.ResponseWriter, r *http.Request) {
 	}
 	c := correction{
 		Offset: time.Duration(body.OffsetMs) * time.Millisecond,
-		Rate:   rate, Applied: body.Apply, Manual: true, Measured: false,
+		Rate:   rate, Applied: body.Apply, Manual: true, Measured: false, Method: "manual",
 		Confidence: 1, Inliers: 1, At: s.now().UTC(),
 	}
 	if body.Reference != "" {
@@ -210,6 +211,16 @@ func (s *Service) handleManualAdjust(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.storeCorrection(id, manualSource, c)
+	if c.Applied {
+		s.log.Info("subtitle alignment applied",
+			"id", id,
+			"source", manualSource,
+			"method", "manual",
+			"offset", c.Offset.Round(time.Millisecond),
+			"offset_ms", c.Offset.Milliseconds(),
+			"scale", math.Round(c.Rate*1e6)/1e6,
+		)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"externalUrl": URLPrefix + id})
 }

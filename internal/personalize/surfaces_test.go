@@ -87,8 +87,8 @@ func TestRecommendedPagesDifferFromHome(t *testing.T) {
 	h.rebuild(u)
 	hc := hubContext(testNow, core.DeviceTV)
 	home := preview(t, h, u, hc, "home")
-	movies := preview(t, h, u, hc, "movies")
-	shows := preview(t, h, u, hc, "shows")
+	movies := preview(t, h, u, hc, "library:1")
+	shows := preview(t, h, u, hc, "library:2")
 	t.Logf("home:\n%s\nmovies:\n%s\nshows:\n%s", describe(home.Rows), describe(movies.Rows), describe(shows.Rows))
 
 	for k := range kindSet(home.Rows) {
@@ -208,10 +208,10 @@ func TestDedupeHomeSwitch(t *testing.T) {
 	home := preview(t, h, u, hc, "home")
 	lead := leadKeys(home.Rows)
 
-	on := preview(t, h, u, hc, "movies")
+	on := preview(t, h, u, hc, "library:1")
 	off := false
-	draft := core.HomeLayout{Global: []core.LayoutPage{{Section: "movies", DedupeHome: &off, Rows: []core.RowPolicy{}}}}
-	offP, err := h.e.PreviewLayout(ctx, &u, hc, "movies", 12, draft)
+	draft := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", DedupeHome: &off, Rows: []core.RowPolicy{}}}}
+	offP, err := h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, draft)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +240,8 @@ func TestDedupeHomeSwitch(t *testing.T) {
 		t.Fatalf("switching dedupe off should bring Home lead titles back: on %d off %d", count(on), count(offP))
 	}
 	// A viewer page overrides the global switch.
-	vdraft := core.HomeLayout{Global: draft.Global, Viewers: []core.ViewerLayout{{UserID: u.ID, Pages: []core.LayoutPage{{Section: "movies", DedupeHome: boolPtr(true), Rows: []core.RowPolicy{}}}}}}
-	vp, err := h.e.PreviewLayout(ctx, &u, hc, "movies", 12, vdraft)
+	vdraft := core.HomeLayout{Global: draft.Global, Viewers: []core.ViewerLayout{{UserID: u.ID, Pages: []core.LayoutPage{{Section: "library:1", DedupeHome: boolPtr(true), Rows: []core.RowPolicy{}}}}}}
+	vp, err := h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, vdraft)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,25 +553,25 @@ func TestTuningDialsMoveOutcomes(t *testing.T) {
 
 func TestResolveTuningPrecedence(t *testing.T) {
 	d := core.HomeLayout{
-		Global: []core.LayoutPage{{Section: "movies", Tuning: &core.LayoutTuning{Discovery: floatPtr(0.9), Freshness: floatPtr(0.2)}}},
-		Viewers: []core.ViewerLayout{{UserID: 3, Pages: []core.LayoutPage{{Section: "movies",
+		Global: []core.LayoutPage{{Section: "library:1", Tuning: &core.LayoutTuning{Discovery: floatPtr(0.9), Freshness: floatPtr(0.2)}}},
+		Viewers: []core.ViewerLayout{{UserID: 3, Pages: []core.LayoutPage{{Section: "library:1",
 			Tuning: &core.LayoutTuning{Freshness: floatPtr(0.7), Variety: floatPtr(0)}}}}},
 	}
-	got := resolveTuning(d, 3, "movies")
+	got := resolveTuning(d, 3, "library:1")
 	if got != (tuning{0.9, 0.7, 0}) {
 		t.Fatalf("viewer → global → default: %+v", got)
 	}
-	if got := resolveTuning(d, 4, "movies"); got != (tuning{0.9, 0.2, 0.5}) {
+	if got := resolveTuning(d, 4, "library:1"); got != (tuning{0.9, 0.2, 0.5}) {
 		t.Fatalf("global only: %+v", got)
 	}
 	if got := resolveTuning(d, 3, "home"); got != defaultTuning {
 		t.Fatalf("other page: %+v", got)
 	}
-	if !resolveDedupeHome(d, 3, "movies") || resolveDedupeHome(d, 3, "home") {
+	if !resolveDedupeHome(d, 3, "library:1") || resolveDedupeHome(d, 3, "home") {
 		t.Fatal("DedupeHome defaults: on for sections, never Home")
 	}
 	// The dials key the memo.
-	if resolveTuning(d, 3, "movies").key() == resolveTuning(d, 4, "movies").key() {
+	if resolveTuning(d, 3, "library:1").key() == resolveTuning(d, 4, "library:1").key() {
 		t.Fatal("tuning memo key")
 	}
 }
@@ -580,9 +580,9 @@ func TestLayoutValidatesDedupeAndTuning(t *testing.T) {
 	bad := core.HomeLayout{
 		Global: []core.LayoutPage{
 			{Section: "home", DedupeHome: boolPtr(false)},
-			{Section: "movies", Tuning: &core.LayoutTuning{Discovery: floatPtr(1.5), Variety: floatPtr(2)}},
+			{Section: "library:1", Tuning: &core.LayoutTuning{Discovery: floatPtr(1.5), Variety: floatPtr(2)}},
 		},
-		Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "shows", Tuning: &core.LayoutTuning{Freshness: floatPtr(-0.1)}}}}},
+		Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "library:2", Tuning: &core.LayoutTuning{Freshness: floatPtr(-0.1)}}}}},
 	}
 	_, err := normalizeHomeLayout(bad)
 	ve, ok := err.(*ValidationError)
@@ -598,11 +598,11 @@ func TestLayoutValidatesDedupeAndTuning(t *testing.T) {
 		t.Fatalf("missing problems %v in %v", want, ve.Problems)
 	}
 	// NaN (which JSON cannot carry) is rejected too.
-	if _, err := normalizeHomeLayout(core.HomeLayout{Global: []core.LayoutPage{{Section: "shows", Tuning: &core.LayoutTuning{Variety: floatPtr(math.NaN())}}}}); err == nil {
+	if _, err := normalizeHomeLayout(core.HomeLayout{Global: []core.LayoutPage{{Section: "library:2", Tuning: &core.LayoutTuning{Variety: floatPtr(math.NaN())}}}}); err == nil {
 		t.Fatal("NaN tuning accepted")
 	}
 	good := core.HomeLayout{
-		Global:  []core.LayoutPage{{Section: "movies", DedupeHome: boolPtr(false), Tuning: &core.LayoutTuning{Discovery: floatPtr(0), Variety: floatPtr(1)}}, {Section: "shows", Tuning: &core.LayoutTuning{}}},
+		Global:  []core.LayoutPage{{Section: "library:1", DedupeHome: boolPtr(false), Tuning: &core.LayoutTuning{Discovery: floatPtr(0), Variety: floatPtr(1)}}, {Section: "library:2", Tuning: &core.LayoutTuning{}}},
 		Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "home", Tuning: &core.LayoutTuning{Freshness: floatPtr(0.8)}}}}},
 	}
 	d, err := normalizeHomeLayout(good)
@@ -688,8 +688,8 @@ func TestOwnerPolicyPlacesLensOnHome(t *testing.T) {
 		t.Fatalf("an eligible policy admits the franchise row on Home: %v", kindsOf(p.Rows))
 	}
 	// A row that does not fit a page stays off it whatever the policy.
-	d = core.HomeLayout{Global: []core.LayoutPage{{Section: "movies", Rows: []core.RowPolicy{{Row: KindAiringToday, Status: "always"}}}}}
-	p, _ = h.e.PreviewLayout(ctx, &u, hc, "movies", 12, d)
+	d = core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", Rows: []core.RowPolicy{{Row: KindAiringToday, Status: "always"}}}}}
+	p, _ = h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, d)
 	if r := rowByKind(p.Rows, KindAiringToday); r != nil && len(r.Items) > 0 {
 		t.Fatalf("Airing Today on Movies: %+v", r)
 	}

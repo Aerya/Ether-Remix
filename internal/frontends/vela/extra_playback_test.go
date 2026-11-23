@@ -100,3 +100,33 @@ func TestExtraPlaybackContract(t *testing.T) {
 		}
 	})
 }
+
+type velaExtraStreamsFake struct{ enabled bool }
+
+func (f velaExtraStreamsFake) Lookup(core.RatingKey) (frontend.Extra, bool) {
+	return frontend.Extra{}, false
+}
+func (f velaExtraStreamsFake) Open(context.Context, core.RatingKey) (string, string, map[string]string, error) {
+	return "", "", nil, core.ErrNotFound
+}
+func (f velaExtraStreamsFake) Enabled() bool { return f.enabled }
+func (f velaExtraStreamsFake) List(context.Context, *core.Title, string) ([]frontend.ExtraClip, error) {
+	return nil, nil
+}
+func (f velaExtraStreamsFake) Clip(core.RatingKey) (frontend.ExtraClip, bool) {
+	return frontend.ExtraClip{}, false
+}
+func (f velaExtraStreamsFake) Resolve(context.Context, frontend.ExtraClip) (frontend.ResolvedExtra, error) {
+	return frontend.ResolvedExtra{}, core.ErrNotFound
+}
+func (f velaExtraStreamsFake) PrewarmBytes() int64 { return 0 }
+
+func TestCapabilitiesExtrasAvailability(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		inst := &instance{host: frontend.Host{ExtraStreams: velaExtraStreamsFake{enabled: enabled}}}
+		got := inst.capabilities()["features"].(object)["extras"].(object)["available"]
+		if got != enabled {
+			t.Fatalf("extras.available = %v, want %v", got, enabled)
+		}
+	}
+}

@@ -98,7 +98,7 @@ func TestShieldSubtitleDeliveryContract(t *testing.T) {
 						if d.Container != transcode.ContainerMatroska || d.SubtitleStream != c.index {
 							t.Errorf("HLS handoff lost selected track/target: %+v", d)
 						}
-						if mode != "direct" && mode != "burn" && c.index != 4 && (!strings.Contains(row, `location="segments-av"`) || streamAttr(row, "format") == "" || streamAttr(row, "key") != "") {
+						if mode != "direct" && mode != "burn" && c.index != 4 && (!strings.Contains(row, `location="segments-av"`) || streamAttr(row, "format") == "" || streamAttr(row, "key") != "" || streamAttr(row, "index") != strconv.Itoa(c.index)) {
 							t.Errorf("conversion row: %s", row)
 						}
 						// Reuse the running session, as the in-player picker does.

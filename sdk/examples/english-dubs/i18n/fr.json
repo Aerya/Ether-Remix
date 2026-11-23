@@ -1,0 +1,23 @@
+{
+  "summary": "Séries et films animés avec doublage anglais via MAL-Dubs.",
+  "list_dubbed_label": "Animés avec doublage anglais",
+  "list_dubbed_hint": "Séries et films animés confirmés en doublage anglais sur MAL-Dubs.",
+  "list_incomplete_label": "Doublage en cours",
+  "list_incomplete_hint": "Séries et films animés dont le doublage anglais est en cours sur MAL-Dubs.",
+  "setting_include_incomplete_label": "Inclure les doublages en cours",
+  "setting_include_incomplete_hint": "Ajoute les animés au doublage anglais incomplet à la liste principale.",
+  "setting_type_filter_label": "Filtre de type",
+  "setting_type_filter_hint": "Limite les résultats aux séries animées, aux films animés ou aux deux.",
+  "type_both": "Séries et films",
+  "type_series": "Séries uniquement",
+  "type_movies": "Films uniquement",
+  "page_label": "Animés doublés en anglais",
+  "page_title": "Animés doublés en anglais",
+  "stat_mapped_series": "Séries animées associées",
+  "stat_mapped_movies": "Films animés associés",
+  "stat_incomplete": "Doublages en cours",
+  "panel_cache": "Cache et actualisation",
+  "action_refresh": "Actualiser le cache",
+  "panel_source": "Sources et licence",
+  "source_credit": "Liste MAL-Dubs sous licence AGPL v3, associée à TMDB via Fribb anime-lists."
+}

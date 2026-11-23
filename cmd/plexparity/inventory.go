@@ -65,30 +65,33 @@ func missingRoutes() []string {
 // unprobedRoutes are GET routes the offline parity world cannot compare
 // byte for byte, each with the reason. They are not counted as covered.
 var unprobedRoutes = map[string]string{
+	// New in 0.3.19, so the v0.3.18 parity baseline has no such route to
+	// compare. internal/frontends/plex/account_id_consistency_test.go checks
+	// the canonical owner id 1 and plex.tv ids for friends and Home users.
+	"/accounts/{id}": "new in 0.3.19; no baseline route to compare yet",
 	// v0.3.12 TV discovery depends on the owner's imported guides and the
 	// current programme window. The offline parity corpus has no matching
 	// PMS guide; livetv_discovery_test.go exercises bounded projections.
-	"/tv.plex.providers.epg.xmltv:1/hubs/discover":                      "owner guide discovery has no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/hubs/promoted":                      "owner guide discovery has no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/hubs/sections/home":                 "owner guide discovery has no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/lineups/dvr/channels/featured":      "owner guide featured channels have no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/sections":                           "owner guide sections have no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/watchnow/groups/{sourceID}/{group}": "owner source groups have no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/watchnow/tonight":                   "current programme window has no recorded PMS baseline",
-	"/library/metadata/{key}/theme/{version}":                           "theme audio requires an owner-enabled cache and version digest absent from the offline world",
+	"/tv.plex.providers.epg.xmltv:1/hubs/discover":                 "owner guide discovery has no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/hubs/promoted":                 "owner guide discovery has no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/hubs/sections/home":            "owner guide discovery has no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/lineups/dvr/channels/featured": "owner guide featured channels have no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/sections":                      "owner guide sections have no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/watchnow/tonight":              "current programme window has no recorded PMS baseline",
+	"/library/metadata/{key}/theme/{version}":                      "theme audio requires an owner-enabled cache and version digest absent from the offline world",
 	// Owner-defined guides and genre-filtered channel menus have no recorded
 	// PMS baseline. Populated membership and visibility are exercised by
 	// internal/frontends/plex/livetv_guides_test.go.
-	"/tv.plex.providers.epg.xmltv:1/categories/{category}/channels":        "owner guide category channels have no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/guides/{guide}/channels":               "owner-defined guides have no recorded PMS baseline",
-	"/tv.plex.providers.epg.xmltv:1/watchnow/categories/{category}":        "owner guide category listings have no recorded PMS baseline",
-	"/service/ultrablur/colors":                                            "colours come from the artwork palette cache, which the offline world does not warm",
-	"/services/ultrablur/colors":                                           "colours come from the artwork palette cache, which the offline world does not warm",
-	"/library/parts/{part}/{changestamp}/":                                 "PM4K bare changestamp route has no offline parity request",
-	"/statistics/resources":                                                "live host CPU and memory samples differ between any two processes",
-	"/{ttype:video|music|audio|subtitles}/:/transcode/universal/start":     "Plex for Mac's protocol=http conversion streams from a live FFmpeg the offline world does not run",
-	"/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.mkv": "PM4K's Matroska stream comes from a live FFmpeg the offline world does not run",
-	"/subtitles/:/transcode/universal/start":                               "Plex Web's direct-play subtitle stream is extracted by a live FFmpeg the offline world does not run",
+	"/tv.plex.providers.epg.xmltv:1/categories/{category}/channels":    "owner guide category channels have no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/guides/{guide}/channels":           "owner-defined guides have no recorded PMS baseline",
+	"/tv.plex.providers.epg.xmltv:1/watchnow/categories/{category}":    "owner guide category listings have no recorded PMS baseline",
+	"/service/ultrablur/colors":                                        "colours come from the artwork palette cache, which the offline world does not warm",
+	"/services/ultrablur/colors":                                       "colours come from the artwork palette cache, which the offline world does not warm",
+	"/library/parts/{part}/{changestamp}/":                             "PM4K bare changestamp route has no offline parity request",
+	"/statistics/resources":                                            "live host CPU and memory samples differ between any two processes",
+	"/{ttype:video|music|audio|subtitles}/:/transcode/universal/start": "Plex for Mac's protocol=http conversion streams from a live FFmpeg the offline world does not run",
+	"/{ttype:video|music|audio|subtitles}/:/transcode/universal/start.{ext:mkv|mp3|aac|m4a|flac|opus|ogg|wav|mp4}": "PM4K's Matroska and universal audio HTTP streams come from a live FFmpeg the offline world does not run",
+	"/subtitles/:/transcode/universal/start": "Plex Web's direct-play subtitle stream is extracted by a live FFmpeg the offline world does not run",
 	// New in v0.3 (32e51bfaf): pre-32e51bfaf baselines such as v0.2.58 and main
 	// answer 404, and the harness requires every browse fixture to answer 2xx on
 	// both sides.

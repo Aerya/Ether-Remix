@@ -18,6 +18,22 @@ func tickSamples(f transcode.RawFormat, n int64) int {
 	fps := int64(f.FPSNum)
 	return int((n+1)*rate/fps - n*rate/fps)
 }
+
+// tickCycle is the period, in output ticks, of the per-tick PCM size:
+// tickSamples(f, n+cycle) == tickSamples(f, n). It is 1 at integer frame rates
+// and 5 at 30000/1001 or 60000/1001 with 48 kHz audio.
+func tickCycle(f transcode.RawFormat) int64 {
+	rate := int64(f.SampleRate) * int64(f.FPSDen)
+	fps := int64(f.FPSNum)
+	if rate <= 0 || fps <= 0 {
+		return 1
+	}
+	a, b := rate, fps
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return fps / a
+}
 func validRawFrame(f transcode.RawFormat, frame transcode.RawFrame) bool {
 	return len(frame.Video) == f.Width*f.Height*3/2 && len(frame.PCM)%(f.Channels*2) == 0
 }

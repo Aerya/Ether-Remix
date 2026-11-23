@@ -141,3 +141,77 @@ func TestLivePreparationLaneUnderContinuousLoad(t *testing.T) {
 	}
 	again()
 }
+
+func TestMultiviewGroupSharesSingleTranscodeSlotAndFailsFastWhenFull(t *testing.T) {
+	m := newTestManager(t, newFakeRunner(), config.Transcode{MaxTranscodes: 2})
+	ctx := t.Context()
+
+	// Occupy 1 slot with an ungrouped viewer.
+	_, soloRelease, err := m.AcquireTranscodeSlot(ctx, SlotViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer soloRelease()
+
+	// All 4 tiles + 1 handover encoder of one multiview group share 1 slot.
+	var releases []func()
+	for i := 0; i < 5; i++ {
+		_, _, rel, err := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, "mv-group-1")
+		if err != nil {
+			t.Fatalf("group tile %d failed under MaxTranscodes=2: %v", i, err)
+		}
+		releases = append(releases, rel)
+	}
+	if got := m.EncodingCount(); got != 2 {
+		t.Fatalf("EncodingCount = %d, want 2 (1 solo + 1 multiview group)", got)
+	}
+
+	// An unrelated viewer or second multiview group fails fast with ErrTooManyTranscodes
+	// instead of blocking until context cancellation.
+	if _, _, _, err := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, ""); !errors.Is(err, ErrTooManyTranscodes) {
+		t.Fatalf("unrelated viewer when full: err=%v, want ErrTooManyTranscodes", err)
+	}
+	if _, _, _, err := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, "mv-group-2"); !errors.Is(err, ErrTooManyTranscodes) {
+		t.Fatalf("second multiview group when full: err=%v, want ErrTooManyTranscodes", err)
+	}
+
+	// StartEncoder must also fail fast with ErrTooManyTranscodes (never hang).
+	_, err = m.StartEncoder(ctx, EncoderRequest{
+		Source:          RawFormat{Width: 640, Height: 360, FPSNum: 30, FPSDen: 1, SampleRate: 48000, Channels: 2, PixelFormat: "yuv420p"},
+		SegmentDuration: 2 * time.Second,
+	})
+	if !errors.Is(err, ErrTooManyTranscodes) {
+		t.Fatalf("StartEncoder when full: err=%v, want ErrTooManyTranscodes", err)
+	}
+
+	// Releasing the group frees its single shared slot.
+	for _, rel := range releases {
+		rel()
+	}
+	if got := m.EncodingCount(); got != 1 {
+		t.Fatalf("EncodingCount after group release = %d, want 1", got)
+	}
+	_, _, g2Rel, err := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, "mv-group-2")
+	if err != nil {
+		t.Fatalf("mv-group-2 after mv-group-1 released: %v", err)
+	}
+	g2Rel()
+
+	// Reassigning a warm ungrouped slot to a multiview group lets sibling tiles
+	// join under MaxTranscodes=1.
+	m1 := newTestManager(t, newFakeRunner(), config.Transcode{MaxTranscodes: 1})
+	_, h, hRel, err := m1.acquirePrioritySlotForGroup(ctx, SlotViewer, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hRel()
+	m1.setSlotGroup(h, "mv-adopted")
+	_, _, sibRel, err := m1.acquirePrioritySlotForGroup(ctx, SlotViewer, false, "mv-adopted")
+	if err != nil {
+		t.Fatalf("sibling tile after setSlotGroup under MaxTranscodes=1: %v", err)
+	}
+	defer sibRel()
+	if got := m1.EncodingCount(); got != 1 {
+		t.Fatalf("m1 EncodingCount = %d, want 1", got)
+	}
+}

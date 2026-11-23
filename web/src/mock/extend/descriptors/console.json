@@ -97,6 +97,22 @@
   },
   {
     "kind": "command",
+    "id": "new-flow",
+    "owner": "builtin",
+    "label": {
+      "source": "New flow"
+    },
+    "hint": {},
+    "order": 65,
+    "meta": {
+      "route": "/flows/list/new",
+      "keywords": {
+        "source": "automation workflow create"
+      }
+    }
+  },
+  {
+    "kind": "command",
     "id": "back-up-now",
     "owner": "builtin",
     "label": {
@@ -263,6 +279,35 @@
       "configKey": "subdl",
       "endpoint": "subdl",
       "test": "subdl",
+      "flag": "enabled",
+      "readyField": "apiKey"
+    }
+  },
+  {
+    "kind": "integration",
+    "id": "subsource",
+    "owner": "builtin",
+    "label": {
+      "source": "SubSource"
+    },
+    "hint": {
+      "source": "Fetch subtitles from SubSource when a release doesn't include them."
+    },
+    "group": "playback-extras",
+    "order": 12,
+    "meta": {
+      "category": "playback-extras",
+      "logo": "subsource",
+      "adds": [
+        {
+          "source": "Subtitles"
+        }
+      ],
+      "connect": "fields",
+      "tab": "subsource",
+      "configKey": "subsource",
+      "endpoint": "subsource",
+      "test": "subsource",
       "flag": "enabled",
       "readyField": "apiKey"
     }
@@ -681,6 +726,22 @@
   },
   {
     "kind": "navItem",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "server",
+    "order": 55,
+    "meta": {
+      "route": "/flows",
+      "page": "flows"
+    }
+  },
+  {
+    "kind": "navItem",
     "id": "cluster",
     "owner": "builtin",
     "label": {
@@ -1068,15 +1129,6 @@
           }
         },
         {
-          "key": "sources",
-          "label": {
-            "source": "IPTV sources"
-          },
-          "keywords": {
-            "source": "m3u xmltv playlist"
-          }
-        },
-        {
           "key": "guide",
           "label": {
             "source": "Guide"
@@ -1370,6 +1422,15 @@
           "keywords": {
             "source": "subtitles"
           }
+        },
+        {
+          "key": "subsource",
+          "label": {
+            "source": "SubSource"
+          },
+          "keywords": {
+            "source": "subtitles"
+          }
         }
       ]
     }
@@ -1435,6 +1496,46 @@
             "source": "Delivery history"
           },
           "keywords": {}
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "server",
+    "order": 55,
+    "meta": {
+      "route": "/flows",
+      "navGroup": "server",
+      "inNav": true,
+      "keywords": {
+        "source": "automations automation workflows triggers actions events rules alerts"
+      },
+      "sections": [
+        {
+          "key": "templates",
+          "label": {
+            "source": "Templates"
+          },
+          "keywords": {
+            "source": "recipes starter tautulli kill stream newsletter"
+          }
+        },
+        {
+          "key": "runs",
+          "label": {
+            "source": "Runs"
+          },
+          "keywords": {
+            "source": "history trace test dry run"
+          }
         }
       ]
     }
@@ -1512,6 +1613,15 @@
           },
           "keywords": {
             "source": "nntp backfill connections"
+          }
+        },
+        {
+          "key": "iptv",
+          "label": {
+            "source": "IPTV"
+          },
+          "keywords": {
+            "source": "m3u xmltv playlist"
           }
         },
         {

@@ -1,6 +1,8 @@
 import type { ScreenStyle } from "./onair/ScreenPicker";
 import { personalRecipe } from "./onair/defaults";
 import type { PersonalRecipe, ChannelLook, ClockSlot } from "./onair/model";
+import type { LiveApp } from "./ChannelApps";
+import { compareChannelNumber, compareParsedChannelNumber, parseChannelNumber } from "./reorder";
 import { getLocale, localized, t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { unit } from "../../lib/format";
@@ -99,6 +101,8 @@ export type Pin = {
 export type Channel = {
   /** Apps that leave this channel out of their lineup; every other app lists it. */
   hiddenApps?: string[];
+  /** Apps where this channel is explicitly shown even if one of its owner groups hides the app. */
+  shownApps?: string[];
   pins?: Pin[];
   personal?: PersonalRecipe;
   look?: ChannelLook;
@@ -127,10 +131,20 @@ export type Channel = {
   streamUrl?: string;
   /** Ordered stream sources: the first enabled one plays, the rest are backups. */
   streamSources?: StreamSource[];
+  /** Donor channel IDs removed from automatic duplicate backups by the owner. */
+  suppressedAutoBackups?: string[];
+  /** True when the owner manually edited, added, or reordered streamSources. */
+  ownerStreamSources?: boolean;
+  /** Rules that merge matching feeds across IPTV providers into streamSources. */
+  inputMerge?: ChannelInputMerge;
+  /** Target channel ID when this channel is hidden as a merged duplicate. */
+  mergedInto?: string;
   group?: string;
   customGroup?: boolean;
   /** The provider's channel number; differs from `number` when the owner renumbered it. */
   providerNumber?: string;
+  /** The provider's guide id; differs from `guideId` when the owner remapped or cleared it. */
+  providerGuideId?: string;
   epoch: string;
   seed: number;
   shuffle: boolean;
@@ -178,6 +192,76 @@ export type ChannelPage = {
   coverage: Record<string, boolean>;
   nextNumber: string;
 };
+/** A provider group reference inside one of the owner's groups. */
+export type ProviderGroupRef = {
+  sourceId: string;
+  name: string;
+  sourceName?: string;
+  count?: number;
+};
+export type OwnerGroupRuleField = "name" | "group" | "guideId" | "number" | "source";
+export type OwnerGroupRuleOp =
+  "contains" | "is" | "startsWith" | "matches" | "notContains" | "notMatches";
+export type OwnerGroupRule = {
+  field: OwnerGroupRuleField;
+  op: OwnerGroupRuleOp;
+  value: string;
+};
+export type OwnerGroupMatch = "any" | "all";
+export type OwnerGroupPreview = {
+  count: number;
+  channels: ChannelSummary[];
+};
+export type ChannelInputMerge = {
+  rules?: OwnerGroupRule[];
+  match?: OwnerGroupMatch;
+  hideDuplicates?: boolean;
+};
+export type ChannelMergePreviewItem = {
+  id: string;
+  channelId: string;
+  name: string;
+  group?: string;
+  guideId?: string;
+  sourceId?: string;
+  sourceName?: string;
+  sourcePriority?: number;
+  quality?: string;
+  primary?: boolean;
+  included: boolean;
+  state: SourceStatus["state"];
+  failures?: number;
+  lastPlayed?: string;
+  retryAfter?: string;
+  lastError?: string;
+};
+export type ChannelMergePreview = {
+  matchCount: number;
+  totalFeeds: number;
+  maxInputs: number;
+  inputs: ChannelMergePreviewItem[];
+};
+/** One of the owner's ordered channel groups ("Your groups"). */
+export type OwnerGroup = {
+  id: string;
+  name: string;
+  groups: ProviderGroupRef[];
+  channels?: string[];
+  rules?: OwnerGroupRule[];
+  match?: OwnerGroupMatch;
+  all?: boolean;
+  hidden?: boolean;
+  unratedRating?: string;
+  apps?: Record<string, boolean>;
+  hiddenApps?: string[];
+  channelCount?: number;
+};
+/** Request payload for POST /livetv/channels/apps. */
+export type ChannelAppChange =
+  | { app: LiveApp; show: boolean; channels: string[] }
+  | { app: LiveApp; show: boolean; source: string; group?: string }
+  | { app: LiveApp; show: boolean; ownerGroup: string };
+
 export type StreamSource = {
   id: string;
   name: string;
@@ -186,6 +270,12 @@ export type StreamSource = {
   priority: number;
   /** The source whose provider login this input uses (blank: the channel's own). */
   authSourceId?: string;
+  /** Imported channel ID when attached automatically by input merge rules. */
+  mergedFrom?: string;
+  /** Duplicate channel ID when attached automatically as a backup stream. */
+  autoFrom?: string;
+  /** Duplicate channel's lineup number for failover and console display. */
+  autoNumber?: string;
 };
 export type AuthType = "" | "basic" | "bearer" | "headers" | "xtream";
 /** Provider login. Secrets come back as "••••"; sending that back keeps them. */
@@ -255,8 +345,6 @@ export type GroupRules = {
   hideAdult?: boolean;
   /** Empty: the provider's order and numbers. Otherwise channels are numbered 1… down this group order. */
   groupOrder?: string[];
-  /** Show each included channel group as a What's On shelf in Plex. */
-  hubGroups?: boolean;
 };
 /** How gently Ether uses a provider's streams (see SourceLimits). */
 export type SourceLimitRules = {
@@ -290,8 +378,10 @@ export type Source = {
   kind?: string;
   id: string;
   name: string;
+  priority?: number;
   playlistUrl?: string;
   guideUrl?: string;
+  playlistGuide?: boolean;
   updatedAt: string;
   refreshHours?: number;
   activityRefreshMinutes?: number;
@@ -417,6 +507,186 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+function unpackOwnerGroups(raw: unknown): OwnerGroup[] {
+  if (Array.isArray(raw)) return raw as OwnerGroup[];
+  if (raw && typeof raw === "object" && "groups" in raw) {
+    const groups = (raw as { groups?: unknown }).groups;
+    if (Array.isArray(groups)) return groups as OwnerGroup[];
+  }
+  return [];
+}
+
+/**
+ * Translates a Go RE2-style rule pattern (case-insensitive by default unless
+ * inline flags like (?i) or (?-i) are set) into a JS RegExp for client-side
+ * membership display. Authoritative validation happens on the server.
+ */
+export function compileOwnerGroupRegExp(pattern: string): RegExp | null {
+  if (!pattern || pattern.length > 4096) return null;
+  let expr = pattern;
+  let flagI = true;
+  let flagM = false;
+  let flagS = false;
+  const leading = /^\(\?([imsU-]+)\)/.exec(expr);
+  if (leading) {
+    expr = expr.slice(leading[0].length);
+    flagI = false;
+    let neg = false;
+    for (const ch of leading[1]!) {
+      if (ch === "-") {
+        neg = true;
+        continue;
+      }
+      if (ch === "i") flagI = !neg;
+      if (ch === "m") flagM = !neg;
+      if (ch === "s") flagS = !neg;
+    }
+  }
+  const flags = `${flagI ? "i" : ""}${flagM ? "m" : ""}${flagS ? "s" : ""}`;
+  try {
+    return new RegExp(expr, flags);
+  } catch {
+    return null;
+  }
+}
+
+type ChannelRuleLike = Pick<
+  ChannelSummary,
+  "id" | "name" | "group" | "guideId" | "number" | "kind" | "sourceId"
+>;
+
+/**
+ * Compiles one OwnerGroup's membership (provider groups ∪ explicit channels ∪
+ * rule matches − rule excludes) once so scanning 10,000+ channels stays fast.
+ */
+export function compileOwnerGroupMatcher(
+  g: Pick<OwnerGroup, "all" | "groups" | "channels" | "rules" | "match">,
+  sourceNames?: ReadonlyMap<string, string>,
+): (c: ChannelRuleLike) => boolean {
+  const pkeys = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
+  const cids = new Set(g.channels ?? []);
+  const include: ((c: ChannelRuleLike) => boolean)[] = [];
+  const exclude: ((c: ChannelRuleLike) => boolean)[] = [];
+
+  for (const r of g.rules ?? []) {
+    if (!r.value) continue;
+    const isRegex = r.op === "matches" || r.op === "notMatches";
+    const re = isRegex ? compileOwnerGroupRegExp(r.value) : null;
+    if (isRegex && !re) continue;
+    const lower = isRegex ? "" : r.value.toLowerCase();
+    const matchVal = (val: string): boolean => {
+      switch (r.op) {
+        case "contains":
+        case "notContains":
+          return val.toLowerCase().includes(lower);
+        case "is":
+          return val.toLowerCase() === lower;
+        case "startsWith":
+          return val.toLowerCase().startsWith(lower);
+        case "matches":
+        case "notMatches":
+          return re ? re.test(val) : false;
+      }
+    };
+    const fn = (c: ChannelRuleLike): boolean => {
+      switch (r.field) {
+        case "name":
+          return matchVal(c.name ?? "");
+        case "group":
+          return matchVal(c.group ?? "");
+        case "guideId":
+          return matchVal(c.guideId ?? "");
+        case "number":
+          return matchVal(c.number ?? "");
+        case "source": {
+          const sid = c.sourceId ?? "";
+          const sname = sourceNames?.get(sid) ?? "";
+          if (sname && matchVal(sname)) return true;
+          if (!sname || sid !== sname) return matchVal(sid);
+          return false;
+        }
+      }
+    };
+    if (r.op === "notContains" || r.op === "notMatches") exclude.push(fn);
+    else include.push(fn);
+  }
+
+  const matchAll = g.match === "all";
+  return (c: ChannelRuleLike): boolean => {
+    let hit =
+      Boolean(g.all) ||
+      cids.has(c.id) ||
+      (c.kind !== "virtual" && pkeys.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`));
+    if (!hit && include.length > 0) {
+      hit = matchAll ? include.every((fn) => fn(c)) : include.some((fn) => fn(c));
+    }
+    if (!hit) return false;
+    for (const fn of exclude) {
+      if (fn(c)) return false;
+    }
+    return true;
+  };
+}
+
+/**
+ * Effective visibility of a channel in one Live TV app, combining per-channel
+ * hiddenApps with any per-group app rules from the channel's owner groups.
+ */
+export function channelVisibleInApp(
+  c: Pick<ChannelSummary, "hiddenApps" | "shownApps">,
+  app: LiveApp,
+  memberGroups?: readonly OwnerGroup[],
+): boolean {
+  if (c.hiddenApps?.includes(app)) return false;
+  if (c.shownApps?.includes(app)) return true;
+  if (memberGroups?.length) {
+    for (const g of memberGroups) {
+      if (g.hiddenApps?.includes(app)) return false;
+      if (g.apps && app in g.apps) return Boolean(g.apps[app]);
+    }
+  }
+  return true;
+}
+
+/**
+ * Compresses a channel membership set into whole provider groups where every
+ * channel of that provider group is selected, keeping individual channel IDs
+ * for partial selections so future provider additions join whole groups.
+ */
+export function compressOwnerGroupMembers(
+  base: OwnerGroup,
+  memberIds: ReadonlySet<string>,
+  allChannels: readonly ChannelSummary[],
+): OwnerGroup {
+  const byProviderGroup = new Map<string, { sourceId: string; name: string; ids: string[] }>();
+  for (const c of allChannels) {
+    if (c.kind === "virtual") continue;
+    const sourceId = c.sourceId ?? "";
+    const name = c.group ?? "";
+    const k = `${sourceId}\u0000${name}`;
+    let entry = byProviderGroup.get(k);
+    if (!entry) {
+      entry = { sourceId, name, ids: [] };
+      byProviderGroup.set(k, entry);
+    }
+    entry.ids.push(c.id);
+  }
+  const remaining = new Set(memberIds);
+  const groups: ProviderGroupRef[] = [];
+  for (const entry of byProviderGroup.values()) {
+    if (entry.ids.length > 0 && entry.ids.every((id) => remaining.has(id))) {
+      groups.push({ sourceId: entry.sourceId, name: entry.name });
+      for (const id of entry.ids) remaining.delete(id);
+    }
+  }
+  return {
+    ...base,
+    all: false,
+    groups,
+    channels: [...remaining],
+  };
+}
+
 /**
  * One viewer's Live TV access: the only channel allow-list. The viewer's page
  * and each channel's Viewers tab both edit it. Restricted viewers see only
@@ -509,7 +779,38 @@ export const tv = {
     apiFetch<Channel>(`/livetv/channels/${enc(id)}`, { signal }),
   channelSummaries: (signal?: AbortSignal) =>
     apiFetch<ChannelSummary[]>("/livetv/channels/summary", { signal }),
+  groups: async (signal?: AbortSignal): Promise<OwnerGroup[]> =>
+    unpackOwnerGroups(await apiFetch<unknown>("/livetv/groups", { signal })),
+  saveGroups: async (groups: OwnerGroup[]): Promise<OwnerGroup[]> => {
+    const res = await apiFetch<unknown>("/livetv/groups", json("PUT", groups));
+    const saved = unpackOwnerGroups(res);
+    return saved.length || groups.length === 0 ? saved : groups;
+  },
+  previewGroup: (group: Partial<OwnerGroup>, signal?: AbortSignal) =>
+    apiFetch<OwnerGroupPreview>("/livetv/groups/preview", {
+      ...json("POST", { groups: [], ...group }),
+      signal,
+    }),
+  previewChannelMerge: (
+    req: {
+      channelId?: string;
+      name?: string;
+      sourceId?: string;
+      streamUrl?: string;
+      rules: OwnerGroupRule[];
+      match?: OwnerGroupMatch;
+    },
+    signal?: AbortSignal,
+  ) =>
+    apiFetch<ChannelMergePreview>("/livetv/channels/merge-preview", {
+      ...json("POST", req),
+      signal,
+    }),
+  setChannelsApp: (change: ChannelAppChange) =>
+    apiFetch<{ updated: number }>("/livetv/channels/apps", json("POST", change)),
   sources: (signal?: AbortSignal) => apiFetch<Source[]>("/livetv/sources", { signal }),
+  saveSourceOrder: (ids: string[]) =>
+    apiFetch<Source[]>("/livetv/sources/order", json("PUT", { ids })),
   guide: (from: Date, until: Date, channels?: string[], signal?: AbortSignal) => {
     const p = new URLSearchParams({
       from: from.toISOString(),
@@ -524,6 +825,7 @@ export const tv = {
       enabled?: boolean;
       favorite?: boolean;
       group?: string;
+      numbers?: Record<string, string>;
       showApps?: string[];
       hideApps?: string[];
     },
@@ -835,22 +1137,17 @@ export function progress(p: Programme, at = Date.now()): number {
 const collator = new Intl.Collator();
 
 export function byNumber(a: Channel, b: Channel): number {
-  return (
-    (parseFloat(a.number) || 0) - (parseFloat(b.number) || 0) ||
-    collator.compare(a.number, b.number) ||
-    collator.compare(a.name, b.name)
-  );
+  return compareChannelNumber(a.number, b.number) || collator.compare(a.name, b.name);
 }
 
 /**
  * Channels in lineup order (see byNumber). Each number is parsed once rather
  * than per comparison, which matters for provider lineups of 16,000.
  */
-export function sortByNumber(channels: Channel[]): Channel[] {
-  const keyed = channels.map((c) => ({ c, n: parseFloat(c.number) || 0 }));
+export function sortByNumber<C extends Pick<Channel, "number" | "name">>(channels: C[]): C[] {
+  const keyed = channels.map((c) => ({ c, k: parseChannelNumber(c.number) }));
   keyed.sort(
-    (a, b) =>
-      a.n - b.n || collator.compare(a.c.number, b.c.number) || collator.compare(a.c.name, b.c.name),
+    (a, b) => compareParsedChannelNumber(a.k, b.k) || collator.compare(a.c.name, b.c.name),
   );
   return keyed.map((k) => k.c);
 }
@@ -866,7 +1163,7 @@ export function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> 
   return out;
 }
 
-export function nextNumber(channels: Channel[]): string {
+export function nextNumber(channels: Pick<Channel, "number">[]): string {
   const max = channels.reduce((n, c) => Math.max(n, Math.floor(parseFloat(c.number) || 0)), 0);
   return String(max + 1);
 }
@@ -947,6 +1244,47 @@ export function programmeArtwork(src?: string): string | undefined {
   return src && /^\/[A-Za-z0-9_-]+\.(jpg|png|webp)$/i.test(src)
     ? `/ether/api/image?path=${encodeURIComponent(src)}&w=342`
     : src;
+}
+
+/** Parses stream quality tier rank (0=4K … 4=SD) from channel or feed names. */
+export function streamQualityTier(...names: (string | undefined)[]): {
+  rank: number;
+  label: string;
+} {
+  let best = 3;
+  let sawSD = false;
+  for (const raw of names) {
+    if (!raw) continue;
+    for (const tok of raw.toLowerCase().split(/[^a-z0-9]+/)) {
+      if (!tok) continue;
+      if (
+        ["4k", "uhd", "2160p", "2160i", "2160", "4kuhd", "uhd4k"].includes(tok) ||
+        /^2160[pi]\d{2,3}$/.test(tok)
+      ) {
+        return { rank: 0, label: "4K" };
+      }
+      if (
+        (["fhd", "1080p", "1080i", "1080", "fullhd"].includes(tok) ||
+          /^1080[pi]\d{2,3}$/.test(tok)) &&
+        1 < best
+      )
+        best = 1;
+      else if (
+        (["hd", "720p", "720i", "720"].includes(tok) || /^720[pi]\d{2,3}$/.test(tok)) &&
+        2 < best
+      )
+        best = 2;
+      else if (
+        ["sd", "480p", "480i", "480", "576p", "576i", "576"].includes(tok) ||
+        /^(?:480|576)[pi]\d{2,3}$/.test(tok)
+      )
+        sawSD = true;
+    }
+  }
+  if (best === 1) return { rank: 1, label: "FHD" };
+  if (best === 2) return { rank: 2, label: "HD" };
+  if (sawSD) return { rank: 4, label: "SD" };
+  return { rank: 3, label: "" };
 }
 
 /** Live TV stability presets (config liveTV.stability, channel stability). */

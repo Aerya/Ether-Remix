@@ -84,7 +84,6 @@ func consolePages() []consolePage {
 			Route: "/livetv", NavGroup: extend.NavGroupLibrary, InNav: true,
 			Sections: []extend.PageSection{
 				section("channels", T("Channels"), T("virtual channel")),
-				section("sources", T("IPTV sources"), T("m3u xmltv playlist")),
 				section("guide", T("Guide"), T("epg schedule")),
 				section("looks", T("Looks"), T("on air graphics brand reels")),
 			},
@@ -111,6 +110,7 @@ func consolePages() []consolePage {
 			Sections: []extend.PageSection{
 				section("debrid", T("Debrid"), T("real-debrid realdebrid torbox alldebrid premiumize debrid-link debridlink offcloud torrent cached")),
 				section("usenet", T("Usenet"), T("nntp backfill connections")),
+				section("iptv", T("IPTV"), T("m3u xmltv playlist")),
 				section("indexers", T("Indexers"), T("newznab torznab torrent built-in sites definitions cardigann flaresolverr prowlarr stremio addon budget api")),
 				section("stats", T("Stats"), T("quota price plan cost success speed plays failover")),
 			},
@@ -173,6 +173,7 @@ func consolePages() []consolePage {
 				section("llm", T("Language model"), T("llm ollama openai recaps search")),
 				section("opensubtitles", T("OpenSubtitles"), T("subtitles")),
 				section("subdl", T("SubDL"), T("subtitles")),
+				section("subsource", T("SubSource"), T("subtitles")),
 			},
 		}},
 		{id: "plugins", label: T("Plugins"), icon: "Puzzle", order: 40, meta: extend.PageMeta{
@@ -185,6 +186,14 @@ func consolePages() []consolePage {
 				section("channels", T("Channels"), T("email discord webhook push alerts watchlist")),
 				section("report", T("Weekly report"), T("newsletter digest")),
 				section("deliveries", T("Delivery history"), extend.Text{}),
+			},
+		}},
+		{id: "flows", label: T("Flows"), icon: "Workflow", order: 55, meta: extend.PageMeta{
+			Route: "/flows", NavGroup: extend.NavGroupServer, InNav: true,
+			Keywords: T("automations automation workflows triggers actions events rules alerts"),
+			Sections: []extend.PageSection{
+				section("templates", T("Templates"), T("recipes starter tautulli kill stream newsletter")),
+				section("runs", T("Runs"), T("history trace test dry run")),
 			},
 		}},
 		{id: "cluster", label: T("Cluster"), icon: "Boxes", order: 60, meta: extend.PageMeta{
@@ -238,6 +247,8 @@ func consoleCommands() []extend.Descriptor {
 			Route: "/collections/new", Keywords: T("create")}},
 		{id: "new-notification-channel", label: T("New notification channel"), order: 60, meta: extend.CommandMeta{
 			Route: "/notifications/channels", Keywords: T("alert")}},
+		{id: "new-flow", label: T("New flow"), order: 65, meta: extend.CommandMeta{
+			Route: "/flows/list/new", Keywords: T("automation workflow create")}},
 		{id: "back-up-now", label: T("Back up now"), order: 70, meta: extend.CommandMeta{
 			Route: "/maintenance/backups", Keywords: T("backup snapshot")}},
 		// Ask Ether suggestions (WS6): the label is the suggestion text.
@@ -321,6 +332,14 @@ func consoleIntegrations() []extend.Descriptor {
 			meta: extend.IntegrationMeta{
 				Category: "playback-extras", Logo: "subdl", Connect: "fields",
 				Tab: "subdl", ConfigKey: "subdl", Endpoint: "subdl", Test: "subdl",
+				Flag: "enabled", ReadyField: "apiKey",
+				Adds: []extend.Text{T("Subtitles")},
+			}},
+		{id: "subsource", label: T("SubSource"), order: 12,
+			hint: T("Fetch subtitles from SubSource when a release doesn't include them."),
+			meta: extend.IntegrationMeta{
+				Category: "playback-extras", Logo: "subsource", Connect: "fields",
+				Tab: "subsource", ConfigKey: "subsource", Endpoint: "subsource", Test: "subsource",
 				Flag: "enabled", ReadyField: "apiKey",
 				Adds: []extend.Text{T("Subtitles")},
 			}},

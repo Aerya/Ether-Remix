@@ -1,0 +1,1734 @@
+{
+  "uid": "s:70~l:90~g:9",
+  "id": "9",
+  "name": "National Hockey League",
+  "abbreviation": "NHL",
+  "children": [
+    {
+      "id": "7",
+      "name": "Eastern Conference",
+      "abbreviation": "East",
+      "standings": {
+        "id": "0",
+        "name": "overall",
+        "entries": [
+          {
+            "team": {
+              "id": "7",
+              "uid": "s:70~l:90~t:7",
+              "location": "Carolina",
+              "name": "Hurricanes",
+              "abbreviation": "CAR",
+              "displayName": "Carolina Hurricanes",
+              "shortDisplayName": "Hurricanes",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/car.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/car.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 1.7999999999999998,
+                "displayValue": "+1.8"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 0.0,
+                "displayValue": "-"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 23.0,
+                "displayValue": "23"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 42.0,
+                "displayValue": "+42"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 37.0,
+                "displayValue": "37"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 53.0,
+                "displayValue": "53"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 95.0,
+                "displayValue": "95"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 17.0,
+                "displayValue": "17"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "17-3-3, 37 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "14",
+              "uid": "s:70~l:90~t:14",
+              "location": "Ottawa",
+              "name": "Senators",
+              "abbreviation": "OTT",
+              "displayName": "Ottawa Senators",
+              "shortDisplayName": "Senators",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/ott.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/ott.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 0.3999999999999999,
+                "displayValue": "+0.4"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 4.0,
+                "displayValue": "4"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 24.0,
+                "displayValue": "24"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 9.0,
+                "displayValue": "+9"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 33.0,
+                "displayValue": "33"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 70.0,
+                "displayValue": "70"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 79.0,
+                "displayValue": "79"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "15-6-3, 33 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "20",
+              "uid": "s:70~l:90~t:20",
+              "location": "Tampa Bay",
+              "name": "Lightning",
+              "abbreviation": "TB",
+              "displayName": "Tampa Bay Lightning",
+              "shortDisplayName": "Lightning",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/tb.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-03T19:45Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/tb.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 0.9000000000000004,
+                "displayValue": "+0.9"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 22.0,
+                "displayValue": "22"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 20.0,
+                "displayValue": "+20"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 32.0,
+                "displayValue": "32"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 62.0,
+                "displayValue": "62"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 82.0,
+                "displayValue": "82"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 2.0,
+                "displayValue": "W2"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "15-5-2, 32 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "21",
+              "uid": "s:70~l:90~t:21",
+              "location": "Toronto",
+              "name": "Maple Leafs",
+              "abbreviation": "TOR",
+              "displayName": "Toronto Maple Leafs",
+              "shortDisplayName": "Maple Leafs",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/tor.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-03T19:49Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/tor.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -0.5,
+                "displayValue": "-0.5"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 18.0,
+                "displayValue": "18"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 25.0,
+                "displayValue": "25"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -12.0,
+                "displayValue": "-12"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 19.0,
+                "displayValue": "19"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 90.0,
+                "displayValue": "90"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 78.0,
+                "displayValue": "78"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -9.0,
+                "displayValue": "L9"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "8-14-3, 19 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "29",
+              "uid": "s:70~l:90~t:29",
+              "location": "Columbus",
+              "name": "Blue Jackets",
+              "abbreviation": "CBJ",
+              "displayName": "Columbus Blue Jackets",
+              "shortDisplayName": "Blue Jackets",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/cbj.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/cbj.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -0.6000000000000001,
+                "displayValue": "-0.6"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 19.0,
+                "displayValue": "19"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 21.0,
+                "displayValue": "21"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 12.0,
+                "displayValue": "12"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -14.0,
+                "displayValue": "-14"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 18.0,
+                "displayValue": "18"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 68.0,
+                "displayValue": "68"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 54.0,
+                "displayValue": "54"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 2.0,
+                "displayValue": "W2"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 9.0,
+                "displayValue": "9"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "9-12-0, 18 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "16",
+              "uid": "s:70~l:90~t:16",
+              "location": "Pittsburgh",
+              "name": "Penguins",
+              "abbreviation": "PIT",
+              "displayName": "Pittsburgh Penguins",
+              "shortDisplayName": "Penguins",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/pit.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/pit.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -0.6000000000000001,
+                "displayValue": "-0.6"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 21.0,
+                "displayValue": "21"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 22.0,
+                "displayValue": "22"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 13.0,
+                "displayValue": "13"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -13.0,
+                "displayValue": "-13"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 80.0,
+                "displayValue": "80"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 67.0,
+                "displayValue": "67"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -3.0,
+                "displayValue": "L3"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "7-13-2, 16 PTS"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "8",
+      "name": "Western Conference",
+      "abbreviation": "West",
+      "standings": {
+        "id": "0",
+        "name": "overall",
+        "entries": [
+          {
+            "team": {
+              "id": "30",
+              "uid": "s:70~l:90~t:30",
+              "location": "Minnesota",
+              "name": "Wild",
+              "abbreviation": "MIN",
+              "displayName": "Minnesota Wild",
+              "shortDisplayName": "Wild",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/min.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/min.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 1.4,
+                "displayValue": "+1.4"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 0.0,
+                "displayValue": "-"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 25.0,
+                "displayValue": "25"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 34.0,
+                "displayValue": "+34"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 39.0,
+                "displayValue": "39"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 56.0,
+                "displayValue": "56"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 90.0,
+                "displayValue": "90"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -1.0,
+                "displayValue": "L1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 17.0,
+                "displayValue": "17"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "17-3-5, 39 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "6",
+              "uid": "s:70~l:90~t:6",
+              "location": "Edmonton",
+              "name": "Oilers",
+              "abbreviation": "EDM",
+              "displayName": "Edmonton Oilers",
+              "shortDisplayName": "Oilers",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/edm.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/edm.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 1.0,
+                "displayValue": "+1.0"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 25.0,
+                "displayValue": "25"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 25.0,
+                "displayValue": "+25"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 37.0,
+                "displayValue": "37"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 72.0,
+                "displayValue": "72"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 97.0,
+                "displayValue": "97"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -2.0,
+                "displayValue": "L2"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 17.0,
+                "displayValue": "17"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "17-5-3, 37 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "37",
+              "uid": "s:70~l:90~t:37",
+              "location": "Vegas",
+              "name": "Golden Knights",
+              "abbreviation": "VGK",
+              "displayName": "Vegas Golden Knights",
+              "shortDisplayName": "Golden Knights",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/vgk.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/vgk.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 0.3999999999999999,
+                "displayValue": "+0.4"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 25.0,
+                "displayValue": "25"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 10.0,
+                "displayValue": "+10"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 33.0,
+                "displayValue": "33"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 75.0,
+                "displayValue": "75"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 85.0,
+                "displayValue": "85"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "14-6-5, 33 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "8",
+              "uid": "s:70~l:90~t:8",
+              "location": "Los Angeles",
+              "name": "Kings",
+              "abbreviation": "LA",
+              "displayName": "Los Angeles Kings",
+              "shortDisplayName": "Kings",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/la.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2025-09-25T18:32Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/la.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2025-09-25T18:28Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -0.5,
+                "displayValue": "-0.5"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 23.0,
+                "displayValue": "23"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 21.0,
+                "displayValue": "21"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 12.0,
+                "displayValue": "12"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -12.0,
+                "displayValue": "-12"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 70.0,
+                "displayValue": "70"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 58.0,
+                "displayValue": "58"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -1.0,
+                "displayValue": "L1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "7-12-2, 16 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "4",
+              "uid": "s:70~l:90~t:4",
+              "location": "Chicago",
+              "name": "Blackhawks",
+              "abbreviation": "CHI",
+              "displayName": "Chicago Blackhawks",
+              "shortDisplayName": "Blackhawks",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/chi.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-02T15:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/chi.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -1.5,
+                "displayValue": "-1.5"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 23.0,
+                "displayValue": "23"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 23.0,
+                "displayValue": "23"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -35.0,
+                "displayValue": "-35"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 93.0,
+                "displayValue": "93"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 58.0,
+                "displayValue": "58"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "7-14-2, 16 PTS"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "22",
+              "uid": "s:70~l:90~t:22",
+              "location": "Vancouver",
+              "name": "Canucks",
+              "abbreviation": "VAN",
+              "displayName": "Vancouver Canucks",
+              "shortDisplayName": "Canucks",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500/van.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-07-03T19:59Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nhl/500-dark/scoreboard/van.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-07-02T15:46Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "otLosses",
+                "displayName": "Overtime Losses",
+                "shortDisplayName": "OTL",
+                "abbreviation": "OTL",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "differential",
+                "displayName": "Average Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -1.5,
+                "displayValue": "-1.5"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 26.0,
+                "displayValue": "26"
+              },
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 25.0,
+                "displayValue": "25"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 18.0,
+                "displayValue": "18"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -37.0,
+                "displayValue": "-37"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "PTS",
+                "abbreviation": "PTS",
+                "value": 13.0,
+                "displayValue": "13"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "GA",
+                "abbreviation": "GA",
+                "value": 108.0,
+                "displayValue": "108"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "GF",
+                "abbreviation": "GF",
+                "value": 71.0,
+                "displayValue": "71"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "overall",
+                "displayName": "Team Season Record",
+                "shortDisplayName": "Season",
+                "abbreviation": "TOTAL",
+                "displayValue": "6-18-1, 13 PTS"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

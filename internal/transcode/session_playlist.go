@@ -2,6 +2,7 @@ package transcode
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -17,6 +18,10 @@ import (
 func (s *Session) ServePlaylist(w http.ResponseWriter, r *http.Request) {
 	if s.isDASH() {
 		s.ServeManifest(w, r)
+		return
+	}
+	if err := s.awaitLiveTarget(r.Context(), 0); err != nil {
+		http.Error(w, "live playlist unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	s.mu.Lock()
@@ -54,8 +59,10 @@ func (s *Session) span() time.Duration {
 
 // renderPlaylistLocked renders track t's media playlist from the plan.
 // The primary track's VOD playlist is cached until the plan changes ahead
-// of the player (spike governor) or SwapInput; governed sessions render
-// an EVENT playlist fresh each time so reloads see re-planned segments.
+// of the player (spike governor) or SwapInput. Known-duration sessions
+// always serve VOD with EXT-X-ENDLIST from the first request: an EVENT
+// playlist without EXT-X-ENDLIST causes RFC 8216 §6.3.3 players (notably
+// AVPlayer on Apple TV) to start three segments from the end as a live edge.
 func (s *Session) renderPlaylistLocked(t int) []byte {
 	body := s.renderMediaPlaylistLocked(t)
 	if hasInitSegment(s.container) {
@@ -86,9 +93,6 @@ func (s *Session) renderMediaPlaylistLocked(t int) []byte {
 	}
 	discont := func(n int) bool { return s.discontBeforeLocked(t, n) }
 	if s.total > 0 {
-		if s.governorOn && t == 0 {
-			return planPlaylist(s.plan, s.container, s.segName, discont, true, s.endSeg >= 0, 0, independent)
-		}
 		if t == 0 {
 			if s.playlist == nil {
 				s.playlist = planPlaylist(s.plan, s.container, s.segName, discont, false, true, 0, independent)
@@ -120,10 +124,11 @@ func (s *Session) livePlaylistLocked(t int, discont func(int) bool) []byte {
 			discSeq++
 		}
 	}
-	target := s.segDur
-	for n := first; n < listed; n++ {
-		target = max(target, s.liveDurationLocked(n))
+	// No playlist may commit a target before startup media establishes it.
+	if s.liveTarget == 0 {
+		return nil
 	}
+	target := s.liveTarget
 	var b bytes.Buffer
 	version := 3
 	if hasInitSegment(s.container) {
@@ -144,7 +149,7 @@ func (s *Session) livePlaylistLocked(t int, discont func(int) bool) []byte {
 				fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", initSegmentName(s.container))
 			}
 		}
-		fmt.Fprintf(&b, "#EXTINF:%.6f,\n%s\n", s.liveDurationLocked(n).Seconds(), s.segName(n))
+		fmt.Fprintf(&b, "#EXTINF:%.6f,\n%s\n", s.liveDurationLocked(t, n).Seconds(), s.segName(n))
 	}
 	if s.endSeg >= 0 {
 		b.WriteString("#EXT-X-ENDLIST\n")
@@ -152,8 +157,8 @@ func (s *Session) livePlaylistLocked(t int, discont func(int) bool) []byte {
 	return b.Bytes()
 }
 
-func (s *Session) liveDurationLocked(n int) time.Duration {
-	if d := s.liveDurations[n]; d > 0 {
+func (s *Session) liveDurationLocked(t, n int) time.Duration {
+	if d := s.liveDurations[t][n]; d > 0 {
 		return d
 	}
 	if s.plan != nil {
@@ -164,18 +169,23 @@ func (s *Session) liveDurationLocked(n int) time.Duration {
 
 // noteLiveDurationLocked records segment n's real length, keeping only what
 // the sliding window can still list.
-func (s *Session) noteLiveDurationLocked(n int, d time.Duration) {
+func (s *Session) noteLiveDurationLocked(t, n int, d time.Duration) {
 	if d <= 0 {
 		return
 	}
+	s.establishLiveTargetLocked(d)
 	if s.liveDurations == nil {
-		s.liveDurations = map[int]time.Duration{}
+		s.liveDurations = map[int]map[int]time.Duration{}
 	}
-	s.liveDurations[n] = d
-	if len(s.liveDurations) > 4*liveWindow {
-		for k := range s.liveDurations {
+	if s.liveDurations[t] == nil {
+		s.liveDurations[t] = map[int]time.Duration{}
+	}
+	durations := s.liveDurations[t]
+	durations[n] = d
+	if len(durations) > 4*liveWindow {
+		for k := range durations {
 			if k < n-2*liveWindow {
-				delete(s.liveDurations, k)
+				delete(durations, k)
 			}
 		}
 	}
@@ -270,6 +280,9 @@ func (s *Session) runPlanLocked(seg int) runPlan {
 	}
 	rp.mode = s.plan.ModeAt(seg)
 	rp.planEnd = s.plan.NextChange(seg)
+	if rp.mode == ModeCopy && s.budgetCapKbps > 0 && s.container == ContainerMPEGTS && s.budgetRung > 0 {
+		rp.mode = ModeTranscode
+	}
 	switch rp.mode {
 	case ModeFastStart:
 		rp.fastStart = true
@@ -309,9 +322,9 @@ func (s *Session) trackDecisionLocked(t int) core.Decision {
 		return s.decision
 	}
 	if t >= 0 && t < len(s.rungs) {
-		return s.rungs[t].decision
+		return s.applyBudgetDecisionLocked(t, s.rungs[t].decision)
 	}
-	return s.decision
+	return s.applyBudgetDecisionLocked(t, s.decision)
 }
 
 // vbvRateLocked is track t's VBV rate plan for a new run. A DASH track is
@@ -324,10 +337,22 @@ func (s *Session) vbvRateLocked(t int) rateControl {
 		return rateControl{}
 	}
 	r := s.rungs[t]
+	if !s.isDASH() && s.budgetCapKbps > 0 && s.container == ContainerMPEGTS && s.budgetRung > t && s.budgetRung < len(s.rungs) {
+		r = s.rungs[s.budgetRung]
+	}
 	if r.decision.VideoCopy || r.peakKbps <= 0 {
 		return rateControl{}
 	}
 	maxrate := r.peakKbps
+	target := r.avgKbps
+	if !s.isDASH() && s.budgetCapKbps > 0 {
+		if target == 0 || s.budgetCapKbps < target {
+			target = s.budgetCapKbps
+		}
+		if budgetPeak := peakKbps(s.budgetCapKbps); budgetPeak > 0 && budgetPeak < maxrate {
+			maxrate = budgetPeak
+		}
+	}
 	if gp := s.goodput.Kbps(); gp > 0 {
 		// Leave a modest delivery margin while allowing the reservoir to
 		// spend bits on complex scenes.
@@ -344,7 +369,7 @@ func (s *Session) vbvRateLocked(t int) rateControl {
 		seconds = 8
 	}
 	return rateControl{Quality: true, MaxrateKbps: maxrate,
-		BufsizeKbps: maxrate * seconds, TargetKbps: r.avgKbps}
+		BufsizeKbps: maxrate * seconds, TargetKbps: target}
 }
 
 // maybeGovernLocked re-plans upcoming copy segments as clamped transcodes
@@ -354,12 +379,16 @@ func (s *Session) maybeGovernLocked() {
 	if !s.governorOn || s.plan == nil || s.goodput.Samples() < 2 || len(s.segSizes) == 0 {
 		return
 	}
+	if s.videoTranscodingOff() {
+		return
+	}
 	goodput := s.goodput.Kbps()
 	if goodput <= 0 {
 		return
 	}
 	// Only alter not-yet-requested segments in the encoder read-ahead
-	// window. EVENT playlists let clients discover the revised plan.
+	// window. Only MPEG-TS copy sessions enable the governor, so clamped
+	// segments can splice cleanly without changing an EXT-X-MAP init header.
 	limit := s.aheadLimit()
 	if limit <= 0 {
 		limit = int(24 * time.Second / s.segDur)
@@ -414,4 +443,84 @@ func (s *Session) maybeGovernLocked() {
 			"goodputKbps", goodput, "clampKbps", clamp)
 		break // one clamp run at a time; re-evaluate after it completes
 	}
+}
+
+// Startup uses the existing muxer's first completed segment as a bounded
+// observation, not a prediction of future GOPs. One nominal interval of
+// headroom tolerates ordinary copy-cut variation without changing cuts.
+func (s *Session) establishLiveTargetLocked(d time.Duration) {
+	if s.liveTarget == 0 && d > 0 {
+		base := s.segDur
+		if base <= 0 {
+			base = DefaultSegmentDuration
+		}
+		s.liveTarget = time.Duration(math.Ceil(max(2*base, d).Seconds())) * time.Second
+	}
+}
+
+func (s *Session) awaitLiveTarget(ctx context.Context, track int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.liveInput || s.total != 0 || s.isDASH() {
+		return nil
+	}
+	timeout := s.m.opts.stallTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for s.liveTarget == 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if s.closed {
+			return fmt.Errorf("transcode: session closed")
+		}
+		if s.failErr != nil {
+			return s.failErr
+		}
+		// Live lazy/ladder sessions cannot wait for a segment GET: there is no
+		// media URL to request until this first playlist can be published.
+		if s.cur == nil {
+			s.wantTrack = track
+			if err := s.startRunForLocked(0, false, "live playlist startup"); err != nil {
+				return err
+			}
+		}
+		ch := s.changed
+		s.mu.Unlock()
+		var err error
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-timer.C:
+			err = fmt.Errorf("transcode: live playlist startup timed out")
+		}
+		s.mu.Lock()
+		if err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+type liveTargetError struct {
+	segment          int
+	duration, target time.Duration
+}
+
+func (e *liveTargetError) Error() string {
+	return fmt.Sprintf("transcode: live segment %d duration %s exceeds fixed target %s", e.segment, e.duration, e.target)
+}
+
+func (s *Session) validateLiveDurationLocked(n int, d time.Duration) error {
+	s.establishLiveTargetLocked(d)
+	// EXTINF is printed to six decimal places; compare that same value using
+	// RFC 8216 nearest-integer rounding, including the half-second boundary.
+	if d <= 0 || math.Round(math.Round(d.Seconds()*1e6)/1e6) > s.liveTarget.Seconds() {
+		return &liveTargetError{n, d, s.liveTarget}
+	}
+	return nil
 }

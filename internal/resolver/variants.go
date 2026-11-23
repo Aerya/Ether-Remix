@@ -29,6 +29,16 @@ const (
 // single Auto media; the detail page's PreResolve populates the cache, so
 // a later load shows versions.
 func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
+	if core.LocalResponse(ctx) {
+		// Detail responses expose stable logical choices immediately. Only
+		// the background snapshot may attach policy-checked concrete sources;
+		// a cold snapshot must never make the client's version menu disappear.
+		return s.VersionSlots(ctx, req, max, true)
+	}
+	return s.variants(ctx, req, max)
+}
+
+func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}
@@ -42,18 +52,42 @@ func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
 	sreq := searchRequestFor(req.Title)
 	results, ok := s.peekSearchCache(searchCacheKey(sreq))
-	if !ok || len(results) == 0 {
-		return nil, nil
+	titleVC := s.viewerTitleChoiceForResolve(req, nil)
+	showVC := s.viewerShowChoiceForResolve(req)
+	ownerPin, hasOwnerPin := s.PinFor(req.Title.Key)
+	if req.Client.Download {
+		hasOwnerPin = false
 	}
-	// An owner pin that applies to this client is what normal resolution
-	// tries first, so it is Auto (pins.go).
+	if !ok || len(results) == 0 {
+		playedRel, hasPlayed := s.playedReleaseForSlots(req)
+		if titleVC == nil && !hasPlayed {
+			return nil, nil
+		}
+		if titleVC != nil {
+			results = withRelease(results, titleVC.Release)
+		}
+		if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+			results = withRelease(results, ownerPin.Release)
+		}
+		if hasPlayed {
+			results = withRelease(results, playedRel)
+		}
+	}
+	// An owner pin that applies to this client is kept in the candidate pool,
+	// while an active viewer remembered choice takes precedence in Auto.
 	pinID := ""
-	if pin, _ := s.pinForResolve(req); pin != nil {
-		pinID = pin.Release.ID
-		results = withRelease(results, pin.Release)
+	if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+		pinID = ownerPin.Release.ID
+		results = withRelease(results, ownerPin.Release)
+	}
+	if titleVC != nil {
+		results = withRelease(results, titleVC.Release)
+	}
+	if playedRel, hasPlayed := s.playedReleaseForSlots(req); hasPlayed {
+		results = withRelease(results, playedRel)
 	}
 	// Auto uses the same preferences and hard rules as normal resolution.
-	strict, _, err := s.rankCandidates(ctx, req, sreq, profile, results, nil, pinID)
+	strict, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, nil, pinID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +104,7 @@ func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int
 	allowTaller := s.resolverCfg().OfferHigherVersions
 	if allowTaller {
 		if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-			pool, _, err = s.rankCandidates(ctx, req, sreq, relaxed, results, nil, pinID)
+			pool, _, err = s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, nil, pinID, false)
 			if err != nil {
 				return nil, err
 			}
@@ -78,16 +112,28 @@ func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int
 	}
 	strict = acceptableVariantAudio(clearIdentityVariants(strict))
 	pool = acceptableVariantAudio(clearIdentityVariants(pool))
+	autoRel := strict[0].rel
+	autoRemembered := false
+	if titleVC != nil || showVC != nil {
+		if picked, remembered := s.slotAutoWithSource(req, strict, pool, titleVC, showVC); remembered && picked.ID != "" {
+			autoRel, autoRemembered = picked, true
+		}
+	}
 	var vs []core.ReleaseVariant
 	rcfg := s.resolverCfg()
 	wanted := wantedAudio(profile, req.User, s.catalogLanguage())
 	if rcfg.AlternativesPerSource || rcfg.AlternativesPerResolution {
-		vs = pickResolutionVariants(req.Title, profile, strict[0].rel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
+		vs = pickResolutionVariants(req.Title, profile, autoRel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
 	} else {
-		vs = pickVariants(req.Title, req.Client, profile, strict[0].rel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
+		vs = pickVariants(req.Title, req.Client, profile, autoRel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
 	}
-	// A historical play must not put a now-rejected namesake back into Auto.
+	// A historical play must not put a now-rejected namesake back into Auto,
+	// and an explicit non-Auto version pick stays on its own entry rather than
+	// relabelling Auto.
 	played := req.PlayedRelease
+	if autoRemembered || !core.IsAutoVersionSelector(req.PlayedSelector) {
+		played = ""
+	}
 	if played != "" {
 		r, found := s.LookupRelease(played)
 		for _, result := range results {
@@ -98,7 +144,7 @@ func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int
 		}
 		if found {
 			identity := s.localEpisodeIdentity(ctx, req.Title, sreq, results)
-			if identity.reject(r, req.Title, sreq) != "" || (identity.ambiguous(r, sreq) && !strict[0].identityWeak) {
+			if identity.reject(r, req.Title, sreq) != "" || (identity.ambiguous(r, req.Title, sreq) && !strict[0].identityWeak) {
 				played = ""
 			}
 		}
@@ -106,6 +152,12 @@ func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int
 	labelPlayedAuto(req.Title, vs, played, results, s.LookupRelease, wanted)
 	// Every client version picker gets the same honest preference shortfall.
 	for i := range vs {
+		if info, ok := s.probedMediaFor(vs[i].Release); ok {
+			vs[i].Info = info
+		}
+		vs[i].Remembered = i == 0 && autoRemembered
+		vs[i].Pinned = hasOwnerPin && vs[i].Release.ID == ownerPin.Release.ID
+		vs[i].Availability, vs[i].AvailabilityNote = s.classifyVariantAvailability(ctx, req.Title.Key, vs[i].Release, vs[i].Info, false, ok)
 		for _, c := range pool {
 			if c.rel.ID != vs[i].Release.ID {
 				continue
@@ -646,14 +698,18 @@ func estimateVariantInfo(t *core.Title, rel core.Release, wanted []string) core.
 		original = t.Language
 	}
 	var audioStreams []core.StreamInfo
-	if audioCodec != "" {
+	if audioCodec != "" || len(info.Languages) > 0 {
 		audioStreams = estimateAudioStreams(info, original, rel.SourceLanguage, wanted)
 		for i := range audioStreams {
-			audioStreams[i].Codec = audioCodec
-			audioStreams[i].Channels = channels.count
-			audioStreams[i].ChannelLayout = channels.layout
-			audioStreams[i].SampleRate = 48000
-			audioStreams[i].BitrateKbps = audioKbpsGuess(audioCodec, channels.count)
+			if channels.count > 0 {
+				audioStreams[i].Channels = channels.count
+				audioStreams[i].ChannelLayout = channels.layout
+			}
+			if audioCodec != "" {
+				audioStreams[i].Codec = audioCodec
+				audioStreams[i].SampleRate = 48000
+				audioStreams[i].BitrateKbps = audioKbpsGuess(audioCodec, channels.count)
+			}
 		}
 	}
 
@@ -743,10 +799,10 @@ func estimateAudioStreams(info core.ReleaseInfo, original, sourceLang string, wa
 func estimateAudioLanguages(info core.ReleaseInfo, original, sourceLang string) []string {
 	var out []string
 	seen := map[string]bool{}
-	add := func(v string) {
+	add := func(v string) bool {
 		name := releaseparse.LanguageName(v)
 		if name == "" || name == releaseparse.LanguageMulti || name == releaseparse.LanguageDual {
-			return
+			return false
 		}
 		// Display value: the canonical BCP 47 tag ("pt-BR", "en"), which
 		// frontends render, falling back to the parser's name when the tag
@@ -757,33 +813,39 @@ func estimateAudioLanguages(info core.ReleaseInfo, original, sourceLang string) 
 		}
 		key := strings.ToLower(name)
 		if seen[key] {
-			return
+			return false
 		}
 		seen[key] = true
 		out = append(out, code)
+		return true
 	}
 	wide := false
+	hasNonOriginal := false
 	for _, l := range info.Languages {
 		if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {
 			wide = true
 			continue
 		}
-		add(l)
+		if add(l) {
+			if original == "" || releaseparse.LanguageMatch(l, original) == releaseparse.LanguageNoMatch {
+				hasNonOriginal = true
+			}
+		}
 	}
-	named := len(out)
 	if wide {
 		add(original)
-		if named == 0 {
-			// DUAL/MULTI with no named dub: the source language is the
-			// evidence we have for the other track, but only when it says
-			// something new — a source matching the original adds nothing,
-			// and an unset source stays unlabelled rather than guessed.
+		if !hasNonOriginal {
+			// DUAL/MULTI with no named dub beyond the title's original language:
+			// the source language is the evidence we have for the other track,
+			// but only when it says something new — a source matching the
+			// original adds nothing, and an unset source stays unlabelled rather
+			// than collapsing a multi-track release to only the original language.
 			src := langtag.CanonicalBCP47(sourceLang)
 			if src == "" {
 				src = strings.TrimSpace(sourceLang)
 			}
 			if src != "" && releaseparse.LanguageMatch(src, original) == releaseparse.LanguageNoMatch {
-				out = append(out, src)
+				add(src)
 			} else {
 				out = append(out, "")
 			}

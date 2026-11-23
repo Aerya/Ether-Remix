@@ -1,7 +1,8 @@
 package frontend
 
-// DefaultPort returns the listener port for protocols that require one.
-// Silo uses its Compose default; the reference lab's 8098 is an override.
+// DefaultPort returns the default listener port for protocols that support
+// a dedicated listener. Silo uses its Compose default; Vela's dedicated
+// listener is optional (off until configured) and defaults to 8098.
 func DefaultPort(id Protocol) (int, bool) {
 	switch id {
 	case "plex": // Listener default wiring.
@@ -12,6 +13,8 @@ func DefaultPort(id Protocol) (int, bool) {
 		return 8097, true
 	case "silo":
 		return 8090, true
+	case "vela":
+		return 8098, true
 	default:
 		return 0, false
 	}

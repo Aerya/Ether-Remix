@@ -84,9 +84,10 @@ func (s *Server) expandKey(ctx context.Context, pr *Request, k frontend.RatingKe
 			if err != nil {
 				return nil, err
 			}
+			noExpandCtx := frontend.WithNoContainerExpand(ctx)
 			var out []frontend.RatingKey
 			for _, title := range titles {
-				keys, err := s.expandKey(ctx, pr, title.Key)
+				keys, err := s.expandKey(noExpandCtx, pr, title.Key)
 				if err == nil {
 					out = append(out, keys...)
 				}
@@ -96,6 +97,43 @@ func (s *Server) expandKey(ctx context.Context, pr *Request, k frontend.RatingKe
 			}
 			return capKeys(out), nil
 		}
+	}
+	if k.IsPluginKey() {
+		t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, k)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil || !s.canSeePluginTitle(pr.User, t) {
+			return nil, frontend.ErrNotFound
+		}
+		base, _ := s.kindSectionBaseForTitle(t)
+		excludeVideo := base == plexBaseArtist || (t.MediaClass != "" && t.MediaClass != frontend.MediaClassVideo)
+		var titles []frontend.Title
+		switch t.Type {
+		case frontend.TypeShow, frontend.TypeSeason:
+			titles, err = s.metadataGrandchildrenOf(ctx, pr, t)
+		default:
+			if !s.pluginAwarePlayable(ctx, pr.User, t) {
+				return nil, frontend.ErrNotFound
+			}
+			return []frontend.RatingKey{k}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out := make([]frontend.RatingKey, 0, len(titles))
+		for _, title := range titles {
+			if title.Type == frontend.TypeShow || title.Type == frontend.TypeSeason {
+				continue
+			}
+			if excludeVideo && title.MediaClass == frontend.MediaClassVideo {
+				continue
+			}
+			if s.canSeePluginTitle(pr.User, &title) && s.pluginAwarePlayable(ctx, pr.User, &title) {
+				out = append(out, title.Key)
+			}
+		}
+		return capKeys(out), nil
 	}
 	selection := s.exp().NewPlaylistSelection(frontend.PlaylistSelectionOptions{Playlists: s.playlists(), Collections: s.collections(), Visibility: s.visibility(), Children: func(ctx context.Context, key frontend.RatingKey) ([]frontend.Title, error) {
 		return s.metadataChildren(ctx, pr, key)
@@ -201,8 +239,15 @@ func titleKeys(ts []frontend.Title) []frontend.RatingKey {
 	return out
 }
 
-// resolveURI turns a content URI into playable rating keys.
+// resolveURI turns a content URI into playable rating keys, capped to maxExpand.
 func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]frontend.RatingKey, error) {
+	keys, err := s.expandURI(ctx, pr, uri)
+	return capKeys(keys), err
+}
+
+// expandURI turns a content URI into playable rating keys before play-queue
+// windowing or playlist capping.
+func (s *Server) expandURI(ctx context.Context, pr *Request, uri string) ([]frontend.RatingKey, error) {
 	p, err := uriPath(uri)
 	if err != nil {
 		return nil, err
@@ -227,13 +272,14 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 		}
 		// Use the rendered row so availability and viewer restrictions match
 		// the items the client was offered, including episode parent policy.
+		noExpandCtx := frontend.WithNoContainerExpand(ctx)
 		var out []frontend.RatingKey
 		for _, md := range s.renderHub(ctx, pr, h, hubCtx{}).Metadata {
 			k, err := frontend.ParseRatingKey(md.RatingKey)
 			if err != nil {
 				continue
 			}
-			sub, err := s.expandKey(ctx, pr, k)
+			sub, err := s.expandKey(noExpandCtx, pr, k)
 			if err == nil {
 				out = append(out, sub...)
 			}
@@ -241,12 +287,18 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	case reMetadataPath.MatchString(path):
 		m := reMetadataPath.FindStringSubmatch(path)
 		keys, err := parseKeys(m[1])
 		if err != nil {
 			return nil, err
+		}
+		// Explicit single-container playback may trigger container expansion;
+		// multi-key URIs stay on stored rows to avoid expansion storms.
+		expandCtx := ctx
+		if len(keys) > 1 {
+			expandCtx = frontend.WithNoContainerExpand(ctx)
 		}
 		var out []frontend.RatingKey
 		for _, k := range keys {
@@ -260,24 +312,23 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 					return nil, frontend.ErrNotFound
 				}
 			}
-			sub, err := s.expandKey(ctx, pr, k)
+			sub, err := s.expandKey(expandCtx, pr, k)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, sub...)
-			if len(out) >= maxExpand {
+			if len(keys) > 1 && len(out) >= 20*maxExpand {
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	case reCollectionPath.MatchString(path):
 		m := reCollectionPath.FindStringSubmatch(path)
 		k, err := frontend.ParseRatingKey(m[1])
 		if err != nil {
 			return nil, err
 		}
-		keys, err := s.expandKey(ctx, pr, k)
-		return capKeys(keys), err
+		return s.expandKey(ctx, pr, k)
 	case rePlaylistPath.MatchString(path):
 		m := rePlaylistPath.FindStringSubmatch(path)
 		k, err := frontend.ParseRatingKey(m[1])
@@ -293,6 +344,38 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 			return nil, frontend.ErrNotFound
 		}
 		q, _ := url.ParseQuery(rawQuery)
+		if sec.PluginID != "" {
+			query := frontend.ItemQuery{Limit: maxExpand}
+			if tp := typeFromParam(q.Get("type")); tp != "" && tp != "collection" {
+				query.Recursive = true
+				query.Types = []frontend.MediaType{tp}
+			}
+			query = sanitizePluginSectionQuery(sec, q, query)
+			page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), query)
+			if err != nil {
+				return nil, err
+			}
+			noExpandCtx := frontend.WithNoContainerExpand(ctx)
+			musicSection := string(sec.Type) == plexBaseArtist
+			var out []frontend.RatingKey
+			for _, t := range page.Items {
+				if musicSection && t.MediaClass == frontend.MediaClassVideo {
+					continue
+				}
+				if t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason {
+					sub, err := s.expandKey(noExpandCtx, pr, t.Key)
+					if err == nil {
+						out = append(out, sub...)
+					}
+				} else if s.canSeePluginTitle(pr.User, &t) && s.pluginAwarePlayable(noExpandCtx, pr.User, &t) {
+					out = append(out, t.Key)
+				}
+				if len(out) >= maxExpand {
+					break
+				}
+			}
+			return capKeys(out), nil
+		}
 		br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q, rawQuery)
 		br.q.Offset, br.q.Limit = 0, maxExpand
 		page, err := s.catalog().Browse(ctx, br.q)
@@ -309,7 +392,7 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported uri path %q", path)
 }
@@ -319,6 +402,24 @@ func capKeys(ks []frontend.RatingKey) []frontend.RatingKey {
 		return ks[:maxExpand]
 	}
 	return ks
+}
+
+// windowKeys caps ks to maxExpand items around startIdx (maxExpand/2 before
+// and the rest after, clamped to [0, len(ks)]), returning the windowed slice
+// and the counts of omitted items before and after it.
+func windowKeys(ks []frontend.RatingKey, startIdx int) (window []frontend.RatingKey, before, after int) {
+	if len(ks) <= maxExpand {
+		return ks, 0, 0
+	}
+	lo := startIdx - maxExpand/2
+	if lo+maxExpand > len(ks) {
+		lo = len(ks) - maxExpand
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	hi := lo + maxExpand
+	return ks[lo:hi], lo, len(ks) - hi
 }
 
 // ---------------------------------------------------------------------------

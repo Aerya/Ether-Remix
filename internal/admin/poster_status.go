@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/config"
 )
 
 func (h *Handler) posterStatus(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +63,14 @@ func (h *Handler) clearPosters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 500, "artwork_clear", "Could not clear uploaded artwork")
 		return
+	}
+	if !more && h.deps.Config != nil {
+		if err := h.deps.Config.Update(func(c *config.Config) error {
+			c.Posters.Generation++
+			return nil
+		}); err != nil {
+			h.log.Warn("admin: roll poster generation after clear", "err", err)
+		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true, "more": more})
 }

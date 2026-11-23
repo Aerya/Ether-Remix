@@ -34,7 +34,7 @@ import { useOwnerViewerPath } from "../../components/pickers";
 import { SaveBar } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
 import { localized, t, tn, tx } from "../../i18n";
-import { api, apiFetch, ApiError, type TestFn } from "../../lib/api";
+import { api, apiFetch, ApiError, errorMessage, type TestFn } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
 import { TmdbCatalogueSettings } from "./TmdbCatalogueSettings";
@@ -70,6 +70,7 @@ export type ServiceTab =
   | "llm"
   | "opensubtitles"
   | "subdl"
+  | "subsource"
   | "ratings"
   | "introdb";
 
@@ -89,6 +90,7 @@ const TAB_ORDER: ServiceTab[] = [
   "llm",
   "opensubtitles",
   "subdl",
+  "subsource",
   "ratings",
   "introdb",
 ];
@@ -114,6 +116,7 @@ export function integrationTabs(
     llm: t("Language model"),
     opensubtitles: "OpenSubtitles",
     subdl: "SubDL",
+    subsource: "SubSource",
     ratings: t("Ratings"),
     introdb: "TheIntroDB",
   };
@@ -128,7 +131,15 @@ export function integrationTabs(
 interface Service {
   tab: Exclude<ServiceTab, "overview" | "ratings">;
   configKey:
-    "plexServers" | "trakt" | "simkl" | "mdblist" | "llm" | "openSubtitles" | "subdl" | "markers";
+    | "plexServers"
+    | "trakt"
+    | "simkl"
+    | "mdblist"
+    | "llm"
+    | "openSubtitles"
+    | "subdl"
+    | "subsource"
+    | "markers";
   endpoint: string;
   /** Boolean this card's switch writes. Omitted fields stay stored. */
   flag: "enabled" | "theIntroDb";
@@ -232,6 +243,16 @@ const SERVICES: Service[] = localized(() => [
     groups: S.SUBDL,
     testLabel: t("Test SubDL"),
     test: (v) => api.testSubDL(v as EtherConfig["subdl"]),
+  },
+  {
+    tab: "subsource",
+    configKey: "subsource",
+    endpoint: "subsource",
+    flag: "enabled",
+    label: "SubSource",
+    groups: S.SUBSOURCE,
+    testLabel: t("Test SubSource"),
+    test: (v) => api.testSubSource(v as EtherConfig["subsource"]),
   },
   {
     tab: "introdb",
@@ -420,6 +441,14 @@ function mergeSection(
           apiKey: textField(section, "apiKey", base.subdl?.apiKey ?? ""),
         },
       };
+    case "subsource":
+      return {
+        ...base,
+        subsource: {
+          enabled: boolField(section, "enabled", base.subsource?.enabled ?? false),
+          apiKey: textField(section, "apiKey", base.subsource?.apiKey ?? ""),
+        },
+      };
     case "markers": {
       const prev = base.markers ?? { theIntroDb: false, apiKey: "" };
       return {
@@ -557,7 +586,7 @@ export function ConnectedServices({
     navigate("/services/overview", { replace: true });
     if (skipSetupOffer.current) return;
     const service = SERVICES.find((item) => item.tab === key);
-    if (service && service.blockEnable?.(draft[service.configKey] ?? {})) {
+    if (service) {
       openSectionSetup(service, draft[service.configKey] ?? {});
     }
     // Setup openers are stable setState wrappers. Re-running would reset a drawer mid-edit.
@@ -808,14 +837,22 @@ export function ConnectedServices({
       return;
     }
     void enqueue(async () => {
+      setBusyId("ratings");
       try {
+        const current = model.current.ratings ?? ratings.data;
         const res = await apiFetch<RatingSettings>("/discovery/ratings/settings", {
           method: "PUT",
-          body: JSON.stringify({ ...ratings.data, apiKey: "" }),
+          body: JSON.stringify({ ...current, enabled: false, apiKey: "" }),
         });
+        model.current.ratings = res;
         ratings.setData(res);
       } catch (e) {
         setError(e);
+        toast.error(t("Couldn't save the change"), {
+          description: errorMessage(e),
+        });
+      } finally {
+        setBusyId(null);
       }
     });
   };
@@ -927,6 +964,7 @@ export function ConnectedServices({
           saved={ratings.data ?? null}
           persist={enqueue}
           onPersisted={(next) => {
+            model.current.ratings = next;
             ratings.setData(next);
             setRatingsSetup(false);
           }}
@@ -1020,10 +1058,11 @@ export function ConnectedServices({
         </div>
       ) : null}
       <PosterAccounts locked={locked} tab={tab} onEnabled={setPosterFlags}>
-        {(posterCards) => (
+        {(posterCards, posterSavedNote) => (
           <div hidden={tab !== "overview"}>
             <ServiceOverview
               posterCards={posterCards}
+              posterSavedNote={posterSavedNote}
               onTmdbSetup={() => setTmdbSetup(true)}
               onRatingsSetup={toggleRatings}
               draft={draft}
@@ -1059,26 +1098,29 @@ export function ConnectedServices({
               disabled={locked}
               test={testButton}
               href={
-                s.tab === "introdb" || s.tab === "opensubtitles" || s.tab === "subdl"
+                s.tab === "introdb" ||
+                s.tab === "opensubtitles" ||
+                s.tab === "subdl" ||
+                s.tab === "subsource"
                   ? "/playback/extras"
                   : s.tab === "llm"
                     ? "/home"
                     : s.tab === "trakt"
                       ? ownerPath === "/viewers"
                         ? "/viewers"
-                        : `${ownerPath}/limits`
+                        : `${ownerPath}/sign-in?signin=sync`
                       : "/viewers"
               }
               usage={
                 s.tab === "introdb"
                   ? t("Choose intro lookups in Playback › Extras.")
-                  : s.tab === "opensubtitles" || s.tab === "subdl"
+                  : s.tab === "opensubtitles" || s.tab === "subdl" || s.tab === "subsource"
                     ? t("Supplies subtitles during playback.")
                     : s.tab === "llm"
                       ? t("Powers search, collections and Home recommendations.")
                       : s.tab === "trakt"
                         ? t(
-                            "Connect Trakt under each viewer's Limits tab, or let viewers connect at /ether/me.",
+                            "Connect Trakt under each viewer's Sign-in & devices tab, or let viewers connect at /ether/me.",
                           )
                         : t("Connect viewer accounts to sync watch history.")
               }
@@ -1126,8 +1168,6 @@ export function ConnectedServices({
             name={t("OMDb and MDBList")}
             enabled={secretConfigured(ratings.data?.apiKey)}
             onToggle={toggleRatings}
-            href="/metadata/ratings"
-            usage={t("Choose the scores shown in apps in Metadata › Ratings.")}
           >
             <RatingSources
               keysOnly
@@ -1216,12 +1256,14 @@ function ServiceOverview({
   locked,
   onToggle,
   posterCards,
+  posterSavedNote,
   onTmdbSetup,
   onRatingsSetup,
 }: {
   onTmdbSetup: (next: boolean) => void;
   onRatingsSetup: (next: boolean) => void;
   posterCards: ReactNode;
+  posterSavedNote?: ReactNode;
   draft: Record<string, Obj>;
   stored: Record<string, Obj> | null;
   ratings: RatingSettings | undefined;
@@ -1232,6 +1274,7 @@ function ServiceOverview({
   const navigate = useNavigate();
   const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
   const [addingSource, setAddingSource] = useState(false);
+  const [ownerPostersSaved, setOwnerPostersSaved] = useState(false);
   useStreamEvent("plugins.changed", () => {
     void catalogue.reload();
   });
@@ -1333,6 +1376,13 @@ function ServiceOverview({
                 <>
                   <div className="w-full space-y-1 text-sm text-fg-muted">
                     <p>{source.entries.map(sourceName).join(" · ")}</p>
+                    {source.entries
+                      .filter((entry) => entry.lastError)
+                      .map((entry) => (
+                        <p key={entry.id} className="text-danger">
+                          {sourceName(entry)}: {entry.lastError}
+                        </p>
+                      ))}
                     <p>
                       {source.libraries.length
                         ? t("Used by: {libraries}", {
@@ -1413,14 +1463,28 @@ function ServiceOverview({
         />
       </IntegrationGroup>
       <>
-        <IntegrationGroup title={t("Artwork and ratings")}>
+        <IntegrationGroup
+          title={t("Artwork and ratings")}
+          footer={
+            posterSavedNote ??
+            (ownerPostersSaved ? (
+              <p className="text-sm text-fg-muted" role="status">
+                {t(
+                  "Apps reload posters the next time they open a library; some may need to be restarted.",
+                )}
+              </p>
+            ) : null)
+          }
+        >
           {posterCards}
-          <OwnerPosters locked={locked} />
+          <OwnerPosters locked={locked} onSaved={() => setOwnerPostersSaved(true)} />
           <IntegrationAppCard
             identity={{ id: "ratings", name: t("OMDb and MDBList") }}
             description={t("IMDb, Rotten Tomatoes and other rating badges.")}
             status={ratingsStatus(ratings)}
             enabled={secretConfigured(ratings?.apiKey)}
+            busy={locked || busyId === "ratings"}
+            disabled={switchesHeld}
             onToggle={onRatingsSetup}
             configureHref="/services/ratings"
             configureLabel={t(secretConfigured(ratings?.apiKey) ? "Manage {app}" : "Set up {app}", {
@@ -1457,6 +1521,21 @@ function ServiceOverview({
           onToggle={(next) => onToggle(service("subdl"), next)}
           configureHref="/services/subdl"
           configureLabel={on("subdl") ? t("Manage SubDL") : t("Set up SubDL")}
+        />
+        <IntegrationAppCard
+          identity={{ id: "subsource", name: "SubSource" }}
+          description={t("Fetch subtitles from SubSource when a release doesn't include them.")}
+          status={switchStatus(
+            on("subsource"),
+            Boolean(saved("subsource").apiKey),
+            t("Needs an API key"),
+          )}
+          enabled={on("subsource")}
+          busy={locked || busyId === "subsource"}
+          disabled={switchesHeld}
+          onToggle={(next) => onToggle(service("subsource"), next)}
+          configureHref="/services/subsource"
+          configureLabel={on("subsource") ? t("Manage SubSource") : t("Set up SubSource")}
         />
         <IntegrationAppCard
           identity={{ id: "introdb", name: "TheIntroDB" }}

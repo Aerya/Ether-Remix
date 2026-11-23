@@ -17,7 +17,7 @@ function loadTitle(key: string): Promise<TitleDetail | null> {
 export function useTitle(key: string | undefined): TitleDetail | null {
   const [t, setT] = useState<TitleDetail | null>(null);
   useEffect(() => {
-    if (!key) {
+    if (!key || key === "0") {
       setT(null);
       return;
     }

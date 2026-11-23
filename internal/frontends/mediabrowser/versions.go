@@ -43,6 +43,24 @@ func (i *instance) resolveSource(r *http.Request, scope frontend.VersionScope, h
 	return 0, "", "", frontend.ErrNotFound
 }
 
+// resolveStaleSource reports whether handle was previously issued on this
+// surface for an item this viewer can still access, even though its release or
+// detail revision is no longer current. Foreign, forged, and raw release IDs
+// fail closed.
+func (i *instance) resolveStaleSource(r *http.Request, scope frontend.VersionScope, handle string) (frontend.RatingKey, bool) {
+	if sr, ok := i.host.VersionHandles.(frontend.StaleVersionResolver); ok {
+		if item, err := sr.ResolveStaleParent(i.identityContext(r), scope, handle); err == nil && item != 0 {
+			return item, true
+		}
+	}
+	if dr, ok := i.host.Sessions.(frontend.StaleDetailResolver); ok {
+		if item, err := dr.ResolveStaleDetailParent(i.identityContext(r), scope, handle); err == nil && item != 0 {
+			return item, true
+		}
+	}
+	return 0, false
+}
+
 // The broker accepts both dashed and undashed UUID handles.
 func sameVersionHandle(a, b string) bool {
 	return strings.EqualFold(strings.ReplaceAll(a, "-", ""), strings.ReplaceAll(b, "-", ""))

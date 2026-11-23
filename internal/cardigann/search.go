@@ -15,6 +15,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -137,6 +138,29 @@ func (r *Runner) attempts(req core.SearchRequest, movieCats, tvCats []int) []que
 		kq.keywords = strings.TrimSpace(kq.q + " " + epString)
 		out = append(out, kq)
 	}
+	if req.Category == "" && req.Type == core.TypeEpisode {
+		var lists [][]query
+		if !req.ReleaseAliasesOnly {
+			lists = append(lists, out)
+		}
+		for _, n := range core.EpisodeAliases(req) {
+			lists = append(lists, r.attempts(core.AliasSearchRequest(req, n), movieCats, tvCats))
+		}
+		var combined []query
+		for i := 0; ; i++ {
+			any := false
+			for _, list := range lists {
+				if i < len(list) {
+					any = true
+					combined = append(combined, list[i])
+				}
+			}
+			if !any {
+				break
+			}
+		}
+		out = combined
+	}
 	return out
 }
 
@@ -247,11 +271,32 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 	if req.OriginalTitle != "" {
 		addTitle(req.OriginalTitle)
 	}
+	if req.EnglishTitle != "" {
+		addTitle(req.EnglishTitle)
+	}
 	for _, a := range releaseparse.TitleAliases(req.Title) {
 		addTitle(a)
 	}
 	if req.OriginalTitle != "" {
 		for _, a := range releaseparse.TitleAliases(req.OriginalTitle) {
+			addTitle(a)
+		}
+	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.TitleAliases(req.EnglishTitle) {
+			addTitle(a)
+		}
+	}
+	for _, a := range releaseparse.SubtitleAliases(req.Title, req.AlternativeTitles) {
+		addTitle(a)
+	}
+	if req.OriginalTitle != "" {
+		for _, a := range releaseparse.SubtitleAliases(req.OriginalTitle, req.AlternativeTitles) {
+			addTitle(a)
+		}
+	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.SubtitleAliases(req.EnglishTitle, req.AlternativeTitles) {
 			addTitle(a)
 		}
 	}
@@ -279,24 +324,34 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 			out = append(out, aq)
 		}
 	}
-	// Torrent season-pack / complete-series rescue when an episode search
-	// returned 0 single-episode rows.
-	if isTV && req.Season > 0 && req.Episode > 0 && !strings.EqualFold(r.def.Protocol, "usenet") {
+	// Season-pack rescue when an episode search returned 0 single-episode rows.
+	if isTV && req.Season > 0 && req.Episode > 0 {
 		allTitles := []string{}
 		if primary := sanitizeTitle(req.Title); primary != "" {
 			allTitles = append(allTitles, primary)
 		}
 		allTitles = append(allTitles, altTitles...)
 		seasonStr := fmt.Sprintf("S%02d", req.Season)
+		isUsenet := strings.EqualFold(r.def.Protocol, "usenet")
 		for _, t := range allTitles {
 			sq := base
 			sq.ep = 0
 			sq.q = t
 			sq.keywords = strings.TrimSpace(t + " " + seasonStr)
 			out = append(out, sq)
-			sqWord := sq
-			sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
-			out = append(out, sqWord)
+			if !isUsenet {
+				sqWord := sq
+				sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
+				out = append(out, sqWord)
+			}
+		}
+	}
+	if req.Type == core.TypeEpisode {
+		if req.ReleaseAliasesOnly {
+			out = nil
+		}
+		for _, n := range core.EpisodeAliases(req) {
+			out = append(out, r.fallbackAttempts(core.AliasSearchRequest(req, n), movieCats, tvCats)...)
 		}
 	}
 	return out
@@ -315,6 +370,18 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 	if len(attempts) == 0 {
 		return nil, errors.New("search request has no title or supported identifier")
 	}
+	fallbackCat := config.DefaultCategoryForIdentityMedia(config.IdentityMediaTypeForSearch(req))
+	stampMissing := func(res []core.Release) []core.Release {
+		if fallbackCat == 0 {
+			return res
+		}
+		for i := range res {
+			if res[i].Category == 0 {
+				res[i].Category = fallbackCat
+			}
+		}
+		return res
+	}
 	var firstErr error
 	for _, q := range attempts {
 		if err := ctx.Err(); err != nil {
@@ -332,7 +399,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 			continue
 		}
 		if len(res) > 0 {
-			return res, nil
+			return stampMissing(res), nil
 		}
 	}
 	if firstErr == nil {
@@ -382,7 +449,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 					}
 				}
 				if len(merged) > 0 {
-					return merged, nil
+					return stampMissing(merged), nil
 				}
 				if budgetErr != nil {
 					return nil, budgetErr
@@ -401,7 +468,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 					continue
 				}
 				if len(res) > 0 {
-					return res, nil
+					return stampMissing(res), nil
 				}
 			}
 		}
@@ -1060,6 +1127,7 @@ func (r *Runner) toFound(d rowData) (found, error) {
 		rel.NZBURL = d.download
 	} else {
 		rel.Protocol = core.ProtocolTorrent
+		rel.Private = r.def.IsPrivate()
 		rel.Seeders, rel.Peers = d.seeders, d.seeders+d.leechers
 		rel.NZBURL = d.download
 		rel.MagnetURL = d.magnet
@@ -1067,7 +1135,9 @@ func (r *Runner) toFound(d rowData) (found, error) {
 		if rel.InfoHash == "" && d.magnet != "" {
 			rel.InfoHash = newznab.InfoHashFromMagnet(d.magnet)
 		}
-		if rel.MagnetURL == "" && rel.InfoHash != "" {
+		if rel.Private {
+			rel.MagnetURL = newznab.BareMagnet(rel.InfoHash)
+		} else if rel.MagnetURL == "" && rel.InfoHash != "" {
 			rel.MagnetURL = newznab.MagnetFor(rel.InfoHash, title, nil)
 		}
 		if rel.NZBURL == "" && rel.MagnetURL == "" {

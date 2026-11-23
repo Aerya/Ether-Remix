@@ -24,9 +24,13 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 	if s.rejectedFor(t.Key, rel) {
 		return false
 	}
-	req := s.searchRequest(ctx, t)
+	req := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
+	if rel.Info.Title == "" {
+		rel.Info = releaseparse.Parse(rel.Name)
+	}
 	if req.Type == core.TypeEpisode {
-		if rel.Target != nil && (rel.Target.Season != req.Season || rel.Target.Episode != req.Episode) {
+		season, episode := releaseNumbers(rel.Info, req)
+		if rel.Target != nil && (rel.Target.Season != season || rel.Target.Episode != episode) {
 			return false
 		}
 		// Cached torrent descriptors must carry today's file-selection target.
@@ -34,28 +38,28 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 			return false
 		}
 	}
-	if rel.Info.Title == "" {
-		rel.Info = releaseparse.Parse(rel.Name)
-	}
 	identity := s.localEpisodeIdentity(ctx, t, req, []core.Release{rel})
 	if identity.reject(rel, t, req) != "" {
 		return false
 	}
 	s.prepareSeriesYears(ctx, t, req, []core.Release{rel})
-	if rejectIdentityYears(rel, t, req, s.catalogLanguage(), func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) != "" {
+	s.prepareTitleIDVerifications(ctx, t, req, s.catalogLanguage(), []core.Release{rel})
+	rel = s.applyVerifiedTitleIDs(rel, t, req)
+	if rejectIdentityMetadata(rel, t, req, s.catalogLanguage(), func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }, s.metadataTitleMatches(rel, req)) != "" {
 		return false
 	}
 	if req.Type == core.TypeEpisode && (identity.shared(req) || s.hasSeriesNamesake(ctx, t, req)) {
+		evidence := identity.evidence(rel, t, req)
 		// Old indexer IDs may have been copied from the query. Contradictory
-		// regional evidence needs a year or episode subtitle before reuse.
-		if episodeNamesakeConflict(rel, t, req) {
+		// regional evidence needs positive identity evidence before reuse.
+		if evidence == "" && episodeNamesakeConflict(rel, t, req) {
 			return false
 		}
-		return episodeIdentityEvidence(rel, req)
+		return evidence != ""
 	}
 	return true
 }
 
 func episodeNamesakeConflict(rel core.Release, t *core.Title, req core.SearchRequest) bool {
-	return episodeRegionConflict(rel, t) && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && !releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle)
+	return episodeRegionConflict(rel, t) && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && !releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) && !releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released)
 }

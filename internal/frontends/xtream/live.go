@@ -12,6 +12,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
+func xtreamOwnerGroupRef(id string) string {
+	return "owner\n" + id
+}
+
 func (i *instance) channels(r *http.Request, l login) ([]frontend.LiveChannel, error) {
 	cs, err := i.host.LiveTV.Channels(r.Context(), l.viewer)
 	if err != nil {
@@ -23,6 +27,16 @@ func (i *instance) channels(r *http.Request, l login) ([]frontend.LiveChannel, e
 		seen := map[string]bool{}
 		for _, c := range cs[start:min(start+250, len(cs))] {
 			refs = append(refs, c.ID)
+			if len(c.Groups) > 0 {
+				for _, g := range c.Groups {
+					ref := xtreamOwnerGroupRef(g.ID)
+					if !seen[ref] {
+						groups = append(groups, ref)
+						seen[ref] = true
+					}
+				}
+				continue
+			}
 			if group := strings.TrimSpace(c.Group); group != "" && !seen[group] {
 				groups = append(groups, group)
 				seen[group] = true
@@ -50,15 +64,56 @@ func (i *instance) channels(r *http.Request, l login) ([]frontend.LiveChannel, e
 	}
 	return cs, nil
 }
-func liveCategory(l login, c frontend.LiveChannel) string {
+
+func liveCategoryInt(l login, c frontend.LiveChannel) int32 {
+	if len(c.Groups) > 0 {
+		if id := l.groups[xtreamOwnerGroupRef(c.Groups[0].ID)]; id > 0 {
+			return id
+		}
+	}
 	if id := l.groups[strings.TrimSpace(c.Group)]; id > 0 {
-		return strconv.FormatInt(int64(id), 10)
+		return id
 	}
 	if c.Kind == "iptv" {
-		return "2"
+		return 2
 	}
-	return "1"
+	return 1
 }
+
+func liveCategory(l login, c frontend.LiveChannel) string {
+	return strconv.FormatInt(int64(liveCategoryInt(l, c)), 10)
+}
+
+func liveCategoryIDs(l login, c frontend.LiveChannel) []int32 {
+	if len(c.Groups) > 0 {
+		out := make([]int32, 0, len(c.Groups))
+		for _, g := range c.Groups {
+			if id := l.groups[xtreamOwnerGroupRef(g.ID)]; id > 0 {
+				out = append(out, id)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []int32{liveCategoryInt(l, c)}
+}
+
+func liveChannelInCategory(l login, c frontend.LiveChannel, cat string) bool {
+	if cat == "" || cat == "0" {
+		return true
+	}
+	if len(c.Groups) > 0 {
+		for _, g := range c.Groups {
+			if id := l.groups[xtreamOwnerGroupRef(g.ID)]; id > 0 && strconv.FormatInt(int64(id), 10) == cat {
+				return true
+			}
+		}
+		return false
+	}
+	return cat == liveCategory(l, c)
+}
+
 func (i *instance) live(w http.ResponseWriter, r *http.Request, l login, action string) {
 	channels, err := i.channels(r, l)
 	if err != nil {
@@ -68,7 +123,37 @@ func (i *instance) live(w http.ResponseWriter, r *http.Request, l login, action 
 	if action == "get_live_categories" {
 		out := []map[string]any{}
 		seen := map[string]bool{}
+		var ownerGroups []frontend.LiveGroup
+		if lg, ok := i.host.LiveTV.(frontend.LiveTVGroups); ok {
+			ownerGroups, err = lg.Groups(r.Context(), l.viewer)
+			if err != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+		} else {
+			seenOwner := map[string]bool{}
+			for _, c := range channels {
+				for _, g := range c.Groups {
+					if !seenOwner[g.ID] {
+						seenOwner[g.ID] = true
+						ownerGroups = append(ownerGroups, g)
+					}
+				}
+			}
+		}
+		for _, g := range ownerGroups {
+			if id := l.groups[xtreamOwnerGroupRef(g.ID)]; id > 0 {
+				catID := strconv.FormatInt(int64(id), 10)
+				if !seen[catID] {
+					seen[catID] = true
+					out = append(out, map[string]any{"category_id": catID, "category_name": g.Name, "parent_id": 0})
+				}
+			}
+		}
 		for _, c := range channels {
+			if len(c.Groups) > 0 {
+				continue
+			}
 			id := liveCategory(l, c)
 			if !seen[id] {
 				seen[id] = true
@@ -89,8 +174,9 @@ func (i *instance) live(w http.ResponseWriter, r *http.Request, l login, action 
 	_, _ = w.Write([]byte("["))
 	first := true
 	num := 0
+	catFilter := r.URL.Query().Get("category_id")
 	for _, c := range channels {
-		if cat := r.URL.Query().Get("category_id"); cat != "" && cat != "0" && cat != liveCategory(l, c) {
+		if !liveChannelInCategory(l, c, catFilter) {
 			continue
 		}
 		if !first {
@@ -98,10 +184,11 @@ func (i *instance) live(w http.ResponseWriter, r *http.Request, l login, action 
 		}
 		first = false
 		num++
-		_ = jsonEncoder(w, map[string]any{"num": num, "name": c.Name, "stream_type": "live", "stream_id": l.channels[c.ID], "stream_icon": i.image(r, l, 0, c.ID, c.Images), "epg_channel_id": c.ID, "added": "0", "category_id": liveCategory(l, c), "custom_sid": "", "tv_archive": 0, "tv_archive_duration": 0, "direct_source": ""})
+		_ = jsonEncoder(w, map[string]any{"num": num, "name": c.Name, "stream_type": "live", "stream_id": l.channels[c.ID], "stream_icon": i.image(r, l, 0, c.ID, c.Images), "epg_channel_id": c.ID, "added": "0", "category_id": liveCategory(l, c), "category_ids": liveCategoryIDs(l, c), "custom_sid": "", "tv_archive": 0, "tv_archive_duration": 0, "direct_source": ""})
 	}
 	_, _ = w.Write([]byte("]"))
 }
+
 func (i *instance) findChannel(r *http.Request, l login, id string) (frontend.LiveChannel, bool) {
 	cs, err := i.channels(r, l)
 	if err != nil {
@@ -114,10 +201,12 @@ func (i *instance) findChannel(r *http.Request, l login, id string) (frontend.Li
 	}
 	return frontend.LiveChannel{}, false
 }
+
 func (i *instance) programmes(r *http.Request, l login, c frontend.LiveChannel, limit int) ([]frontend.LiveProgramme, error) {
 	now := time.Now().UTC()
 	return i.host.LiveTV.Guide(r.Context(), l.viewer, frontend.LiveGuideQuery{Device: l.device, Channels: []string{c.ID}, From: now.Add(-6 * time.Hour), Until: now.Add(48 * time.Hour), Limit: limit})
 }
+
 func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action string) {
 	c, ok := i.findChannel(r, l, r.URL.Query().Get("stream_id"))
 	if !ok {
@@ -153,6 +242,7 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 	}
 	jsonResponse(w, map[string]any{"epg_listings": out})
 }
+
 func (i *instance) xmltv(w http.ResponseWriter, r *http.Request, l login) {
 	cs, err := i.channels(r, l)
 	if err != nil {
@@ -191,9 +281,11 @@ func (i *instance) xmltv(w http.ResponseWriter, r *http.Request, l login) {
 	_ = e.Flush()
 	_, _ = w.Write([]byte("</tv>"))
 }
+
 func cleanM3U(s string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\"", "'").Replace(s)
 }
+
 func (i *instance) playlist(w http.ResponseWriter, r *http.Request, l login) {
 	base := i.base(r)
 	if base == "" {
@@ -207,12 +299,19 @@ func (i *instance) playlist(w http.ResponseWriter, r *http.Request, l login) {
 	}
 	w.Header().Set("Content-Type", "audio/x-mpegurl; charset=utf-8")
 	_, _ = fmt.Fprintln(w, "#EXTM3U")
+	liveExt := "m3u8"
+	if strings.EqualFold(r.URL.Query().Get("output"), "ts") || strings.EqualFold(r.URL.Query().Get("output"), "mpegts") {
+		liveExt = "ts"
+	}
 	for _, c := range cs {
 		group := strings.TrimSpace(c.Group)
+		if len(c.Groups) > 0 {
+			group = strings.TrimSpace(c.Groups[0].Name)
+		}
 		if group == "" {
 			group = "Live TV"
 		}
-		_, _ = fmt.Fprintf(w, "#EXTINF:-1 tvg-id=\"%s\" tvg-logo=\"%s\" group-title=\"%s\",%s\n%s/live/%s/%s/%d.m3u8\n", cleanM3U(c.ID), cleanM3U(i.image(r, l, 0, c.ID, c.Images)), cleanM3U(group), cleanM3U(c.Name), base, l.username, l.password, l.channels[c.ID])
+		_, _ = fmt.Fprintf(w, "#EXTINF:-1 tvg-id=\"%s\" tvg-logo=\"%s\" group-title=\"%s\",%s\n%s/live/%s/%s/%d.%s\n", cleanM3U(c.ID), cleanM3U(i.image(r, l, 0, c.ID, c.Images)), cleanM3U(group), cleanM3U(c.Name), base, l.username, l.password, l.channels[c.ID], liveExt)
 	}
 	// Movies are emitted a page at a time; exporting never accumulates the catalogue.
 	if err := i.walk(r, l, "movie", func(l login, t frontend.Title, cat string) error {

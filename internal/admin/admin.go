@@ -25,6 +25,7 @@ package admin
 import (
 	"context"
 	"embed"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -35,7 +36,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
+	"github.com/braedonsaunders/ether/internal/plextv"
+	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
 //go:embed all:dist
@@ -105,6 +110,17 @@ type StatusFunc func(ctx context.Context) any
 // StatusFuncE is a StatusFunc that can fail.
 type StatusFuncE func(ctx context.Context) (any, error)
 
+// ConsoleListenerStatus describes the active state of the optional dedicated
+// owner console listener, including bind-failure fallback to the main port.
+type ConsoleListenerStatus struct {
+	ConfiguredPort int    `json:"configuredPort"`
+	ActivePort     int    `json:"activePort"`
+	MainPort       int    `json:"mainPort"`
+	OnMainPort     bool   `json:"onMainPort"`
+	Fallback       bool   `json:"fallback"`
+	Error          string `json:"error,omitempty"`
+}
+
 // Deps are the dependencies of the admin handler. The component
 // dependencies (Plex sign-in, testers, traces, users, personalization,
 // collections, catalogue helper, image proxy) are required. Only the
@@ -112,11 +128,18 @@ type StatusFuncE func(ctx context.Context) (any, error)
 // ValidateExtra, DiskUsage and UI have defaults or may be left empty.
 type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
+	Vela               *veladist.Manager
+	VelaSkins          VelaSkinAdmin
+	UploadVelaWordmark func(context.Context, io.Reader) (VelaWordmark, error)
+	UploadVelaIcon     func(context.Context, io.Reader) (VelaAppIcon, error)
 	Frontends          FrontendAdmin
+	FrontendAPIKeys    FrontendAPIKeys
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal
 	ViewerAlerts       ViewerAlertPreferences
 	ActiveViewer       func(context.Context, int64) (*core.User, error)
+	AppAddress         func(context.Context, frontend.Protocol, *http.Request, bool) (string, error)
+	ConsoleListener    func() ConsoleListenerStatus
 	ViewerPortalURL    func(context.Context, *http.Request) (string, error)
 	StremioPortalURL   func(context.Context, *http.Request) (string, error)
 	CreateDLNAGuest    func(context.Context) (*core.Viewer, error)
@@ -150,6 +173,8 @@ type Deps struct {
 	Config *config.Store
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// EventBus receives structured auth events (sign-in success/failure).
+	EventBus *events.Bus
 	// Logs is the in-memory log ring served at /ether/api/logs. A fresh
 	// 2000-entry buffer is created when nil (retrieve it via
 	// Handler.Logs()); pass a shared one to tail server logs.
@@ -180,12 +205,18 @@ type Deps struct {
 	Sessions Sessions
 
 	// Provider/integration testers used by the wizard and settings pages.
-	TestUsenet        func(ctx context.Context, p config.UsenetProvider) error
-	TestIndexer       func(ctx context.Context, ix config.Indexer) error
+	TestUsenet  func(ctx context.Context, p config.UsenetProvider) error
+	TestIndexer func(ctx context.Context, ix config.Indexer) error
+	// TestIndexerIdentity runs a single caps request through the resolved
+	// identity for ix under policy.
+	TestIndexerIdentity func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error)
+	// IndexerPreview renders the masked sample requests for a rule or indexer draft.
+	IndexerPreview    func(req IndexerPreviewRequest) (any, error)
 	TestDebrid        func(ctx context.Context, p config.DebridProvider) error
 	TestTMDB          func(ctx context.Context, key string) error
 	TestOpenSubtitles func(ctx context.Context, cfg config.OpenSubtitles) error
 	TestSubDL         func(ctx context.Context, cfg config.SubDL) error
+	TestSubSource     func(ctx context.Context, cfg config.SubSource) error
 	TestLLM           func(ctx context.Context, cfg config.LLM) error
 	// LLMModels lists the models the provider in cfg offers.
 	LLMModels func(ctx context.Context, cfg config.LLM) ([]LLMModel, error)
@@ -255,9 +286,17 @@ type Deps struct {
 	// /api/insights/* (internal/personalize.Engine). Viewers are listed
 	// from Users.
 	Personalization Personalization
+	// LayoutLibraries lists libraries that have Recommended layouts
+	// ("library:<id>"). Optional.
+	LayoutLibraries func(context.Context) ([]LayoutLibrary, error)
+	// PluginLibraryRows lists candidate row descriptors and live shelves for a
+	// plugin library's Recommended tab. Optional.
+	PluginLibraryRows func(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error)
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio
+	// AddonCatalogImports backs /api/collections/addon-imports*.
+	AddonCatalogImports AddonCatalogImporter
 	// CatalogHelper backs /api/catalog/*.
 	CatalogHelper CatalogHelper
 	// TitleSchedules backs the catalogue drawer's episode and release tabs;
@@ -298,6 +337,26 @@ type Deps struct {
 	// SharePlexViewer grants library access on plex.tv to the given username,
 	// email or user ID for this server. Nil ignores cloud library sharing.
 	SharePlexViewer func(ctx context.Context, usernameOrEmail string, userID int64) error
+
+	// SharePlexViewerNoSync grants library access on plex.tv without triggering
+	// an immediate friend sync; used by bulk import to sync once at the end.
+	SharePlexViewerNoSync func(ctx context.Context, usernameOrEmail string, userID int64) error
+
+	// SyncPlexFriends refreshes Ether's plex.tv friend list once after batch sharing.
+	SyncPlexFriends func(ctx context.Context) error
+
+	// ListPlexUsers returns the owner's plex.tv friends and home users so PMS
+	// imports can resolve display names / account IDs to full Plex profiles.
+	ListPlexUsers func(ctx context.Context) ([]plextv.SharedUser, error)
+
+	// EnsurePlexFriend upserts a resolved plex.tv friend/home user into auth_users
+	// and returns its viewer ID.
+	EnsurePlexFriend func(ctx context.Context, user plextv.SharedUser) (int64, error)
+
+	// Flows backs /api/flows/* (owner-authenticated) and /api/flows/hooks/{token}
+	// (incoming webhook ingress outside console auth). Nil hides the routes
+	// unless mounted explicitly via Extensions / PublicExtensions.
+	Flows *FlowsDeps
 }
 
 // Handler is the admin HTTP handler. Use NewHandler when you need access
@@ -419,6 +478,9 @@ func (h *Handler) routes() *http.ServeMux {
 	// started the PIN, and only if the account owns the server.
 	mux.HandleFunc("POST /api/auth/pin", h.limitAuth(h.handleSignInStart))
 	mux.HandleFunc("GET /api/auth/pin/{handle}", h.limitAuth(h.handleSignInPoll))
+	api("GET /api/auth/lockouts", h.handleListLockouts)
+	api("DELETE /api/auth/lockouts", h.handleClearAllLockouts)
+	api("DELETE /api/auth/lockouts/{key}", h.handleClearLockout)
 	mux.HandleFunc("POST /api/auth/session", h.limitAuth(h.handleSessionCreate))
 	mux.HandleFunc("DELETE /api/auth/session", h.limitAuth(h.handleSessionDelete))
 
@@ -438,6 +500,8 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/enabled", h.frontendToggle)
+	api("GET /api/frontends/{id}/api-keys", h.frontendAPIKeys)
+	api("DELETE /api/frontends/{id}/api-keys/{keyId}", h.frontendAPIKeyRevoke)
 	api("GET /api/poster-folders", h.posterFolders)
 	api("GET /api/posters/status", h.posterStatus)
 	api("POST /api/posters/clear", h.clearPosters)
@@ -446,6 +510,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/config/{section}", h.handleGetSection)
 	api("PUT /api/config/{section}", h.handlePutSection)
 	api("PATCH /api/config/{section}", h.handlePutSection)
+	api("GET /api/server/console-listener", h.handleConsoleListener)
 
 	api("GET /api/setup/status", h.handleSetupStatus)
 	api("POST /api/setup/complete", h.handleSetupComplete)
@@ -459,11 +524,14 @@ func (h *Handler) routes() *http.ServeMux {
 
 	api("POST /api/test/usenet", h.handleTestUsenet)
 	api("POST /api/test/indexer", h.handleTestIndexer)
+	api("POST /api/test/indexer-identity", h.handleTestIndexerIdentity)
+	api("POST /api/indexer/preview", h.handleIndexerPreview)
 	api("POST /api/test/debrid", h.handleTestDebrid)
 	api("POST /api/debrid/providers/{id}/key", h.handlePseDebridKey) // PSE-HOOK: affichage ponctuel réservé au propriétaire.
 	api("POST /api/test/tmdb", h.handleTestTMDB)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/subdl", h.handleTestSubDL)
+	api("POST /api/test/subsource", h.handleTestSubSource)
 	api("POST /api/test/llm", h.handleTestLLM)
 	api("GET /api/llm/providers", h.handleLLMProviders)
 	api("POST /api/llm/models", h.handleLLMModels)
@@ -486,6 +554,8 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/users/{id}/password", h.ownerIdentityManagement)
 	api("GET /api/users/{id}/devices", h.ownerIdentityManagement)
 	api("POST /api/users/{id}/devices/revoke", h.ownerIdentityManagement)
+	api("POST /api/users/{id}/devices/xtream/reveal", h.ownerXtreamLogin)
+	api("POST /api/users/{id}/devices/xtream/limit", h.ownerXtreamLogin)
 	api("POST /api/users/{id}/invite", h.ownerIdentityManagement)
 	api("POST /api/users/local", h.handleCreateLocalViewer)
 	api("POST /api/users/invite", h.handleCreateInviteViewer)
@@ -530,15 +600,36 @@ func (h *Handler) routes() *http.ServeMux {
 		prefix := "/api/" + path
 		mux.Handle(prefix+"/", http.StripPrefix(prefix, handler))
 	}
+	h.velaRoutes(api)
+	h.velaSkinRoutes(api)
 	h.personalizationRoutes(api)
 	h.collectionRoutes(mux, api)
 	h.prerollRoutes(api)
 	h.plexServerRoutes(api)
 	h.viewersPlexImportRoutes(api)
+	h.flowsRoutes(mux)
 
 	mux.HandleFunc("/api/", h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")
 	}))
 	mux.HandleFunc("/", h.handleSPA)
 	return mux
+}
+
+func (h *Handler) handleConsoleListener(w http.ResponseWriter, r *http.Request) {
+	if h.deps.ConsoleListener != nil {
+		writeJSON(w, http.StatusOK, h.deps.ConsoleListener())
+		return
+	}
+	var cfg config.Config
+	if h.deps.Config != nil {
+		cfg = h.deps.Config.Get()
+	}
+	writeJSON(w, http.StatusOK, ConsoleListenerStatus{
+		ConfiguredPort: cfg.Server.ConsolePort,
+		ActivePort:     0,
+		MainPort:       cfg.Server.Port,
+		OnMainPort:     true,
+		Fallback:       false,
+	})
 }

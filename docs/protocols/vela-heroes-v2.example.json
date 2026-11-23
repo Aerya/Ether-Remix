@@ -26,8 +26,7 @@
       "reason": "resume",
       "action": {
         "kind": "resume",
-        "titleId": "000000000000000100038d7ea4c68001",
-        "positionSeconds": 123.25
+        "titleId": "000000000000000100038d7ea4c68001"
       },
       "previewOnFocus": true
     },

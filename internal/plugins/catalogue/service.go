@@ -340,12 +340,32 @@ func (s *Service) Resolve(ctx context.Context, idOrURL string, version string) (
 			Version:      v.Version,
 			URL:          v.URL,
 			SHA256:       v.SHA256,
+			Icon:         e.Icon,
 			Kind:         plugins.Kind(e.Kind),
 			Permissions:  permissions,
 			Capabilities: capabilities,
 		}, nil
 	}
 	return plugins.CatalogueArtifact{}, plugins.ErrNotFound
+}
+
+// EntryIcon returns the catalogue entry's icon URL when present and not revoked.
+func (s *Service) EntryIcon(id string) string {
+	if id == "" {
+		return ""
+	}
+	s.mu.RLock()
+	idx := s.idx
+	s.mu.RUnlock()
+	for _, e := range idx.Entries {
+		if e.ID == id {
+			if e.Revoked {
+				return ""
+			}
+			return strings.TrimSpace(e.Icon)
+		}
+	}
+	return ""
 }
 
 // Filter controls search and filtering over catalogue entries.

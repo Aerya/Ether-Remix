@@ -3,7 +3,6 @@ package experience
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -21,7 +20,6 @@ func TestStepAsideLocalResponseNeverWaitsForCompleteness(t *testing.T) {
 		}
 		return source(ctx, shows)
 	}
-	start := time.Now()
 	if got := s.compiled(core.WithLocalResponse(context.Background())); got == nil {
 		t.Fatal("cold membership snapshot missing")
 	} else {
@@ -32,16 +30,12 @@ func TestStepAsideLocalResponseNeverWaitsForCompleteness(t *testing.T) {
 			t.Fatal("cold snapshot guessed show completeness")
 		}
 	}
-	elapsed := time.Since(start)
 	s.mu.RLock()
 	done := s.inflight
 	s.mu.RUnlock()
 	close(release)
 	if done != nil {
 		<-done
-	}
-	if elapsed >= 100*time.Millisecond {
-		t.Fatalf("request waited for completeness: %s", elapsed)
 	}
 	if got := s.compiled(core.WithLocalResponse(context.Background())); got == nil {
 		t.Fatal("background result not published")

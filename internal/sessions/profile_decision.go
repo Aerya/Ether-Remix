@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,35 @@ func (b *Broker) profileDiagnostic(event ProfileDiagnostic) {
 	}
 }
 
+const reasonVideoTranscodingOff = "needs a video transcode, and transcoding is off"
+
+// videoOff is videoTranscodingOff for one request: the server switch, or the
+// owner's switch for this viewer carried on the caps.
+func (b *Broker) videoOff(caps core.ClientCaps) bool {
+	return caps.NoVideoTranscode || b.videoTranscodingOff()
+}
+
+// stampViewerTranscoding marks caps for a viewer whose video must not be
+// re-encoded, so the resolver, the decision and the ladder all see it.
+func (b *Broker) stampViewerTranscoding(v *core.Viewer, caps *core.ClientCaps) {
+	if b != nil && v != nil && b.deps.ViewerVideoTranscodingOff != nil && b.deps.ViewerVideoTranscodingOff(v) {
+		caps.NoVideoTranscode = true
+	}
+}
+
+func (b *Broker) videoTranscodingOff() bool {
+	if b == nil {
+		return false
+	}
+	if b.deps.VideoTranscodingOff != nil && b.deps.VideoTranscodingOff() {
+		return true
+	}
+	if v, ok := b.deps.Transcoder.(interface{ VideoTranscodingOff() bool }); ok && v.VideoTranscodingOff() {
+		return true
+	}
+	return false
+}
+
 func decisionEncodes(d core.Decision, info core.MediaInfo) bool {
 	if d.Kind == core.DecisionTranscode {
 		return true
@@ -37,6 +67,19 @@ func decisionEncodes(d core.Decision, info core.MediaInfo) bool {
 		return false
 	}
 	return info.Video() != nil && !d.VideoCopy || profileStream(info, "audio", d.AudioStream) != nil && !d.AudioCopy
+}
+
+func decisionEncodesVideo(d core.Decision, info core.MediaInfo) bool {
+	if info.Video() == nil {
+		return false
+	}
+	if d.Kind == core.DecisionTranscode {
+		return true
+	}
+	if d.Kind != core.DecisionRemux {
+		return false
+	}
+	return !d.VideoCopy
 }
 
 func applySubtitleProfiles(caps *core.ClientCaps) {
@@ -73,17 +116,53 @@ func profileEqualsAny(value, want string) bool {
 
 func profileName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
+	if strings.HasPrefix(s, "pcm_") {
+		return "pcm"
+	}
 	switch s {
 	case "ts", "mpegts":
 		return "mpegts"
-	case "m4v", "mov", "fmp4":
+	case "m4v", "m4a", "m4b", "mov", "fmp4":
 		return "mp4"
+	case "adts":
+		return "aac"
+	case "oga":
+		return "ogg"
+	case "matroska", "mka":
+		return "mkv"
+	case "weba":
+		return "webm"
+	case "mp4a":
+		return "aac"
+	case "ac-3":
+		return "ac3"
+	case "ec3", "e-ac3":
+		return "eac3"
+	case "dca":
+		return "dts"
+	case "mlp":
+		return "truehd"
 	case "avc", "avc1":
 		return "h264"
 	case "h265":
 		return "hevc"
 	}
 	return s
+}
+
+func profileAudioContainerMatch(containers []string, container, audioCodec string) bool {
+	if profileContains(containers, container) {
+		return true
+	}
+	// Ogg/Opus containers are frequently declared interchangeably as "ogg" or "opus".
+	c := profileName(container)
+	if c == "ogg" && strings.EqualFold(audioCodec, "opus") && profileContains(containers, "opus") {
+		return true
+	}
+	if c == "opus" && profileContains(containers, "ogg") {
+		return true
+	}
+	return false
 }
 func profileContains(xs []string, name string) bool {
 	if len(xs) == 0 {
@@ -130,19 +209,23 @@ func profileConditions(cs []core.ClientProfileCondition, info core.MediaInfo, st
 // compares. Eight-bit untagged 4:2:0 is SDR once Dolby Vision is known to be
 // absent, the same evidence as frontend.KnownSDR. A picture whose range cannot
 // be classified stays empty so a required condition fails closed and playback
-// can fall back to an encode. Equals and NotEquals against the single token
-// DOVI still treat every Dolby Vision profile as DOVI, which is how clients
-// reject profile 5 and every other profile together.
+// can fall back to an encode. As in Jellyfin, Equals and NotEquals DOVI match
+// only a picture with no usable base layer (profile 5, or a profile whose
+// compatibility is unknown). Profiles 7, 8 and 10 with an HDR10, SDR or HLG
+// base layer report their own range type, so `NotEquals DOVI` still direct
+// plays their base layer (Streamyfin, Findroid and Jellyfin's own clients rely
+// on that).
 func profileVideoRangeValue(stream *core.StreamInfo, c core.ClientProfileCondition) string {
 	if stream == nil || (stream.Type != "" && stream.Type != "video") {
 		return ""
 	}
 	dv, known := dolbyVisionEvidence(stream)
 	if dv {
-		if dolbyVisionEquality(c) {
+		value := dolbyVisionRangeType(stream)
+		if value == "DOVIInvalid" && dolbyVisionEquality(c) {
 			return "DOVI"
 		}
-		return dolbyVisionRangeType(stream)
+		return value
 	}
 	if !known {
 		return ""
@@ -301,40 +384,155 @@ func stampEncodedVideoRange(s *core.StreamInfo, d core.Decision) {
 		}
 		depth := s.BitDepth
 		s.BitsPerRawSample = &depth
+		if strings.EqualFold(d.VideoCodec, "hevc") {
+			s.Profile = "Main 10"
+			s.PixelFormat = "p010le"
+		}
 		return
 	}
 	s.BitDepth = 8
 	depth := 8
 	s.BitsPerRawSample = &depth
 	s.PixelFormat = "yuv420p"
+	if strings.EqualFold(d.VideoCodec, "hevc") {
+		s.Profile = "Main"
+	}
 }
 
 // applyProfileRangeCaps lets a device profile's VideoRangeType list drive the
 // direct-play decision. Equals and EqualsAny name ranges the client can play.
 // A list that only says SDR does not advertise HDR or Dolby Vision.
+//
+// A profile that never lists the ranges it plays (Fladder declares no codec
+// conditions; Wholphin only excludes ranges with NotEquals) accepts every
+// range in Jellyfin, which direct-plays HDR10 and Dolby Vision base layers to
+// it and leaves display mapping to the client. Treat it as HDR10-capable, so
+// its declared conditions (evaluated for direct play) decide instead of a
+// forced SDR tone-map encode.
 func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 	if caps.Profiles == nil {
 		return caps
 	}
+	listed := false
 	for _, codec := range caps.Profiles.Codecs {
 		for _, cond := range codec.Conditions {
-			noteProfileRange(&caps, cond)
+			listed = noteProfileRange(&caps, cond) || listed
 		}
-		for _, cond := range codec.ApplyConditions {
-			noteProfileRange(&caps, cond)
+		// ApplyConditions say when a codec profile applies (Wholphin lists
+		// the ranges it cannot play there), not which ranges are playable.
+	}
+	if !listed && !caps.ExplicitNoHDR {
+		hasVideo := false
+		if caps.Profiles.DirectPlay == nil {
+			for _, tp := range caps.Profiles.Transcoding {
+				if tp.MediaType == "" || strings.EqualFold(tp.MediaType, "video") {
+					hasVideo = true
+					break
+				}
+			}
+		} else {
+			for _, dp := range caps.Profiles.DirectPlay {
+				if dp.MediaType == "" || strings.EqualFold(dp.MediaType, "video") {
+					hasVideo = true
+					break
+				}
+			}
+		}
+		if hasVideo {
+			if !caps.HDR10 && profileAllowsVideoRange(caps.Profiles, "HDR10") {
+				caps.HDR10 = true
+			}
+			// A client that excludes only unsupported ranges (Wholphin,
+			// Jellyfin Android TV, Streamyfin) or declares no codec
+			// conditions (Fladder) accepts every unexcluded DV range in
+			// Jellyfin. Leaving DolbyVision false made Android's
+			// hdr10BaseReason force a remux/encode even when the profile
+			// allows DV direct play.
+			if !caps.DolbyVision && len(caps.DVProfiles) == 0 {
+				var dvProfiles []int
+				if profileAllowsVideoRange(caps.Profiles, "DOVI") {
+					dvProfiles = append(dvProfiles, 5)
+				}
+				if profileAllowsVideoRange(caps.Profiles, "DOVIWithHDR10") {
+					dvProfiles = append(dvProfiles, 8)
+				}
+				if len(dvProfiles) > 0 {
+					caps.DolbyVision = true
+					caps.DVProfiles = dvProfiles
+				}
+			}
 		}
 	}
 	return caps
 }
 
-func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) {
+// profileAllowsVideoRange reports whether video codec profiles in p leave
+// rangeType unexcluded. Profiles with ApplyConditions (Wholphin / Jellyfin
+// Android TV) apply only when their VideoRangeType ApplyConditions match
+// rangeType, and exclude it when their Conditions reject rangeType.
+func profileAllowsVideoRange(p *core.ClientCapabilityProfiles, rangeType string) bool {
+	if p == nil {
+		return true
+	}
+	for _, cp := range p.Codecs {
+		if cp.MediaType != "" && !strings.EqualFold(cp.MediaType, "video") {
+			continue
+		}
+		if !profileContains(cp.Codecs, "hevc") {
+			continue
+		}
+		if len(cp.ApplyConditions) > 0 {
+			hasRangeApply := false
+			applies := true
+			for _, cond := range cp.ApplyConditions {
+				if !strings.EqualFold(cond.Property, "VideoRangeType") {
+					continue
+				}
+				hasRangeApply = true
+				ok, known := profileConditionHolds(rangeType, cond)
+				if known && !ok {
+					applies = false
+					break
+				}
+			}
+			if !hasRangeApply || !applies {
+				continue
+			}
+		} else if rangeType != "SDR" {
+			for _, cond := range cp.Conditions {
+				prop, op := strings.ToLower(cond.Property), strings.ToLower(cond.Operator)
+				if prop == "videobitdepth" && (op == "lessthanequal" || op == "equals") {
+					if depth, err := strconv.Atoi(cond.Value); err == nil && depth < 10 {
+						return false
+					}
+				}
+				if prop == "videoprofile" && (op == "equals" || op == "equalsany") && !strings.Contains(strings.ToLower(cond.Value), "main 10") && !strings.Contains(strings.ToLower(cond.Value), "main10") {
+					return false
+				}
+			}
+		}
+		for _, cond := range cp.Conditions {
+			if !strings.EqualFold(cond.Property, "VideoRangeType") {
+				continue
+			}
+			ok, known := profileConditionHolds(rangeType, cond)
+			if known && !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// noteProfileRange reports whether cond positively lists playable ranges.
+func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) bool {
 	if !strings.EqualFold(cond.Property, "VideoRangeType") {
-		return
+		return false
 	}
 	switch strings.ToLower(cond.Operator) {
 	case "equals", "equalsany":
 	default:
-		return
+		return false
 	}
 	for _, part := range strings.Split(cond.Value, "|") {
 		switch strings.ToUpper(strings.TrimSpace(part)) {
@@ -347,6 +545,7 @@ func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) {
 			caps.DolbyVision = true
 		}
 	}
+	return true
 }
 
 func encodedPictureHDR(s *core.StreamInfo) bool {
@@ -593,7 +792,14 @@ func secondaryAudioValue(info core.MediaInfo, stream *core.StreamInfo) (string, 
 }
 
 func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, video, audio string, audioIndex int) bool {
+	audioOnly := info.Video() == nil && audio != ""
 	for _, c := range p.Containers {
+		if audioOnly {
+			if (c.MediaType == "" || strings.EqualFold(c.MediaType, "audio")) && profileAudioContainerMatch(c.Containers, info.Container, audio) && !profileConditions(c.Conditions, info, profileStream(info, "audio", audioIndex)) {
+				return false
+			}
+			continue
+		}
 		if (c.MediaType == "" || strings.EqualFold(c.MediaType, "video")) && profileContains(c.Containers, info.Container) && !profileConditions(c.Conditions, info, info.Video()) {
 			return false
 		}
@@ -603,9 +809,15 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 		var codec string
 		switch strings.ToLower(c.MediaType) {
 		case "video":
+			if audioOnly {
+				continue
+			}
 			stream = info.Video()
 			codec = video
 		case "audio", "videoaudio":
+			if audioOnly && strings.EqualFold(c.MediaType, "videoaudio") {
+				continue
+			}
 			stream = profileStream(info, "audio", audioIndex)
 			codec = audio
 		default:
@@ -616,7 +828,7 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 			}
 			continue
 		}
-		if !profileContains(c.Codecs, codec) || !profileContains(c.Containers, info.Container) {
+		if !profileContains(c.Codecs, codec) || !profileAudioContainerMatch(c.Containers, info.Container, codec) {
 			continue
 		}
 		applies, unknown := evaluateProfileConditions(c.ApplyConditions, info, stream)
@@ -635,7 +847,17 @@ func profileRestrictions(p *core.ClientCapabilityProfiles, info core.MediaInfo, 
 
 func profileUnknownRequired(p *core.ClientCapabilityProfiles, info core.MediaInfo, d core.Decision) bool {
 	video, audio := info.Video(), profileStream(info, "audio", d.AudioStream)
+	audioOnly := video == nil && audio != nil
 	for _, c := range p.Containers {
+		if audioOnly {
+			if (c.MediaType == "" || strings.EqualFold(c.MediaType, "audio")) && profileAudioContainerMatch(c.Containers, info.Container, audio.Codec) {
+				_, unknown := evaluateProfileConditions(c.Conditions, info, audio)
+				if unknown {
+					return true
+				}
+			}
+			continue
+		}
 		if (c.MediaType == "" || strings.EqualFold(c.MediaType, "video")) && profileContains(c.Containers, info.Container) {
 			_, unknown := evaluateProfileConditions(c.Conditions, info, video)
 			if unknown {
@@ -647,13 +869,19 @@ func profileUnknownRequired(p *core.ClientCapabilityProfiles, info core.MediaInf
 		var stream *core.StreamInfo
 		switch strings.ToLower(c.MediaType) {
 		case "video":
+			if audioOnly {
+				continue
+			}
 			stream = video
 		case "audio", "videoaudio":
+			if audioOnly && strings.EqualFold(c.MediaType, "videoaudio") {
+				continue
+			}
 			stream = audio
 		default:
 			continue
 		}
-		if stream == nil || !profileContains(c.Codecs, stream.Codec) || !profileContains(c.Containers, info.Container) {
+		if stream == nil || !profileContains(c.Codecs, stream.Codec) || !profileAudioContainerMatch(c.Containers, info.Container, stream.Codec) {
 			continue
 		}
 		applies, unknown := evaluateProfileConditions(c.ApplyConditions, info, stream)
@@ -674,9 +902,6 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	if p == nil {
 		return true
 	}
-	if p.MaxStaticBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticBitrate) {
-		return false
-	}
 	video, audio := "", ""
 	if s := info.Video(); s != nil {
 		video = s.Codec
@@ -684,10 +909,34 @@ func profileDirectAllowed(p *core.ClientCapabilityProfiles, info core.MediaInfo,
 	if s := profileStream(info, "audio", d.AudioStream); s != nil {
 		audio = s.Codec
 	}
+	audioOnly := video == "" && audio != ""
+	if p.MaxStaticBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticBitrate) {
+		return false
+	}
+	if audioOnly && p.MaxStaticMusicBitrate > 0 && info.BitrateKbps > 0 && int64(info.BitrateKbps)*1000 > int64(p.MaxStaticMusicBitrate) {
+		return false
+	}
 	if !profileRestrictions(p, info, video, audio, d.AudioStream) {
 		return false
 	}
+	// A profile that omits DirectPlayProfiles (e.g. Infuse, which posts only
+	// TranscodingProfiles and SubtitleProfiles with EnableDirectPlay=true) does
+	// not restrict direct play by container/codec pair; static bitrate and
+	// codec/container conditions above still apply, while an explicit empty
+	// DirectPlayProfiles slice still rejects direct play.
+	if p.DirectPlay == nil {
+		return true
+	}
 	for _, candidate := range p.DirectPlay {
+		if audioOnly {
+			// Music and audiobooks: an audio-only source matches the
+			// client's audio (or untyped) direct-play profiles; video
+			// codec lists say nothing about it.
+			if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "audio")) && profileAudioContainerMatch(candidate.Containers, info.Container, audio) && profileContains(candidate.AudioCodecs, audio) {
+				return true
+			}
+			continue
+		}
 		if (candidate.MediaType == "" || strings.EqualFold(candidate.MediaType, "video")) && profileContains(candidate.Containers, info.Container) && profileContains(candidate.VideoCodecs, video) && profileContains(candidate.AudioCodecs, audio) {
 			return true
 		}
@@ -733,7 +982,8 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 		if s.Type == "video" {
 			s.Codec = d.VideoCodec
 			if !d.VideoCopy {
-				s.Width, s.Height = transcode.OutputGeometry(s.Width, s.Height, d.MaxHeight)
+				s.Width, s.Height = transcode.OutputGeometry(s, d.MaxHeight)
+				s.SampleAspectRatio = "1:1" // encodes are square-pixel
 				s.Level = d.H264Level
 				s.Profile = ""
 				s.BitDepth = 0
@@ -748,6 +998,11 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 			} else if d.StripDolbyVision {
 				stampEncodedVideoRange(s, d)
 			}
+			if d.Container == transcode.ContainerFMP4 {
+				if tag := fmp4VideoTag(info.Video(), d); tag != "" {
+					s.CodecTag = tag
+				}
+			}
 		} else if s.Type == "audio" && s.Index == d.AudioStream {
 			s.Codec = d.AudioCodec
 			if !d.AudioCopy {
@@ -758,9 +1013,23 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 			}
 		}
 	}
+	audioOnly := info.Video() == nil && profileStream(info, "audio", d.AudioStream) != nil
 	for _, c := range p.Transcoding {
-		if !strings.EqualFold(c.Delivery, delivery) || (c.MediaType != "" && !strings.EqualFold(c.MediaType, "video")) || !profileContains(c.Containers, d.Container) || !profileContains(c.VideoCodecs, d.VideoCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+		candDelivery := strings.ToLower(strings.TrimSpace(c.Delivery))
+		if candDelivery == "" && audioOnly {
+			candDelivery = "http"
+		}
+		if !strings.EqualFold(candDelivery, delivery) {
 			continue
+		}
+		if audioOnly {
+			if (c.MediaType != "" && !strings.EqualFold(c.MediaType, "audio")) || !profileAudioContainerMatch(c.Containers, d.Container, d.AudioCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+				continue
+			}
+		} else {
+			if (c.MediaType != "" && !strings.EqualFold(c.MediaType, "video")) || !profileContains(c.Containers, d.Container) || !profileContains(c.VideoCodecs, d.VideoCodec) || !profileContains(c.AudioCodecs, d.AudioCodec) {
+				continue
+			}
 		}
 		if c.MaxAudioChannels != "" && (d.AudioCodec != "" || profileStream(info, "audio", d.AudioStream) != nil) {
 			limit, err := strconv.Atoi(c.MaxAudioChannels)
@@ -778,11 +1047,34 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 				continue
 			}
 		}
-		if profileConditions(c.Conditions, info, info.Video()) && profileRestrictions(p, output, d.VideoCodec, d.AudioCodec, d.AudioStream) {
+		condStream := info.Video()
+		if audioOnly {
+			condStream = profileStream(info, "audio", d.AudioStream)
+		}
+		if profileConditions(c.Conditions, info, condStream) && profileRestrictions(p, output, d.VideoCodec, d.AudioCodec, d.AudioStream) {
 			return true
 		}
 	}
 	return false
+}
+
+// fmp4VideoTag is the sample entry fMP4 segments carry for the output video,
+// as the transcoder's arguments write it: HEVC is tagged hvc1 (dvh1 for a
+// copied Dolby Vision profile 5 source) and H.264 avc1, whatever the source
+// container used. A required VideoCodecTag condition, such as AVPlayer's
+// hvc1/dvh1, is evaluated against this rather than the source's tag, which
+// Matroska does not have.
+func fmp4VideoTag(source *core.StreamInfo, d core.Decision) string {
+	switch d.VideoCodec {
+	case "hevc":
+		if d.VideoCopy && source != nil && source.DolbyVision && source.DolbyVisionProfile == 5 {
+			return "dvh1"
+		}
+		return "hvc1"
+	case "h264":
+		return "avc1"
+	}
+	return ""
 }
 
 // constrainedH264 describes only facts guaranteed by the selected encoder
@@ -818,7 +1110,7 @@ func constrainedH264(d core.Decision, info core.MediaInfo, caps core.ClientCaps,
 	if v.AverageFrameRate != nil && *v.AverageFrameRate > fps {
 		fps = *v.AverageFrameRate
 	}
-	w, h := transcode.OutputGeometry(v.Width, v.Height, d.MaxHeight)
+	w, h := transcode.OutputGeometry(v, d.MaxHeight)
 	if w == 0 || h == 0 || fps <= 0 || d.BitrateKbps <= 0 {
 		return d, caps.VideoLevels["h264"] <= 0 && len(caps.VideoProfiles["h264"]) == 0
 	}
@@ -852,12 +1144,34 @@ func (b *Broker) h264EncoderVerified() bool {
 	return hw.Name == transcode.AccelNVENC
 }
 
+// sideSubtitleStream reports the text subtitle stream selected for the client
+// to render beside the video when decideProfile cleared Decision.SubtitleStream
+// to -1 so the video encoder does not burn it in.
+func sideSubtitleStream(ps *core.PlaySession, req frontend.PlanRequest, dec core.Decision) *int {
+	if ps == nil || dec.SubtitleStream >= 0 || req.Intent.Options.SubtitleStream < 0 {
+		return nil
+	}
+	want := req.Intent.Options.SubtitleStream
+	if slices.Contains(progressiveTextTracks(string(req.Protocol), req.Caps, ps.Info), want) ||
+		(hlsOnlyTextClient(string(req.Protocol), req.Caps) && slices.Contains(hlsTextTracks(string(req.Protocol), req.Caps, ps.Info), want)) {
+		return &want
+	}
+	return nil
+}
+
 func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (core.Decision, error) {
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
-	if req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
-		d := core.Decision{Kind: core.DecisionDirectPlay, Reason: "original_runtime", Container: ps.Info.Container, VideoCopy: true, AudioCopy: true, AudioStream: req.Intent.Options.AudioStream, SubtitleStream: req.Intent.Options.SubtitleStream}
+	if req.Channel == "" && b.videoOff(req.Caps) {
+		req.Caps.NoVideoTranscode = true
+	}
+	requiresRemux := ps.RequiresRemux
+	if rr, ok := b.deps.Playback.(core.RemuxRequirer); ok && rr.RequiresRemux(ps.ID) {
+		requiresRemux = true
+	}
+	if !requiresRemux && req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && len(b.originalBudgetRejection(ps.Info, req)) == 0 && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
+		d := core.Decision{Kind: core.DecisionDirectPlay, Reason: "original_runtime", Container: ps.Info.Container, VideoCopy: !ps.Info.AudioOnly(), AudioCopy: true, AudioStream: req.Intent.Options.AudioStream, SubtitleStream: req.Intent.Options.SubtitleStream}
 		if audio := profileStream(ps.Info, "audio", d.AudioStream); audio != nil {
 			d.AudioStream = audio.Index
 		}
@@ -873,7 +1187,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		return d, nil
 	}
 
-	rejected := []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}}
+	rejected := []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, req)}}
 
 	// The progressive client renders text outside the video. Keep the user's
 	// selection in the plan, but never ask the video decision to burn it in.
@@ -883,6 +1197,20 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			// Progressive cues need the playback demuxer. Negotiate its
 			// real output now, including the streaming audio constraints.
 			req.Intent.Options.DirectPlay = false
+		}
+		// A native HLS client shows its selected text track as a rendition of
+		// the HLS stream. Only HLS can carry it, so the original file is not
+		// direct-played, and the video decision stays subtitle-free like the
+		// progressive client's below.
+		// A client that also renders embedded tracks from the original file
+		// (HLSTextRenditions) keeps direct play and its selection.
+		for _, index := range hlsTextTracks(string(req.Protocol), req.Caps, ps.Info) {
+			if hlsOnlyTextClient(string(req.Protocol), req.Caps) && req.Intent.Options.SubtitleStream == index {
+				req.Intent.Options.DirectPlay = false
+				req.Intent.Options.SubtitleStream = -1
+				req.Intent.Options.BurnSubtitles = false
+				break
+			}
 		}
 		for _, index := range tracks {
 			if req.Intent.Options.SubtitleStream == index {
@@ -902,7 +1230,8 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		}
 		rejected = append(rejected, frontend.RejectedPlaybackPath{Path: path, Reasons: []string{reason}})
 	}
-	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true}
+	videoOff := req.Channel == "" && b.videoOff(req.Caps)
+	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true, NoVideoTranscode: videoOff}
 	d, err := Decide(b.deps.Playback, b.deps.Transcoder, r)
 	if err == nil && d.Reason == "remux for failover safety: health unverified" && b.deps.Logger != nil {
 		b.deps.Logger.Debug(d.Reason, "session", ps.ID)
@@ -911,6 +1240,12 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	// nothing about playback (Findroid's "Direct play all"); the ordinary
 	// capability decision stands.
 	if err != nil || req.Caps.Profiles == nil || (req.Caps.Profiles.DirectPlay == nil && req.Caps.Profiles.Transcoding == nil) {
+		if err == nil && videoOff && decisionEncodesVideo(d, ps.Info) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{
+				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+				Cause:         core.ErrVideoTranscodingDisabled,
+			}
+		}
 		return d, err
 	}
 	if d.Kind == core.DecisionDirectPlay && profileDirectAllowed(req.Caps.Profiles, ps.Info, d) {
@@ -923,16 +1258,48 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			b.profileDiagnostic(ProfileRequiredConditionUnknown)
 		}
 	}
+	rejectedForVideoOff := false
 	allowed := func(d core.Decision) bool {
+		if videoOff && decisionEncodesVideo(d, ps.Info) {
+			rejectedForVideoOff = true
+			return false
+		}
 		return req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding || !decisionEncodes(d, ps.Info)
+	}
+	if ps != nil && ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+		if d.Kind != core.DecisionDirectPlay && allowed(d) {
+			delivery := "hls"
+			if req.Intent.Options.Protocol == core.ProtocolHTTP {
+				delivery = "http"
+			}
+			if profileDeliveryAllowed(req.Caps.Profiles, d, ps.Info, delivery) {
+				return d, nil
+			}
+		}
+		if decision, ok := b.decideAudioProfile(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, ""); ok {
+			if decision.Kind == core.DecisionTranscode {
+				b.profileDiagnostic(ProfileFallbackTranscode)
+			} else {
+				b.profileDiagnostic(ProfileFallbackRemux)
+			}
+			return decision, nil
+		}
+		b.profileDiagnostic(ProfileNoDelivery)
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: rejected}
 	}
 	if output, ok := constrainedH264(d, ps.Info, req.Caps, b.h264EncoderVerified()); d.Kind != core.DecisionDirectPlay && ok && allowed(output) && (profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "hls") || profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "dash")) {
 		return output, nil
 	}
 	if d.Kind != core.DecisionDirectPlay {
 		b.profileDiagnostic(ProfileDeliveryRejected)
-		reject("delivery", outputRejection(d, ps.Info, req.Intent.AllowTranscoding))
+		if videoOff && decisionEncodesVideo(d, ps.Info) {
+			rejectedForVideoOff = true
+			reject("delivery", reasonVideoTranscodingOff)
+		} else {
+			reject("delivery", outputRejection(d, ps.Info, req.Intent.AllowTranscoding))
+		}
 	}
+	var encodeFallback *core.Decision
 	for _, candidate := range req.Caps.Profiles.Transcoding {
 		reject(candidate.Delivery, "no output matches declared containers ["+strings.Join(candidate.Containers, ",")+"] video ["+strings.Join(candidate.VideoCodecs, ",")+"] audio ["+strings.Join(candidate.AudioCodecs, ",")+"] and profile constraints")
 		if !strings.EqualFold(candidate.Delivery, "hls") && !strings.EqualFold(candidate.Delivery, "dash") {
@@ -943,6 +1310,8 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			caps.VideoCodecs = videoCodecs
 			caps.AudioCodecs = candidate.AudioCodecs
 			caps.HLSContainers = candidate.Containers
+			caps.TranscodeVideoCodecs = nil
+			caps.TranscodeAudioCodecs = nil
 			// MaxAudioChannels constrains this delivery, not direct-file
 			// decoding. Feed it into the audio planner so supported surround
 			// codecs are downmixed instead of repeatedly proposing copy.
@@ -958,52 +1327,55 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			// Retry only bounded output heights; never raise a client or request
 			// cap. This allows a lower resolution when the required H.264 level
 			// or dimensions cannot support the original size.
-			for _, height := range []int{0, 2160, 1440, 1080, 720, 576, 480, 360, 240, 144} {
-				attempt := opts
-				if height > 0 && (attempt.MaxHeight == 0 || height < attempt.MaxHeight) {
-					attempt.MaxHeight = height
-				}
-				decision, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: attempt, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true})
+			tryAttempt := func(attempt core.DecideOptions) (core.Decision, bool, bool) {
+				decision, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: attempt, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true, NoVideoTranscode: videoOff})
 				if err == nil && !allowed(decision) {
-					reject(candidate.Delivery, "transcode not allowed")
+					if videoOff && decisionEncodesVideo(decision, ps.Info) {
+						reject(candidate.Delivery, reasonVideoTranscodingOff)
+					} else {
+						reject(candidate.Delivery, "transcode not allowed")
+					}
 				}
 				if err != nil || decision.Kind == core.DecisionDirectPlay || !allowed(decision) {
-					continue
+					return decision, false, false
 				}
 				decision, ok := constrainedH264(decision, ps.Info, caps, b.h264EncoderVerified())
 				if ok && profileDeliveryAllowed(req.Caps.Profiles, decision, ps.Info, candidate.Delivery) {
 					if req.Intent.Options.DirectPlay {
 						decision.Reason = strings.ReplaceAll(decision.Reason, "direct play not allowed by client", "direct play rejected by declared output profile")
 					}
+					return decision, true, true
+				}
+				return decision, false, true
+			}
+			for _, height := range []int{0, 2160, 1440, 1080, 720, 576, 480, 360, 240, 144} {
+				attempt := opts
+				if height > 0 && (attempt.MaxHeight == 0 || height < attempt.MaxHeight) {
+					attempt.MaxHeight = height
+				}
+				decision, matched, valid := tryAttempt(attempt)
+				if matched {
 					return decision, true
 				}
-				if decision.VideoCopy || decision.VideoCodec != "h264" {
+				if !videoOff && valid && decision.VideoCopy && attempt.DirectStream {
+					attempt.DirectStream = false
+					opts.DirectStream = false
+					decision, matched, valid = tryAttempt(attempt)
+					if matched {
+						return decision, true
+					}
+				}
+				if !valid {
+					continue
+				}
+				if decision.VideoCopy || (decision.VideoCodec != "h264" && decision.VideoCodec != "hevc") {
 					break
 				}
 			}
 			return core.Decision{}, false
 		}
 		if decision, ok := try(candidate.VideoCodecs); ok {
-			if decision.Kind == core.DecisionTranscode {
-				b.profileDiagnostic(ProfileFallbackTranscode)
-			} else {
-				b.profileDiagnostic(ProfileFallbackRemux)
-			}
-			return decision, nil
-		}
-		// A combined codec list may repeatedly select source copy even when
-		// its required profile predicates reject that source. Try individually
-		// declared alternatives, retaining all audio and container constraints.
-		// The transcoder currently emits H.264 or HEVC. Trying these fixed
-		// outputs bounds work independently of untrusted profile list length.
-		for _, codec := range []string{"h264", "hevc"} {
-			if !profileContains(candidate.VideoCodecs, codec) {
-				continue
-			}
-			if len(req.Caps.VideoCodecs) > 0 && !req.Caps.SupportsVideo(codec) {
-				continue
-			}
-			if decision, ok := try([]string{codec}); ok {
+			if decision.VideoCopy {
 				if decision.Kind == core.DecisionTranscode {
 					b.profileDiagnostic(ProfileFallbackTranscode)
 				} else {
@@ -1011,10 +1383,157 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 				}
 				return decision, nil
 			}
+			if encodeFallback == nil {
+				d := decision
+				encodeFallback = &d
+			}
+			continue
+		}
+		// A combined codec list may repeatedly select source copy even when
+		// its required profile predicates reject that source. Try individually
+		// declared alternatives, retaining all audio and container constraints.
+		// The transcoder currently emits H.264 or HEVC. Trying these fixed
+		// outputs bounds work independently of untrusted profile list length.
+		fallbackCodecs := []string{"h264", "hevc"}
+		if v := ps.Info.Video(); v != nil && encodedPictureHDR(v) && req.Caps.HDR10 {
+			fallbackCodecs = []string{"hevc", "h264"}
+		}
+		for _, codec := range fallbackCodecs {
+			if !profileContains(candidate.VideoCodecs, codec) {
+				continue
+			}
+			if len(req.Caps.VideoCodecs) > 0 && !req.Caps.SupportsVideo(codec) {
+				continue
+			}
+			if decision, ok := try([]string{codec}); ok {
+				if decision.VideoCopy {
+					if decision.Kind == core.DecisionTranscode {
+						b.profileDiagnostic(ProfileFallbackTranscode)
+					} else {
+						b.profileDiagnostic(ProfileFallbackRemux)
+					}
+					return decision, nil
+				}
+				if encodeFallback == nil {
+					d := decision
+					encodeFallback = &d
+				}
+				break
+			}
 		}
 	}
+	if encodeFallback != nil {
+		if encodeFallback.Kind == core.DecisionTranscode {
+			b.profileDiagnostic(ProfileFallbackTranscode)
+		} else {
+			b.profileDiagnostic(ProfileFallbackRemux)
+		}
+		return *encodeFallback, nil
+	}
 	b.profileDiagnostic(ProfileNoDelivery)
-	return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: rejected}
+	outErr := &frontend.NoCompatiblePathError{RejectedPaths: rejected}
+	if rejectedForVideoOff {
+		outErr.Cause = core.ErrVideoTranscodingDisabled
+	}
+	return core.Decision{}, outErr
+}
+
+// decideAudioProfile negotiates an audio-only transcoding/remux decision against
+// declared Type:"Audio" (or untyped) TranscodingProfiles. wantDelivery restricts
+// matching to "http" or "hls" when non-empty; empty evaluates candidates in
+// declaration order across both progressive HTTP and HLS.
+func (b *Broker) decideAudioProfile(ps *core.PlaySession, baseCaps core.ClientCaps, baseOpts core.DecideOptions, allowTranscoding *bool, wantDelivery string) (core.Decision, bool) {
+	if ps == nil || b.deps.Transcoder == nil || ps.Info.Video() != nil || !ps.Info.HasPlayableMedia() {
+		return core.Decision{}, false
+	}
+	allowed := func(d core.Decision) bool {
+		if d.Kind == core.DecisionDirectPlay {
+			return false
+		}
+		if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(d, ps.Info) {
+			return false
+		}
+		if d.Kind == core.DecisionRemux && !baseOpts.DirectStream {
+			return false
+		}
+		return true
+	}
+	if baseCaps.Profiles == nil || baseCaps.Profiles.Transcoding == nil {
+		opts := baseOpts
+		opts.DirectPlay = false
+		if wantDelivery == "http" {
+			opts.Protocol = core.ProtocolHTTP
+		} else if wantDelivery == "hls" {
+			opts.Protocol = core.ProtocolHLS
+		}
+		d, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: baseCaps, Options: opts, PreserveSourceOnFailure: true})
+		if err != nil || !allowed(d) {
+			return core.Decision{}, false
+		}
+		return d, true
+	}
+	for _, candidate := range baseCaps.Profiles.Transcoding {
+		if candidate.MediaType != "" && !strings.EqualFold(candidate.MediaType, "audio") {
+			continue
+		}
+		delivery := strings.ToLower(strings.TrimSpace(candidate.Delivery))
+		if delivery == "" {
+			delivery = "http"
+		}
+		if delivery != "http" && delivery != "hls" {
+			continue
+		}
+		if wantDelivery != "" && !strings.EqualFold(delivery, wantDelivery) {
+			continue
+		}
+		tryCodecs := func(audioCodecs []string) (core.Decision, bool) {
+			caps := baseCaps
+			caps.AudioCodecs = audioCodecs
+			caps.TranscodeAudioCodecs = audioCodecs
+			caps.HLSContainers = candidate.Containers
+			if candidate.MaxAudioChannels != "" {
+				limit, err := strconv.Atoi(candidate.MaxAudioChannels)
+				if err != nil || limit <= 0 {
+					return core.Decision{}, false
+				}
+				caps.AudioLimits = append(slices.Clone(caps.AudioLimits), core.AudioLimit{Codec: "*", Name: "audio.channels", Type: "upperBound", Value: limit})
+			}
+			opts := baseOpts
+			opts.DirectPlay = false
+			if delivery == "http" {
+				opts.Protocol = core.ProtocolHTTP
+			} else {
+				opts.Protocol = core.ProtocolHLS
+			}
+			if baseCaps.Profiles.MusicStreamingTranscodingBitrate > 0 {
+				kbps := baseCaps.Profiles.MusicStreamingTranscodingBitrate / 1000
+				if kbps > 0 && (opts.MaxBitrateKbps == 0 || kbps < opts.MaxBitrateKbps) {
+					opts.MaxBitrateKbps = kbps
+				}
+			}
+			d, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: opts, PreserveSourceOnFailure: true})
+			if err != nil || !allowed(d) {
+				return core.Decision{}, false
+			}
+			if profileDeliveryAllowed(baseCaps.Profiles, d, ps.Info, delivery) {
+				if baseOpts.DirectPlay {
+					d.Reason = strings.ReplaceAll(d.Reason, "direct play not allowed by client, ", "")
+					d.Reason = strings.ReplaceAll(d.Reason, "direct play not allowed by client", "direct play rejected by declared output profile")
+				}
+				return d, true
+			}
+			return core.Decision{}, false
+		}
+		if d, ok := tryCodecs(candidate.AudioCodecs); ok {
+			return d, true
+		}
+		for _, codec := range candidate.AudioCodecs {
+			if d, ok := tryCodecs([]string{codec}); ok {
+				return d, true
+			}
+		}
+	}
+	return core.Decision{}, false
 }
 
 // Original-file decoders cannot apply a server-side image subtitle selection.
@@ -1028,8 +1547,48 @@ func selectedImageSubtitle(info core.MediaInfo, index int) bool {
 	return false
 }
 
+func (b *Broker) originalBudgetRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
+	var reasons []string
+	if req.Caps.EffectiveAlwaysEncodeVideo() {
+		reasons = append(reasons, "owner policy requires video encoding")
+	}
+	if v := info.Video(); v != nil {
+		if req.Intent.Options.MaxHeight > 0 && v.Height > req.Intent.Options.MaxHeight {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds client %dp limit", v.Height, req.Intent.Options.MaxHeight))
+		}
+		if req.Intent.Options.MaxWidth > 0 && v.Width > req.Intent.Options.MaxWidth {
+			reasons = append(reasons, fmt.Sprintf("%dpx width exceeds client %dpx limit", v.Width, req.Intent.Options.MaxWidth))
+		}
+		if h := req.Caps.VideoMaxHeights[v.Codec]; h > 0 && v.Height > h {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds %dp %s decoder limit", v.Height, h, v.Codec))
+		}
+		if req.Caps.MaxHeightSource == "App compatibility override" && req.Caps.MaxHeight > 0 && v.Height > req.Caps.MaxHeight {
+			reasons = append(reasons, fmt.Sprintf("%dp exceeds %dp app compatibility limit", v.Height, req.Caps.MaxHeight))
+		}
+	}
+	bitrateCap := req.Intent.Options.MaxBitrateKbps
+	if req.Caps.Remote {
+		if req.Caps.MaxBitrateKbps > 0 && (bitrateCap == 0 || req.Caps.MaxBitrateKbps < bitrateCap) {
+			bitrateCap = req.Caps.MaxBitrateKbps
+		}
+		if b != nil && b.deps.RemoteBitrateLimit != nil {
+			if limit := b.deps.RemoteBitrateLimit(); limit > 0 && (bitrateCap == 0 || limit < bitrateCap) {
+				bitrateCap = limit
+			}
+		}
+	}
+	sourceKbps := info.BitrateKbps
+	if sourceKbps <= 0 && info.Size > 0 && info.Duration > 0 {
+		sourceKbps = int(float64(info.Size*8) / info.Duration.Seconds() / 1000)
+	}
+	if bitrateCap > 0 && sourceKbps > bitrateCap {
+		reasons = append(reasons, fmt.Sprintf("bitrate %d kbps exceeds %d kbps limit", sourceKbps, bitrateCap))
+	}
+	return reasons
+}
+
 // Diagnostics use only resolved source facts and declarations, never source URLs.
-func originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
+func (b *Broker) originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
 	var reasons []string
 	if !req.Intent.Options.DirectPlay {
 		reasons = append(reasons, "original playback not allowed")
@@ -1040,6 +1599,7 @@ func originalRejection(info core.MediaInfo, req frontend.PlanRequest) []string {
 	if selectedImageSubtitle(info, req.Intent.Options.SubtitleStream) {
 		reasons = append(reasons, "selected image subtitle requires conversion")
 	}
+	reasons = append(reasons, b.originalBudgetRejection(info, req)...)
 	c := req.Intent.OriginalPlayback
 	if !c.Valid() {
 		reasons = append(reasons, "original decoder capabilities not declared")

@@ -21,13 +21,14 @@ const backSlack = 1 << 20
 
 // cursor follows one sequential reader.
 type cursor struct {
-	requestBegin int64 // foreground start; next includes bytes still being read
-	next         int64 // offset after the last byte read
-	window       int64 // current read-ahead window
-	frontier     int64 // read-ahead scheduled up to here
-	used         time.Time
-	verifying    bool // one archive-layout verification per cursor
-	blocked      bool // failed verification waits for a new foreground read
+	requestBegin   int64 // foreground start; next includes bytes still being read
+	next           int64 // offset after the last byte read
+	window         int64 // current read-ahead window
+	frontier       int64 // read-ahead scheduled up to here
+	used           time.Time
+	verifying      bool // one archive-layout verification per cursor
+	blocked        bool // failed verification waits for a new foreground read
+	backoffBlocked bool // paused during provider backoff; resumes once active read succeeds
 
 	// Playback read-ahead (playahead.go).
 	consumed int64 // sequential bytes this reader has read
@@ -36,6 +37,9 @@ type cursor struct {
 
 // source implements core.MediaSource.
 type source struct {
+	healthyOnce             sync.Once
+	liveStart, missingStart uint64
+
 	recovery  repairObserver
 	bulk      *bulkReader
 	e         *Engine
@@ -67,6 +71,7 @@ type source struct {
 }
 
 func newSource(e *Engine, rel *release, p *plan, releaseID string) *source {
+
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.active.Add(1)
 	s := &source{
@@ -87,9 +92,67 @@ func newSource(e *Engine, rel *release, p *plan, releaseID string) *source {
 	return s
 }
 
-func (s *source) Size() int64       { return s.plan.size }
-func (s *source) Name() string      { return s.plan.name }
-func (s *source) ReleaseID() string { return s.releaseID }
+func (s *source) Size() int64                 { return s.plan.size }
+func (s *source) Name() string                { return s.plan.name }
+func (s *source) ReleaseID() string           { return s.releaseID }
+func (s *source) ResolvedArchiveMember() bool { return s.plan.resolvedMember }
+
+// archiveVolumesSource wraps one or more raw archive volume *source streams
+// (e.g. a compressed or solid RAR/7z/ZIP set for a non-video release) so
+// callers implementing ArchiveVolumeSource can extract the target member
+// through the shared archive reader stack without a second archive stack.
+type archiveVolumesSource struct {
+	vols      []*source
+	format    string
+	member    string
+	name      string
+	releaseID string
+	closeOnce sync.Once
+}
+
+func (a *archiveVolumesSource) Size() int64 {
+	if len(a.vols) == 0 {
+		return 0
+	}
+	return a.vols[0].Size()
+}
+
+func (a *archiveVolumesSource) Name() string      { return a.name }
+func (a *archiveVolumesSource) ReleaseID() string { return a.releaseID }
+
+func (a *archiveVolumesSource) ReadAt(p []byte, off int64) (int, error) {
+	if len(a.vols) == 0 {
+		return 0, io.EOF
+	}
+	return a.vols[0].ReadAt(p, off)
+}
+
+func (a *archiveVolumesSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if len(a.vols) == 0 {
+		return 0, io.EOF
+	}
+	return a.vols[0].ReadAtContext(ctx, p, off)
+}
+
+func (a *archiveVolumesSource) ArchiveVolumes() ([]core.MediaSource, string, string) {
+	out := make([]core.MediaSource, len(a.vols))
+	for i, v := range a.vols {
+		out[i] = v
+	}
+	return out, a.format, a.member
+}
+
+func (a *archiveVolumesSource) Close() error {
+	var first error
+	a.closeOnce.Do(func() {
+		for _, v := range a.vols {
+			if err := v.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	})
+	return first
+}
 
 // Close stops read-ahead and releases the index. Safe to call twice.
 func (s *source) Close() error {
@@ -178,7 +241,11 @@ func (s *source) readAtWithPriority(parent context.Context, p []byte, off int64,
 		s.readAhead(off, int64(len(want)))
 	}
 
-	ctx, cancel := context.WithTimeout(core.WithStreamKey(parent, s), s.e.opts.ReadTimeout)
+	baseCtx := core.WithStreamKey(parent, s)
+	if prio == core.PriorityLive && !core.IsBackgroundCheck(parent) && parent.Value(healthWorkKey{}) != true && s.e.opts.BackoffHold > 0 {
+		baseCtx = withBackoffHold(baseCtx, time.Now().Add(s.e.opts.BackoffHold))
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, s.e.opts.ReadTimeout)
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
 	defer cancel()
@@ -193,10 +260,30 @@ func (s *source) readAtWithPriority(parent context.Context, p []byte, off int64,
 		}
 		return n, err
 	}
-	if ahead && n > 0 && s.playRate.Load() > 0 {
-		// The first foreground read teaches perFetchBps; widen the cursor
-		// window and schedule additional adaptive concurrency immediately.
-		s.growPlayingWindow(off, int64(n))
+	if cb := s.e.opts.OnHealthy; cb != nil && prio == core.PriorityLive && n > 0 && s.rel.liveArticles.Load() > s.liveStart && !core.IsBackgroundCheck(parent) {
+		s.healthyOnce.Do(func() {
+			e := s.e
+			r := s.rel
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if !e.closed {
+				e.wg.Go(func() {
+					r.feedbackMu.Lock()
+					defer r.feedbackMu.Unlock()
+					if r.missingEpoch.Load() == s.missingStart {
+						cb(r.feedbackID)
+					}
+				})
+			}
+		})
+	}
+	if ahead && n > 0 {
+		s.clearBackoffBlocked(off, int64(n))
+		if s.playRate.Load() > 0 {
+			// The first foreground read teaches perFetchBps; widen the cursor
+			// window and schedule additional adaptive concurrency immediately.
+			s.growPlayingWindow(off, int64(n))
+		}
 	}
 	if n < len(p) {
 		return n, io.EOF
@@ -360,9 +447,28 @@ func (s *source) readAhead(off, n int64) {
 	c.window = min(c.window, windowCap)
 	c.used = now
 	c.blocked = false // a new demand read permits retrying a failed layout check
+	c.backoffBlocked = false
 	s.mu.Unlock()
 	s.kickReadAhead()
 	s.kickPlayAhead()
+}
+
+func (s *source) clearBackoffBlocked(off, n int64) {
+	end := off + n
+	cleared := false
+	s.mu.Lock()
+	if !s.closed {
+		for _, cur := range s.cursors {
+			if cur.backoffBlocked && (cur.requestBegin == off || (end >= cur.next-backSlack && end <= cur.next+cur.window)) {
+				cur.backoffBlocked = false
+				cleared = true
+			}
+		}
+	}
+	s.mu.Unlock()
+	if cleared {
+		s.kickReadAhead()
+	}
 }
 
 // growPlayingWindow expands an active cursor's window once completed fetches
@@ -431,7 +537,7 @@ func (s *source) pumpReadAhead() {
 					break
 				}
 			}
-			if !present || s.closed || c.blocked || c.verifying {
+			if !present || s.closed || c.blocked || c.backoffBlocked || c.verifying {
 				s.mu.Unlock()
 				continue
 			}
@@ -462,7 +568,7 @@ func (s *source) cursorWindow(c *cursor) (int64, int64, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || c.blocked {
+	if s.closed || c.blocked || c.backoffBlocked {
 		return 0, 0, false
 	}
 	for _, current := range s.cursors {
@@ -486,7 +592,7 @@ func (s *source) repairNeeded(c *cursor, begin, end int64) bool {
 	}
 	for _, current := range s.cursors {
 		if current == c {
-			return !c.blocked && end > c.requestBegin && begin < min(c.next+c.window, s.plan.size)
+			return !c.blocked && !c.backoffBlocked && end > c.requestBegin && begin < min(c.next+c.window, s.plan.size)
 		}
 	}
 	return false
@@ -501,8 +607,11 @@ func (s *source) scheduleCursor(from, to int64, c *cursor) int64 {
 		}
 		if !s.plan.isVerified(pc.vol) {
 			// A failed verification must not become a self-sustaining retry
-			// loop. Only a later foreground read unblocks this cursor.
+			// loop. Non-backoff failures wait for a new foreground demand
+			// read; provider backoff pauses read-ahead without poisoning the
+			// active read and resumes as soon as demand succeeds.
 			vol := pc.vol
+			volOff := from + pc.bufOff
 			if c != nil {
 				s.mu.Lock()
 				c.verifying = true
@@ -513,7 +622,14 @@ func (s *source) scheduleCursor(from, to int64, c *cursor) int64 {
 				if c != nil {
 					s.mu.Lock()
 					c.verifying = false
-					c.blocked = err != nil
+					if err != nil {
+						if s.e.isProviderBackoff(err) {
+							c.backoffBlocked = true
+							c.frontier = min(c.frontier, volOff)
+						} else {
+							c.blocked = true
+						}
+					}
 					s.mu.Unlock()
 				}
 				return err == nil
@@ -523,7 +639,7 @@ func (s *source) scheduleCursor(from, to int64, c *cursor) int64 {
 				c.verifying = false
 				s.mu.Unlock()
 			}
-			return from + pc.bufOff
+			return volOff
 		}
 		for _, i := range pf.slotsFor(pc.off, pc.n) {
 			begin, end, _ := pf.rangeOf(i)
@@ -550,8 +666,15 @@ func (s *source) scheduleCursor(from, to int64, c *cursor) int64 {
 					return s.repairNeeded(c, inner, innerEnd)
 				}
 				_, err := s.e.segment(s.ctx, s.rel, pf, i, core.PriorityReadahead, fo)
-				if err != nil && s.ctx.Err() == nil && !isMissing(err) {
-					s.e.log.Debug("read-ahead fetch failed", "name", s.plan.name, "part", i+1, "err", err)
+				if err != nil {
+					if c != nil && s.e.isProviderBackoff(err) {
+						s.mu.Lock()
+						c.backoffBlocked = true
+						c.frontier = min(c.frontier, inner)
+						s.mu.Unlock()
+					} else if s.ctx.Err() == nil && !isMissing(err) {
+						s.e.log.Debug("read-ahead fetch failed", "name", s.plan.name, "part", i+1, "err", err)
+					}
 				}
 				return err == nil
 			})

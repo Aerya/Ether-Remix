@@ -47,6 +47,11 @@ func (p *offlineXtreamPlayback) ServeRange(w http.ResponseWriter, r *http.Reques
 	http.ServeContent(w, r, "original.mkv", time.Time{}, strings.NewReader("offline-original-media-bytes"))
 }
 func TestXtreamOfflineRoutesThroughRealBroker(t *testing.T) {
+	for _, cap := range []int{1, 2} {
+		t.Run(fmt.Sprintf("device-cap-%d", cap), func(t *testing.T) { testXtreamOfflineRoutesThroughRealBroker(t, cap) })
+	}
+}
+func testXtreamOfflineRoutesThroughRealBroker(t *testing.T, deviceCap int) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	users, err := auth.New(ctx, db, auth.Options{})
@@ -64,6 +69,13 @@ func TestXtreamOfflineRoutesThroughRealBroker(t *testing.T) {
 	grants, _ := identity.NewGrants(db, users, time.Hour, nil)
 	password, err := grants.Issue(ctx, viewerID, nil, "xtream", core.Device{ID: "xtream-login"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := grants.List(ctx, viewerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := grants.SetXtreamStreamLimit(ctx, viewerID, list[0].Hash, deviceCap); err != nil {
 		t.Fatal(err)
 	}
 	active := users.ActiveUser
@@ -117,7 +129,22 @@ func TestXtreamOfflineRoutesThroughRealBroker(t *testing.T) {
 		t.Fatalf("original range: %d %q %v", w.Code, w.Body.String(), w.Header())
 	}
 	done := make(chan struct{})
-	go func() { defer close(done); call(base+"?hold=1", "") }()
+	heldCtx, cancelHeld := context.WithCancel(ctx)
+	defer cancelHeld()
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest("GET", base+"?hold=1", nil).WithContext(heldCtx)
+		req.RemoteAddr = "192.0.2.1:1234"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	defer func() {
+		cancelHeld()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("held response did not exit")
+		}
+	}()
 	select {
 	case <-pb.started:
 	case <-time.After(2 * time.Second):
@@ -128,16 +155,29 @@ func TestXtreamOfflineRoutesThroughRealBroker(t *testing.T) {
 	if w.Code != 307 {
 		t.Fatalf("live primary: %d %s", w.Code, w.Body.String())
 	}
-	select {
-	case <-pb.stopped:
-	case <-time.After(time.Second):
-		t.Fatal("original response not promptly canceled")
+	if deviceCap == 1 {
+		select {
+		case <-pb.stopped:
+		case <-time.After(time.Second):
+			t.Fatal("original response not promptly canceled")
+		}
+		<-done
 	}
-	<-done
 	location := strings.TrimPrefix(w.Header().Get("Location"), "http://ether.test")
 	w = call(location, "")
 	if w.Code != 200 || live.tunes != 1 {
 		t.Fatalf("live broker: %d %s tunes=%d", w.Code, w.Body.String(), live.tunes)
+	}
+	if deviceCap == 2 {
+		// The second item has actually opened through the broker. The original
+		// response must still be alive, not merely admitted before being cancelled.
+		select {
+		case <-pb.stopped:
+			t.Fatal("multi-view canceled original response")
+		case <-time.After(50 * time.Millisecond):
+		}
+		cancelHeld()
+		<-done
 	}
 	// The live backend can expire before the broker receives a client switch.
 	// Exact authenticated retirement is idempotent when that backend is absent.
@@ -147,7 +187,7 @@ func TestXtreamOfflineRoutesThroughRealBroker(t *testing.T) {
 	if w.Code != 206 || w.Body.String() != "offline" {
 		t.Fatalf("episode range: %d %s", w.Code, w.Body.String())
 	}
-	list, err := grants.List(ctx, viewerID)
+	list, err = grants.List(ctx, viewerID)
 	if err != nil {
 		t.Fatal(err)
 	}

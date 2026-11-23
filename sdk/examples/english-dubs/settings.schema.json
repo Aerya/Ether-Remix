@@ -1,0 +1,32 @@
+{
+  "fields": [
+    {
+      "key": "includeIncomplete",
+      "kind": "bool",
+      "label": "$t:setting_include_incomplete_label",
+      "hint": "$t:setting_include_incomplete_hint",
+      "default": false
+    },
+    {
+      "key": "typeFilter",
+      "kind": "select",
+      "label": "$t:setting_type_filter_label",
+      "hint": "$t:setting_type_filter_hint",
+      "default": "both",
+      "options": [
+        {
+          "value": "both",
+          "label": "$t:type_both"
+        },
+        {
+          "value": "series",
+          "label": "$t:type_series"
+        },
+        {
+          "value": "movies",
+          "label": "$t:type_movies"
+        }
+      ]
+    }
+  ]
+}

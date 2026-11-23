@@ -52,6 +52,19 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 			}
 			return a.cfg.Get().Downloads.AllowFriends
 		})
+		a.safety.SetDownloadDefaults(func() core.DownloadAllowance {
+			if a.cfg == nil {
+				return core.DownloadAllowance{}
+			}
+			d := a.cfg.Get().Downloads
+			return core.DownloadAllowance{
+				LimitUnit:   d.LimitUnit,
+				LimitAmount: d.LimitAmount,
+				LimitPeriod: d.LimitPeriod,
+				MaxHeight:   d.MaxHeight,
+				NoTranscode: d.NoTranscode,
+			}
+		})
 		if a.catalog != nil {
 			a.catalog.SetOwnerContentPolicy(func(ctx context.Context, t *core.Title) bool {
 				if a.users == nil || a.safety == nil {
@@ -76,6 +89,7 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 		Shared:         a.sharedCerts(),
 		Logger:         log.With("component", "certs"),
 		OnChange:       a.publishDashboard,
+		OnRenewed:      a.emitCertificateRenewed,
 	}); err != nil {
 		return fmt.Errorf("certificates: %w", err)
 	}
@@ -84,12 +98,15 @@ func (a *App) buildIdentity(ctx context.Context, cfg config.Config) error {
 	// while the bus and the shared store are still open.
 	a.closers = append(a.closers, a.certs.Close)
 	ropts := plextv.RegistrarOptions{
-		Config:   a.cfg,
-		Client:   a.plextv,
-		Users:    a.users,
-		Certs:    a.certs,
-		Logger:   log.With("component", "registrar"),
-		OnChange: a.publishDashboard,
+		Config: a.cfg,
+		Client: a.plextv,
+		Users:  a.users,
+		Certs:  a.certs,
+		Logger: log.With("component", "registrar"),
+		OnChange: func() {
+			a.observeReachabilityChange()
+			a.publishDashboard()
+		},
 	}
 	if a.clustered() {
 		ropts.PeerURIs = a.peers.get // publish the union of every live node

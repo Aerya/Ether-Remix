@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -81,6 +82,24 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
+// defaultMaxPluginBuildsPerTick caps how many remote plugin-backed collections
+// from any single add-on RunDue refreshes in one scheduler tick, so importing
+// hundreds of add-on catalogues spreads refreshes naturally without bursting.
+const defaultMaxPluginBuildsPerTick = 12
+
+// pluginAddonID returns the owning plugin ID when a collection reads from a
+// plugin list source ("plugin:<addonID>/<key>").
+func pluginAddonID(sp core.CollectionSpec) string {
+	for _, src := range sp.Sources {
+		if rest, ok := strings.CutPrefix(src.Kind, "plugin:"); ok {
+			if id, _, ok := strings.Cut(rest, "/"); ok && id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 // RunDue rebuilds every collection that is due and returns how many were
 // built.
 func (s *Service) RunDue(ctx context.Context) int {
@@ -90,10 +109,20 @@ func (s *Service) RunDue(ctx context.Context) int {
 		s.log.Warn("collections: scheduler", "err", err)
 		return 0
 	}
+	perAddonLimit := s.maxPluginBuildsPerTick
+	if perAddonLimit <= 0 {
+		perAddonLimit = defaultMaxPluginBuildsPerTick
+	}
+	addonBuilds := map[string]int{}
 	built := 0
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			break
+		}
+		if strings.HasPrefix(row.slug, "plugin:") {
+			if _, ok := s.kindRegistry().Lookup(row.slug); !ok {
+				continue
+			}
 		}
 		if !row.builtin && row.owner > 0 && len(row.spec.Sources) == 1 && row.spec.Sources[0].Kind == "titles" && len(row.spec.Sources[0].Keys) == 0 {
 			_, _ = s.db.ExecContext(ctx, `DELETE FROM collections_specs WHERE id=? AND builtin=0`, row.id)
@@ -102,9 +131,16 @@ func (s *Service) RunDue(ctx context.Context) int {
 		if !s.due(row) {
 			continue
 		}
+		addonID := pluginAddonID(row.spec)
+		if addonID != "" && addonBuilds[addonID] >= perAddonLimit {
+			continue
+		}
 		bctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		_, err := s.build(bctx, row)
 		cancel()
+		if addonID != "" {
+			addonBuilds[addonID]++
+		}
 		if err != nil {
 			if ctx.Err() == nil {
 				s.log.Warn("collections: refresh failed", "collection", row.spec.Name, "err", err)
@@ -121,6 +157,9 @@ func (s *Service) due(row *specRow) bool {
 		return false
 	}
 	if !row.enabled {
+		return false
+	}
+	if row.spec.AddonSync != nil && row.spec.AddonSync.Removed {
 		return false
 	}
 	if row.lastBuilt.IsZero() || row.buildHash == "" {

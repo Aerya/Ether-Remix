@@ -229,3 +229,174 @@ func TestActionSlotContract(t *testing.T) {
 		t.Fatalf("expected route error, got %v", err)
 	}
 }
+
+func TestFlowsManifestValidationAndPermissions(t *testing.T) {
+	sideEffect := true
+	valid := func() Manifest {
+		m := baseManifest()
+		m.Ether.Capabilities = []Capability{CapEvents, CapFlowActions}
+		m.Ether.Contributes.Events = &EventsMeta{
+			Subscribe: []string{"playback.session.started", EventPlaybackStopped},
+			Publish: []PublishedEventMeta{{
+				Key:         "scene.changed",
+				Version:     1,
+				Label:       "Scene changed",
+				Description: "Lighting scene changed.",
+				Fields: []EventFieldMeta{
+					{Name: "scene", Type: "enum", Label: "Scene", Filterable: true, Enum: []EventEnumOption{
+						{Value: "cinema", Label: "Cinema"},
+						{Value: "bright", Label: "Bright"},
+					}},
+					{Name: "brightness", Type: "int", Label: "Brightness", Unit: "percent"},
+				},
+			}},
+		}
+		m.Ether.Contributes.FlowActions = []FlowActionMeta{{
+			Key:         "set_scene",
+			Label:       "Set scene",
+			Description: "Switch the lighting scene.",
+			Route:       "/ether/v1/flow-actions/set_scene",
+			Timeout:     "15s",
+			Idempotent:  true,
+			SideEffect:  &sideEffect,
+			Params: []FlowActionParamMeta{
+				{Key: "scene", Type: "enum", Label: "Scene", Required: true, Enum: []EventEnumOption{
+					{Value: "cinema", Label: "Cinema"},
+				}},
+				{Key: "brightness", Type: "int", Label: "Brightness", Default: 25},
+			},
+			Outputs: []EventFieldMeta{
+				{Name: "scene", Type: "string", Label: "Scene"},
+			},
+		}}
+		return m
+	}
+
+	if err := valid().Validate(); err != nil {
+		t.Fatalf("valid flows manifest failed: %v", err)
+	}
+
+	// Publish-only events capability (without subscribe) is valid.
+	pubOnly := valid()
+	pubOnly.Ether.Contributes.Events.Subscribe = nil
+	if err := pubOnly.Validate(); err != nil {
+		t.Fatalf("publish-only manifest failed: %v", err)
+	}
+
+	// Permission sheet & diff include published events and flow actions.
+	lines, _, _ := PermissionSheet(valid())
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"Publishes custom events to Flows", "Adds actions to Flows"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("PermissionSheet missing %q in:\n%s", want, joined)
+		}
+	}
+	if added := PermissionDiff(baseManifest(), valid()); len(added) == 0 {
+		t.Fatal("expected PermissionDiff to report added events.publish and flow_actions")
+	}
+
+	cases := []struct {
+		name  string
+		mut   func(*Manifest)
+		field string
+	}{
+		{
+			name: "events empty subscribe and publish",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Events = &EventsMeta{}
+			},
+			field: "ether.contributes.events",
+		},
+		{
+			name: "published event key bad",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Events.Publish[0].Key = "Scene.Changed"
+			},
+			field: "ether.contributes.events.publish[0].key",
+		},
+		{
+			name: "published event duplicate key",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Events.Publish = append(m.Ether.Contributes.Events.Publish, m.Ether.Contributes.Events.Publish[0])
+			},
+			field: "ether.contributes.events.publish[1].key",
+		},
+		{
+			name: "published event bad field type",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Events.Publish[0].Fields[0].Type = "binary"
+			},
+			field: "ether.contributes.events.publish[0].fields[0].type",
+		},
+		{
+			name: "published event enum missing options",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Events.Publish[0].Fields[0].Enum = nil
+			},
+			field: "ether.contributes.events.publish[0].fields[0].enum",
+		},
+		{
+			name: "flow actions missing without capability",
+			mut: func(m *Manifest) {
+				m.Ether.Capabilities = []Capability{CapEvents}
+			},
+			field: "ether.capabilities",
+		},
+		{
+			name: "flow_actions capability without contributions",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions = nil
+			},
+			field: "ether.contributes.flowActions",
+		},
+		{
+			name: "flow action bad key",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions[0].Key = "SetScene"
+			},
+			field: "ether.contributes.flowActions[0].key",
+		},
+		{
+			name: "flow action route outside /ether/",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions[0].Route = "/api/set_scene"
+			},
+			field: "ether.contributes.flowActions[0].route",
+		},
+		{
+			name: "flow action timeout over 60s",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions[0].Timeout = "90s"
+			},
+			field: "ether.contributes.flowActions[0].timeout",
+		},
+		{
+			name: "flow action bad param type",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions[0].Params[0].Type = "file"
+			},
+			field: "ether.contributes.flowActions[0].params[0].type",
+		},
+		{
+			name: "flow action bad picker",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.FlowActions[0].Params[1].Picker = "magic"
+			},
+			field: "ether.contributes.flowActions[0].params[1].picker",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := valid()
+			tc.mut(&m)
+			err := m.Validate()
+			if err == nil {
+				t.Fatalf("expected error on %s, got nil", tc.field)
+			}
+			if !hasField(err, tc.field) {
+				t.Fatalf("expected error on %s, got %v", tc.field, err)
+			}
+		})
+	}
+}

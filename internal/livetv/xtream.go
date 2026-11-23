@@ -190,6 +190,11 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 	if err := x.get(ctx, "get_live_streams", &streams); err != nil {
 		return Fetched{}, err
 	}
+	if len(streams) == 0 {
+		if err := s.refuseEmptyLineup(ctx, src); err != nil {
+			return Fetched{}, err
+		}
+	}
 	old, err := s.sourceStreamIDs(ctx, src.ID)
 	if err != nil {
 		return Fetched{}, err
@@ -198,7 +203,7 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 	src.Account = acct
 	src.Playlist = ""
 	cs = s.applyGroupRules(ctx, src, cs)
-	g, err := fetchSourceGuide(ctx, s, src, cs, true)
+	g, err := fetchSourceGuide(ctx, s, src, cs, true, nil)
 	if err != nil {
 		return Fetched{}, err
 	}
@@ -238,8 +243,9 @@ func xtreamChannels(sourceID, base string, a *SourceAuth, output string, cats []
 			id = stableID(sourceID, "xtream", sid)
 		}
 		streamURL := base + "/live/" + url.PathEscape(a.Username) + "/" + url.PathEscape(a.Password) + "/" + url.PathEscape(sid) + "." + output
+		epgID := strings.TrimSpace(st.EPGID)
 		c := Channel{
-			ID: id, Name: strings.TrimSpace(st.Name), Logo: strings.TrimSpace(st.Icon), GuideID: strings.TrimSpace(st.EPGID),
+			ID: id, Name: strings.TrimSpace(st.Name), Logo: strings.TrimSpace(st.Icon), GuideID: epgID, ProviderGuideID: epgID,
 			Group: names[string(st.CategoryID)], SourceID: sourceID, Kind: "iptv", Enabled: true, StreamURL: streamURL,
 			adult: st.Adult.truthy(),
 		}

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -39,6 +40,10 @@ func imageSize(img frontend.Image, secret string) object {
 }
 
 func (i *instance) image(w http.ResponseWriter, r *http.Request) {
+	if secret := r.PathValue("secret"); strings.HasPrefix(secret, plexAvatarPrefix) {
+		i.plexAvatar(w, r, secret)
+		return
+	}
 	if i.host.ImageGrants == nil {
 		i.unavailable(w, r)
 		return

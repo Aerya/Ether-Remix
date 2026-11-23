@@ -729,7 +729,7 @@ func pluginData(p PluginInfo) map[string]any {
 	if p.Kind != "" {
 		m["kind"] = p.Kind
 	}
-	if p.Detail != "" {
+	if p.Detail != "" && p.Health != "ok" {
 		m["detail"] = truncate(p.Detail, 300)
 	}
 	return m

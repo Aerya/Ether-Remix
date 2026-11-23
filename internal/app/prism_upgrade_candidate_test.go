@@ -12,13 +12,13 @@ import (
 // These versions identify the announced candidate, not the frozen delivered
 // fixture. Keep the latter at 9503; every transition is applied by the binary.
 var prismCandidateMigrations = map[string]int{
-	"sessions":              10,
+	"sessions":              11,
 	"sessions_samples":      1,
 	"viewer_policy":         7,
 	"availability":          6,
 	"capability_tickets":    1,
 	"capability_headers":    3,
-	"frontend_image_grants": 7,
+	"frontend_image_grants": 8,
 	"frontend_tickets":      3,
 	"experience_receipts":   5,
 	"handle_reservations":   2,
@@ -87,7 +87,7 @@ func assertPrismCandidateArtifacts(t *testing.T, db *sql.DB) {
 		}
 		rows.Close()
 	}
-	for _, table := range []string{"frontend_tickets", "handle_reservations", "experience_receipt_actions"} {
+	for _, table := range []string{"frontend_image_grants", "frontend_tickets", "handle_reservations", "experience_receipt_actions"} {
 		query := `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`
 		if store.DialectOf(db) == store.Postgres {
 			query = `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?`

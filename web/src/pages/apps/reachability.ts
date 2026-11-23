@@ -2,8 +2,13 @@ import { t } from "../../i18n";
 
 /** Frontend status fields the owner-console summary actually reads. */
 export type ReachabilityStatus = {
+  mounted?: boolean;
   addresses?: string[] | null;
   connectUrls?: string[];
+  /** Recent client-visible addresses (host and path prefix) Ether answered requests on. */
+  observedAddresses?: string[];
+  /** Optional owner-configured published addresses for QR codes, invites, and share links. */
+  publishedAddresses?: string[];
   lan?: string;
   lanReason?: string;
   lanCheckedAt?: string;
@@ -13,18 +18,29 @@ export type ReachabilityStatus = {
   /** The published outside route the away verdict is about. */
   wanAddress?: string;
   wanCheckedAt?: string;
+  busyPort?: number;
+  actualPort?: number;
+  busyPortHolder?: string;
+  error?: string;
+  warnings?: string[];
 };
 
 const UNUSABLE_HOSTS = new Set(["", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::"]);
 
-function hostOf(value: string): string {
+function parseCandidateURL(value: string): URL | null {
   const trimmed = value.trim();
+  if (!trimmed) return null;
   try {
-    const url = trimmed.includes("://") ? new URL(trimmed) : new URL(`http://${trimmed}`);
-    return url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return trimmed.includes("://") ? new URL(trimmed) : new URL(`http://${trimmed}`);
   } catch {
-    return trimmed.toLowerCase();
+    return null;
   }
+}
+
+function hostOf(value: string): string {
+  const parsed = parseCandidateURL(value);
+  if (parsed) return parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return value.trim().toLowerCase();
 }
 
 /** Loopback and unspecified binds are not addresses another device can use. */
@@ -32,11 +48,37 @@ export function isLoopbackAddress(value: string): boolean {
   return UNUSABLE_HOSTS.has(hostOf(value));
 }
 
-/** Prefer published connect URLs. Fall back to listener addresses that are not loopback. */
+/**
+ * True when an address uses Ether's shared-port path for an app that can have
+ * its own dedicated listener port (Jellyfin, Emby, Silo, Vela).
+ */
+export function isSharedPortFallbackPath(value: string): boolean {
+  const parsed = parseCandidateURL(value);
+  if (!parsed) return false;
+  return /^\/(jellyfin|emby|silo|vela)(\/|$)/i.test(parsed.pathname || "/");
+}
+
+function orderDedicatedFirst(addresses: string[]): string[] {
+  const dedicated: string[] = [];
+  const shared: string[] = [];
+  for (const item of addresses) {
+    if (isSharedPortFallbackPath(item)) shared.push(item);
+    else dedicated.push(item);
+  }
+  return dedicated.length > 0 ? [...dedicated, ...shared] : addresses;
+}
+
+/**
+ * Prefer published connect URLs, always ranking a protocol's own dedicated
+ * listener port ahead of shared-port fallback paths (/jellyfin, /emby, /silo).
+ * Fall back to listener addresses that are not loopback.
+ */
 export function usableAddresses(status: ReachabilityStatus | null | undefined): string[] {
   const urls = (status?.connectUrls ?? []).filter((item) => item && !isLoopbackAddress(item));
-  if (urls.length) return urls;
-  return (status?.addresses ?? []).filter((item) => item && !isLoopbackAddress(item));
+  if (urls.length) return orderDedicatedFirst(urls);
+  return orderDedicatedFirst(
+    (status?.addresses ?? []).filter((item) => item && !isLoopbackAddress(item)),
+  );
 }
 
 /** The address the connect control selects until the owner picks another. */

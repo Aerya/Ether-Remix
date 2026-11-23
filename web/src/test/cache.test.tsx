@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { presetForFreeBytes } from "../pages/cache/presets";
 import { calls, renderApp } from "./harness";
@@ -10,6 +10,13 @@ async function chooseProfile(name: RegExp) {
   fireEvent.click(await screen.findByRole("button", { name }, WAIT));
   fireEvent.click(screen.getByRole("button", { name: "Review profile" }));
 }
+
+async function pickToolbarOption(label: string, optionName: string | RegExp) {
+  fireEvent.click(await screen.findByRole("button", { name: label }, WAIT));
+  const menu = await screen.findByRole("menu", { name: label }, WAIT);
+  fireEvent.click(within(menu).getByRole("menuitemradio", { name: optionName }));
+}
+
 describe("cache preset suggestion", () => {
   it("picks Everyday when the disk can hold 32 GiB, and Feather when it cannot", () => {
     expect(presetForFreeBytes(1.1 * 1024 ** 4)?.key).toBe("everyday");
@@ -19,6 +26,7 @@ describe("cache preset suggestion", () => {
 
 describe("Cache management", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
   it("keeps a preset as a draft until saved and discards it without a request", async () => {
@@ -79,29 +87,33 @@ describe("Cache management", () => {
     await waitFor(() => expect(fake.state.config.cache.storage).toBe("shared"));
     expect(fake.state.config.cache.dir).toBe("/Volumes/media/ether-cache");
   });
-  it("disables speculation controls in no-media mode and saves the off policy", async () => {
+  it("disables speculation controls on Preloading in no-media mode and keeps Edit policy storage-only", async () => {
     const { fake } = renderApp("/cache");
     fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
-    fireEvent.change(await screen.findByLabelText("Retention strategy", {}, WAIT), {
-      target: { value: "off" },
-    });
-    expect(screen.getByRole("switch", { name: "Warm detail pages" })).toBeDisabled();
+    const dialog = await screen.findByRole("dialog", { name: "Edit cache policy" }, WAIT);
+    expect(
+      within(dialog).queryByRole("switch", { name: "Warm detail pages" }),
+    ).not.toBeInTheDocument();
+    await pickToolbarOption("Retention strategy", "No persistent media");
     fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
     await waitFor(() => expect(fake.state.config.cache.mode).toBe("off"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: "Preloading" }));
+    expect(await screen.findByRole("switch", { name: "Warm detail pages" }, WAIT)).toBeDisabled();
+    expect(screen.getByText(/Persistent media caching is turned off/)).toBeInTheDocument();
   });
-  it("saves the playback read-ahead depth and disables it without media caching", async () => {
-    const { fake } = renderApp("/cache");
-    fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
-    const ahead = await screen.findByLabelText("Read ahead while playing", {}, WAIT);
-    expect(ahead).toHaveValue("5");
-    fireEvent.change(ahead, { target: { value: "10" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+  it("saves the playback read-ahead depth from Preloading and disables it without media caching", async () => {
+    const { fake } = renderApp("/cache/preloading");
+    const ahead = await screen.findByRole("button", { name: "Read ahead while playing" }, WAIT);
+    expect(ahead).toHaveTextContent("5 minutes (recommended)");
+    await pickToolbarOption("Read ahead while playing", "10 minutes");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(fake.state.config.cache.playbackReadAheadMinutes).toBe(10));
     fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
-    fireEvent.change(await screen.findByLabelText("Retention strategy", {}, WAIT), {
-      target: { value: "off" },
-    });
-    expect(screen.getByLabelText("Read ahead while playing")).toBeDisabled();
+    await pickToolbarOption("Retention strategy", "No persistent media");
+    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    await waitFor(() => expect(fake.state.config.cache.mode).toBe("off"));
+    expect(screen.getByRole("button", { name: "Read ahead while playing" })).toBeDisabled();
   });
   it("filters retained titles and updates an owner pin", async () => {
     const { fake } = renderApp("/cache/explorer");
@@ -114,29 +126,84 @@ describe("Cache management", () => {
     await waitFor(() => expect(calls(fake, "POST", "/cache/pin")).toHaveLength(1));
     expect((await screen.findAllByText("Kept by you")).length).toBeGreaterThan(0);
   });
-  it("saves a household blend and rolling TV window with explanations", async () => {
+  it("saves a household blend and rolling TV window from Preloading with explanations", async () => {
     const { fake } = renderApp("/cache");
     await chooseProfile(/Cinema node/);
-    expect(screen.getByLabelText("Selection strategy")).toHaveValue("smart");
-    expect(screen.getByLabelText("Include in your shelf")).toHaveValue("mixed");
-    fireEvent.change(screen.getByLabelText("Include in your shelf"), { target: { value: "tv" } });
-    fireEvent.change(screen.getByLabelText("Household influence"), { target: { value: "80" } });
-    fireEvent.change(screen.getByLabelText("Episode window per show"), { target: { value: "6" } });
-    fireEvent.change(screen.getByLabelText("Learn from"), { target: { value: "all" } });
-    expect(calls(fake, "PUT", "/config/cache")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    await waitFor(() => expect(fake.state.config.cache.preloadEpisodesAhead).toBe(6));
-    expect(fake.state.config.cache.preloadContent).toBe("tv");
-    expect(fake.state.config.cache.preloadHouseholdWeight).toBe(80);
-    expect(fake.state.config.cache.preloadHouseholdScope).toBe("all");
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Save policy" })).not.toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("tab", { name: "Preloading" }));
+    expect(
+      await screen.findByRole("button", { name: "Selection strategy" }, WAIT),
+    ).toHaveTextContent("Smart household blend");
+    expect(screen.getByRole("button", { name: "Include in your shelf" })).toHaveTextContent(
+      "Movies & TV episodes",
+    );
+    await pickToolbarOption("Include in your shelf", "TV episodes only");
+    fireEvent.change(screen.getByLabelText("Household influence"), { target: { value: "80" } });
+    fireEvent.change(screen.getByLabelText("Episode window per show"), { target: { value: "6" } });
+    await pickToolbarOption("Learn from", "All active shared viewers");
+    const savesBefore = calls(fake, "PUT", "/config/cache").length;
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/config/cache").length).toBeGreaterThan(savesBefore),
+    );
+    expect(fake.state.config.cache.preloadEpisodesAhead).toBe(6);
+    expect(fake.state.config.cache.preloadContent).toBe("tv");
+    expect(fake.state.config.cache.preloadHouseholdWeight).toBe(80);
+    expect(fake.state.config.cache.preloadHouseholdScope).toBe("all");
     expect((await screen.findAllByText(/Severance · S02E04/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/Next in a household viewing sequence/)).toBeInTheDocument();
   });
-  it("explains releases by reason, file name, filters, and detail", async () => {
+  it("edits plugin library cache quotas with standard inputs and SaveBar", async () => {
+    let cacheState = {
+      used: 512 * 1024 ** 2,
+      blobs: 3,
+      maxBytes: 4 * 1024 ** 3,
+      ttlSeconds: 7 * 86400,
+    };
+    const { fake } = renderAppWith("/cache/libraries", (method, path, body) => {
+      if (method === "GET" && path === "/libraries") {
+        return {
+          libraries: [
+            {
+              id: 42,
+              key: "audiobooks",
+              name: "Audiobooks",
+              source: "plugin",
+              sort: 1,
+              hidden: false,
+              createdAt: "",
+              updatedAt: "",
+            },
+          ],
+        };
+      }
+      if (method === "GET" && path === "/libraries/42/cache") {
+        return cacheState;
+      }
+      if (method === "PUT" && path === "/libraries/42/cache") {
+        cacheState = { ...cacheState, ...(body as { maxBytes: number; ttlSeconds: number }) };
+        return cacheState;
+      }
+      return undefined;
+    });
+    expect(await screen.findByRole("heading", { name: "Audiobooks" }, WAIT)).toBeInTheDocument();
+    const keep = screen.getByLabelText("Keep at most");
+    const forget = screen.getByLabelText("Forget files after");
+    expect(keep).toHaveValue(4);
+    expect(forget).toHaveValue(7);
+    fireEvent.change(keep, { target: { value: "8" } });
+    fireEvent.change(forget, { target: { value: "14" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/libraries/42/cache")).toHaveLength(1));
+    expect(calls(fake, "PUT", "/libraries/42/cache")[0]!.body).toEqual({
+      maxBytes: 8 * 1024 ** 3,
+      ttlSeconds: 14 * 86400,
+    });
+  });
+  it("explains releases by reason, file name, filters, and drawer detail", async () => {
     renderApp("/cache/explorer");
     expect(await screen.findByText("Arrival", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Reason" })).toBeInTheDocument();
@@ -149,9 +216,7 @@ describe("Cache management", () => {
     expect(await screen.findByText("Interstellar.2014.1080p.mkv")).toBeInTheDocument();
     expect(screen.queryByText("Arrival")).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Filter cached releases"), {
-      target: { value: "all" },
-    });
+    await pickToolbarOption("Filter cached releases", "All releases");
     fireEvent.change(screen.getByLabelText("Search cached releases"), { target: { value: "" } });
     expect(
       await screen.findByText("No reason was recorded for this older entry."),
@@ -160,16 +225,45 @@ describe("Cache management", () => {
       await screen.findByText("The.Americans.2013.S03E01.1080p.BRRip.x264-HiQVE"),
     ).toBeInTheDocument();
     expect(await screen.findByText("Written by a quality check or probe.")).toBeInTheDocument();
-    fireEvent.click(await screen.findByText("Interstellar.2014.1080p.mkv"));
-    expect(await screen.findByText("Fetched because")).toBeInTheDocument();
-    expect(screen.getByText("Kept because")).toBeInTheDocument();
-    expect(screen.getByText("Play history")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Filter cached releases"), {
-      target: { value: "unfinished" },
-    });
+    fireEvent.click(await screen.findByText("Interstellar.2014.1080p.mkv"));
+    const dialog = await screen.findByRole("dialog", { name: "Interstellar" }, WAIT);
+    expect(within(dialog).getByText("What's cached")).toBeInTheDocument();
+    expect(within(dialog).getByText("Segment map")).toBeInTheDocument();
+    expect(within(dialog).getByText("Where")).toBeInTheDocument();
+    expect(within(dialog).getByText("Why it's cached")).toBeInTheDocument();
+    expect(within(dialog).getByText("When")).toBeInTheDocument();
+    expect(within(dialog).getByText("Fetched because")).toBeInTheDocument();
+    expect(within(dialog).getByText("Kept because")).toBeInTheDocument();
+    expect(within(dialog).getByText("Play history")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await pickToolbarOption("Filter cached releases", "Unfinished");
     expect(await screen.findByText(/Severance · S02E03/)).toBeInTheDocument();
     expect(screen.queryByText("Arrival")).not.toBeInTheDocument();
+  });
+  it("opens the release drawer via deep-link and keyboard navigation with segment and shelf details", async () => {
+    const { fake } = renderApp("/cache/explorer?release=demo-dune-2160");
+    const dialog = await screen.findByRole("dialog", { name: "Dune: Part Two" }, WAIT);
+    expect(within(dialog).getByText("4K")).toBeInTheDocument();
+    expect(within(dialog).getByText("DV · HDR10")).toBeInTheDocument();
+    expect(within(dialog).getByText("Remux")).toBeInTheDocument();
+    expect(within(dialog).getByText("72/100")).toBeInTheDocument();
+    expect(within(dialog).getByText("Usenet")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Segments 0–1,999")).toBeInTheDocument();
+    expect(calls(fake, "GET", "/cache/releases/demo-dune-2160").length).toBeGreaterThan(0);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep in cache" }));
+    await waitFor(() => expect(calls(fake, "POST", "/cache/pin")).toHaveLength(1));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const row = (await screen.findByText(/Severance · S02E03/)).closest("tr")!;
+    fireEvent.keyDown(row, { key: "Enter" });
+    const nextDialog = await screen.findByRole("dialog", { name: /Severance · S02E03/ }, WAIT);
+    expect(await within(nextDialog).findByText("Segments 0–31, 260–767")).toBeInTheDocument();
   });
   it("breaks protected bytes down by cause and names the current warm", async () => {
     renderApp("/cache/overview");
@@ -256,5 +350,115 @@ describe("Cache management", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
     expect(await screen.findByText("Playback readiness")).toBeInTheDocument();
     expect(screen.queryByLabelText("Search cached releases")).not.toBeInTheDocument();
+  });
+  it("styles Clear cache as outline and points Media disk budget to Back to presets → Pass-through", async () => {
+    renderApp("/cache");
+    const clearBtn = await screen.findByRole("button", { name: "Clear cache" }, WAIT);
+    const editBtn = screen.getByRole("button", { name: "Edit policy" });
+    expect(clearBtn.className).toContain("border-border");
+    expect(clearBtn.className).not.toContain("bg-primary ");
+    expect(editBtn.className).toContain("bg-primary");
+
+    fireEvent.click(editBtn);
+    const dialog = await screen.findByRole("dialog", { name: "Edit cache policy" }, WAIT);
+    expect(
+      within(dialog).getByText(
+        /Use Back to presets and choose Pass-through to turn disk caching off/,
+      ),
+    ).toBeInTheDocument();
+  });
+  it("hides raw SHA1 keys behind a compact copyable drawer field and merges live playback pills", async () => {
+    const sha1 = "8b8ad7ac4ea04925d6c6775d072c9e397f177c36";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderAppWith("/cache/explorer", (method, path) => {
+      if (method !== "GET" || path !== "/cache/") return undefined;
+      return {
+        used: 100 * 1024 ** 2,
+        budget: 10 * 1024 ** 3,
+        directory: "/cache",
+        protectedBytes: 100 * 1024 ** 2,
+        metrics: { hits: 1, misses: 0, servedBytes: 100, evictedBytes: 0 },
+        prefetch: { queued: 0, running: 0, completed: 0, failed: 0, dropped: 0 },
+        preload: {
+          state: "idle",
+          message: "",
+          title: "",
+          fetched: 0,
+          size: 0,
+          allocated: 0,
+          ready: 0,
+          failed: 0,
+          paused: false,
+          items: [],
+        },
+        releases: [
+          {
+            ReleaseID: sha1,
+            Title: "Allen.[2026].2160p.4K.WEB-DL",
+            Bytes: 52.4 * 1024 ** 2,
+            Size: 0,
+            Segments: 12,
+            Plays: 1,
+            LastUsed: new Date().toISOString(),
+            LastPlayed: new Date().toISOString(),
+            Pins: ["playback:live", "playback:inprogress"],
+            reason: {
+              causes: [{ code: "playing", firstSeen: new Date().toISOString() }],
+              retention: { kind: "pinned", pins: ["playback:live", "playback:inprogress"] },
+              file: "",
+              source: "",
+            },
+          },
+        ],
+      };
+    });
+
+    expect(await screen.findByText("Allen.[2026].2160p.4K.WEB-DL", {}, WAIT)).toBeInTheDocument();
+    expect(screen.getByText("Unmatched release")).toBeInTheDocument();
+    expect(screen.queryByText(sha1)).not.toBeInTheDocument();
+    expect(screen.queryByText("Watching now")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Allen.[2026].2160p.4K.WEB-DL"));
+    const dialog = await screen.findByRole(
+      "dialog",
+      { name: "Allen.[2026].2160p.4K.WEB-DL" },
+      WAIT,
+    );
+    expect(within(dialog).getByText("Unmatched release")).toBeInTheDocument();
+    expect(within(dialog).queryByText(sha1)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Watching now")).not.toBeInTheDocument();
+    // Hero status pill + Fetched because list item = 2 occurrences, not duplicate pills in hero.
+    const heroBadges = dialog.querySelectorAll('[class*="rounded-full"]');
+    const playingBadges = Array.from(heroBadges).filter((el) => el.textContent === "Playing now");
+    expect(playingBadges).toHaveLength(1);
+
+    expect(within(dialog).getByText("8b8ad7ac…177c36")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy cache key" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(sha1));
+  });
+  it("switches Explorer rows to a stacked card layout below 640px", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: query === "(max-width: 639px)",
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+
+    const { fake } = renderApp("/cache/explorer");
+    expect(await screen.findByText("Arrival", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    const cards = screen.getAllByRole("listitem");
+    expect(cards.length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pin Interstellar" }));
+    await waitFor(() => expect(calls(fake, "POST", "/cache/pin")).toHaveLength(1));
+
+    fireEvent.click(screen.getByText("Arrival"));
+    expect(await screen.findByRole("dialog", { name: "Arrival" }, WAIT)).toBeInTheDocument();
   });
 });

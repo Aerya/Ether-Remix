@@ -57,3 +57,9 @@ type RowViews interface {
 	ListRowViews(context.Context, RowViewRequest) ([]RowView, error)
 	ResolveRowView(context.Context, RowViewPageRequest) (RowViewPage, error)
 }
+
+// RowViewPages resolves one bounded group of pages in request order. Every
+// page belongs to the same viewer/device/surface; admission remains atomic.
+type RowViewPages interface {
+	ResolveRowViews(context.Context, []RowViewPageRequest) ([]RowViewPage, error)
+}

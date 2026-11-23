@@ -52,6 +52,13 @@ func (a *App) ensurePlexAccountServices() error {
 			}
 			return a.catalog.Namesakes(ctx, k)
 		},
+		EnsureTitle: func(ctx context.Context, k core.RatingKey) error {
+			if a.catalog == nil {
+				return nil
+			}
+			_, err := a.catalog.Get(ctx, k)
+			return err
+		},
 	})
 	metadataService := plexmeta.New(a.db, plexmeta.Options{
 		HTTP:             a.opts.plextvHTTP,

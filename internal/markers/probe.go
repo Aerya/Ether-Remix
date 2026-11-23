@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 // Probe checks that TheIntroDB answers, and that apiKey is accepted when one
@@ -27,7 +28,7 @@ func Probe(ctx context.Context, baseURL, apiKey string) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether/1")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

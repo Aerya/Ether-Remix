@@ -36,6 +36,7 @@ type fakeRemuxer struct {
 func (f *fakeRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRemuxRequest, progress func(float64)) (string, int64, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	run := len(f.requests)
 	f.mu.Unlock()
 	if f.block != nil {
 		select {
@@ -50,7 +51,7 @@ func (f *fakeRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRemuxR
 	if progress != nil {
 		progress(0.5)
 	}
-	p := filepath.Join(f.dir, "dl-fake.mp4")
+	p := filepath.Join(f.dir, "dl-fake-"+strconv.Itoa(run)+".mp4")
 	if err := os.WriteFile(p, []byte(f.payload), 0o644); err != nil {
 		return "", 0, err
 	}
@@ -591,4 +592,170 @@ func TestDownloadRestartGetsOwnPlaybackSession(t *testing.T) {
 	}
 	close(f.remux.block)
 	f.waitStatus(t, qid, downloadAvailable)
+}
+
+// Completed download media must advertise stable strong ETag + Last-Modified
+// + Accept-Ranges on both HEAD and GET, honor Range/If-Range without
+// re-remuxing, match the /decision container/size, and rotate ETag on restart.
+func TestDownloadMediaResumeValidatorsAndDecisionConsistency(t *testing.T) {
+	f := newDownloadFixture(t, true)
+	qid := f.queue(t)
+	key := "/library/metadata/" + fightClub.Key.String()
+	rec := f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/add?keys="+key, ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
+	}
+	it := f.waitStatus(t, qid, downloadAvailable)
+	itemID := int64(it["id"].(float64))
+
+	// /decision must describe the converted MP4 with exact size and selected flags.
+	decRec := f.do(t, http.MethodGet, "/downloadQueue/"+itoa(qid)+"/item/"+itoa(itemID)+"/decision", ownerToken, nil)
+	if decRec.Code != http.StatusOK {
+		t.Fatalf("decision: %d %s", decRec.Code, decRec.Body.String())
+	}
+	decMC := decodeContainer(t, decRec)
+	mds, _ := decMC["Metadata"].([]any)
+	if len(mds) != 1 {
+		t.Fatalf("decision Metadata = %v", decMC["Metadata"])
+	}
+	mediaList, _ := mds[0].(map[string]any)["Media"].([]any)
+	if len(mediaList) != 1 {
+		t.Fatalf("decision Media = %v", mds[0].(map[string]any)["Media"])
+	}
+	dm := mediaList[0].(map[string]any)
+	parts, _ := dm["Part"].([]any)
+	if len(parts) != 1 {
+		t.Fatalf("decision Part = %v", dm["Part"])
+	}
+	dp := parts[0].(map[string]any)
+	if dm["container"] != "mp4" || dm["selected"] != true || dp["container"] != "mp4" || dp["decision"] != "transcode" || dp["selected"] != true {
+		t.Fatalf("decision media/part = %v / %v", dm, dp)
+	}
+	if int64(dp["size"].(float64)) != int64(len(f.remux.payload)) {
+		t.Fatalf("decision Part.size = %v, want %d", dp["size"], len(f.remux.payload))
+	}
+	if _, hasKey := dp["key"]; hasKey {
+		t.Fatalf("converted decision Part must omit direct Part.key: %v", dp["key"])
+	}
+
+	// HEAD and GET /media advertise identical strong ETag, Last-Modified, Accept-Ranges, Content-Length.
+	media := "/downloadQueue/" + itoa(qid) + "/item/" + itoa(itemID) + "/media"
+	head := f.do(t, http.MethodHead, media, ownerToken, nil)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 {
+		t.Fatalf("HEAD media: %d len=%d", head.Code, head.Body.Len())
+	}
+	etag := head.Header().Get("ETag")
+	lastMod := head.Header().Get("Last-Modified")
+	if etag == "" || strings.HasPrefix(etag, "W/") || !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
+		t.Fatalf("HEAD ETag = %q, want strong quoted ETag", etag)
+	}
+	if lastMod == "" || head.Header().Get("Accept-Ranges") != "bytes" || head.Header().Get("Content-Length") != strconv.Itoa(len(f.remux.payload)) {
+		t.Fatalf("HEAD headers = %v", head.Header())
+	}
+
+	// Resuming with Range + matching If-Range (ETag and Last-Modified) serves 206 without re-remuxing.
+	resumed := f.do(t, http.MethodGet, media, ownerToken, map[string]string{"Range": "bytes=100-", "If-Range": etag})
+	if resumed.Code != http.StatusPartialContent || resumed.Body.String() != f.remux.payload[100:] || resumed.Header().Get("ETag") != etag {
+		t.Fatalf("If-Range ETag resume = %d etag=%q len=%d", resumed.Code, resumed.Header().Get("ETag"), resumed.Body.Len())
+	}
+	resumedLM := f.do(t, http.MethodGet, media, ownerToken, map[string]string{"Range": "bytes=100-149", "If-Range": lastMod})
+	if resumedLM.Code != http.StatusPartialContent || resumedLM.Body.String() != f.remux.payload[100:150] {
+		t.Fatalf("If-Range Last-Modified resume = %d len=%d", resumedLM.Code, resumedLM.Body.Len())
+	}
+	// Weak or stale If-Range falls back cleanly to 200 full body.
+	weak := f.do(t, http.MethodGet, media, ownerToken, map[string]string{"Range": "bytes=100-", "If-Range": "W/" + etag})
+	if weak.Code != http.StatusOK || weak.Body.String() != f.remux.payload {
+		t.Fatalf("weak If-Range = %d len=%d, want 200 full body", weak.Code, weak.Body.Len())
+	}
+	// Reused the single finished file across HEAD + all GET resumes.
+	f.remux.mu.Lock()
+	remuxes := len(f.remux.requests)
+	f.remux.mu.Unlock()
+	if remuxes != 1 {
+		t.Fatalf("remux ran %d times across HEAD/GET resumes, want 1", remuxes)
+	}
+
+	// Restarting produces a new file and distinct ETag, so stale If-Range restarts cleanly with 200.
+	rec = f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/items/"+itoa(itemID)+"/restart", ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restart: %d", rec.Code)
+	}
+	f.waitStatus(t, qid, downloadAvailable)
+	stale := f.do(t, http.MethodGet, media, ownerToken, map[string]string{"Range": "bytes=100-", "If-Range": etag})
+	if stale.Code != http.StatusOK || stale.Body.String() != f.remux.payload || stale.Header().Get("ETag") == etag {
+		t.Fatalf("after restart stale If-Range = %d etag=%q (old=%q)", stale.Code, stale.Header().Get("ETag"), etag)
+	}
+}
+
+func TestDownloadQueueUsesPreferredAndSelectedAudioTrack(t *testing.T) {
+	f := newDownloadFixture(t, true)
+	dualAudio := core.MediaInfo{
+		Container:   "mkv",
+		Duration:    24 * time.Minute,
+		Size:        1000,
+		BitrateKbps: 6000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Language: "jpn", Default: true},
+			{Index: 2, Type: "audio", Codec: "aac", Channels: 2, Language: "eng"},
+			{Index: 3, Type: "subtitle", Codec: "subrip", Language: "eng"},
+		},
+	}
+	f.playback.mu.Lock()
+	f.playback.info = dualAudio
+	f.playback.mu.Unlock()
+	u := ownerUser
+	u.AudioLanguages = []string{"en"}
+	f.auth.users[ownerToken] = u
+
+	qid := f.queue(t)
+	key := "/library/metadata/" + fightClub.Key.String()
+	rec := f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/add?keys="+key, ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
+	}
+	f.waitStatus(t, qid, downloadAvailable)
+
+	f.remux.mu.Lock()
+	reqs := append([]core.DownloadRemuxRequest(nil), f.remux.requests...)
+	f.remux.mu.Unlock()
+	if len(reqs) != 1 {
+		t.Fatalf("remux requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].AudioStream != 2 || reqs[0].Options.AudioStream != 2 {
+		t.Fatalf("preferred English audio ignored: req.AudioStream=%d opts.AudioStream=%d, want 2", reqs[0].AudioStream, reqs[0].Options.AudioStream)
+	}
+
+	items := f.items(t, qid)
+	itemID := int64(items[0]["id"].(float64))
+	decRec := f.do(t, http.MethodGet, "/downloadQueue/"+itoa(qid)+"/item/"+itoa(itemID)+"/decision", ownerToken, nil)
+	if decRec.Code != http.StatusOK {
+		t.Fatalf("decision: %d %s", decRec.Code, decRec.Body.String())
+	}
+	decMC := decodeContainer(t, decRec)
+	dm := decMC["Metadata"].([]any)[0].(map[string]any)["Media"].([]any)[0].(map[string]any)
+	if dm["audioCodec"] != "aac" {
+		t.Fatalf("decision audioCodec = %v, want aac (selected track)", dm["audioCodec"])
+	}
+
+	// Explicit viewer pick (Japanese audio + English subtitle) overrides preferred language.
+	f.srv.selections.update(ownerUser.ID, int64(fightClub.Key), func(sel *selection) {
+		sel.audio, sel.audioSet = 1, true
+		sel.subtitle, sel.subtitleSet = 3, true
+	})
+	rec = f.do(t, http.MethodPost, "/downloadQueue/"+itoa(qid)+"/items/"+itoa(itemID)+"/restart", ownerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restart: %d %s", rec.Code, rec.Body.String())
+	}
+	f.waitStatus(t, qid, downloadAvailable)
+	f.remux.mu.Lock()
+	reqs = append([]core.DownloadRemuxRequest(nil), f.remux.requests...)
+	f.remux.mu.Unlock()
+	if len(reqs) != 2 {
+		t.Fatalf("remux requests = %d, want 2", len(reqs))
+	}
+	if reqs[1].AudioStream != 1 || reqs[1].Options.AudioStream != 1 || reqs[1].Options.SubtitleStream != 3 {
+		t.Fatalf("explicit selection ignored: audio=%d opts.audio=%d opts.sub=%d, want 1/1/3",
+			reqs[1].AudioStream, reqs[1].Options.AudioStream, reqs[1].Options.SubtitleStream)
+	}
 }

@@ -52,6 +52,19 @@ func (s *Service) PersonFacetIDs(ctx context.Context, viewer *core.Viewer, _ cor
 			}
 		}
 	}
+	for _, c := range title.MediaCredits {
+		if c.TMDB <= 0 || c.Name == "" {
+			continue
+		}
+		id := personFacetID(c.TMDB)
+		if old, ok := seen[id]; ok && old != c.TMDB {
+			return nil, errors.New("experience: facet identifier collision")
+		}
+		seen[id] = c.TMDB
+		if wanted[c.TMDB] {
+			result[c.TMDB] = id
+		}
+	}
 	return result, nil
 }
 
@@ -62,6 +75,9 @@ func (s *Service) PersonFacetIDs(ctx context.Context, viewer *core.Viewer, _ cor
 // person's most popular credit and the name on it, however many titles
 // credit them; ok is false when the credit index is unavailable.
 func (s *Service) resolvePersonFacet(ctx context.Context, viewer *core.Viewer, viewID, id string, tmdb int64) (core.FacetValue, bool, error) {
+	if core.IsPluginPersonID(tmdb) {
+		return s.resolvePluginPersonFacet(ctx, viewer, viewID, id, tmdb)
+	}
 	if s.d.PersonCreditsMany == nil {
 		return core.FacetValue{}, false, nil
 	}

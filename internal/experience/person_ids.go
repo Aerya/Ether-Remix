@@ -49,19 +49,24 @@ func personTMDB(id string) (int64, bool) {
 }
 
 // personFacetTMDB inverts a person facet identifier: from the memo, else
-// from the indexed person vocabulary (Deps.PersonByFacetID), remembering
-// the answer. ok is false when neither knows it.
+// from the indexed person vocabulary (Deps.PersonByFacetID) or plugin
+// people index, remembering the answer. ok is false when none knows it.
 func (s *Service) personFacetTMDB(ctx context.Context, id string) (int64, bool, error) {
 	if tmdb, ok := personTMDB(id); ok {
 		return tmdb, true, nil
 	}
-	if s.d.PersonByFacetID == nil {
-		return 0, false, nil
+	if s.d.PersonByFacetID != nil {
+		tmdb, ok, err := s.d.PersonByFacetID(core.WithoutCatalogViewer(ctx), id)
+		if err != nil {
+			return 0, false, err
+		}
+		if ok {
+			personFacetID(tmdb)
+			return tmdb, true, nil
+		}
 	}
-	tmdb, ok, err := s.d.PersonByFacetID(core.WithoutCatalogViewer(ctx), id)
-	if err != nil || !ok {
-		return 0, false, err
+	if pid, ok, err := s.pluginPersonByFacetID(ctx, id); err != nil || ok {
+		return pid, ok, err
 	}
-	personFacetID(tmdb)
-	return tmdb, true, nil
+	return 0, false, nil
 }

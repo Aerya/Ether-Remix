@@ -1,7 +1,6 @@
 package vela
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -25,7 +24,7 @@ func (i *instance) livePageScope(r *http.Request, v *frontend.Viewer, token stri
 }
 
 func (i *instance) readLiveCursor(r *http.Request, scope, query string) (liveCursor, error) {
-	c := liveCursor{Scope: scope, Query: query, Expires: time.Now().Add(10 * time.Minute).Unix()}
+	c := liveCursor{Scope: scope, Query: query, Expires: cursorExpiry(time.Now())}
 	token := r.URL.Query().Get("cursor")
 	if token == "" {
 		return c, nil
@@ -50,8 +49,8 @@ func (i *instance) nextLiveCursor(c liveCursor, offset int, snapshot string) (st
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, i.seal.NonceSize())
-	if _, err = rand.Read(nonce); err != nil {
+	nonce, err := i.cursorNonce("vela-live", b)
+	if err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(i.seal.Seal(nonce, nonce, b, []byte("vela-live"))), nil

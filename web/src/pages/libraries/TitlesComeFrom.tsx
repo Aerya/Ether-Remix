@@ -31,6 +31,7 @@ export function TitlesComeFrom({
   const busy = false;
   const ids = sources;
   const attached = registry.data?.filter((source) => ids.includes(source.id)) ?? [];
+  const failedAttached = attached.filter((source) => Boolean(source.lastError));
   const manageHref =
     ids.length === 1
       ? library.source === "builtin" || attached[0]?.group === "builtin"
@@ -72,14 +73,14 @@ export function TitlesComeFrom({
           }
           control={
             <div className="flex flex-wrap items-center justify-end gap-2">
-              {ids.map((id) => (
-                <Badge key={id} variant="secondary">
-                  {(() => {
-                    const source = registry.data?.find((source) => source.id === id);
-                    return source ? sourceLabel(source) : t("Unavailable");
-                  })()}
-                </Badge>
-              ))}
+              {ids.map((id) => {
+                const source = registry.data?.find((item) => item.id === id);
+                return (
+                  <Badge key={id} variant={source?.lastError ? "warning" : "secondary"}>
+                    {source ? sourceLabel(source) : t("Unavailable")}
+                  </Badge>
+                );
+              })}
               {library.source !== "builtin" && library.source !== "plugin" ? (
                 <Button size="sm" variant="outline" onClick={() => setDraft([...ids])}>
                   {t("Change")}
@@ -91,6 +92,15 @@ export function TitlesComeFrom({
             </div>
           }
         />
+        {failedAttached.length ? (
+          <div className="space-y-1 px-5 pb-4 text-sm text-danger">
+            {failedAttached.map((source) => (
+              <p key={source.id}>
+                {sourceLabel(source)}: {source.lastError}
+              </p>
+            ))}
+          </div>
+        ) : null}
         {children}
       </SettingsSection>
       {draft ? (
@@ -137,6 +147,9 @@ export function TitlesComeFrom({
                   <span>
                     <span className="block font-medium">{sourceName(source)}</span>
                     <span className="block text-sm text-fg-muted">{sourceOwner(source)}</span>
+                    {source.lastError ? (
+                      <span className="block text-sm text-danger">{source.lastError}</span>
+                    ) : null}
                   </span>
                 </label>
               ))}

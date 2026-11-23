@@ -2,10 +2,12 @@ package frontendadapter
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
 // Viewer-identity headers the proxy injects (spec §6.5). The plugin never
@@ -136,4 +138,40 @@ func validRange(v string) bool {
 		}
 	}
 	return true
+}
+
+// Redirects stay on this origin. The host's minted media tickets are root-relative;
+// credentials, authority changes and browser URL normalization tricks are refused.
+func copyRedirect(w http.ResponseWriter, resp plugins.Response) {
+	switch resp.Status {
+	case 301, 302, 303, 307, 308:
+	default:
+		return
+	}
+	v := headerValue(resp.Headers, "Location")
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" || !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
+		return
+	}
+	decoded, err := url.PathUnescape(v)
+	if err != nil {
+		return
+	}
+	for _, c := range decoded {
+		if c <= 32 || c == 127 || c == '\\' {
+			return
+		}
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return
+	}
+	for key := range q {
+		switch strings.ToLower(key) {
+		case "token", "x-plex-token", "access_token", "refresh_token", "api_key", "apikey", "password", "authorization", "x-auth-token":
+			return
+		}
+	}
+	w.Header().Set("Location", v)
+	w.Header().Set("Referrer-Policy", "no-referrer")
 }

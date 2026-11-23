@@ -93,3 +93,95 @@ export function translatePlexFieldError(field: { field: string; message: string 
   }
   return field.message;
 }
+
+const UNPUBLISHED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0", "::"]);
+
+/**
+ * Validates and normalizes an optional per-app published address.
+ * Supports both subdomain roots (https://jellyfin.example.com) and optional
+ * path prefixes (https://example.com/jellyfin), stripping trailing slashes.
+ */
+export function normalizePublishedAddress(raw: string): string | null {
+  const s = raw.trim();
+  if (!s || s.length > 512 || s.startsWith("[") || /[\s()<>\"'\\|?#]/.test(s)) {
+    return null;
+  }
+  const schemeIdx = s.indexOf("://");
+  if (schemeIdx > 0) {
+    const slashIdx = s.indexOf("/", schemeIdx + 3);
+    if (slashIdx >= 0) {
+      const rawPath = s.slice(slashIdx).replace(/\/+$/, "");
+      if (rawPath && (rawPath.includes("//") || /(^|\/)\.\.?(\/|$)/.test(rawPath))) {
+        return null;
+      }
+    }
+  }
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.username || u.password || u.search || u.hash) return null;
+  if (u.host.endsWith(":")) return null;
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host || UNPUBLISHED_HOSTS.has(host)) return null;
+  if (u.hostname.startsWith("[") && u.hostname.endsWith("]")) {
+    if (host.length === 0 || !host.includes(":")) return null;
+  } else {
+    if (/[[\]]/.test(u.host)) return null;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+      const ok = host.split(".").every((part) => {
+        const n = Number(part);
+        return Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === part;
+      });
+      if (!ok) return null;
+    } else {
+      if (host.length > 253 || host.startsWith(".") || host.endsWith(".")) return null;
+      const labels = host.split(".");
+      for (const label of labels) {
+        if (
+          !label ||
+          label.length > 63 ||
+          label.startsWith("-") ||
+          label.endsWith("-") ||
+          !/^[a-zA-Z0-9-]+$/.test(label)
+        ) {
+          return null;
+        }
+      }
+      if (/^\d+$/.test(labels[labels.length - 1]!)) return null;
+    }
+  }
+  if (u.port) {
+    const port = Number(u.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  }
+  let cleanPath = "";
+  if (u.pathname && u.pathname !== "/") {
+    const trimmed = u.pathname.replace(/\/+$/, "");
+    if (!trimmed.startsWith("/") || trimmed.includes("//")) return null;
+    for (const seg of trimmed.slice(1).split("/")) {
+      if (!seg || seg === "." || seg === "..") return null;
+    }
+    cleanPath = trimmed;
+  }
+  const hostPort = u.port
+    ? host.includes(":")
+      ? `[${host}]:${u.port}`
+      : `${host}:${u.port}`
+    : host.includes(":")
+      ? `[${host}]`
+      : host;
+  return `${u.protocol}//${hostPort}${cleanPath}`;
+}
+
+export function validatePublishedAddress(raw: string): string | undefined {
+  if (!normalizePublishedAddress(raw)) {
+    return t(
+      "Enter a full http:// or https:// address (path optional), such as https://jellyfin.example.com or https://example.com/jellyfin.",
+    );
+  }
+  return undefined;
+}

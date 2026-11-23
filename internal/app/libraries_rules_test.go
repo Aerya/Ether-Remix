@@ -12,11 +12,15 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plextv"
 )
 
 func TestLibrariesConsoleRulesPreviewAndPluginsSetup(t *testing.T) {
 	a := setupTestApp(t, true)
 	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 42, Username: "owner"}, "test-owner"); err != nil {
+		t.Fatal(err)
+	}
 	rel := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 	for _, title := range []core.Title{
 		{Key: core.MovieKey(201), Type: core.TypeMovie, Title: "US Action", Language: "en", Genres: []string{"Action"}, Released: rel, HomeReleased: rel},
@@ -89,6 +93,42 @@ func TestLibrariesConsoleRulesPreviewAndPluginsSetup(t *testing.T) {
 	prev := rawPrev.(catalog.VisibilityPreview)
 	if prev.Total != 2 || prev.Hidden != 1 || prev.Visible != 1 {
 		t.Fatalf("admin CatalogVisibility for filter library = %+v", prev)
+	}
+
+	// HTTP /ether/api/catalog/visibility/preview on a custom library (id > 2):
+	// 1) An incomplete rule is omitted gracefully (200 OK, real totals, 0 catch count).
+	// 2) A genuinely invalid rule returns 400 invalid_filter, never 500.
+	// 3) A missing library returns 404 not_found, never 500.
+	callAdmin := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "http://localhost/ether/api/catalog/visibility/preview", strings.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:1000"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("X-Plex-Token", "test-owner")
+		r.Header.Set("X-Ether-Request", "1")
+		w := httptest.NewRecorder()
+		a.handler.ServeHTTP(w, r)
+		return w
+	}
+	w = callAdmin(`{"libraryId":` + fid + `,"visibilityDefault":"show","exclusions":[{"name":"No JP","mediaType":"movie","match":"all","rules":[{"field":"language","op":"is","value":"ja"}]},{"name":"","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":[]}]},{"name":"","mediaType":"movie","match":"all","rules":[{"field":"browse:year","op":"is","value":""}]}]}`)
+	if w.Code != 200 {
+		t.Fatalf("visibility preview with incomplete rules = %d %s", w.Code, w.Body)
+	}
+	var httpPrev catalog.VisibilityPreview
+	if err := json.Unmarshal(w.Body.Bytes(), &httpPrev); err != nil {
+		t.Fatal(err)
+	}
+	if httpPrev.Total != 2 || httpPrev.Hidden != 1 || httpPrev.Visible != 1 || len(httpPrev.Rules) != 3 || httpPrev.Rules[0].Movies != 1 || httpPrev.Rules[1].Movies != 0 || httpPrev.Rules[2].Movies != 0 {
+		t.Fatalf("visibility preview with incomplete rules = %+v", httpPrev)
+	}
+
+	w = callAdmin(`{"libraryId":` + fid + `,"visibilityDefault":"show","exclusions":[{"name":"Bad","mediaType":"movie","match":"all","rules":[{"field":"bogus","op":"is","value":"x"}]}]}`)
+	if w.Code != 400 {
+		t.Fatalf("visibility preview with invalid rule on custom library = %d %s, want 400", w.Code, w.Body)
+	}
+
+	w = callAdmin(`{"libraryId":999999,"visibilityDefault":"show","exclusions":[]}`)
+	if w.Code != 404 {
+		t.Fatalf("visibility preview on missing library = %d %s, want 404", w.Code, w.Body)
 	}
 
 	// GET / on plugins-setup lists content-kind plugins (empty when none installed).

@@ -1,23 +1,30 @@
-import { Badge, Button, toast } from "@braedonsaunders/appkit-ui";
-import { Pencil, Tv } from "lucide-react";
+import { Badge, Button, cn, toast } from "@braedonsaunders/appkit-ui";
+import { CalendarRange, Pencil, RefreshCw, Tv } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Drawer } from "../../components/Drawer";
+import { DragHandle, SortableList } from "../../components/Sortable";
 import { ErrorPanel } from "../../components/feedback";
 import { t, tn } from "../../i18n";
-import { AddAddonDrawer } from "../../components/addons/AddAddonDrawer";
-import type { AddonSummary } from "../../components/addons/addons";
 import { errorMessage } from "../../lib/api";
+import { relativeTime } from "../../lib/format";
+import { useInterval } from "../../lib/hooks";
+import { SourceDrawer } from "../livetv/SourceEditor";
 import { ProviderAccountCard } from "../livetv/SourceGroups";
-import { SourceEditor } from "../livetv/SourceEditor";
-import { addonChannelsKind, emptySource, plexLineupName, tv, type Source } from "../livetv/model";
+import { dayClock, isChannelSource, plexLineupName, tv, type Source } from "../livetv/model";
+import { sourceImportError } from "../livetv/sourceErrors";
+
+const STALE_MS = 6 * 60 * 60 * 1000;
 
 /** The canonical connection editor for provider, playlist and guide sources.
- * Live TV links here and reads the same source records for its lineup. */
+ * Live TV reads and edits the same source records in place over its lineup. */
 export function IPTVProviders({ sourceParam = "source" }: { sourceParam?: string } = {}) {
   const [params, setParams] = useSearchParams();
   const [sources, setSources] = useState<Source[] | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useInterval(() => setNow(Date.now()), 30_000);
+
   const reload = useCallback(async () => {
     try {
       setSources(await tv.sources());
@@ -51,42 +58,19 @@ export function IPTVProviders({ sourceParam = "source" }: { sourceParam?: string
     const timer = window.setInterval(() => void reload(), 30000);
     return () => window.clearInterval(timer);
   }, [reload, id, adding]);
-  const selected = sources?.find((s) => s.id === id) ?? null;
-  const open = Boolean(id || (adding && adding !== "addon"));
   const close = () => setEditorParams(new URLSearchParams());
-  const addAddonSource = async (addon: AddonSummary) => {
-    const kind = addonChannelsKind(addon.id);
-    const existing = (sources ?? []).find((s) => s.kind === kind || s.playlistUrl === kind);
-    if (existing) {
-      toast.info(t("{name} is already in Live TV", { name: existing.name }));
-      setEditorParams(new URLSearchParams({ source: existing.id }));
-      return;
-    }
-    if (!addon.roles?.some((r) => r.role === "livetv_channels" && r.on)) {
-      toast.error(t("Live TV channels are off for {name}", { name: addon.name }), {
-        description: t("Switch them on in Plugins to add its channels."),
-      });
-      return;
-    }
-    const importing = toast.loading(t("Importing channels from {name}…", { name: addon.name }));
+
+  const refresh = async (source: Source) => {
+    setRefreshing(source.id);
+    const name = source.kind === "plex" ? plexLineupName(source.name) : source.name;
     try {
-      const saved = await tv.saveSource({
-        ...emptySource(),
-        name: addon.name,
-        kind,
-        playlistUrl: kind,
-      });
-      toast.success(t("Source imported"), {
-        id: importing,
-        description: t("Channel numbers, mappings and access rules are kept."),
-      });
+      await tv.refreshSource(source.id);
+      toast.success(t("{name} refreshed", { name }));
       await reload();
-      setEditorParams(new URLSearchParams({ source: saved.id }));
     } catch (e) {
-      toast.error(t("Couldn't import channels from {name}", { name: addon.name }), {
-        id: importing,
-        description: errorMessage(e),
-      });
+      toast.error(t("Refresh failed"), { description: sourceImportError(e) });
+    } finally {
+      setRefreshing(null);
     }
   };
 
@@ -99,121 +83,197 @@ export function IPTVProviders({ sourceParam = "source" }: { sourceParam?: string
         <p className="text-sm text-fg-muted">{t("No channel sources yet")}</p>
       ) : (
         <div className="space-y-3">
-          {sources.map((source) => (
-            <article
-              key={source.id}
-              className="flex items-start gap-3 rounded-xl border border-border bg-surface p-4"
-            >
-              <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg-muted">
-                <Tv size={20} />
-              </span>
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-fg">
-                    {source.kind === "plex" ? plexLineupName(source.name) : source.name}
-                  </h3>
-                  {source.disabled ? <Badge>{t("Disabled")}</Badge> : null}
-                  <Badge>
-                    {source.kind?.startsWith("plugin:")
-                      ? t("Plugin source")
-                      : source.auth?.type === "xtream"
-                        ? t("Xtream Codes login")
-                        : source.hasPlaylist
-                          ? t("M3U playlist")
-                          : t("Guide source")}
-                  </Badge>
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-muted">
-                  {source.useLiveTV !== false ? (
-                    <span>
-                      {source.hasPlaylist === false && source.auth?.type !== "xtream"
-                        ? tn(
-                            source.guideChannelCount ?? 0,
-                            "{count} guide channel",
-                            "{count} guide channels",
-                          )
-                        : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
-                    </span>
-                  ) : null}
-                  {source.useVOD ? (
-                    <span>
-                      {t("Movies & shows index")}:{" "}
-                      {tn(source.vodStatus?.movies ?? 0, "{count} movie", "{count} movies")} ·{" "}
-                      {tn(source.vodStatus?.series ?? 0, "{count} show", "{count} shows")}
-                    </span>
-                  ) : null}
-                </div>
-                {source.logins?.length ? (
-                  <details className="text-sm">
-                    <summary className="cursor-pointer text-fg-muted">
-                      {t("Provider account")}
-                    </summary>
-                    <div className="mt-3 space-y-3">
-                      {[{ id: "primary", account: source.account }, ...source.logins].map(
-                        (login, i) => (
-                          <div key={login.id} className="space-y-1">
-                            <p className="font-medium">{t("Login {number}", { number: i + 1 })}</p>
-                            {login.account ? <ProviderAccountCard account={login.account} /> : null}
-                          </div>
-                        ),
-                      )}
-                    </div>
-                  </details>
-                ) : null}
-                {source.lastError || source.vodStatus?.error ? (
-                  <p className="text-sm text-danger">
-                    {t("Provider unavailable; retry scheduled")}
-                  </p>
-                ) : null}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={t("Edit {name}", { name: source.name })}
-                onClick={() => setEditorParams(new URLSearchParams({ source: source.id }))}
-              >
-                <Pencil size={13} />
-                {t("Edit")}
-              </Button>
-            </article>
-          ))}
-        </div>
-      )}
-      <AddAddonDrawer
-        open={adding === "addon" && sources !== null}
-        role="livetv_channels"
-        onClose={close}
-        onAdded={(addon) => void addAddonSource(addon)}
-      />
-      <Drawer
-        open={open}
-        onClose={close}
-        title={
-          id ? t("Edit IPTV source") : adding === "guide" ? t("Guide source") : t("IPTV source")
-        }
-        size="lg"
-      >
-        {id && sources === null ? (
-          <p>{t("Loading…")}</p>
-        ) : id && !selected ? (
-          <p>{t("That source no longer exists.")}</p>
-        ) : (
-          <SourceEditor
-            key={id ?? adding}
-            source={selected}
-            kind={adding === "guide" ? "guide" : "playlist"}
-            initialXtream={adding === "xtream"}
-            onSaved={async (s) => {
-              await reload();
-              setEditorParams(new URLSearchParams({ source: s.id }));
+          {sources.filter(isChannelSource).length > 1 ? (
+            <p className="text-xs text-fg-muted">
+              {t(
+                "Drag providers to set failover priority when channels merge feeds across sources.",
+              )}
+            </p>
+          ) : null}
+          <SortableList
+            items={sources}
+            getId={(s) => s.id}
+            onReorder={async (next) => {
+              const prev = sources;
+              setSources(next);
+              try {
+                setSources(await tv.saveSourceOrder(next.map((s) => s.id)));
+              } catch (e) {
+                setSources(prev);
+                toast.error(errorMessage(e));
+              }
             }}
-            onDeleted={async () => {
-              close();
-              await reload();
+            className="space-y-3"
+            renderItem={(source, handle) => {
+              const channelSources = sources.filter(isChannelSource);
+              const channelRank = isChannelSource(source)
+                ? channelSources.findIndex((s) => s.id === source.id) + 1
+                : 0;
+              const name = source.kind === "plex" ? plexLineupName(source.name) : source.name;
+              const guideOnly = source.hasPlaylist === false && source.auth?.type !== "xtream";
+              const urlBacked =
+                source.kind === "plex" ||
+                source.auth?.type === "xtream" ||
+                Boolean(source.playlistUrl || source.guideUrl || source.playlistGuide);
+              const busy = refreshing === source.id;
+              const until = source.guideUntil ? Date.parse(source.guideUntil) : 0;
+              return (
+                <article className="flex flex-wrap items-start gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-nowrap">
+                  {sources.length > 1 ? (
+                    <DragHandle
+                      handle={handle}
+                      label={t("Reorder {name}", { name: source.name })}
+                      className="mt-1.5"
+                    />
+                  ) : null}
+                  <span
+                    className={cn(
+                      "flex size-11 shrink-0 items-center justify-center rounded-lg",
+                      guideOnly ? "bg-info/15 text-info" : "bg-bg-subtle text-fg-muted",
+                    )}
+                  >
+                    {guideOnly ? <CalendarRange size={20} /> : <Tv size={20} />}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="min-w-0 truncate font-semibold text-fg" title={name}>
+                        {name}
+                      </h3>
+                      {channelRank > 0 && channelSources.length > 1 ? (
+                        <Badge>{t("Priority #{rank}", { rank: channelRank })}</Badge>
+                      ) : null}
+                      {source.disabled ? <Badge>{t("Disabled")}</Badge> : null}
+                      <Badge>
+                        {source.kind?.startsWith("plugin:")
+                          ? t("Plugin source")
+                          : source.auth?.type === "xtream"
+                            ? t("Xtream Codes login")
+                            : source.hasPlaylist
+                              ? t("M3U playlist")
+                              : t("Guide source")}
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-muted">
+                      {source.useLiveTV !== false ? (
+                        <>
+                          <span>
+                            {guideOnly
+                              ? tn(
+                                  source.guideChannelCount ?? 0,
+                                  "{count} guide channel",
+                                  "{count} guide channels",
+                                )
+                              : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
+                          </span>
+                          {!guideOnly && (source.guideChannelCount ?? 0) > 0 ? (
+                            <span>
+                              {tn(
+                                source.guideChannelCount ?? 0,
+                                "{count} guide channel",
+                                "{count} guide channels",
+                              )}
+                            </span>
+                          ) : null}
+                          {until > 0 ? (
+                            <span
+                              className={cn(
+                                (until <= now || until - now < STALE_MS) && "text-warning",
+                              )}
+                            >
+                              {until <= now
+                                ? t("Listings have run out")
+                                : t("to {time}", { time: dayClock(new Date(until)) })}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : null}
+                      {source.useVOD ? (
+                        <span>
+                          {t("Movies & shows index")}:{" "}
+                          {tn(source.vodStatus?.movies ?? 0, "{count} movie", "{count} movies")} ·{" "}
+                          {tn(source.vodStatus?.series ?? 0, "{count} show", "{count} shows")}
+                        </span>
+                      ) : null}
+                      {source.updatedAt ? (
+                        <span>
+                          {t("refreshed {when}", { when: relativeTime(source.updatedAt) })}
+                        </span>
+                      ) : null}
+                    </div>
+                    {source.logins?.length ? (
+                      <details className="text-sm">
+                        <summary className="cursor-pointer text-fg-muted">
+                          {t("Provider account")}
+                        </summary>
+                        <div className="mt-3 space-y-3">
+                          {[{ id: "primary", account: source.account }, ...source.logins].map(
+                            (login, i) => (
+                              <div key={login.id} className="space-y-1">
+                                <p className="font-medium">
+                                  {t("Login {number}", { number: i + 1 })}
+                                </p>
+                                {login.account ? (
+                                  <ProviderAccountCard account={login.account} />
+                                ) : null}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      </details>
+                    ) : null}
+                    {source.lastError ? (
+                      <p role="alert" className="break-words text-sm text-danger">
+                        {sourceImportError(source.lastError)}
+                      </p>
+                    ) : source.vodStatus?.error ? (
+                      <p role="alert" className="text-sm text-danger">
+                        {t("Provider unavailable; retry scheduled")}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy || !urlBacked || Boolean(source.disabled)}
+                      title={
+                        urlBacked ? undefined : t("Uploaded files can't be refreshed; upload again")
+                      }
+                      onClick={() => void refresh(source)}
+                    >
+                      <RefreshCw size={13} className={cn(busy && "animate-spin")} />
+                      {t("Refresh")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={t("Edit {name}", { name: source.name })}
+                      onClick={() => setEditorParams(new URLSearchParams({ source: source.id }))}
+                    >
+                      <Pencil size={13} />
+                      {t("Edit")}
+                    </Button>
+                  </div>
+                </article>
+              );
             }}
           />
-        )}
-      </Drawer>
+        </div>
+      )}
+      <SourceDrawer
+        sourceId={id}
+        adding={adding}
+        sources={sources}
+        onClose={close}
+        onSaved={async (s) => {
+          await reload();
+          setEditorParams(new URLSearchParams({ source: s.id }));
+        }}
+        onDeleted={async () => {
+          close();
+          await reload();
+        }}
+      />
     </>
   );
 }

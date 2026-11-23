@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -81,11 +82,6 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
-	offsetCheck, durationCheck := msParam(q.Get("time")), msParam(q.Get("duration"))
-	if durationCheck > 0 && offsetCheck > durationCheck {
-		writeHTTPError(w, http.StatusBadRequest)
-		return
-	}
 	// Pre-rolls and trailers are synthetic extras, not catalog titles.
 	// Acknowledge their timelines without writing feature watch progress.
 	if key.Kind() == frontend.KindExtra {
@@ -115,13 +111,21 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		title, err := s.catalog().Get(ctx, key)
+		title, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
+		if title == nil {
+			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
 		ctx = frontend.WithHistoryTitle(ctx, title)
-		if title == nil || !s.titleVisible(pr.User, title) {
+		visible := s.titleVisible(pr.User, title)
+		if key.IsPluginKey() {
+			visible = s.canSeePluginTitle(pr.User, title)
+		}
+		if !visible {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}
@@ -187,21 +191,6 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if saved, ok := s.progressiveStops.get(user.ID, pr.ClientID, pr.SessionID, key, s.now()); ok {
 		offset, duration = saved.offset, saved.duration
 	}
-	// Some clients carry the previous queue item's playhead into the first
-	// timeline for the next item. A position past the item's end is not
-	// evidence of watching it: keep the last real position for this item and
-	// handle the report (session, stop, encoders) as usual.
-	if impossiblePlayhead(offset, duration) {
-		s.log.Debug("ignoring impossible playhead", "key", key, "position", offset, "duration", duration)
-		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
-	}
-	// A failed start cannot write a resume point or consume the completion latch.
-	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
-	stalled := s.checkStartStall(pr, key, state, offset, tids)
-	if failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
-		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
-		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
-	}
 	if ps != nil {
 		// Client duration can be a stale queue estimate. Only a probed duration is
 		// authoritative for an active source; estimates cannot establish completion.
@@ -210,11 +199,31 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duration = 0
 		}
-		if state == "stopped" {
-			// EOF after a decoder crash is not a played position. The last nonterminal
-			// report is the evidence of where this viewer actually got to.
-			offset = min(offset, s.lastKnownOffset(ctx, user.ID, tid, key))
-		}
+	}
+	// Some clients carry the previous queue item's playhead into the first
+	// timeline for the next item. A position past the item's end is not
+	// evidence of watching it: keep the last real position for this item and
+	// handle the report (session, stop, encoders) as usual without mutating
+	// watch state. Small overshoots near EOF clamp to duration, matching other
+	// frontends' progress reports.
+	impossible := impossiblePlayhead(offset, duration)
+	if impossible {
+		s.log.Debug("ignoring impossible playhead", "key", key, "position", offset, "duration", duration)
+		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+	} else if duration > 0 && offset > duration {
+		offset = duration
+	}
+	// A failed start cannot write a resume point or consume the completion latch.
+	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
+	stalled := s.checkStartStall(pr, key, state, offset, tids)
+	if impossible || failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
+		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+	}
+	if ps != nil && state == "stopped" {
+		// EOF after a decoder crash is not a played position. The last nonterminal
+		// report is the evidence of where this viewer actually got to.
+		offset = min(offset, s.lastKnownOffset(ctx, user.ID, tid, key))
 	}
 	ctx, watchResult, watchErr := s.timelineWatch(ctx, pr, key, offset, duration, state, r)
 	if watchErr != nil {
@@ -234,9 +243,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.reportBrokerTimeline(ctx, pr, key, offset, duration, "stopped", sanitizeSessionID(q.Get("session")))
 	}
 	for _, id := range tids {
-		if e, ok := s.transcodes.get(id); ok && s.playbackOwners.Stale(user.ID, pr.ClientID, key, e.playbackID) {
-			s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
-			continue
+		if e, ok := s.transcodes.get(id); ok {
+			if s.playbackOwners.Stale(user.ID, pr.ClientID, key, e.playbackID) {
+				s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
+				continue
+			}
+			if state != "stopped" && e.started && !s.transcodeEntryLive(e) {
+				s.dropTranscode(id)
+				continue
+			}
 		}
 		s.transcodes.touch(id, s.now())
 		frontend.NotifyTranscodeActivity(s.transcoder(), id, state)
@@ -295,7 +310,11 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		armed := s.decisionArmed(pr, 0)
 		var changed bool
 		e := s.sessions.update(tid, func(e *playEntry) {
-			changed = fresh || e.key != key || e.state != state
+			nextTranscodeID := ""
+			if te, ok := s.activeTranscodeForClient(user.ID, pr.ClientID, pr.SessionID, key, e.transcodeID); ok {
+				nextTranscodeID = te.id
+			}
+			changed = fresh || e.key != key || e.state != state || e.transcodeID != nextTranscodeID
 			if e.key != key {
 				e.startedAt = s.now()
 			}
@@ -308,10 +327,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			e.offset = offset
 			e.duration = duration
 			e.playQueueItemID = pqItem
-			e.transcodeID = ""
-			if len(tids) > 0 {
-				e.transcodeID = tids[0]
-			}
+			e.transcodeID = nextTranscodeID
 			e.updatedAt = s.now()
 		})
 		s.notifyPlaying(e, state)
@@ -387,7 +403,10 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		_, err = s.collectionRaw(ctx, pr.User, key)
 		known = err == nil
 	default:
-		if s.catalog() != nil {
+		if key.IsPluginKey() {
+			title, e := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
+			known = e == nil && title != nil && s.canSeePluginTitle(pr.User, title)
+		} else if s.catalog() != nil {
 			var title *frontend.Title
 			var e error
 			if stored, ok := s.catalog().(frontend.StoredTitleLookup); ok {
@@ -427,13 +446,16 @@ func (s *Server) scrobble(w http.ResponseWriter, r *http.Request, watched bool) 
 	if !ok {
 		return
 	}
-	if title, err := s.catalog().Get(ctx, key); err == nil && title != nil {
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	title, titleErr := s.metadataTitle(noExpandCtx, pr, key)
+	if titleErr == nil && title != nil {
 		ctx = frontend.WithHistoryTitle(ctx, title)
+		noExpandCtx = frontend.WithHistoryTitle(noExpandCtx, title)
 	}
 	// Containers mark every episode.
 	keys := []frontend.RatingKey{key}
-	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason {
-		if ks, err := s.expandKey(ctx, pr, key); err == nil && len(ks) > 0 {
+	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason || (key.IsPluginKey() && title != nil && (title.Type == frontend.TypeShow || title.Type == frontend.TypeSeason)) {
+		if ks, err := s.expandKey(noExpandCtx, pr, key); err == nil && len(ks) > 0 {
 			keys = ks
 		}
 	}
@@ -570,17 +592,21 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			md = s.playlistMetadata(withRequest(ctx, viewer), pl, false)
 		} else {
-			t, err := s.catalog().Get(ctx, e.key)
-			if err != nil {
+			t, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), viewer, e.key)
+			if err != nil || t == nil {
 				continue
 			}
 			sessionTitle = t
 			md = s.metadata(ctx, viewer, t, renderOpts{media: true, session: true})
 		}
-		if e.node == "" && e.transcodeID != "" && sessionTitle != nil {
-			if te, ok := s.transcodes.get(e.transcodeID); ok && te.started {
-				if m, ok := s.sessionTranscodeMedia(sessionTitle, te, viewer); ok {
-					md.Media = []model.Media{m}
+		var activeTE *transcodeEntry
+		if e.node == "" {
+			if te, ok := s.activeTranscodeForSession(e); ok {
+				activeTE = te
+				if sessionTitle != nil {
+					if m, ok := s.sessionTranscodeMedia(sessionTitle, te, viewer); ok {
+						md.Media = []model.Media{m}
+					}
 				}
 			}
 		}
@@ -588,7 +614,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 		md.SessionKey = strconv.Itoa(e.sessionKey)
 		md.ViewOffset = ms(e.offset)
-		md.User = &model.SessionUser{ID: strconv.FormatInt(e.user.PlexID, 10), Thumb: e.user.Thumb, Title: e.user.Title}
+		sessionUserID := s.plexAccountIDFor(ctx, &e.user)
+		md.User = &model.SessionUser{ID: strconv.FormatInt(sessionUserID, 10), Thumb: e.user.Thumb, Title: e.user.Title}
 		if md.User.Title == "" {
 			md.User.Title = e.user.Username
 		}
@@ -600,20 +627,29 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if title == "" {
 			title = e.client.Device
 		}
+		var addr, remotePublic string
+		if e.client.RemoteIP.IsValid() {
+			addr = e.client.RemoteIP.Unmap().String()
+			if e.client.Remote {
+				remotePublic = addr
+			}
+		}
 		md.Player = &model.Player{
-			Address:           e.client.RemoteIP.String(),
-			Device:            e.client.Device,
-			MachineIdentifier: e.client.ClientID,
-			Model:             e.client.Model,
-			Platform:          e.client.Platform,
-			PlatformVersion:   e.client.PlatformVersion,
-			Product:           e.client.Product,
-			Profile:           resolvedPlayerProfile(&e.client),
-			State:             state,
-			Title:             title,
-			Version:           e.client.Version,
-			Local:             !e.client.Remote,
-			UserID:            e.user.PlexID,
+			Address:             addr,
+			Device:              e.client.Device,
+			MachineIdentifier:   e.client.ClientID,
+			Model:               e.client.Model,
+			Platform:            e.client.Platform,
+			PlatformVersion:     e.client.PlatformVersion,
+			Product:             e.client.Product,
+			Profile:             resolvedPlayerProfile(&e.client),
+			RemotePublicAddress: remotePublic,
+			State:               state,
+			Title:               title,
+			Version:             e.client.Version,
+			Local:               !e.client.Remote,
+			Secure:              e.client.Secure,
+			UserID:              sessionUserID,
 		}
 		loc := "lan"
 		if e.client.Remote {
@@ -625,13 +661,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.node != "" {
 			md.TranscodeSession = e.remoteTS
-		} else if e.transcodeID != "" {
-			if te, ok := s.transcodes.get(e.transcodeID); ok {
-				ts := s.servedTranscodeSessionModel(te)
-				md.TranscodeSession = &ts
-			}
+		} else if activeTE != nil {
+			ts := s.servedTranscodeSessionModel(activeTE)
+			md.TranscodeSession = &ts
 		}
-		md.Session.Bandwidth = s.sessionBandwidth(e, md)
+		md.Session.Bandwidth = s.sessionBandwidth(e, activeTE, md)
 		sessionClient := e.client
 		sessionClient.User = &e.user
 		if !e.decisionSeen && !s.decisionArmed(&sessionClient, 0) {
@@ -699,6 +733,23 @@ func (s *Server) terminateLocal(sid, reason string) bool {
 			}
 
 			s.setOwnerTermination(e.id, reason)
+			tids := s.transcodes.forClient(e.user.ID, e.client.ClientID, e.key)
+			if e.transcodeID != "" && !slices.Contains(tids, e.transcodeID) {
+				tids = append(tids, e.transcodeID)
+			}
+			for _, id := range tids {
+				unlockEnc, encErr := s.lockEncoder(s.ctx, id)
+				if encErr != nil {
+					continue
+				}
+				if te, ok := s.transcodes.get(id); ok && te.userID == e.user.ID && te.clientID == e.client.ClientID && te.key == e.key {
+					if s.transcoder() != nil {
+						s.stopPlexHLS(id)
+					}
+					s.dropTranscode(id)
+				}
+				unlockEnc()
+			}
 			if pb := s.playback(); pb != nil {
 				if ps, ok := pb.SessionFor(e.user.ID, e.client.ClientID, e.key); ok && ps != nil {
 					if stop := s.brokerRuntime(); stop != nil {
@@ -708,6 +759,10 @@ func (s *Server) terminateLocal(sid, reason string) bool {
 						}
 					}
 				}
+			}
+			if removed, ok := s.sessions.remove(e.id); ok {
+				s.notifyPlaying(removed, "stopped")
+				s.cl.poke()
 			}
 			return true
 		}

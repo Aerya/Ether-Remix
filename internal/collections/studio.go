@@ -1,7 +1,9 @@
 package collections
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +28,9 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 	out := make([]core.CollectionSpec, 0, len(rows))
 	var snap *snapshot
 	for _, r := range rows {
+		if strings.HasPrefix(r.slug, "plugin:") {
+			continue
+		}
 		if _, ok := localFacetSpec(r.spec); ok {
 			// A listing waits briefly for the catalogue index's first
 			// build, which reads the whole catalogue; past that the stored
@@ -35,6 +40,9 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 		}
 	}
 	for _, r := range rows {
+		if strings.HasPrefix(r.slug, "plugin:") {
+			continue
+		}
 		v := r.view()
 		if key, ok := localFacetSpec(r.spec); ok && snap != nil {
 			v.ItemCount = len(snap.facetKeys(key))
@@ -57,6 +65,9 @@ func (s *Service) ListSpecsLight(ctx context.Context) ([]core.CollectionSpec, er
 	}
 	out := make([]core.CollectionSpec, 0, len(rows))
 	for _, r := range rows {
+		if strings.HasPrefix(r.slug, "plugin:") {
+			continue
+		}
 		out = append(out, r.view())
 	}
 	return out, nil
@@ -86,6 +97,23 @@ func (s *Service) CreateSpec(ctx context.Context, sp core.CollectionSpec) (*core
 	return s.afterSave(ctx, row)
 }
 
+// CreateSpecDeferred validates and saves a new collection without starting an
+// immediate background build. Bulk imports use this so importing hundreds of
+// remote catalogues lets the scheduler build them in bounded batches instead
+// of launching a burst of concurrent upstream requests.
+func (s *Service) CreateSpecDeferred(ctx context.Context, sp core.CollectionSpec) (*core.CollectionSpec, error) {
+	Normalize(&sp)
+	if err := s.validate(&sp); err != nil {
+		return nil, err
+	}
+	row, err := s.insertRow(ctx, sp, 0)
+	if err != nil {
+		return nil, err
+	}
+	v := row.view()
+	return &v, nil
+}
+
 // UpdateSpec replaces a collection. Built-ins accept only enabled,
 // targets, artwork, rotate and limit.
 func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionSpec) (*core.CollectionSpec, error) {
@@ -97,10 +125,40 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if row.builtin {
 		sp = mergeBuiltin(row.spec, sp)
 	}
-	if err := s.validate(&sp); err != nil {
+	// If the owner swapped away from the synced add-on catalogue source,
+	// detach the add-on sync metadata automatically.
+	if sp.AddonSync != nil {
+		wantKind := "plugin:" + sp.AddonSync.AddonID + "/" + sp.AddonSync.CatalogKey
+		hasSyncedSource := false
+		for _, src := range sp.Sources {
+			if src.Kind == wantKind {
+				hasSyncedSource = true
+				break
+			}
+		}
+		if !hasSyncedSource {
+			sp.AddonSync = nil
+		}
+	}
+	// Allow unchanged removed add-on sources so owners can unpublish, rename
+	// or reorganize a collection whose catalogue disappeared from its add-on.
+	var allowMissing map[string]bool
+	if row.spec.AddonSync != nil && row.spec.AddonSync.Removed {
+		prevPlugins := map[string]bool{}
+		for _, src := range row.spec.Sources {
+			if strings.HasPrefix(src.Kind, "plugin:") {
+				prevPlugins[src.Kind] = true
+			}
+		}
+		if len(prevPlugins) > 0 {
+			allowMissing = prevPlugins
+		}
+	}
+	if err := s.validateWithExisting(&sp, allowMissing); err != nil {
 		return nil, err
 	}
-	if err := s.updateRow(ctx, row.id, sp); err != nil {
+	keepBuild := row.buildHash != "" && !row.lastBuilt.IsZero() && membershipSpecEqual(row.spec, sp)
+	if err := s.updateRow(ctx, row.id, sp, keepBuild); err != nil {
 		return nil, err
 	}
 	s.changed(row.id)
@@ -108,13 +166,111 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if err != nil {
 		return nil, err
 	}
+	if keepBuild {
+		v := row.view()
+		return &v, nil
+	}
 	return s.afterSave(ctx, row)
+}
+
+// UpdateSpecFromAddonSync applies a manifest-sync mutation to an existing
+// collection, preserving built members whenever membership inputs did not
+// change and optionally updating stored warnings (for example when a catalogue
+// is removed from or restored by its add-on).
+func (s *Service) UpdateSpecFromAddonSync(ctx context.Context, id string, mutate func(sp *core.CollectionSpec, prevWarnings []string) (warnings []string, setWarnings bool)) (*core.CollectionSpec, error) {
+	row, err := s.rowByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if row.builtin {
+		return nil, core.ErrNotFound
+	}
+	sp := cloneSpec(row.spec)
+	warnings, setWarnings := mutate(&sp, append([]string(nil), row.warnings...))
+	Normalize(&sp)
+	allowMissing := map[string]bool{}
+	if sp.AddonSync != nil && sp.AddonSync.Removed {
+		for _, src := range sp.Sources {
+			if strings.HasPrefix(src.Kind, "plugin:") {
+				allowMissing[src.Kind] = true
+			}
+		}
+	}
+	if err := s.validateWithExisting(&sp, allowMissing); err != nil {
+		return nil, err
+	}
+	keepBuild := row.buildHash != "" && !row.lastBuilt.IsZero() && membershipSpecEqual(row.spec, sp)
+	if err := s.updateRowWarnings(ctx, row.id, sp, keepBuild, warnings, setWarnings); err != nil {
+		return nil, err
+	}
+	s.changed(row.id)
+	fresh, err := s.rowByID(ctx, idString(row.id))
+	if err != nil {
+		return nil, err
+	}
+	v := fresh.view()
+	return &v, nil
+}
+
+// membershipSpecEqual reports whether two normalized specs evaluate to the same
+// persisted member set and order. Presentation and publication edits (targets,
+// schedule, artwork, rotate, description, enabled, refresh) do not invalidate
+// existing built members.
+func membershipSpecEqual(a, b core.CollectionSpec) bool {
+	type key struct {
+		MediaType     string                  `json:"mediaType"`
+		Sources       []core.CollectionSource `json:"sources"`
+		Match         string                  `json:"match"`
+		Rules         []core.CollectionRule   `json:"rules"`
+		Exclude       []core.CollectionRule   `json:"exclude"`
+		Sort          string                  `json:"sort"`
+		SortDesc      bool                    `json:"sortDesc"`
+		Limit         int                     `json:"limit"`
+		LocalOnly     bool                    `json:"localOnly"`
+		ReleaseMode   string                  `json:"releaseMode"`
+		LookaheadDays int                     `json:"lookaheadDays"`
+		RandomName    string                  `json:"randomName,omitempty"`
+	}
+	makeKey := func(sp core.CollectionSpec) key {
+		k := key{
+			MediaType:     sp.MediaType,
+			Sources:       sp.Sources,
+			Match:         sp.Match,
+			Rules:         sp.Rules,
+			Exclude:       sp.Exclude,
+			Sort:          sp.Sort,
+			SortDesc:      sp.SortDesc,
+			Limit:         sp.Limit,
+			LocalOnly:     sp.LocalOnly,
+			ReleaseMode:   sp.ReleaseMode,
+			LookaheadDays: sp.LookaheadDays,
+		}
+		if sp.Sort == "random" {
+			k.RandomName = sp.Name
+		}
+		return k
+	}
+	ja, errA := json.Marshal(makeKey(a))
+	jb, errB := json.Marshal(makeKey(b))
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
+}
+
+func (s *Service) remoteBuildGate() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.remoteGate == nil {
+		s.remoteGate = make(chan struct{}, 2)
+	}
+	return s.remoteGate
 }
 
 func (s *Service) afterSave(ctx context.Context, row *specRow) (*core.CollectionSpec, error) {
 	if row.enabled {
 		if hasRemoteListSource(row.spec) || row.spec.NavigationGroup != "" {
+			gate := s.remoteBuildGate()
 			go func() {
+				gate <- struct{}{}
+				defer func() { <-gate }()
 				bctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				_, _ = s.build(bctx, row)
@@ -395,21 +551,22 @@ func (s *Service) artworkFor(ctx context.Context, row *specRow, keys []core.Rati
 	return data, ct, stamp, nil
 }
 
+// subtitleFor is the small caps line on a generated collection poster.
+// It names the kind, never a count: the poster is shared by every viewer,
+// and each sees a different number of titles after their own access and
+// rating rules, so a baked-in count ("100 FILMS") disagreed with the count
+// their app shows.
 func subtitleFor(sp core.CollectionSpec, n int) string {
-	kind := "TITLES"
 	switch sp.MediaType {
 	case MediaMovie:
-		kind = "FILMS"
 		if n == 1 {
-			kind = "FILM"
+			return "FILM"
 		}
+		return "FILMS"
 	case MediaShow:
-		kind = "SERIES"
+		return "SERIES"
 	}
-	if n <= 0 {
-		return "COLLECTION"
-	}
-	return fmt.Sprintf("%d %s", n, kind)
+	return "COLLECTION"
 }
 
 // tmdbCollectionPoster finds the poster of the spec's TMDB collection.

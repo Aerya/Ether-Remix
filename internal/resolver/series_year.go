@@ -68,6 +68,9 @@ func (s *Service) prepareSeriesYears(ctx context.Context, t *core.Title, sreq co
 		lookups++
 		lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		conflict, err := s.seriesYearConflict(lctx, t.ShowKey, sreq.Title, y)
+		if err == nil && !conflict && sreq.EnglishTitle != "" && !releaseparse.TitlesMatch(sreq.EnglishTitle, sreq.Title) {
+			conflict, err = s.seriesYearConflict(lctx, t.ShowKey, sreq.EnglishTitle, y)
+		}
 		cancel()
 		if err != nil {
 			s.log.Debug("series year lookup failed; keeping the year check", "show", t.ShowKey, "year", y, "err", err)
@@ -109,7 +112,20 @@ func (s *Service) hasSeriesNamesake(ctx context.Context, t *core.Title, req core
 	if s.seriesNamesake == nil || t == nil {
 		return false
 	}
-	key := "namesake/" + seriesYearKey(t.ShowKey, req.Year) + "/" + req.Title
+	if s.hasSeriesNamesakeTitle(ctx, t.ShowKey, req.Title, req.Year) {
+		return true
+	}
+	if req.EnglishTitle != "" && !releaseparse.TitlesMatch(req.EnglishTitle, req.Title) {
+		return s.hasSeriesNamesakeTitle(ctx, t.ShowKey, req.EnglishTitle, req.Year)
+	}
+	return false
+}
+
+func (s *Service) hasSeriesNamesakeTitle(ctx context.Context, showKey core.RatingKey, title string, year int) bool {
+	if title == "" {
+		return false
+	}
+	key := "namesake/" + seriesYearKey(showKey, year) + "/" + title
 	now := s.now()
 	s.years.mu.Lock()
 	v, ok := s.years.seen[key]
@@ -119,7 +135,7 @@ func (s *Service) hasSeriesNamesake(ctx context.Context, t *core.Title, req core
 	}
 	lookup, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	found, err := s.seriesNamesake(lookup, t.ShowKey, req.Title, req.Year)
+	found, err := s.seriesNamesake(lookup, showKey, title, year)
 	if err != nil {
 		return false
 	}

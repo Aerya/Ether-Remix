@@ -17,7 +17,7 @@ import { useAsync } from "../../lib/hooks";
 import { librariesApi } from "../libraries/api";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { ChipGroup, NumberInput, Segmented } from "../../components/fields";
-import { Section } from "../../components/layout";
+import { Section, SubtabNav } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t, tn } from "../../i18n";
@@ -88,6 +88,7 @@ function blankProfile(profiles: QualityProfile[], media: ProfileMedia): QualityP
     episodeMinSizeMbPerMin: 0,
     episodeMaxSizeMbPerMin: 0,
     preferredLanguages: null,
+    audioLanguageMode: "preferred",
     allowCam: false,
   };
 }
@@ -319,7 +320,7 @@ function syncHours(raw: string | undefined): string {
   const { amount, unit } = parseDuration(raw);
   const n = Number(amount);
   if (!Number.isFinite(n)) return "24";
-  const hours = unit === "d" ? n * 24 : unit === "h" ? n : n / 60;
+  const hours = unit === "d" ? n * 24 : unit === "h" ? n : unit === "m" ? n / 60 : n / 3600;
   return hours > 0 ? String(hours) : "24";
 }
 
@@ -511,6 +512,7 @@ export function QualityTab() {
 }
 
 type Commit = (next: Quality, message: string) => Promise<void>;
+type ProfileDrawerTab = "tiers" | "limits" | "scoring";
 
 function ProfileList({
   quality,
@@ -551,10 +553,12 @@ function ProfileList({
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<ProfileDrawerTab>("tiers");
 
   const open = (index: number, draft: QualityProfile) => {
     setErrors({});
     setError(null);
+    setDrawerTab("tiers");
     const cloned = structuredClone(draft);
     setEditing({ index, draft: cloned });
     const isExisting = index < profiles.length;
@@ -582,6 +586,7 @@ function ProfileList({
         parsed = parseFormats(formatsText);
       } catch (e) {
         setError(e);
+        setDrawerTab("scoring");
         return;
       }
     }
@@ -637,6 +642,7 @@ function ProfileList({
     const conflict = releaseRuleConflict(draft.releaseRules ?? [], fields);
     if (conflict) {
       setErrors({ releaseRules: conflict });
+      setDrawerTab("limits");
       return;
     }
     setSaving(true);
@@ -662,8 +668,22 @@ function ProfileList({
       }
       setEditing(null);
     } catch (e) {
+      const nextErrors = recordErrors(e, `quality.profiles[${index}].`);
       setError(withProfileNames(e, list));
-      setErrors(recordErrors(e, `quality.profiles[${index}].`));
+      setErrors(nextErrors);
+      if (nextErrors.name) {
+        setDrawerTab("tiers");
+      } else if (
+        nextErrors.minHeight ||
+        nextErrors.maxHeight ||
+        nextErrors.minSizeMbPerMin ||
+        nextErrors.maxSizeMbPerMin ||
+        nextErrors.episodeMinSizeMbPerMin ||
+        nextErrors.episodeMaxSizeMbPerMin ||
+        nextErrors.releaseRules
+      ) {
+        setDrawerTab("limits");
+      }
     } finally {
       setSaving(false);
     }
@@ -871,6 +891,22 @@ function ProfileList({
         onClose={() => !saving && setEditing(null)}
         title={isNew ? t("New profile") : draft?.name || t("Profile")}
         description={t("How releases are filtered and ranked for apps using this profile.")}
+        subtabs={
+          draft ? (
+            <div className="[&>div]:mb-0">
+              <SubtabNav
+                ariaLabel={t("Profile sections")}
+                active={drawerTab}
+                onSelect={(k) => setDrawerTab(k as ProfileDrawerTab)}
+                tabs={[
+                  { key: "tiers", label: t("Tiers") },
+                  { key: "limits", label: t("Limits") },
+                  { key: "scoring", label: t("Scoring") },
+                ]}
+              />
+            </div>
+          ) : undefined
+        }
         onSave={() => void save()}
         saving={saving}
         saveLabel={t("Save profile")}
@@ -880,92 +916,107 @@ function ProfileList({
         error={error}
       >
         {draft ? (
-          <>
-            {isNew ? (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setEditing(null);
-                  setImporting(true);
-                }}
-              >
-                <Download size={16} />
-                {t("Import a preset quality profile")}
-              </Button>
-            ) : null}
-            <SettingsSection title={t("Profile")}>
-              <TextRow
-                label={t("Name")}
-                value={draft.name}
-                error={errors.name}
-                onChange={(v) => patch({ name: v })}
-              />
-              <SettingsRow
-                title={t("Applies to")}
-                description={
-                  draft.import
-                    ? t("Set by the {app} profile it was imported from.", {
-                        app: draft.import.app === "sonarr" ? "Sonarr" : "Radarr",
-                      })
-                    : t("Movies or shows: a profile ranks releases for one of them.")
-                }
-                control={
-                  draft.import || isNew ? (
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      <Badge variant="secondary">
-                        {mediaLabel(
-                          draft.mediaType ||
-                            mediaTypeForApp(draft.import?.app === "sonarr" ? "sonarr" : "radarr"),
-                        )}
-                      </Badge>
-                      {draft.import ? (
-                        <Badge variant="outline">
-                          {draft.import.source === "dictionarry"
-                            ? "Profilarr (Dictionarry)"
-                            : "TRaSH Guides"}
-                        </Badge>
-                      ) : null}
-                    </span>
-                  ) : (
-                    <Segmented
-                      ariaLabel={t("Applies to")}
-                      size="sm"
-                      value={profileMediaType(draft) as ProfileMedia}
-                      options={MEDIA_OPTIONS}
-                      onChange={changeApplies}
-                    />
-                  )
-                }
-              />
-              <SettingsRow
-                title={t("Default for")}
-                description={t(
-                  "Used when no device rule matches for {media}. With no profile for Away, people away from home get the At home profile.",
-                  { media: mediaLabel(draftScope || media) },
-                )}
-                control={
-                  <ChipGroup
-                    ariaLabel={t("Default for")}
-                    size="sm"
-                    options={[
-                      { value: "home", label: t("At home") },
-                      { value: "away", label: t("Away") },
-                    ]}
-                    value={[
-                      ...(defaultFor.home ? ["home" as const] : []),
-                      ...(defaultFor.away ? ["away" as const] : []),
-                    ]}
-                    onChange={(next) =>
-                      setDefaultFor({
-                        home: next.includes("home"),
-                        away: next.includes("away"),
-                      })
+          drawerTab === "tiers" ? (
+            <>
+              <SettingsSection title={t("Profile")}>
+                {isNew ? (
+                  <SettingsRow
+                    title={t("Start from a preset")}
+                    description={t(
+                      "Copy quality order and format scores from TRaSH Guides or Profilarr.",
+                    )}
+                    control={
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditing(null);
+                          setImporting(true);
+                        }}
+                      >
+                        <Download size={14} />
+                        {t("Import a preset quality profile")}
+                      </Button>
                     }
                   />
-                }
-              />
-            </SettingsSection>
+                ) : null}
+                <TextRow
+                  label={t("Name")}
+                  value={draft.name}
+                  error={errors.name}
+                  onChange={(v) => patch({ name: v })}
+                />
+                <SettingsRow
+                  title={t("Applies to")}
+                  description={
+                    draft.import
+                      ? t("Set by the {app} profile it was imported from.", {
+                          app: draft.import.app === "sonarr" ? "Sonarr" : "Radarr",
+                        })
+                      : t("Movies or shows: a profile ranks releases for one of them.")
+                  }
+                  control={
+                    draft.import || isNew ? (
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary">
+                          {mediaLabel(
+                            draft.mediaType ||
+                              mediaTypeForApp(draft.import?.app === "sonarr" ? "sonarr" : "radarr"),
+                          )}
+                        </Badge>
+                        {draft.import ? (
+                          <Badge variant="outline">
+                            {draft.import.source === "dictionarry"
+                              ? "Profilarr (Dictionarry)"
+                              : "TRaSH Guides"}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <Segmented
+                        ariaLabel={t("Applies to")}
+                        size="sm"
+                        value={profileMediaType(draft) as ProfileMedia}
+                        options={MEDIA_OPTIONS}
+                        onChange={changeApplies}
+                      />
+                    )
+                  }
+                />
+                <SettingsRow
+                  title={t("Default for")}
+                  description={t(
+                    "Used when no device rule matches for {media}. With no profile for Away, people away from home get the At home profile.",
+                    { media: mediaLabel(draftScope || media) },
+                  )}
+                  control={
+                    <ChipGroup
+                      ariaLabel={t("Default for")}
+                      size="sm"
+                      options={[
+                        { value: "home", label: t("At home") },
+                        { value: "away", label: t("Away") },
+                      ]}
+                      value={[
+                        ...(defaultFor.home ? ["home" as const] : []),
+                        ...(defaultFor.away ? ["away" as const] : []),
+                      ]}
+                      onChange={(next) =>
+                        setDefaultFor({
+                          home: next.includes("home"),
+                          away: next.includes("away"),
+                        })
+                      }
+                    />
+                  }
+                />
+              </SettingsSection>
 
+              <QualityOrderSection draft={draft} patch={patch} />
+
+              <LanguageSection draft={draft} patch={patch} />
+            </>
+          ) : drawerTab === "limits" ? (
             <SettingsSection
               title={t("Never play")}
               description={t(
@@ -978,9 +1029,7 @@ function ProfileList({
                   errors.minHeight || errors.maxHeight ? (
                     <span className="text-danger">{errors.minHeight || errors.maxHeight}</span>
                   ) : (
-                    t(
-                      "Maximum limits and blocked releases always apply. Minimum resolution is a preference.",
-                    )
+                    t("Lowest preferred and highest allowed resolution.")
                   )
                 }
                 control={
@@ -1009,7 +1058,13 @@ function ProfileList({
                   </span>
                 }
               />
-              <div className="grid gap-6 border-t border-border px-4 py-3 sm:grid-cols-2">
+              <div
+                className={
+                  (draftScope || media) === MEDIA_TV
+                    ? "grid gap-6 px-5 py-4 sm:grid-cols-2"
+                    : "px-5 py-4"
+                }
+              >
                 <fieldset className="min-w-0 space-y-2">
                   <legend className="text-sm font-medium text-fg">{t("Movies")}</legend>
                   {errors.minSizeMbPerMin || errors.maxSizeMbPerMin ? (
@@ -1040,36 +1095,38 @@ function ProfileList({
                     <span className="text-sm text-fg-muted">MB</span>
                   </span>
                 </fieldset>
-                <fieldset className="min-w-0 space-y-2">
-                  <legend className="text-sm font-medium text-fg">{t("TV episodes")}</legend>
-                  {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin ? (
-                    <p className="text-xs text-danger">
-                      {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-fg-muted">
-                      {t("Optional override for TV episodes. 0 uses the movie limits.")}
-                    </p>
-                  )}
-                  <span className="flex flex-wrap items-center gap-2">
-                    <NumberInput
-                      aria-label={t("Episode minimum MB per minute")}
-                      value={draft.episodeMinSizeMbPerMin ?? 0}
-                      min={0}
-                      className="w-20"
-                      onChange={(n) => patch({ episodeMinSizeMbPerMin: n })}
-                    />
-                    <span className="text-sm text-fg-muted">{t("to")}</span>
-                    <NumberInput
-                      aria-label={t("Episode maximum MB per minute")}
-                      value={draft.episodeMaxSizeMbPerMin ?? 0}
-                      min={0}
-                      className="w-20"
-                      onChange={(n) => patch({ episodeMaxSizeMbPerMin: n })}
-                    />
-                    <span className="text-sm text-fg-muted">MB</span>
-                  </span>
-                </fieldset>
+                {(draftScope || media) === MEDIA_TV ? (
+                  <fieldset className="min-w-0 space-y-2">
+                    <legend className="text-sm font-medium text-fg">{t("TV episodes")}</legend>
+                    {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin ? (
+                      <p className="text-xs text-danger">
+                        {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-fg-muted">
+                        {t("Optional override for TV episodes. 0 uses the movie limits.")}
+                      </p>
+                    )}
+                    <span className="flex flex-wrap items-center gap-2">
+                      <NumberInput
+                        aria-label={t("Episode minimum MB per minute")}
+                        value={draft.episodeMinSizeMbPerMin ?? 0}
+                        min={0}
+                        className="w-20"
+                        onChange={(n) => patch({ episodeMinSizeMbPerMin: n })}
+                      />
+                      <span className="text-sm text-fg-muted">{t("to")}</span>
+                      <NumberInput
+                        aria-label={t("Episode maximum MB per minute")}
+                        value={draft.episodeMaxSizeMbPerMin ?? 0}
+                        min={0}
+                        className="w-20"
+                        onChange={(n) => patch({ episodeMaxSizeMbPerMin: n })}
+                      />
+                      <span className="text-sm text-fg-muted">MB</span>
+                    </span>
+                  </fieldset>
+                ) : null}
               </div>
               <BoolRow
                 label={t("Allow HDR")}
@@ -1093,11 +1150,7 @@ function ProfileList({
                 error={errors.releaseRules}
               />
             </SettingsSection>
-
-            <QualityOrderSection draft={draft} patch={patch} />
-
-            <LanguageSection draft={draft} patch={patch} />
-
+          ) : (
             <CustomFormatsSection
               draft={draft}
               patch={patch}
@@ -1106,7 +1159,7 @@ function ProfileList({
               onFormatsText={setFormatsText}
               revealed={false}
             />
-          </>
+          )
         ) : null}
       </RecordDrawer>
     </>

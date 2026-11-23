@@ -181,7 +181,9 @@ func heroFromEntry(row, entry object, source heroSource) (heroCandidate, bool) {
 	switch {
 	case (purpose == frontend.RowContinue || source.kind == "continue-watching") && playable && position > 0:
 		reason, personal = "resume", true
-		action["kind"], action["positionSeconds"] = "resume", position
+		// Home snapshots can outlive watch progress. Let Play resolve the
+		// current server position instead of replaying this snapshot's offset.
+		action["kind"] = "resume"
 	case (purpose == frontend.RowNextUp || source.kind == "up-next") && title["kind"] == "episode":
 		reason, personal = "nextEpisode", true
 	case purpose == frontend.RowRecentlyAdded || purpose == frontend.RowRecentlyReleased:

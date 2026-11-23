@@ -53,7 +53,7 @@ func predicateGroup(g FilterGroup) CollectionRule {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &fields)
 	delete(fields, "operator")
-	if g.OnWatchlist != nil || g.StateField != "" || g.Unwatched != nil || g.InProgress != nil || g.LastViewedAfter > 0 || g.LastViewedBefore > 0 {
+	if g.OnWatchlist != nil || g.Watchlist != nil || g.Favorite != nil || g.StateField != "" || g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil || g.LastViewedAfter > 0 || g.LastViewedBefore > 0 {
 		return CollectionRule{Field: "viewer", Op: "is", Value: raw}
 	}
 	if g.Filter != nil {

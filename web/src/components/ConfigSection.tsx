@@ -1,5 +1,5 @@
 import { SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { useApp } from "../app-context";
 import { t } from "../i18n";
 import { api, ApiError } from "../lib/api";
@@ -54,7 +54,7 @@ export function MoreOptions({
         data-more={setting}
         onClick={() => setOpen((v) => !v)}
       >
-        {open && !text ? t("Less options") : (text ?? t("More options"))}
+        {open && !text ? t("Fewer options") : (text ?? t("More options"))}
       </button>
       {open ? children : null}
     </div>
@@ -80,10 +80,12 @@ export function ConfigSection({
   schemaId,
   label,
   before,
+  afterGroup,
   test,
   onSaved,
   hidden = false,
   show,
+  fieldDisabled,
 }: {
   /** Key in config.json, e.g. "cache" or "openSubtitles". */
   configKey: string;
@@ -104,6 +106,8 @@ export function ConfigSection({
   label: string;
   /** Status or context rendered above the fields, given the live draft. */
   before?: (draft: Obj, cfg: EtherConfig) => ReactNode;
+  /** Content rendered right after a group's section (e.g. a related panel). */
+  afterGroup?: (group: FieldGroup, index: number) => ReactNode;
   /** A connection test rendered under the fields, given the live draft. */
   test?: (draft: Obj) => ReactNode;
   onSaved?: (value: Obj) => void;
@@ -116,6 +120,8 @@ export function ConfigSection({
   hidden?: boolean;
   /** Which groups to render; all of them when omitted. Hidden groups keep their edits. */
   show?: (group: FieldGroup, index: number) => boolean;
+  /** Disables fields that do not apply for the current draft while preserving their values. */
+  fieldDisabled?: (field: FieldDef, draft: Obj) => boolean;
 }) {
   const { refreshDashboard } = useApp();
   const schemaIds =
@@ -191,6 +197,7 @@ export function ConfigSection({
       path={`${configKey}.${f.key}`}
       error={errors[`${configKey}.${f.key}`]}
       errors={errors}
+      disabled={fieldDisabled?.(f, draft)}
       onChange={(v) => change({ ...draft, [f.key]: v })}
     />
   );
@@ -199,21 +206,25 @@ export function ConfigSection({
       {before?.(draft, cfg)}
       {groups.map((g, i) =>
         show && !show(g, i) ? null : (
-          <SettingsSection
-            key={g.id ?? g.title ?? `group-${i}`}
-            title={g.title ?? (i === 0 ? label : undefined)}
-            description={g.description}
-          >
-            {g.fields.map((f, j) => renderField(f, `${f.key}-${j}`))}
-            {g.more?.length ? (
-              <MoreOptions
-                label={g.title ? t("More options: {title}", { title: g.title }) : t("More options")}
-                hasError={g.more.some((f) => hasFieldError(f, errors, configKey))}
-              >
-                {g.more.map((f, j) => renderField(f, `more-${f.key}-${j}`))}
-              </MoreOptions>
-            ) : null}
-          </SettingsSection>
+          <Fragment key={g.id ?? g.title ?? `group-${i}`}>
+            <SettingsSection
+              title={g.title ?? (i === 0 ? label : undefined)}
+              description={g.description}
+            >
+              {g.fields.map((f, j) => renderField(f, `${f.key}-${j}`))}
+              {g.more?.length ? (
+                <MoreOptions
+                  label={
+                    g.title ? t("More options: {title}", { title: g.title }) : t("More options")
+                  }
+                  hasError={g.more.some((f) => hasFieldError(f, errors, configKey))}
+                >
+                  {g.more.map((f, j) => renderField(f, `more-${f.key}-${j}`))}
+                </MoreOptions>
+              ) : null}
+            </SettingsSection>
+            {afterGroup?.(g, i)}
+          </Fragment>
         ),
       )}
       {test ? <div className="flex justify-end">{test(draft)}</div> : null}

@@ -7,7 +7,7 @@ import { t, tn } from "../../i18n";
 import { WEEKDAYS } from "../../lib/format";
 import {
   DEVICES,
-  SECTIONS,
+  sectionLabelOf,
   STATUS_LABEL,
   overrideCount,
   pageOf,
@@ -38,7 +38,7 @@ export function OverrideList({
   onOpenLayer: (l: LayerKey) => void;
 }) {
   const [q, setQ] = useState("");
-  const sectionLabel = SECTIONS.find((s) => s.value === section)?.label ?? section;
+  const sectionLabel = sectionLabelOf(section);
   if (layer === "global") {
     const all = viewers.filter((v) => overrideCount(draft, v.id) > 0);
     const needle = q.trim().toLowerCase();

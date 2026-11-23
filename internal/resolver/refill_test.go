@@ -109,8 +109,11 @@ func TestRefillSearchCacheDedupCapacityAndNoQueue(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	second := s.RefillSearchCache(refillEpisode(6))
-	startedRefill(t, idx)
+	second := s.RefillWarmupSearchCache(refillEpisode(6))
+	warmCall := startedRefill(t, idx)
+	if core.IndexerPurpose(warmCall.ctx) != core.IndexerPurposeWarmup || !core.IsUnattendedSearch(warmCall.ctx) {
+		t.Fatal("unattended refill must spend the warm-up share")
+	}
 	if second == nil || second == first {
 		t.Fatal("different episodes must use distinct slots")
 	}

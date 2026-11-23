@@ -223,6 +223,15 @@ func (s *Store) attachShared(ctx context.Context, b SharedBackend, o SharedOptio
 		// Reset profiles stored before the Radarr/Sonarr-standard model,
 		// then settle the stored document itself (keeping fields this
 		// version does not know), so every node reads the same profiles.
+		if upgradeClientIdentity(stored) {
+			dropped = true
+		}
+		if upgradeFrontendPublishedAddresses(stored) {
+			dropped = true
+		}
+		if migrateExtrasDefaultOn(stored) {
+			dropped = true
+		}
 		reset := resetPreStandardQuality(stored)
 		settled = normalizeSharedDocument(stored)
 		if !dropped && !reset && len(settled) == 0 {

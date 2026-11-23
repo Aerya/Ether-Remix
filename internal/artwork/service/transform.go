@@ -80,6 +80,9 @@ func Transform(data []byte, contentType string, transform frontend.ArtworkTransf
 	}
 	// Width alone is handled by the existing image sources, including TMDB's
 	// width buckets and the poster provider's resize path.
+	if transform.Width == 0 && transform.Height == 0 && transform.Format == "" && !transform.Blur {
+		return data, contentType, nil
+	}
 	if !transform.Fit && transform.Height == 0 && transform.Format == "" && !transform.Blur {
 		return data, contentType, nil
 	}

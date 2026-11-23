@@ -15,27 +15,47 @@ import (
 // The method uses already-built members and the current local index. It never
 // triggers a build, fetches a source, or invents a media-availability deadline.
 func (s *Service) LastChance(ctx context.Context, user *core.User, key core.RatingKey) (time.Time, error) {
-	if user == nil {
+	if user == nil || key == 0 {
 		return time.Time{}, nil
 	}
-	deadlines, err := reqmemo.Do(ctx, fmt.Sprintf("collections:lastchance:%p:%d", s, user.ID), func() (map[core.RatingKey]time.Time, error) {
-		return s.lastChanceDeadlines(ctx, user)
-	})
-	return deadlines[key], err
+	now := s.now()
+	kind := key.Kind()
+	memoKey := fmt.Sprintf("collections-lastchance:%p:%d:%t:%s:%v:%d:%d",
+		s, user.ID, user.IsOwner, user.MaxContentRating,
+		user.AllowedLibraries, int(kind), now.Truncate(time.Minute).Unix())
+	if reqmemo.Active(ctx) {
+		m, err := reqmemo.Do(ctx, memoKey, func() (map[core.RatingKey]time.Time, error) {
+			return s.computeLastChanceMap(ctx, user, kind, 0, now)
+		})
+		if err != nil {
+			return time.Time{}, err
+		}
+		return m[key], nil
+	}
+	m, err := s.computeLastChanceMap(ctx, user, kind, key, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return m[key], nil
 }
 
-// Compute each rotation once per viewer/request, including negative results.
-func (s *Service) lastChanceDeadlines(ctx context.Context, user *core.User) (map[core.RatingKey]time.Time, error) {
-	deadlines := make(map[core.RatingKey]time.Time)
+func (s *Service) computeLastChanceMap(ctx context.Context, user *core.User, wantKind core.KeyKind, singleKey core.RatingKey, now time.Time) (map[core.RatingKey]time.Time, error) {
 	snap := s.idx.current()
 	if snap == nil {
-		return deadlines, nil
+		return nil, nil
 	}
 	rows, err := s.loadRows(ctx)
 	if err != nil {
 		return nil, err
 	}
-	now := s.now()
+
+	type candidate struct {
+		row *specRow
+		ms  *memberSet
+	}
+	var cands []candidate
+	var missingRows []*specRow
+	var missingIDs []int64
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -44,19 +64,100 @@ func (s *Service) lastChanceDeadlines(ctx context.Context, user *core.User) (map
 		if !visible(row, user) || sp.Rotate == nil || sp.Rotate.Size <= 0 || (!sp.Targets.CollectionsTab && !sp.Targets.HomeRow && !sp.Targets.SectionRow) || !sp.Targets.Schedule.Allows("", now) {
 			continue
 		}
+		if (wantKind == core.KindMovie && sp.MediaType == MediaShow) || (wantKind == core.KindShow && sp.MediaType == MediaMovie) {
+			continue
+		}
 		ms := s.cached(row.id)
+		if ms != nil && row.buildHash != "" && ms.hash != row.buildHash {
+			ms = nil
+		}
 		if ms == nil {
 			if row.lastBuilt.IsZero() || row.buildHash == "" {
 				continue
 			}
-			keys, unshared, e := s.loadMembers(ctx, row.id)
-			if e != nil {
-				return nil, e
-			}
-			ms = s.newMemberSet(row.spec, keys, unshared, row.lastBuilt, row.buildHash)
+			missingRows = append(missingRows, row)
+			missingIDs = append(missingIDs, row.id)
+			continue
 		}
+		cands = append(cands, candidate{row: row, ms: ms})
+	}
+
+	if len(missingIDs) > 0 {
+		keysByID, unsharedByID, err := s.loadMembersMany(ctx, missingIDs)
+		if err != nil {
+			return nil, err
+		}
+		loaded := make([]*memberSet, len(missingRows))
+		for i, row := range missingRows {
+			ms := s.newMemberSet(row.spec, keysByID[row.id], unsharedByID[row.id], row.lastBuilt, row.buildHash)
+			// Preserve lastBuilt as loadedAt so RefreshLive collections older
+			// than liveTTL still refresh on their next membersFor call.
+			ms.loadedAt = row.lastBuilt
+			loaded[i] = ms
+			cands = append(cands, candidate{row: row, ms: ms})
+		}
+		s.mu.Lock()
+		for i, row := range missingRows {
+			if s.members[row.id] == nil {
+				s.members[row.id] = loaded[i]
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	if singleKey != 0 {
+		filtered := cands[:0]
+		for _, c := range cands {
+			if c.ms.has(singleKey) {
+				filtered = append(filtered, c)
+			}
+		}
+		cands = filtered
+	}
+	if len(cands) == 0 {
+		return nil, nil
+	}
+
+	var statuses map[core.RatingKey]core.WatchStatus
+	statusesLoaded := false
+	if st := s.stateDep(); st != nil {
+		var personalKeys []core.RatingKey
+		var seen map[core.RatingKey]struct{}
+		for _, c := range cands {
+			pr := c.ms.personalRules()
+			if len(pr.include)+len(pr.exclude) == 0 {
+				continue
+			}
+			if seen == nil {
+				seen = make(map[core.RatingKey]struct{}, len(c.ms.keys))
+			}
+			for _, k := range c.ms.keys {
+				if _, ok := seen[k]; ok {
+					continue
+				}
+				seen[k] = struct{}{}
+				personalKeys = append(personalKeys, k)
+			}
+		}
+		if len(personalKeys) > 0 {
+			if m, err := st.GetMany(ctx, user.ID, personalKeys); err == nil {
+				statuses = m
+				statusesLoaded = true
+			} else {
+				s.log.Debug("collections: watch state", "err", err)
+			}
+		}
+	}
+
+	expiries := make(map[core.RatingKey]time.Time)
+	for _, c := range cands {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		row, ms := c.row, c.ms
+		sp := row.spec
 		// Retain serving's exact filtering/order/limit before comparing rotations.
-		keys := s.filterForUser(ctx, ms.keys, ms.personalRules(), user, snap)
+		keys := s.filterForUserWithStatuses(ctx, ms.keys, ms.personalRules(), user, snap, statuses, statusesLoaded)
 		if sp.Sort == "personal" {
 			keys = s.personalOrder(ctx, row.id, ms.hash, user, keys)
 		}
@@ -66,18 +167,26 @@ func (s *Service) lastChanceDeadlines(ctx context.Context, user *core.User) (map
 		if len(keys) <= sp.Rotate.Size {
 			continue
 		}
+		current := rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), now)
 		boundary := nextRotationBoundary(sp.Rotate.Every, now)
-		next := make(map[core.RatingKey]bool)
-		for _, k := range rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), boundary) {
-			next[k] = true
+		next := rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), boundary)
+		nextSet := make(map[core.RatingKey]struct{}, len(next))
+		for _, k := range next {
+			nextSet[k] = struct{}{}
 		}
-		for _, k := range rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), now) {
-			if !next[k] && (deadlines[k].IsZero() || boundary.Before(deadlines[k])) {
-				deadlines[k] = boundary
+		for _, k := range current {
+			if singleKey != 0 && k != singleKey {
+				continue
+			}
+			if _, stays := nextSet[k]; stays {
+				continue
+			}
+			if prev, ok := expiries[k]; !ok || boundary.Before(prev) {
+				expiries[k] = boundary
 			}
 		}
 	}
-	return deadlines, nil
+	return expiries, nil
 }
 
 // Use calendar arithmetic in the collection clock's zone, including DST.

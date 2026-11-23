@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/webclient"
 )
@@ -21,7 +22,26 @@ type PublicInfo struct {
 	ID, ServerName, LocalAddress, Version, ProductName string
 }
 
-func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.HandlerFunc, clientIP func(*http.Request) (netip.Addr, bool), webClient *webclient.Installer) error {
+type originResolver func(*http.Request) (clientnet.RequestOrigin, bool)
+type surfaceResolver func(context.Context, *http.Request) (string, error)
+
+func resolveRequestOrigin(r *http.Request, originFn originResolver) (clientnet.RequestOrigin, bool) {
+	if originFn != nil {
+		return originFn(r)
+	}
+	return clientnet.Origin(r)
+}
+
+func requestRedirectPrefix(r *http.Request, originFn originResolver) string {
+	mountPrefix, _ := r.Context().Value(prefixKey{}).(string)
+	fwdPrefix := ""
+	if origin, ok := resolveRequestOrigin(r, originFn); ok {
+		fwdPrefix = origin.Prefix
+	}
+	return clientnet.JoinPrefix(fwdPrefix, mountPrefix)
+}
+
+func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.HandlerFunc, clientIP func(*http.Request) (netip.Addr, bool), originFn originResolver, surfaceFn surfaceResolver, webClient *webclient.Installer) error {
 	if picker == nil {
 		picker = func(w http.ResponseWriter, _ *http.Request) { jsonReply(w, []any{}) }
 	}
@@ -31,7 +51,7 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 	}{
 		{"GET", "/System/Info/Public", func(w http.ResponseWriter, r *http.Request) {
 			info := getInfo()
-			address := requestAddress(info, r)
+			address := requestAddress(info, r, originFn, surfaceFn)
 			if info.ProductName == "Emby Server" {
 				jsonReply(w, map[string]any{"Id": info.ID, "ServerName": info.ServerName, "Version": info.Version, "LocalAddress": address, "LocalAddresses": []string{address}, "RemoteAddresses": []string{address}, "WanAddress": address})
 				return
@@ -61,7 +81,7 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 				webSigninPage(w, r)
 				return
 			}
-			serveWeb(w, r, getInfo().ProductName == "Emby Server", webClient)
+			serveWeb(w, r, getInfo().ProductName == "Emby Server", originFn, webClient)
 		}},
 		{"GET", "/Users/Public", picker},
 		{"GET", "/System/Endpoint", func(w http.ResponseWriter, r *http.Request) {
@@ -80,15 +100,12 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 		}{"GET", "/", func(w http.ResponseWriter, r *http.Request) {
 			if webClient != nil {
 				if st, _ := webClient.State(); st == webclient.StatusReady {
-					target := "/web/"
-					if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
-						target = prefix + target
-					}
+					target := clientnet.RedirectPath(requestRedirectPrefix(r, originFn), "", "/web/")
 					http.Redirect(w, r, target, http.StatusFound)
 					return
 				}
 			}
-			webPage(w, r)
+			webPage(w, r, originFn)
 		}})
 	}
 	for _, h := range handlers {
@@ -101,10 +118,10 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 
 // endpointInfo reports where the caller sits relative to the server. Emby for
 // tvOS and other native clients call it before signing in and treat a 404 as
-// an unreachable server. IsLocal is a loopback peer and IsInNetwork a
-// loopback, private or link-local peer, as in Jellyfin. The peer comes from
-// the host's trusted-proxy resolution, so forwarding headers cannot claim
-// the LAN.
+// an unreachable server. IsLocal is a loopback peer and IsInNetwork follows
+// the shared clientnet.LAN classification (loopback, RFC1918/ULA, link-local,
+// CGNAT, and this host's own interface subnets). The peer comes from the
+// host's trusted-proxy resolution, so forwarding headers cannot claim the LAN.
 func endpointInfo(r *http.Request, clientIP func(*http.Request) (netip.Addr, bool)) map[string]bool {
 	var ip netip.Addr
 	ok := false
@@ -115,32 +132,41 @@ func endpointInfo(r *http.Request, clientIP func(*http.Request) (netip.Addr, boo
 	}
 	ip = ip.Unmap()
 	local := ok && ip.IsLoopback()
-	network := local || ok && (ip.IsPrivate() || ip.IsLinkLocalUnicast())
+	network := ok && clientnet.LAN(ip)
 	return map[string]bool{"IsLocal": local, "IsInNetwork": network}
 }
 
-// requestAddress is the externally reachable base URL a client should use,
-// honouring a mount prefix and the request's own host when the host supplied
-// no fixed local address.
-func requestAddress(info PublicInfo, r *http.Request) string {
-	address := info.LocalAddress
-	if address == "" && r.Host != "" {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
+// requestAddress is the externally reachable base URL a client should use.
+// When the host supplied the shared app address resolver (surfaceFn), it runs
+// with the unified precedence (request-derived -> published -> server+path);
+// standalone unit tests without a host resolver derive directly from the request.
+func requestAddress(info PublicInfo, r *http.Request, originFn originResolver, surfaceFn surfaceResolver) string {
+	mountPrefix, _ := r.Context().Value(prefixKey{}).(string)
+	if info.LocalAddress != "" {
+		if mountPrefix != "" {
+			return strings.TrimRight(info.LocalAddress, "/") + mountPrefix
 		}
-		address = scheme + "://" + r.Host
+		return info.LocalAddress
 	}
-	if prefix, ok := r.Context().Value(prefixKey{}).(string); ok && address != "" {
-		address = strings.TrimRight(address, "/") + prefix
+	if surfaceFn != nil {
+		if base, err := surfaceFn(r.Context(), r); err == nil && base != "" {
+			return strings.TrimRight(base, "/")
+		}
 	}
-	return address
+	origin, ok := resolveRequestOrigin(r, originFn)
+	if !ok {
+		return ""
+	}
+	return origin.BaseURL(mountPrefix)
 }
 
 // requestPort is the port the client reached this surface on. It returns 0
 // when the Host carries no explicit port, so the caller falls back to the
 // configured listener port.
-func requestPort(r *http.Request) int {
+func requestPort(r *http.Request, originFn originResolver) int {
+	if origin, ok := resolveRequestOrigin(r, originFn); ok {
+		return origin.Port()
+	}
 	if _, port, err := net.SplitHostPort(r.Host); err == nil {
 		if n, err := strconv.Atoi(port); err == nil {
 			return n
@@ -170,9 +196,11 @@ func StripPrefix(prefix string, next http.Handler) http.Handler {
 	})
 }
 
-func webPage(w http.ResponseWriter, r *http.Request) { webPageWithNote(w, r, "") }
+func webPage(w http.ResponseWriter, r *http.Request, originFn originResolver) {
+	webPageWithNote(w, r, originFn, "")
+}
 
-func webPageWithNote(w http.ResponseWriter, r *http.Request, note string) {
+func webPageWithNote(w http.ResponseWriter, r *http.Request, originFn originResolver, note string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 	w.Header().Set("Vary", "Accept-Language")
@@ -217,7 +245,7 @@ func webPageWithNote(w http.ResponseWriter, r *http.Request, note string) {
 		}
 	}
 	c := translations[lang]
-	address := webAddress(r)
+	address := webAddress(r, originFn)
 	addressHTML := ""
 	if address != "" {
 		addressHTML = fmt.Sprintf(`<p>%s</p><p><code>%s</code></p>`, html.EscapeString(addressLabels[lang]), html.EscapeString(address))
@@ -249,24 +277,16 @@ var appLabels = map[string]string{
 	"zh-CN": "可以试试的应用", "zh-TW": "可以試試的應用程式",
 }
 
-func webAddress(r *http.Request) string {
-	if r.Host == "" {
+func webAddress(r *http.Request, originFn originResolver) string {
+	origin, ok := resolveRequestOrigin(r, originFn)
+	if !ok {
 		return ""
 	}
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	if !origin.Proxied {
+		if ip, err := netip.ParseAddr(origin.Hostname()); err == nil && netip.MustParsePrefix("172.16.0.0/12").Contains(ip.Unmap()) {
+			return ""
+		}
 	}
-	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && netip.MustParsePrefix("172.16.0.0/12").Contains(ip.Unmap()) {
-		return ""
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	path := ""
-	if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
-		path = prefix
-	}
-	return scheme + "://" + r.Host + path
+	mountPrefix, _ := r.Context().Value(prefixKey{}).(string)
+	return origin.BaseURL(mountPrefix)
 }

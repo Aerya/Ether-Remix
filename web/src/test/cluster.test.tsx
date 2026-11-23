@@ -450,6 +450,12 @@ describe("cluster helpers", () => {
     expect(transcodeLabel({ ...base.self, caps: { transcode: true, hwAccel: "vaapi" } })).toBe(
       "vaapi",
     );
+    expect(
+      transcodeLabel({
+        ...base.self,
+        caps: { transcode: true, hwAccel: "vaapi", videoTranscoding: "off" },
+      }),
+    ).toBe("Off");
   });
 });
 

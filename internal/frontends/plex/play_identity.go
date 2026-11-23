@@ -93,18 +93,20 @@ type issuedMedia struct {
 }
 
 type issuedStream struct {
-	id       int64
-	typ      int
-	lang     string
-	codec    string
-	channels int
-	selected bool
-	external bool
+	id        int64
+	typ       int
+	lang      string
+	codec     string
+	channels  int
+	selected  bool
+	external  bool
+	estimated bool
 }
 
 type remapTarget struct {
-	index int
-	info  frontend.StreamInfo
+	index     int
+	info      frontend.StreamInfo
+	estimated bool
 }
 
 // pinnedVariants is a render's view of an identity.
@@ -160,6 +162,32 @@ func (p *playIdentities) entryLocked(k playIdentityKey, now time.Time) *playIden
 	e := &playIdentity{at: now, media: map[int64]*issuedMedia{}}
 	p.m[k] = e
 	return e
+}
+
+// has reports whether k already has a live or pinned identity without
+// allocating one or extending any TTL.
+func (p *playIdentities) has(k playIdentityKey) bool {
+	if p == nil || !k.valid() {
+		return false
+	}
+	p.mu.Lock()
+	_, ok := p.m[k]
+	p.mu.Unlock()
+	return ok
+}
+
+// selectedPart reads the current Part without freezing or extending the issued
+// version list merely because a client is checking for a pending subtitle pick.
+func (p *playIdentities) selectedPart(k playIdentityKey) int64 {
+	if p == nil || !k.valid() {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e := p.m[k]; e != nil {
+		return e.selected
+	}
+	return 0
 }
 
 // pinned returns the identity's list. live renders (a session exists)
@@ -431,17 +459,24 @@ func (p *playIdentities) issueStreams(k playIdentityKey, mediaID int64, out []mo
 				continue
 			}
 			score := 1
-			if out[i].LanguageCode == is.lang {
+			if is.lang != "" && out[i].LanguageCode == is.lang {
 				score += 8
 			}
-			if out[i].Codec == is.codec {
+			if is.codec != "" && out[i].Codec == is.codec {
 				score += 2
 			}
-			if out[i].Channels == is.channels {
+			if is.channels > 0 && out[i].Channels == is.channels {
 				score++
 			}
 			if streamSelected(out[i]) == is.selected {
-				score += 4
+				if is.estimated && !info.Estimated {
+					// Pre-probe placeholder/estimated attributes are guessed;
+					// once real tracks arrive, keep the client's selected id on
+					// the real selected track rather than a guessed language.
+					score += 16
+				} else {
+					score += 4
+				}
 			}
 			pairs = append(pairs, pair{score: score, issued: j, out: i})
 		}
@@ -460,13 +495,14 @@ func (p *playIdentities) issueStreams(k playIdentityKey, mediaID int64, out []mo
 			final[i] = natural[i]
 		}
 		if final[i] != natural[i] && src[i] >= 0 && src[i] < len(info.Streams) {
-			im.remap[final[i]] = remapTarget{index: src[i], info: info.Streams[src[i]]}
+			im.remap[final[i]] = remapTarget{index: src[i], info: info.Streams[src[i]], estimated: info.Estimated}
 		} else {
 			delete(im.remap, final[i])
 		}
 		out[i].ID = final[i]
 		rec := issuedStream{id: final[i], typ: out[i].StreamType, lang: out[i].LanguageCode, codec: out[i].Codec,
-			channels: out[i].Channels, selected: streamSelected(out[i]), external: isExternalStream(out[i])}
+			channels: out[i].Channels, selected: streamSelected(out[i]), external: isExternalStream(out[i]),
+			estimated: info.Estimated}
 		if j, ok := issued[final[i]]; ok {
 			im.streams[j] = rec
 		} else if final[i] != 0 {
@@ -558,26 +594,38 @@ func (p *playIdentities) shownSubtitles(k playIdentityKey, now time.Time) (subs 
 }
 
 // resolve returns the track an issued id now names for this client, when
-// a probe or failover moved it. The selected Media's mapping wins.
-func (p *playIdentities) resolve(k playIdentityKey, wireID int64) (remapTarget, bool) {
+// a probe or failover moved it, plus whether this client was issued that id
+// and whether the latest issued stream for that id came from estimated
+// metadata. The selected Media's mapping wins.
+func (p *playIdentities) resolve(k playIdentityKey, wireID int64) (remapTarget, bool, bool, bool) {
 	if p == nil || !k.valid() || wireID == 0 {
-		return remapTarget{}, false
+		return remapTarget{}, false, false, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	e := p.m[k]
 	if e == nil {
-		return remapTarget{}, false
+		return remapTarget{}, false, false, false
 	}
-	if im := e.media[e.selected]; im != nil {
-		if t, ok := im.remap[wireID]; ok {
-			return t, true
+	check := func(im *issuedMedia) (remapTarget, bool, bool, bool) {
+		if im == nil {
+			return remapTarget{}, false, false, false
 		}
+		if t, ok := im.remap[wireID]; ok {
+			return t, true, true, t.estimated
+		}
+		for _, is := range im.streams {
+			if is.id == wireID {
+				return remapTarget{}, false, true, is.estimated
+			}
+		}
+		return remapTarget{}, false, false, false
 	}
-	if im := e.media[int64(k.key)]; im != nil {
-		if t, ok := im.remap[wireID]; ok {
-			return t, true
-		}
+	if t, rm, known, est := check(e.media[e.selected]); known {
+		return t, rm, true, est
+	}
+	if t, rm, known, est := check(e.media[int64(k.key)]); known {
+		return t, rm, true, est
 	}
 	ids := make([]int64, 0, len(e.media))
 	for id := range e.media {
@@ -585,11 +633,11 @@ func (p *playIdentities) resolve(k playIdentityKey, wireID int64) (remapTarget, 
 	}
 	sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
 	for _, id := range ids {
-		if t, ok := e.media[id].remap[wireID]; ok {
-			return t, true
+		if t, rm, known, est := check(e.media[id]); known {
+			return t, rm, true, est
 		}
 	}
-	return remapTarget{}, false
+	return remapTarget{}, false, false, false
 }
 
 // expire drops idle identities. A frozen one stays while alive reports its

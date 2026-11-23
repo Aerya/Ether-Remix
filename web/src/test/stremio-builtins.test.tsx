@@ -18,9 +18,7 @@ describe("Stremio built-ins", () => {
   it("starts a Stremio Home row by choosing a plugin catalog", async () => {
     renderApp("/collections/new?source=addonCatalog&draft=new-addon-row");
     const picker = await screen.findByRole("dialog", { name: "Choose a Stremio plugin catalog" });
-    expect(
-      await within(picker).findByText("No installed plugin offers a movie or series catalog yet."),
-    ).toBeInTheDocument();
+    expect(await within(picker).findByLabelText("Filter catalogues")).toBeInTheDocument();
     fireEvent.click(within(picker).getByRole("button", { name: "Add a plugin from Stremio" }));
     const add = await screen.findByRole("dialog", { name: "Add a plugin from Stremio" });
     expect(within(add).getByText("Install link")).toBeInTheDocument();

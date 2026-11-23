@@ -64,6 +64,17 @@ type InputSwapState interface {
 // the original handoff; its old source must not be used for rollback.
 var ErrReplacementSuperseded = errors.New("replacement output superseded")
 
+// ErrEncoderExhausted means the encoder session reached its per-session or
+// per-segment failure cap or the client is gone; further failover swaps
+// against this session cannot succeed.
+var ErrEncoderExhausted = errors.New("encoder session exhausted")
+
+// DamagedSegmentSkipper advances a mid-stream HLS session past a bounded range
+// of corrupt input segments when no alternate release can recover them.
+type DamagedSegmentSkipper interface {
+	SkipDamagedSegment(ctx context.Context, inputURL string, info MediaInfo, at time.Duration) error
+}
+
 // PlaybackTimeline carries actual client position without changing history.
 type PlaybackTimeline interface {
 	PlaybackProgress(userID int64, clientID string, key RatingKey, position time.Duration, state string)

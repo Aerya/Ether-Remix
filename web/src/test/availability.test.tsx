@@ -180,6 +180,9 @@ describe("New release modes", () => {
     fireEvent.click(more);
     const field = screen.getByLabelText("Daily budget for new-release checks");
     fireEvent.change(field, { target: { value: "48" } });
+    const pluginChecks = screen.getByLabelText("Daily background Usenet checks per plugin");
+    expect(pluginChecks).toHaveValue(20);
+    fireEvent.change(pluginChecks, { target: { value: "35" } });
     const bar = screen.getByRole("region", { name: "Unsaved changes" });
     fireEvent.click(within(bar).getByRole("button", { name: "Save changes" }));
     await settleUi(() => {
@@ -188,6 +191,7 @@ describe("New release modes", () => {
     expect(calls(fake, "PUT", "/config/availability")[0]!.body).toMatchObject({
       effort: "custom",
       feedRequests: 48,
+      pluginUsenetChecks: 35,
     });
   });
 

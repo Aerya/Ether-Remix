@@ -24,31 +24,108 @@ func idsOf(ids core.IDs) traktIDs {
 	return traktIDs{TMDB: ids.TMDB, IMDB: ids.IMDB, TVDB: ids.TVDB}
 }
 
-// payloadFor builds the Trakt movie/episode object for a catalogue title.
+func isPlayableTraktKey(key core.RatingKey) bool {
+	if !key.Valid() || key.TMDB() <= 0 {
+		return false
+	}
+	k := key.Kind()
+	return k == core.KindMovie || k == core.KindEpisode
+}
+
+func isRatableTraktKey(key core.RatingKey) bool {
+	if !key.Valid() || key.TMDB() <= 0 {
+		return false
+	}
+	k := key.Kind()
+	return k == core.KindMovie || k == core.KindShow || k == core.KindSeason || k == core.KindEpisode
+}
+
+func isSyncableTraktEvent(ev state.Event) bool {
+	switch ev.Kind {
+	case state.EventProgress, state.EventScrobble, state.EventUnscrobble:
+		return isPlayableTraktKey(ev.Key)
+	case state.EventRated:
+		return isRatableTraktKey(ev.Key)
+	default:
+		return false
+	}
+}
+
+// payloadFor builds the Trakt movie/show/season/episode object for a catalogue title.
 func payloadFor(t *core.Title) (kind string, payload map[string]any) {
-	if t.Type == core.TypeEpisode || t.Key.Kind() == core.KindEpisode {
+	if t == nil {
+		return "", nil
+	}
+	var k core.KeyKind
+	if t.Key != 0 {
+		k = t.Key.Kind()
+	} else {
+		switch t.Type {
+		case core.TypeMovie:
+			k = core.KindMovie
+		case core.TypeShow:
+			k = core.KindShow
+		case core.TypeSeason:
+			k = core.KindSeason
+		case core.TypeEpisode:
+			k = core.KindEpisode
+		}
+	}
+	switch k {
+	case core.KindEpisode:
 		season, episode := t.Season, t.Episode
-		if season == 0 && episode == 0 {
+		if season == 0 && episode == 0 && t.Key.Kind() == core.KindEpisode {
 			season, episode = t.Key.Season(), t.Key.Episode()
 		}
 		showIDs := t.ShowIDs
-		if showIDs.TMDB == 0 {
+		if showIDs.TMDB == 0 && t.Key.Kind() == core.KindEpisode {
 			showIDs.TMDB = t.Key.TMDB()
 		}
 		return "episode", map[string]any{
 			"show":    map[string]any{"title": t.ShowTitle, "ids": idsOf(showIDs)},
 			"episode": map[string]any{"season": season, "number": episode, "ids": idsOf(t.IDs)},
 		}
+	case core.KindSeason:
+		season := t.Season
+		if season == 0 && t.Key.Kind() == core.KindSeason {
+			season = t.Key.Season()
+		}
+		// Season rows carry the TMDB season id in t.IDs; Trakt's nested
+		// shows[].seasons[] payload expects the show's ids.
+		showIDs := t.ShowIDs
+		if showIDs.TMDB == 0 && t.Key.Kind() == core.KindSeason {
+			showIDs.TMDB = t.Key.TMDB()
+		}
+		show := map[string]any{"title": t.ShowTitle, "ids": idsOf(showIDs)}
+		if t.ShowYear > 0 {
+			show["year"] = t.ShowYear
+		}
+		return "season", map[string]any{
+			"show":   show,
+			"season": map[string]any{"number": season},
+		}
+	case core.KindShow:
+		ids := t.IDs
+		if ids.TMDB == 0 && t.Key.Kind() == core.KindShow {
+			ids.TMDB = t.Key.TMDB()
+		}
+		return "show", map[string]any{"show": map[string]any{"title": t.Title, "year": t.Year, "ids": idsOf(ids)}}
+	case core.KindMovie:
+		ids := t.IDs
+		if ids.TMDB == 0 && t.Key.Kind() == core.KindMovie {
+			ids.TMDB = t.Key.TMDB()
+		}
+		return "movie", map[string]any{"movie": map[string]any{"title": t.Title, "year": t.Year, "ids": idsOf(ids)}}
+	default:
+		return "", nil
 	}
-	ids := t.IDs
-	if ids.TMDB == 0 && t.Key.Kind() == core.KindMovie {
-		ids.TMDB = t.Key.TMDB()
-	}
-	return "movie", map[string]any{"movie": map[string]any{"title": t.Title, "year": t.Year, "ids": idsOf(ids)}}
 }
 
 // titleFor resolves an event's key to a catalogue title.
 func (c *Client) titleFor(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if !isRatableTraktKey(key) {
+		return nil, core.ErrNotFound
+	}
 	if c.catalog != nil {
 		if t, err := c.catalog.Get(ctx, key); err == nil && t != nil {
 			return t, nil
@@ -58,8 +135,12 @@ func (c *Client) titleFor(ctx context.Context, key core.RatingKey) (*core.Title,
 	switch key.Kind() {
 	case core.KindMovie:
 		return &core.Title{Key: key, Type: core.TypeMovie, IDs: core.IDs{TMDB: key.TMDB()}}, nil
+	case core.KindShow:
+		return &core.Title{Key: key, Type: core.TypeShow, IDs: core.IDs{TMDB: key.TMDB()}}, nil
+	case core.KindSeason:
+		return &core.Title{Key: key, Type: core.TypeSeason, ShowKey: core.ShowKey(key.TMDB()), ShowIDs: core.IDs{TMDB: key.TMDB()}, Season: key.Season()}, nil
 	case core.KindEpisode:
-		return &core.Title{Key: key, Type: core.TypeEpisode, ShowIDs: core.IDs{TMDB: key.TMDB()}, Season: key.Season(), Episode: key.Episode()}, nil
+		return &core.Title{Key: key, Type: core.TypeEpisode, ShowKey: core.ShowKey(key.TMDB()), ShowIDs: core.IDs{TMDB: key.TMDB()}, Season: key.Season(), Episode: key.Episode()}, nil
 	default:
 		return nil, core.ErrNotFound
 	}
@@ -70,14 +151,17 @@ func (c *Client) titleFor(ctx context.Context, key core.RatingKey) (*core.Title,
 // Scrobble pushes one playback state to Trakt: action is "start", "pause"
 // or "stop"; progress is 0-100. Trakt marks >=80% on stop as watched.
 func (c *Client) Scrobble(ctx context.Context, userID int64, key core.RatingKey, action string, progress float64) error {
-	if !c.Connected(ctx, userID) {
+	if !isPlayableTraktKey(key) || !c.Connected(ctx, userID) {
 		return nil
 	}
 	t, err := c.titleFor(ctx, key)
 	if err != nil {
 		return nil // seasons/shows don't scrobble
 	}
-	_, payload := payloadFor(t)
+	kind, payload := payloadFor(t)
+	if kind != "movie" && kind != "episode" {
+		return nil
+	}
 	payload["progress"] = progress
 	status, b, err := c.authed(ctx, userID, http.MethodPost, "/scrobbling/"+action, payload)
 	if err != nil {
@@ -91,44 +175,82 @@ func (c *Client) Scrobble(ctx context.Context, userID int64, key core.RatingKey,
 }
 
 func syncBody(kind string, item map[string]any, extra map[string]any) map[string]any {
-	inner := map[string]any{}
-	for k, v := range item {
-		inner[k] = v
-	}
-	for k, v := range extra {
-		inner[k] = v
-	}
-	if kind == "episode" {
-		// /sync/history wants episodes nested in shows/seasons; the flat
-		// {show, episode} episode shape is also accepted for history adds
-		// via "episodes" — build the documented nested form.
-		show := item["show"]
+	switch kind {
+	case "episode":
+		// /sync/history and /sync/ratings accept episodes nested in shows/seasons.
+		show, _ := item["show"].(map[string]any)
 		ep, _ := item["episode"].(map[string]any)
+		if show == nil || ep == nil {
+			return nil
+		}
 		season, _ := ep["season"].(int)
 		epItem := map[string]any{"number": ep["number"]}
 		for k, v := range extra {
 			epItem[k] = v
 		}
 		return map[string]any{"shows": []any{map[string]any{
-			"title":   show.(map[string]any)["title"],
-			"ids":     show.(map[string]any)["ids"],
+			"title":   show["title"],
+			"ids":     show["ids"],
 			"seasons": []any{map[string]any{"number": season, "episodes": []any{epItem}}},
 		}}}
-	}
-	movie := map[string]any{}
-	if m, ok := item["movie"].(map[string]any); ok {
+	case "season":
+		show, _ := item["show"].(map[string]any)
+		sn, _ := item["season"].(map[string]any)
+		if show == nil || sn == nil {
+			return nil
+		}
+		seasonItem := map[string]any{"number": sn["number"]}
+		for k, v := range extra {
+			seasonItem[k] = v
+		}
+		showItem := map[string]any{
+			"title":   show["title"],
+			"ids":     show["ids"],
+			"seasons": []any{seasonItem},
+		}
+		if year, ok := show["year"].(int); ok && year > 0 {
+			showItem["year"] = year
+		}
+		return map[string]any{"shows": []any{showItem}}
+	case "show":
+		s, _ := item["show"].(map[string]any)
+		if s == nil {
+			return nil
+		}
+		showItem := map[string]any{}
+		for k, v := range s {
+			showItem[k] = v
+		}
+		for k, v := range extra {
+			showItem[k] = v
+		}
+		return map[string]any{"shows": []any{showItem}}
+	case "movie":
+		m, _ := item["movie"].(map[string]any)
+		if m == nil {
+			return nil
+		}
+		movie := map[string]any{}
 		for k, v := range m {
 			movie[k] = v
 		}
+		for k, v := range extra {
+			movie[k] = v
+		}
+		return map[string]any{"movies": []any{movie}}
+	default:
+		return nil
 	}
-	for k, v := range extra {
-		movie[k] = v
-	}
-	return map[string]any{"movies": []any{movie}}
 }
 
-// AddHistory marks a title watched on Trakt at the given time.
+// AddHistory marks a movie or episode watched on Trakt at the given time.
+// Show and season keys are ignored: marking one episode watched emits parent
+// touch events for its season and show, and whole-show/season marks already
+// expand to per-episode events.
 func (c *Client) AddHistory(ctx context.Context, userID int64, key core.RatingKey, watchedAt time.Time) error {
+	if !isPlayableTraktKey(key) {
+		return nil
+	}
 	return c.sync(ctx, userID, "/sync/history", key, map[string]any{"watched_at": watchedAt.UTC().Format(time.RFC3339)})
 }
 
@@ -177,18 +299,27 @@ func (c *Client) SetWatchlist(ctx context.Context, userID int64, title core.Titl
 	return true, nil
 }
 
-// RemoveHistory removes a title from the user's Trakt history.
+// RemoveHistory removes a movie or episode from the user's Trakt history.
 func (c *Client) RemoveHistory(ctx context.Context, userID int64, key core.RatingKey) error {
+	if !isPlayableTraktKey(key) {
+		return nil
+	}
 	return c.sync(ctx, userID, "/sync/history/remove", key, nil)
 }
 
 // RemoveRating clears a title's rating on Trakt.
 func (c *Client) RemoveRating(ctx context.Context, userID int64, key core.RatingKey) error {
+	if !isRatableTraktKey(key) {
+		return nil
+	}
 	return c.sync(ctx, userID, "/sync/ratings/remove", key, nil)
 }
 
 // AddRating rates a title on Trakt (1-10).
 func (c *Client) AddRating(ctx context.Context, userID int64, key core.RatingKey, rating float64) error {
+	if !isRatableTraktKey(key) {
+		return nil
+	}
 	r := int(rating + 0.5)
 	if r < 1 {
 		r = 1
@@ -208,7 +339,11 @@ func (c *Client) sync(ctx context.Context, userID int64, path string, key core.R
 		return nil
 	}
 	kind, item := payloadFor(t)
-	status, b, err := c.authed(ctx, userID, http.MethodPost, path, syncBody(kind, item, extra))
+	body := syncBody(kind, item, extra)
+	if body == nil {
+		return nil
+	}
+	status, b, err := c.authed(ctx, userID, http.MethodPost, path, body)
 	if err != nil {
 		return err
 	}
@@ -289,6 +424,9 @@ func (c *Client) handleEvent(ctx context.Context, ev state.Event) error {
 	if ev.Imported && (ev.Kind == state.EventProgress || ev.At.IsZero()) {
 		return nil
 	}
+	if !isSyncableTraktEvent(ev) {
+		return nil
+	}
 	switch ev.Kind {
 	case state.EventProgress:
 		action := ""
@@ -333,7 +471,7 @@ func (c *Client) SubscribeTo(src interface {
 	Subscribe(func(state.Event)) func()
 }) func() {
 	return src.Subscribe(func(ev state.Event) {
-		if ev.Account {
+		if ev.Account || !isSyncableTraktEvent(ev) {
 			return
 		}
 		if ev.Imported {

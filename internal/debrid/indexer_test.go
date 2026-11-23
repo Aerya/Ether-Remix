@@ -175,3 +175,74 @@ func TestIndexerRescuesSeasonPackWhenSingleEpisodesUncached(t *testing.T) {
 		t.Fatalf("expected torrent-only cached season pack rescue, got=%+v packCalls=%d torrentOnly=%v", got, inner.packCalls, inner.packTorrentOnly)
 	}
 }
+
+func TestIndexerResolveTorrentForwardsToInner(t *testing.T) {
+	h := newHarness(t, 1<<20, "torbox")
+	inner := &resolvingInner{}
+	x := NewIndexer(inner, h.svc)
+	got, err := x.ResolveTorrent(context.Background(), core.Release{
+		Name:     "Album",
+		Protocol: core.ProtocolTorrent,
+		NZBURL:   "https://cardigann.example/album.html",
+	})
+	if err != nil || got.InfoHash != testHash || inner.resolved != 1 {
+		t.Fatalf("ResolveTorrent = %+v err=%v resolved=%d", got, err, inner.resolved)
+	}
+}
+
+func TestListReleaseFilesChecksUnknownHashesAndRespectsUncached(t *testing.T) {
+	ctx := context.Background()
+
+	// Bulk-check provider (TorBox): unknown cached hash is checked via CheckCached
+	// and listed; unknown uncached hash is skipped without calling Acquire.
+	hBulk := newHarness(t, 1<<20, "torbox")
+	hBulk.provs["torbox-0"].bulk = true
+	hBulk.provs["torbox-0"].cached[testHash] = true
+	hBulk.provs["torbox-0"].files = []File{
+		{ID: "1", Path: "Album/01.flac", Size: 20_000_000},
+		{ID: "2", Path: "Album/02.flac", Size: 22_000_000},
+	}
+	files, err := hBulk.svc.ListReleaseFiles(ctx, core.Release{
+		Name:     "Album",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: testHash,
+	})
+	if err != nil || len(files) != 2 || files[0].Path != "Album/01.flac" || files[1].Index != 1 {
+		t.Fatalf("bulk cached ListReleaseFiles = %+v err=%v", files, err)
+	}
+
+	uncachedHash := strings.Repeat("55", 20)
+	if _, err := hBulk.svc.ListReleaseFiles(ctx, core.Release{
+		Name:     "Missing",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: uncachedHash,
+	}); !errors.Is(err, core.ErrNotCached) {
+		t.Fatalf("bulk uncached err = %v, want ErrNotCached", err)
+	}
+	if got := hBulk.provs["torbox-0"].callCount("acquire"); got != 1 {
+		t.Fatalf("bulk provider acquire calls = %d, want 1 (only cached hash)", got)
+	}
+
+	// Non-bulk provider (Real-Debrid): newly-resolved cached hash lists files,
+	// and an uncached hash returns ErrNotCached even if Choose inspected files.
+	hRD := newHarness(t, 1<<20, "realdebrid")
+	hRD.provs["realdebrid-0"].cached[testHash] = true
+	hRD.provs["realdebrid-0"].files = []File{
+		{ID: "1", Path: "Album/01.flac", Size: 20_000_000},
+	}
+	files, err = hRD.svc.ListReleaseFiles(ctx, core.Release{
+		Name:     "Album",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: testHash,
+	})
+	if err != nil || len(files) != 1 || files[0].Path != "Album/01.flac" {
+		t.Fatalf("non-bulk cached ListReleaseFiles = %+v err=%v", files, err)
+	}
+	if _, err := hRD.svc.ListReleaseFiles(ctx, core.Release{
+		Name:     "Uncached",
+		Protocol: core.ProtocolTorrent,
+		InfoHash: uncachedHash,
+	}); !errors.Is(err, core.ErrNotCached) {
+		t.Fatalf("non-bulk uncached err = %v, want ErrNotCached", err)
+	}
+}

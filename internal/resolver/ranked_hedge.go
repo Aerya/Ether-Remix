@@ -11,6 +11,10 @@ import (
 // equivalent must not sit behind a provider's entire eight-second deadline.
 const rankedSourceGrace = 2 * time.Second
 
+// RankedSourceGrace is how long a lead source may stay in flight before an
+// equivalent ready backup overtakes it or a stalled lead yields an extra slot.
+const RankedSourceGrace = rankedSourceGrace
+
 // A health check that downloads an NZB (or a torrent file) spends one of the
 // indexer's daily grabs. A second such check starts only as a hedge: when
 // the one in flight fails, or has run longer than a healthy check usually
@@ -19,7 +23,17 @@ const rankedSourceGrace = 2 * time.Second
 const (
 	defaultHealthHedgeDelay = 1500 * time.Millisecond
 	minHealthHedgeDelay     = 750 * time.Millisecond
+
+	DefaultHealthHedgeDelay = defaultHealthHedgeDelay
+	MinHealthHedgeDelay     = minHealthHedgeDelay
 )
+
+// SpendsGrab reports whether opening rel downloads from its indexer (a Usenet
+// NZB, or a torrent known only by its download link). Torrents with an info
+// hash or magnet and direct HTTP sources do not spend an indexer grab.
+func SpendsGrab(rel core.Release) bool {
+	return spendsGrab(rel)
+}
 
 // spendsGrab reports whether checking rel downloads from its indexer: a
 // Usenet NZB, or a torrent known only by its download link. Torrents with
@@ -32,6 +46,12 @@ func spendsGrab(rel core.Release) bool {
 		return false
 	}
 	return true
+}
+
+// HealthHedgeDelay returns how long a grab-spending open should wait behind a
+// single healthy-so-far in-flight open before joining as a hedge.
+func (s *Service) HealthHedgeDelay(rel core.Release) time.Duration {
+	return s.healthHedgeDelay(rel)
 }
 
 // healthHedgeDelay is how long a grab-spending check runs alone before a

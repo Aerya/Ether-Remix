@@ -211,7 +211,8 @@ func TestAnonymousTaglessImageServesOnlyPublicArtwork(t *testing.T) {
 		{"anonymous public poster indexed", "/Items/" + id + "/Images/Primary/0", 200},
 		{"anonymous hidden poster", "/Items/" + hidden + "/Images/Primary", 404},
 		{"anonymous missing kind", "/Items/" + id + "/Images/Backdrop", 404},
-		{"anonymous forged tag stays denied", "/Items/" + id + "/Images/Primary?tag=forged", 404},
+		{"anonymous forged tag is a cache-buster", "/Items/" + id + "/Images/Primary?tag=forged", 200},
+		{"anonymous forged tag on hidden poster", "/Items/" + hidden + "/Images/Primary?tag=forged", 404},
 		{"anonymous unresolvable id", "/Items/not-a-guid/Images/Primary", 404},
 	}
 	for _, tc := range cases {

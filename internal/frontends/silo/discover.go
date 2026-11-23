@@ -179,8 +179,19 @@ func (i *instance) sectionCards(r *http.Request, v *frontend.Viewer, credential 
 		}
 		if row.Purpose == frontend.RowNextUp {
 			item["item_source"] = "next_up"
-		} else if row.Purpose == frontend.RowContinue && states[t.Key].ViewOffset > 0 {
+		} else if st := states[t.Key]; row.Purpose == frontend.RowContinue && st.ViewOffset > 0 {
+			// The reference server's in-progress cards carry the resume point
+			// and length beside item_source; without them the app draws no
+			// progress bar on Continue Watching.
 			item["item_source"] = "in_progress"
+			item["position_seconds"] = st.ViewOffset.Seconds()
+			duration := st.Duration
+			if duration <= st.ViewOffset {
+				duration = t.Runtime
+			}
+			if duration > st.ViewOffset {
+				item["duration_seconds"] = duration.Seconds()
+			}
 		}
 		i.paintCardArtwork(r, artwork[t.Key], item)
 		if row.PreviewOnFocus {

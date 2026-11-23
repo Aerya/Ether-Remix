@@ -81,7 +81,10 @@ func broadcastLiveWindow(ctx context.Context, lease *broadcastLease, index trans
 	if r.originErr != nil {
 		return frontend.LiveWindow{}, r.originErr
 	}
-	origin := r.origin
+	origin := b.anchorOrigin
+	if origin.IsZero() {
+		origin = r.origin
+	}
 	first, last := segments[0], segments[len(segments)-1]
 	return frontend.LiveWindow{Anchor: frontend.LiveAnchor{MediaSequence: first.Seq, WindowStartSeconds: first.Start.Sub(origin).Seconds()}, LiveEdgeSeconds: last.Start.Add(last.Duration).Sub(origin).Seconds()}, nil
 }

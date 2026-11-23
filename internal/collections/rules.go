@@ -164,7 +164,7 @@ func compileRule(cr core.CollectionRule) (*rule, error) {
 			if len(r.tags) != 1 {
 				return nil, fmt.Errorf("contentRating %s needs one rating", cr.Op)
 			}
-			if r.ratingRank = int(contentrating.LevelOf(r.tags[0])); r.ratingRank == 0 {
+			if r.ratingRank = int(contentrating.EnforceLevelOf(r.tags[0])); r.ratingRank == 0 {
 				return nil, fmt.Errorf("%q is not a rating Ether can order (try G, PG, PG-13, R, TV-14…)", r.tags[0])
 			}
 		} else if cr.Field == "contentRating" {
@@ -573,8 +573,12 @@ func (r *rule) matchTags(e *entry) bool {
 			have = []string{e.lang}
 		}
 	case "contentRating":
+		enf := e.enforcementRating()
 		if r.op == "gte" || r.op == "lte" {
-			rank := int(contentrating.LevelOf(e.crating))
+			if enf == contentrating.UncertifiedAdult {
+				return false
+			}
+			rank := int(contentrating.EnforceLevelOf(enf))
 			if rank == 0 || r.ratingRank == 0 {
 				return false
 			}
@@ -583,7 +587,11 @@ func (r *rule) matchTags(e *entry) bool {
 			}
 			return rank <= r.ratingRank
 		}
-		have = []string{strings.ToLower(contentrating.LevelOf(e.crating).Key())}
+		if enf == contentrating.UncertifiedAdult {
+			have = nil
+		} else {
+			have = []string{strings.ToLower(contentrating.EnforceLevelOf(enf).Key())}
+		}
 	}
 	has := func(want string) bool {
 		for _, h := range have {

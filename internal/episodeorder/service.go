@@ -1,4 +1,4 @@
-// Package episodeorder provides presentation-only TV ordering. Canonical TMDB
+// Package episodeorder provides TV presentation and independent release preferences. Canonical TMDB
 // keys and season/episode identity never change, including during playback.
 package episodeorder
 
@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +22,7 @@ import (
 
 func init() {
 	store.Register("episodeorder", 1, `CREATE TABLE episodeorder_preferences(user_id INTEGER NOT NULL,show_key INTEGER NOT NULL,group_id TEXT NOT NULL,specials TEXT NOT NULL DEFAULT 'last',PRIMARY KEY(user_id,show_key)); CREATE TABLE episodeorder_groups(id TEXT PRIMARY KEY,body TEXT NOT NULL,updated_at INTEGER NOT NULL);`)
+	store.Register("episodeorder", 2, `CREATE TABLE episodeorder_release_preferences(show_key INTEGER PRIMARY KEY,mode TEXT NOT NULL,group_id TEXT NOT NULL);`)
 }
 
 type Source interface {
@@ -73,19 +73,45 @@ func (s *Service) changed() {
 func New(db *sql.DB, source Source, catalog core.Catalog) *Service {
 	return &Service{db: db, source: source, catalog: catalog, cache: map[string]cachedLayout{}}
 }
+
+func (s *Service) userPreferences(ctx context.Context, user int64) (map[core.RatingKey]Preference, error) {
+	s.mu.Lock()
+	gen := s.generation
+	s.mu.Unlock()
+	key := fmt.Sprintf("episodeorder:prefs:%p:%d:%d", s, gen, user)
+	return reqmemo.Do(ctx, key, func() (map[core.RatingKey]Preference, error) {
+		rows, err := s.db.QueryContext(ctx, `SELECT user_id,show_key,group_id,specials FROM episodeorder_preferences WHERE user_id IN (0,?) ORDER BY user_id ASC`, user)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[core.RatingKey]Preference{}
+		for rows.Next() {
+			var uid, show int64
+			var p Preference
+			if err := rows.Scan(&uid, &show, &p.GroupID, &p.Specials); err != nil {
+				return nil, err
+			}
+			p.Inherited = user != 0 && uid == 0
+			out[core.RatingKey(show)] = p
+		}
+		return out, rows.Err()
+	})
+}
+
 func (s *Service) Preference(ctx context.Context, user int64, show core.RatingKey) (Preference, error) {
 	p := Preference{Specials: "last"}
-	// A list asks for every listed series' preference; most viewers have
-	// none at all, which one read per request answers for every series.
+	// A list or detail page asks for many series' preferences; one indexed read
+	// per request answers Preference and Grouped for every series.
 	if reqmemo.Active(ctx) {
-		any, err := reqmemo.Do(ctx, "episodeorder:any:"+strconv.FormatInt(user, 10), func() (bool, error) {
-			var any bool
-			err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM episodeorder_preferences WHERE user_id IN (0,?))`, user).Scan(&any)
-			return any, err
-		})
-		if err == nil && !any {
-			return p, nil
+		prefs, err := s.userPreferences(ctx, user)
+		if err != nil {
+			return p, err
 		}
+		if got, ok := prefs[show]; ok {
+			return got, nil
+		}
+		return p, nil
 	}
 	var id int64
 	err := s.db.QueryRowContext(ctx, `SELECT user_id,group_id,specials FROM episodeorder_preferences WHERE show_key=? AND user_id IN (0,?) ORDER BY user_id DESC LIMIT 1`, int64(show), user).Scan(&id, &p.GroupID, &p.Specials)
@@ -100,8 +126,19 @@ func (s *Service) Preference(ctx context.Context, user int64, show core.RatingKe
 // defaults, change some series' episode set: an episode group, or hidden
 // specials. Showing specials first or last only reorders them.
 func (s *Service) Customized(ctx context.Context, u *core.User) (bool, error) {
+	uid := userID(u)
+	if reqmemo.Active(ctx) {
+		s.mu.Lock()
+		gen := s.generation
+		s.mu.Unlock()
+		return reqmemo.Do(ctx, fmt.Sprintf("episodeorder:custom:%p:%d:%d", s, gen, uid), func() (bool, error) {
+			var custom bool
+			err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM episodeorder_preferences WHERE user_id IN (0,?) AND (group_id<>'' OR specials='hidden'))`, uid).Scan(&custom)
+			return custom, err
+		})
+	}
 	var custom bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM episodeorder_preferences WHERE user_id IN (0,?) AND (group_id<>'' OR specials='hidden'))`, userID(u)).Scan(&custom)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM episodeorder_preferences WHERE user_id IN (0,?) AND (group_id<>'' OR specials='hidden'))`, uid).Scan(&custom)
 	return custom, err
 }
 
@@ -111,6 +148,22 @@ func (s *Service) Customized(ctx context.Context, u *core.User) (bool, error) {
 // catalogue without loading its layout title by title.
 func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.RatingKey) (map[core.RatingKey]bool, error) {
 	grouped := map[core.RatingKey]bool{}
+	if len(shows) == 0 {
+		return grouped, nil
+	}
+	if reqmemo.Active(ctx) {
+		prefs, err := s.userPreferences(ctx, userID(u))
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range shows {
+			sk := showKey(k)
+			if prefs[sk].GroupID != "" {
+				grouped[sk] = true
+			}
+		}
+		return grouped, nil
+	}
 	for len(shows) > 0 {
 		n := min(len(shows), 500)
 		args := []any{userID(u)}
@@ -235,6 +288,10 @@ func showKey(k core.RatingKey) core.RatingKey {
 	return core.ShowKey(k.TMDB())
 }
 func (s *Service) layout(ctx context.Context, u *core.User, k core.RatingKey) (*layout, error) {
+	l, _, err := s.layoutWithPref(ctx, u, k)
+	return l, err
+}
+func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.RatingKey) (*layout, Preference, error) {
 	show := showKey(k)
 	cacheKey := fmt.Sprintf("%d:%d", userID(u), show)
 	s.mu.Lock()
@@ -242,26 +299,26 @@ func (s *Service) layout(ctx context.Context, u *core.User, k core.RatingKey) (*
 	generation := s.generation
 	s.mu.Unlock()
 	if ok && time.Now().Before(cached.expires) {
-		return cached.value, nil
+		return cached.value, Preference{}, nil
 	}
 	p, e := s.Preference(ctx, userID(u), show)
 	if e != nil {
-		return nil, e
+		return nil, p, e
 	}
 	if p.GroupID == "" {
-		return nil, nil
+		return nil, p, nil
 	}
 	g, e := s.group(ctx, p.GroupID)
 	if e != nil {
-		return nil, e
+		return nil, p, e
 	}
 	eps, e := s.catalog.Grandchildren(ctx, show)
 	if e != nil {
-		return nil, e
+		return nil, p, e
 	}
 	st, e := s.catalog.Get(ctx, show)
 	if e != nil {
-		return nil, e
+		return nil, p, e
 	}
 	out := &layout{positions: map[core.RatingKey]position{}}
 	byKey := map[core.RatingKey]core.Title{}
@@ -344,7 +401,7 @@ func (s *Service) layout(ctx context.Context, u *core.User, k core.RatingKey) (*
 		s.cache[cacheKey] = cachedLayout{out, time.Now().Add(time.Minute)}
 	}
 	s.mu.Unlock()
-	return out, nil
+	return out, p, nil
 }
 func (s *Service) invalidate() {
 	s.mu.Lock()
@@ -394,12 +451,12 @@ func (s *Service) Children(ctx context.Context, u *core.User, k core.RatingKey) 
 	if k.Kind() != core.KindShow && k.Kind() != core.KindSeason {
 		return s.catalog.Children(ctx, k)
 	}
-	l, e := s.layout(ctx, u, k)
+	l, pref, e := s.layoutWithPref(ctx, u, k)
 	if e != nil || l == nil {
 		if e != nil {
 			return nil, e
 		}
-		return s.canonicalChildren(ctx, u, k)
+		return s.canonicalChildren(ctx, k, pref)
 	}
 	if k.Kind() == core.KindShow {
 		return l.seasons, nil
@@ -412,12 +469,8 @@ func (s *Service) Children(ctx context.Context, u *core.User, k core.RatingKey) 
 	}
 	return out, nil
 }
-func (s *Service) canonicalChildren(ctx context.Context, u *core.User, k core.RatingKey) ([]core.Title, error) {
+func (s *Service) canonicalChildren(ctx context.Context, k core.RatingKey, p Preference) ([]core.Title, error) {
 	items, e := s.catalog.Children(ctx, k)
-	if e != nil {
-		return nil, e
-	}
-	p, e := s.Preference(ctx, userID(u), showKey(k))
 	if e != nil {
 		return nil, e
 	}
@@ -444,7 +497,7 @@ func (s *Service) canonicalChildren(ctx context.Context, u *core.User, k core.Ra
 	return items, nil
 }
 func (s *Service) Grandchildren(ctx context.Context, u *core.User, k core.RatingKey) ([]core.Title, error) {
-	l, e := s.layout(ctx, u, k)
+	l, pref, e := s.layoutWithPref(ctx, u, k)
 	if e != nil {
 		return nil, e
 	}
@@ -455,28 +508,24 @@ func (s *Service) Grandchildren(ctx context.Context, u *core.User, k core.Rating
 	if e != nil {
 		return nil, e
 	}
-	return s.orderUngroupedEpisodes(ctx, u, k, items)
+	return orderUngroupedEpisodes(pref, items), nil
 }
 
 // OrderStoredGrandchildren presents an already loaded canonical episode set.
 // It lets batched browse reads preserve Specials preferences without loading
 // every show's full catalogue metadata again.
 func (s *Service) OrderStoredGrandchildren(ctx context.Context, u *core.User, k core.RatingKey, items []core.Title) ([]core.Title, error) {
-	l, err := s.layout(ctx, u, k)
+	l, pref, err := s.layoutWithPref(ctx, u, k)
 	if err != nil {
 		return nil, err
 	}
 	if l != nil {
 		return l.episodes, nil
 	}
-	return s.orderUngroupedEpisodes(ctx, u, k, items)
+	return orderUngroupedEpisodes(pref, items), nil
 }
 
-func (s *Service) orderUngroupedEpisodes(ctx context.Context, u *core.User, k core.RatingKey, items []core.Title) ([]core.Title, error) {
-	p, e := s.Preference(ctx, userID(u), showKey(k))
-	if e != nil {
-		return nil, e
-	}
+func orderUngroupedEpisodes(p Preference, items []core.Title) []core.Title {
 	var special, normal []core.Title
 	for _, t := range items {
 		if t.Season == 0 {
@@ -486,12 +535,12 @@ func (s *Service) orderUngroupedEpisodes(ctx context.Context, u *core.User, k co
 		}
 	}
 	if p.Specials == "hidden" {
-		return normal, nil
+		return normal
 	}
 	if p.Specials == "first" {
-		return append(special, normal...), nil
+		return append(special, normal...)
 	}
-	return append(normal, special...), nil
+	return append(normal, special...)
 }
 
 // Position returns only presentation fields, leaving the catalogue title intact.
@@ -505,4 +554,66 @@ func (s *Service) Position(ctx context.Context, u *core.User, k core.RatingKey) 
 	}
 	p, ok := l.positions[k]
 	return p.season, p.episode, p.name, ok
+}
+
+// SearchNumbering reads only the independent owner release group.
+func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, season, episode int, cachedOnly bool) (int, int, error) {
+	p, err := s.ReleasePreference(ctx, show)
+	if err != nil || p.Mode != "group" {
+		return 0, 0, err
+	}
+	var g *tmdb.EpisodeGroup
+	if cachedOnly {
+		var body string
+		if err := s.db.QueryRowContext(ctx, `SELECT body FROM episodeorder_groups WHERE id=?`, p.GroupID).Scan(&body); err != nil {
+			return 0, 0, nil
+		}
+		g = &tmdb.EpisodeGroup{}
+		if json.Unmarshal([]byte(body), g) != nil {
+			return 0, 0, nil
+		}
+	} else {
+		g, err = s.group(ctx, p.GroupID)
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	// TMDB subgroup order is already the season number when the orders
+	// start at 1, or when order 0 is the Specials subgroup (One Piece
+	// "TVDB Order": 0=Specials, 16=Season 16). Only a set whose first
+	// subgroup is a regular season at order 0 numbers seasons order+1.
+	seasonOffset := 0
+	for _, group := range g.Groups {
+		if group.Order != 0 {
+			continue
+		}
+		specials := strings.EqualFold(strings.TrimSpace(group.Name), "specials")
+		if !specials && len(group.Episodes) > 0 {
+			specials = true
+			for _, ep := range group.Episodes {
+				if ep.SeasonNumber != 0 {
+					specials = false
+					break
+				}
+			}
+		}
+		if !specials {
+			seasonOffset = 1
+		}
+		break
+	}
+	var found bool
+	var sn, en int
+	for _, group := range g.Groups {
+		for _, ep := range group.Episodes {
+			if ep.SeasonNumber == season && ep.EpisodeNumber == episode {
+				if found {
+					return 0, 0, nil
+				} // ambiguous membership
+				found = true
+				sn, en = group.Order+seasonOffset, ep.Order+1
+			}
+		}
+	}
+	return sn, en, nil
 }

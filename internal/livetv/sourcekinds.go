@@ -25,6 +25,9 @@ type Fetched struct {
 	// provider. Channels imported before provider numbers were recorded
 	// then take the provider's number instead of keeping a generated one.
 	ProviderNumbers bool
+	// cachedLineup marks a fallback lineup loaded from stored channels so
+	// importSource preserves their stored ProviderGuideID baseline.
+	cachedLineup bool
 }
 
 // SourceKind is one Live TV source kind: how the console describes it, how
@@ -59,12 +62,21 @@ type SourceDescribe struct {
 	YieldsGuide    bool
 }
 
+// OnDemandRefreshKind is optionally implemented by a SourceKind whose
+// listings are short-lived (such as event-based Stremio add-ons) and should
+// refresh on a short schedule only while the source is in use, doing no eager
+// background work when nobody is watching or browsing Live TV.
+type OnDemandRefreshKind interface {
+	OnDemandRefreshInterval() time.Duration
+}
+
 // KindRegistry holds the Live TV source kinds. Safe for concurrent use.
 type KindRegistry struct {
-	mu           sync.RWMutex
-	kinds        map[string]SourceKind
-	order        []string
-	streamOpener func(ctx context.Context, c Channel, src StreamSource) (string, http.Header, error)
+	mu             sync.RWMutex
+	kinds          map[string]SourceKind
+	order          []string
+	streamOpener   func(ctx context.Context, c Channel, src StreamSource) (string, http.Header, error)
+	streamExpander func(ctx context.Context, s *Service, c Channel, src StreamSource) ([]StreamSource, map[string]Programme, *Programme, bool, error)
 }
 
 // NewKindRegistry returns a registry holding the built-in kinds.
@@ -193,6 +205,17 @@ func (s *Service) SetStreamOpener(fn func(ctx context.Context, c Channel, src St
 	r.mu.Unlock()
 }
 
+// SetStreamExpander installs a tune-time expander for lazy multi-candidate
+// plugin:// inputs (such as event-based add-on channels whose live events
+// each provide ordered streams to try before failing over to the next live
+// event). Returning handled=false falls back to normal stream opening.
+func (s *Service) SetStreamExpander(fn func(ctx context.Context, s *Service, c Channel, src StreamSource) ([]StreamSource, map[string]Programme, *Programme, bool, error)) {
+	r := s.kindRegistry()
+	r.mu.Lock()
+	r.streamExpander = fn
+	r.mu.Unlock()
+}
+
 // SourceKindOf classifies a saved source ("xtream", "guideOnly", "m3u").
 func (s *Service) SourceKindOf(src Source) string {
 	if k, ok := s.kindRegistry().Classify(src); ok {
@@ -299,10 +322,10 @@ func (virtualKind) Fetch(context.Context, *Service, *Source) (Fetched, error) {
 }
 
 // fetchPlaylistGuide is the shared M3U/XMLTV fetch: download the playlist,
-// parse channels, then fetch and filter the guide. Behaviour is unchanged
-// from the pre-registry ImportSource.
+// parse channels, then fetch and filter the guide.
 func fetchPlaylistGuide(ctx context.Context, s *Service, src *Source, withChannels bool) (Fetched, error) {
 	var err error
+	src.PlaylistGuide = false
 	progress := importProgress(ctx)
 	if progress != nil {
 		progress.setPhase("playlist")
@@ -322,29 +345,50 @@ func fetchPlaylistGuide(ctx context.Context, s *Service, src *Source, withChanne
 		return Fetched{}, fmt.Errorf("source needs a playlist or an XMLTV guide")
 	}
 	var cs []Channel
+	var playlistGuides []string
 	if withChannels && strings.TrimSpace(src.Playlist) != "" {
 		var stats m3uStats
 		cs, stats, err = parseM3U(strings.NewReader(src.Playlist), src.ID)
 		if err != nil {
 			return Fetched{}, fmt.Errorf("playlist: %w", err)
 		}
+		if len(cs) == 0 {
+			if err := s.refuseEmptyLineup(ctx, src); err != nil {
+				return Fetched{}, fmt.Errorf("playlist: %w", err)
+			}
+		}
 		src.SkippedVOD = stats.SkippedVOD
+		playlistGuides = stats.GuideURLs
 		cs = s.applyGroupRules(ctx, src, cs)
 		if progress != nil {
 			progress.setChannels(len(cs))
 		}
 		s.o.Logger.Info("Live TV source read", "sourceId", src.ID, "source", src.Name, "step", "playlist", "bytes", len(src.Playlist), "channels", len(cs), "skippedVod", stats.SkippedVOD)
 	}
-	g, err := fetchSourceGuide(ctx, s, src, cs, withChannels && strings.TrimSpace(src.Playlist) != "")
+	g, err := fetchSourceGuide(ctx, s, src, cs, withChannels && strings.TrimSpace(src.Playlist) != "", playlistGuides)
 	if err != nil {
 		return Fetched{}, err
 	}
 	return Fetched{Channels: cs, Guide: g}, nil
 }
 
+// playlistGuideHeaders scopes source credentials to same-origin playlist guide
+// URLs so third-party x-tvg-url hosts never receive provider logins.
+func playlistGuideHeaders(src Source, guideURL string) http.Header {
+	if src.Auth == nil || src.PlaylistURL == "" {
+		return nil
+	}
+	origin := urlOrigin(guideURL)
+	if origin == "" || origin != urlOrigin(src.PlaylistURL) {
+		return nil
+	}
+	return src.Auth.header()
+}
+
 // fetchSourceGuide reads a source's guide, keeping only the channels it
-// lists (all of them for a guide-only source).
-func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel, hasChannels bool) (XMLGuide, error) {
+// lists (all of them for a guide-only source). When the owner has not set a
+// guide, playlistGuides discovered in #EXTM3U (x-tvg-url / url-tvg) are used.
+func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel, hasChannels bool, playlistGuides []string) (XMLGuide, error) {
 	allow, err := s.guideAllow(ctx, *src, cs, hasChannels)
 	if err != nil {
 		return XMLGuide{}, err
@@ -354,7 +398,7 @@ func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel
 	if len(cs) > 0 {
 		filter.Resolve = func(channels map[string]Channel, names map[string][]string) map[string]struct{} {
 			candidates := nameCandidates(cs, channels, names)
-			nameCandidateCount = len(candidates)
+			nameCandidateCount += len(candidates)
 			return candidates
 		}
 	}
@@ -370,7 +414,7 @@ func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel
 		if err != nil {
 			return XMLGuide{}, fmt.Errorf("guide: %w", err)
 		}
-	} else if src.Guide != "" {
+	} else if strings.TrimSpace(src.Guide) != "" {
 		var dropped bool
 		g, dropped, err = parseXMLTV(strings.NewReader(src.Guide), filter)
 		if err != nil {
@@ -383,9 +427,33 @@ func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel
 			}
 			src.Guide = trimmed
 		}
+	} else if len(playlistGuides) > 0 {
+		loaded := 0
+		var lastErr error
+		for _, raw := range playlistGuides {
+			s.o.Logger.Info("Live TV source fetching", "sourceId", src.ID, "source", src.Name, "url", urlOrigin(raw), "step", "guide")
+			part, readErr := s.readGuide(ctx, raw, playlistGuideHeaders(*src, raw), filter)
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return XMLGuide{}, fmt.Errorf("guide: %w", readErr)
+				}
+				lastErr = readErr
+				s.o.Logger.Warn("Live TV playlist guide fetch failed", "sourceId", src.ID, "source", src.Name, "url", urlOrigin(raw), "error", readErr)
+				continue
+			}
+			mergeXMLGuide(&g, part)
+			loaded++
+		}
+		if loaded > 0 {
+			src.PlaylistGuide = true
+		} else if lastErr != nil {
+			if old, e := s.storedSourceByID(ctx, src.ID); e == nil && old.PlaylistGuide {
+				return XMLGuide{}, fmt.Errorf("guide: %w", lastErr)
+			}
+		}
 	}
 	g.Programmes = dedupeProgrammes(g.Programmes)
-	if src.Guide != "" || src.GuideURL != "" {
+	if src.Guide != "" || src.GuideURL != "" || src.PlaylistGuide {
 		if progress != nil {
 			progress.setProgrammes(len(g.Programmes))
 		}

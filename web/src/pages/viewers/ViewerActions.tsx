@@ -31,18 +31,18 @@ import { PasswordInput } from "../../components/fields";
 import { viewerName } from "../../components/pickers";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { t, tn } from "../../i18n";
-import { api, apiFetch, errorMessage } from "../../lib/api";
+import { api, ApiError, apiFetch, errorMessage } from "../../lib/api";
 import type { Viewer } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
 import { MIN_LOCAL_PASSWORD } from "../me/SignInMethods";
 import { PLEX_ACCESS_URL, viewerLifecycle } from "./ViewerStatus";
 
-type Panel = "invite" | "password" | "tvcode" | "merge" | "remove" | null;
+type Panel = "invite" | "password" | "tvcode" | "copy" | "merge" | "remove" | null;
 
 /**
  * The viewer page's one Actions menu: Home, sign-in help, access and removal.
- * What shows follows the viewer's lifecycle — Plex viewers are managed on
- * plex.tv, so Ether offers no pause, remove or merge for them.
+ * What shows follows the viewer's lifecycle — Plex viewers can be paused and
+ * resumed in Ether, while removal and merging remain managed on plex.tv.
  */
 export function ViewerActions({
   viewer,
@@ -93,10 +93,15 @@ export function ViewerActions({
     if (paused) {
       const ok = await confirmDialog({
         title: t("Pause access?"),
-        message: t(
-          "{name} keeps everything — history, Home and settings — but can't sign in anywhere until you resume access.",
-          { name },
-        ),
+        message: plexManaged
+          ? t(
+              "{name} keeps everything — history, Home and settings — and stays shared on plex.tv, but is signed out everywhere and can't watch until you resume access.",
+              { name },
+            )
+          : t(
+              "{name} keeps everything — history, Home and settings — but can't sign in anywhere until you resume access.",
+              { name },
+            ),
         confirmLabel: t("Pause access"),
       });
       if (!ok) return;
@@ -106,7 +111,18 @@ export function ViewerActions({
         method: "POST",
         body: JSON.stringify({}),
       });
-      toast.success(paused ? t("Access paused") : t("Access resumed"));
+      if (paused) {
+        toast.success(t("Access paused"));
+      } else if (plexManaged && life.plexShared === false) {
+        toast.success(t("Owner pause removed"), {
+          description: t(
+            "{name} is still not shared on plex.tv, so they won't have access until you share the server with them there.",
+            { name },
+          ),
+        });
+      } else {
+        toast.success(t("Access resumed"));
+      }
       onChange();
     } catch (e) {
       toast.error(paused ? t("Couldn't pause access") : t("Couldn't resume access"), {
@@ -156,12 +172,40 @@ export function ViewerActions({
       icon: Tv,
       onSelect: () => setPanel("tvcode"),
     },
+    ...(!viewer.isOwner
+      ? [
+          {
+            key: "copy",
+            label: t("Copy settings from another viewer"),
+            icon: Copy,
+            onSelect: () => setPanel("copy"),
+          } satisfies ContextMenuEntry,
+        ]
+      : []),
     {
       key: "signout",
       label: t("Sign out everywhere"),
       icon: LogOut,
       onSelect: () => void signOutEverywhere(),
     },
+    ...(life.canPause
+      ? [
+          { key: "sep-access", separator: true } satisfies ContextMenuEntry,
+          life.paused
+            ? ({
+                key: "resume",
+                label: t("Resume access"),
+                icon: PlayCircle,
+                onSelect: () => void setPaused(false),
+              } satisfies ContextMenuEntry)
+            : ({
+                key: "pause",
+                label: t("Pause access"),
+                icon: PauseCircle,
+                onSelect: () => void setPaused(true),
+              } satisfies ContextMenuEntry),
+        ]
+      : []),
     ...(plexManaged
       ? [
           { key: "sep-plex", separator: true } satisfies ContextMenuEntry,
@@ -173,24 +217,6 @@ export function ViewerActions({
           } satisfies ContextMenuEntry,
         ]
       : [
-          ...(life.canPause
-            ? [
-                { key: "sep-access", separator: true } satisfies ContextMenuEntry,
-                life.paused
-                  ? {
-                      key: "resume",
-                      label: t("Resume access"),
-                      icon: PlayCircle,
-                      onSelect: () => void setPaused(false),
-                    }
-                  : {
-                      key: "pause",
-                      label: t("Pause access"),
-                      icon: PauseCircle,
-                      onSelect: () => void setPaused(true),
-                    },
-              ]
-            : []),
           ...(life.canMerge || life.canRemove
             ? [{ key: "sep-remove", separator: true } satisfies ContextMenuEntry]
             : []),
@@ -230,6 +256,12 @@ export function ViewerActions({
         onClose={() => setPanel(null)}
       />
       <TvCodePanel viewer={viewer} open={panel === "tvcode"} onClose={() => setPanel(null)} />
+      <CopySettingsPanel
+        viewer={viewer}
+        open={panel === "copy"}
+        onClose={() => setPanel(null)}
+        onDone={onChange}
+      />
       <MergePanel viewer={viewer} open={panel === "merge"} onClose={() => setPanel(null)} />
       <RemovePanel viewer={viewer} open={panel === "remove"} onClose={() => setPanel(null)} />
     </>
@@ -550,6 +582,150 @@ export function TvCodeForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Uses another viewer as a template: their limits, libraries, parental
+ * controls, audio and subtitle choices and Live TV access are written onto
+ * this viewer. Identity, sign-in methods, history and taste are not touched.
+ */
+function CopySettingsPanel({
+  viewer,
+  open,
+  onClose,
+  onDone,
+}: {
+  viewer: Viewer;
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const viewers = useAsync(() => (open ? api.viewers() : Promise.resolve([])), [open]);
+  const [from, setFrom] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setFrom(null);
+      setError("");
+    }
+  }, [open, viewer.id]);
+  const name = viewerName(viewer);
+  const choices = (viewers.data ?? []).filter((v) => v.id !== viewer.id);
+  const source = choices.find((v) => v.id === from);
+  async function submit() {
+    if (!source) return;
+    const ok = await confirmDialog({
+      title: t("Copy {source}'s settings to {name}?", { source: viewerName(source), name }),
+      message: t(
+        "{name}'s stream limit, rating limit, libraries, parental controls, audio and subtitle choices and Live TV access are replaced with {source}'s.",
+        { name, source: viewerName(source) },
+      ),
+      confirmLabel: t("Copy settings"),
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError("");
+    try {
+      const [users, safetyPolicy, streamPrefs, liveTVPolicy] = await Promise.all([
+        api.users(),
+        apiFetch<unknown>(`/safety/policies/${source.id}`),
+        apiFetch<unknown>(`/stream-preferences/${source.id}`),
+        apiFetch<unknown>(`/livetv/policies/${source.id}`).catch((err: unknown) => {
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        }),
+      ]);
+      const template = users.find((u) => u.id === source.id);
+      if (!template) throw new Error(t("That viewer no longer exists."));
+      await api.updateUser(viewer.id, {
+        streamLimit: template.streamLimit,
+        maxContentRating: template.maxContentRating,
+        allowedLibraries: template.allowedLibraries ?? [],
+      });
+      await apiFetch(`/safety/policies/${viewer.id}`, {
+        method: "PUT",
+        body: JSON.stringify(safetyPolicy),
+      });
+      await apiFetch(`/stream-preferences/${viewer.id}`, {
+        method: "PUT",
+        body: JSON.stringify(streamPrefs),
+      });
+      if (liveTVPolicy !== null) {
+        await apiFetch(`/livetv/policies/${viewer.id}`, {
+          method: "PUT",
+          body: JSON.stringify(liveTVPolicy),
+        });
+      }
+      toast.success(t("Settings copied"), {
+        description: t("{name} now has {source}'s settings.", {
+          name,
+          source: viewerName(source),
+        }),
+      });
+      onDone();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Drawer open={open} onClose={onClose} title={t("Copy settings from another viewer")}>
+      <div className="space-y-4">
+        <p className="text-sm text-fg-muted">
+          {t(
+            "Pick a viewer to use as the template. Their stream limit, rating limit, allowed libraries, parental controls, audio and subtitle choices and Live TV access are copied to {name}. Sign-in, watch history and taste stay as they are.",
+            { name },
+          )}
+        </p>
+        <div role="radiogroup" aria-label={t("Copy from")}>
+          {viewers.error ? (
+            <p role="alert" className="text-sm text-danger">
+              {errorMessage(viewers.error)}
+            </p>
+          ) : !viewers.data ? (
+            <p className="text-sm text-fg-muted">{t("Loading viewers")}</p>
+          ) : choices.length === 0 ? (
+            <p className="text-sm text-fg-muted">{t("There is no other viewer to copy from.")}</p>
+          ) : (
+            <ul className="divide-y divide-border rounded-xl border border-border">
+              {choices.map((v) => (
+                <li key={v.id}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={from === v.id}
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-bg-subtle ${
+                      from === v.id ? "bg-bg-subtle" : ""
+                    }`}
+                    onClick={() => setFrom(v.id)}
+                  >
+                    <span className="font-medium text-fg">{viewerName(v)}</span>
+                    <span className="text-xs text-fg-muted">{v.username}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {error ? (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            {t("Cancel")}
+          </Button>
+          <Button type="button" disabled={busy || !source} onClick={() => void submit()}>
+            {t("Copy settings")}
+          </Button>
+        </div>
+      </div>
+    </Drawer>
   );
 }
 

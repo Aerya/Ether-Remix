@@ -110,6 +110,7 @@ type continuousSegmentIndex struct {
 	enc                      *continuousEncoder
 	mu                       sync.Mutex
 	segments                 []Segment
+	startSeq                 int64
 	next                     int64
 	start                    time.Time
 	duration                 time.Duration
@@ -133,7 +134,8 @@ func newContinuousSegmentIndex(e *continuousEncoder) *continuousSegmentIndex {
 	if bandwidth <= 0 {
 		bandwidth = videoBitrate(core.MediaInfo{}, d) + max(d.AudioBitrateKbps, 128)
 	}
-	return &continuousSegmentIndex{enc: e, duration: time.Second * time.Duration(g*f.FPSDen) / time.Duration(f.FPSNum), changed: make(chan struct{}), kicks: make(chan struct{}, 1), width: w, height: h, bandwidth: bandwidth * 1000}
+	startSeq := max(e.req.StartSeq, 0)
+	return &continuousSegmentIndex{enc: e, startSeq: startSeq, next: startSeq, policySeq: startSeq, duration: time.Second * time.Duration(g*f.FPSDen) / time.Duration(f.FPSNum), changed: make(chan struct{}), kicks: make(chan struct{}, 1), width: w, height: h, bandwidth: bandwidth * 1000}
 }
 
 // kick refreshes the index as soon as the store receives a file.
@@ -293,6 +295,11 @@ func (s *continuousSegmentIndex) Wait(ctx context.Context, after int64) (Segment
 		s.mu.Lock()
 		if len(s.segments) > 0 {
 			first := s.segments[0].Seq
+			if after == -1 && first == s.startSeq {
+				out := s.segments[0]
+				s.mu.Unlock()
+				return out, nil
+			}
 			if after+1 < first {
 				s.mu.Unlock()
 				return Segment{}, core.ErrNotFound
@@ -355,7 +362,9 @@ func (s *continuousSegmentIndex) ServeInit(w http.ResponseWriter, r *http.Reques
 // Apple players stop a live item whose playlist gains no segment for 1.5
 // target durations. Publication lag is how much later than its own duration
 // after the previous one a segment became servable: the gap a client sees
-// beyond the cadence. Warn once it uses half the client's margin.
+// beyond the cadence. Steady playlists declare TARGETDURATION = ceil(segment)+1
+// (3 s for 2 s segments), giving >= 1 segment of stale-playlist margin; warn
+// once publication lag uses half that margin.
 func (s *continuousSegmentIndex) noteLagLocked(seg Segment, received time.Time) {
 	lag := time.Duration(0)
 	if !s.lastReceived.IsZero() {
@@ -371,7 +380,7 @@ func (s *continuousSegmentIndex) noteLagLocked(seg Segment, received time.Time) 
 	if segment <= 0 {
 		segment = 4 * time.Second
 	}
-	if margin := segment / 2; lag > margin/2 && time.Since(s.lagWarned) > time.Minute && s.enc.m != nil {
+	if margin := max(segment, time.Second); lag > margin/2 && time.Since(s.lagWarned) > time.Minute && s.enc.m != nil {
 		s.lagWarned = time.Now()
 		s.enc.m.log.Warn("continuous output published late", "session", s.enc.req.SessionID, "segment", seg.Seq, "late", lag, "schedLate", SchedulerLate(lag+time.Second), "clientMargin", margin, "droppedHistoryWrites", s.enc.store.droppedWrites())
 	}
@@ -431,8 +440,9 @@ func continuousWindow(window, duration time.Duration) int {
 func (s *continuousSegmentIndex) recordPolicy(tick int64, tags []any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	baseStart, _ := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, s.startSeq)
 	start, frames := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, s.policySeq)
-	if tick >= start+frames {
+	if tick >= (start-baseStart)+frames {
 		s.policySeq++
 	}
 	if s.policyTags == nil {

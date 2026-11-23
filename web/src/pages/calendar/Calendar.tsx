@@ -20,6 +20,7 @@ import { ErrorPanel } from "../../components/feedback";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { Workspace } from "../../components/workspace";
 import { t, tn } from "../../i18n";
+import { usePageTitle } from "../../lib/document-title";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { TitleInspector } from "../libraries/browser/TitleInspector";
 import { AgendaView } from "./AgendaView";
@@ -81,6 +82,10 @@ export default function Calendar() {
     : wide
       ? "month"
       : "agenda";
+  usePageTitle([
+    t("Calendar"),
+    view === "month" ? t("Month") : view === "week" ? t("Week") : t("Agenda"),
+  ]);
 
   const [today, setToday] = useState(localToday);
   useInterval(() => setToday(localToday()), 60_000);

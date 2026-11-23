@@ -334,7 +334,6 @@ func TestDecisionOptions(t *testing.T) {
 	// Select the French track and the embedded English subtitle by id.
 	frID := f.bindStream(fightClub.Key, 2, sampleInfo.Streams[2])
 	subID := f.bindStream(fightClub.Key, 3, sampleInfo.Streams[3])
-	f.get(t, "/library/metadata/1000000000000550") // registers stream ids
 	f.request(t, http.MethodPut, fmt.Sprintf("/library/parts/1000000000000550?audioStreamID=%d&subtitleStreamID=%d&allParts=1", frID, subID), nil)
 	f.get(t, "/video/:/transcode/universal/decision?path=/library/metadata/1000000000000550&directPlay=0&maxVideoBitrate=4000&videoResolution=1280x720&subtitles=burn&session=o1",
 		"X-Plex-Product", "Plex Web", "X-Plex-Platform", "Chrome")
@@ -559,11 +558,11 @@ func TestPhotoTranscode(t *testing.T) {
 	}
 	// Direct thumb and episode still fallback.
 	rec = f.get(t, "/library/metadata/"+bbE1.Key.String()+"/thumb/1")
-	if rec.Body.String() != "IMG:/t/p/original/pilot.jpg" {
+	if rec.Body.String() != "IMG:/t/p/w780/pilot.jpg" { // no width: TV-sized still
 		t.Fatalf("still: %q", rec.Body.String())
 	}
 	rec = f.get(t, "/library/metadata/"+bbE2.Key.String()+"/art/1")
-	if rec.Body.String() != "IMG:/t/p/original/bbart.jpg" { // no width: full-resolution art (4K TVs)
+	if rec.Body.String() != "IMG:/t/p/w1280/bbart.jpg" { // no width: TV-sized art, not the multi-MB original
 		t.Fatalf("episode art falls back to show: %q", rec.Body.String())
 	}
 	rec = f.get(t, "/library/collections/5000000000008091/thumb/1")

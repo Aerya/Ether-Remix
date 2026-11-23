@@ -78,6 +78,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,6 +101,8 @@ var ErrUnsupportedTransport = errors.New("safefetch: unsupported transport")
 // either: a feed must not reach the owner's overlay network.
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
+var cloudMetadataIP = netip.MustParseAddr("169.254.169.254")
+
 // IsPublicIP reports whether ip is a routable public unicast address.
 // Loopback, RFC 1918 / RFC 4193 private, link-local (including
 // 169.254.0.0/16 cloud metadata), CGNAT, multicast and unspecified
@@ -115,6 +118,16 @@ func IsPublicIP(ip netip.Addr) bool {
 		return false
 	}
 	return ip.IsGlobalUnicast()
+}
+
+// IsPrivateLANIP reports whether ip is a private LAN or CGNAT address
+// (RFC 1918, RFC 4193, or RFC 6598), excluding loopback and link-local.
+func IsPrivateLANIP(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.IsPrivate() || cgnat.Contains(ip)
 }
 
 // Guard builds guarded HTTP clients. The zero value is ready to use;
@@ -193,23 +206,47 @@ func (g *Guard) ValidatePublicURL(ctx context.Context, rawURL string) error {
 // proxy the request still goes to the proxy afterwards, but a
 // non-public destination never reaches it.
 func (g *Guard) validatePublicDestination(ctx context.Context, u *url.URL) error {
-	_, err := g.resolveValidatedIPs(ctx, u.Hostname(), false)
+	_, err := g.resolveValidatedIPs(ctx, u.Hostname(), false, false)
 	return err
 }
 
+func allowedTrustedIP(ip netip.Addr, host string, allowLoopback bool) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap()
+	if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	if ip.IsLoopback() && !allowLoopback {
+		return false
+	}
+	if ip == cloudMetadataIP && canonicalHost(host) != cloudMetadataIP.String() {
+		return false
+	}
+	return true
+}
+
 // resolveValidatedIPs resolves host and returns the validated addresses.
-// Unless trusted (exactly the owner-configured
-// origin, where a private LAN address is legitimate), EVERY candidate
-// must be public: a mixed answer is refused rather than picking the
-// public-looking one, so a rebinding answer cannot hide a private
-// candidate behind a public one.
-func (g *Guard) resolveValidatedIPs(ctx context.Context, host string, trusted bool) ([]netip.Addr, error) {
+// Unless trusted (an owner-configured origin or explicitly granted local
+// host), EVERY candidate must be public: a mixed answer is refused rather
+// than picking the public-looking one, so a rebinding answer cannot hide a
+// private candidate behind a public one. Loopback addresses stay refused
+// even for trusted local hosts unless allowLoopback is set (an explicit
+// localhost or 127.0.0.1 / ::1 grant, or WithTrustedOrigin).
+func (g *Guard) resolveValidatedIPs(ctx context.Context, host string, trusted, allowLoopback bool) ([]netip.Addr, error) {
 	ips, err := g.resolve(ctx, host)
 	if err != nil {
 		return nil, err
 	}
 	for _, ip := range ips {
-		if !trusted && !IsPublicIP(ip) {
+		if !trusted {
+			if !IsPublicIP(ip) {
+				return nil, fmt.Errorf("%w: %s resolves to %s", ErrBlocked, host, ip)
+			}
+			continue
+		}
+		if !allowedTrustedIP(ip, host, allowLoopback) {
 			return nil, fmt.Errorf("%w: %s resolves to %s", ErrBlocked, host, ip)
 		}
 	}
@@ -222,13 +259,14 @@ func (g *Guard) resolveValidatedIPs(ctx context.Context, host string, trusted bo
 // the cloned request's context; the inner transports' Proxy and TLS
 // dial hooks only consume it and never re-run the owner's selector.
 type routeDecision struct {
-	trusted    bool
-	proxy      *url.URL
-	ip         netip.Addr
-	ips        []netip.Addr
-	host       string // original hostname (no port)
-	targetAddr string // validated IP:port
-	poolAddr   string // direct pool key, including hostname and address set
+	trusted       bool
+	allowLoopback bool
+	proxy         *url.URL
+	ip            netip.Addr
+	ips           []netip.Addr
+	host          string // original hostname (no port)
+	targetAddr    string // validated IP:port
+	poolAddr      string // direct pool key, including hostname and address set
 }
 
 type routeDecisionKey struct{}
@@ -303,19 +341,19 @@ func WithTrustedOrigin(ctx context.Context, rawURL string) context.Context {
 	if err != nil || u.Hostname() == "" {
 		return ctx
 	}
-	port := u.Port()
-	if port == "" {
-		if u.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	return context.WithValue(ctx, trustedOriginKey{}, hostPortKey(u.Hostname(), port))
+	return context.WithValue(ctx, trustedOriginKey{}, originKey(u))
 }
 
 func hostPortKey(host, port string) string {
-	return strings.ToLower(strings.Trim(host, "[]")) + ":" + port
+	return canonicalHost(host) + ":" + port
+}
+
+func canonicalHost(host string) string {
+	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
+	if ip, err := netip.ParseAddr(trimmed); err == nil {
+		return ip.Unmap().String()
+	}
+	return strings.ToLower(trimmed)
 }
 
 func trustedOrigin(ctx context.Context) string {
@@ -325,19 +363,200 @@ func trustedOrigin(ctx context.Context) string {
 	return ""
 }
 
+func urlDefaultPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 // originKey returns the host:port key for u, filling in the scheme's
 // default port. It identifies an origin exactly as WithTrustedOrigin
 // records it.
 func originKey(u *url.URL) string {
-	port := u.Port()
+	return hostPortKey(u.Hostname(), urlDefaultPort(u))
+}
+
+type trustedHost struct {
+	host          string
+	port          string
+	allowLoopback bool
+}
+
+type trustedHostsKey struct{}
+
+func isExplicitLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func validPortString(port string) bool {
 	if port == "" {
-		if u.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == port
+}
+
+func validDNSName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	labels := strings.Split(name, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			isAlphaNum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+			if !isAlphaNum && (c != '-' || i == 0 || i == len(label)-1) {
+				return false
+			}
 		}
 	}
-	return hostPortKey(u.Hostname(), port)
+	return true
+}
+
+// NormalizeTrustedHost validates a single exact host or host:port entry
+// (DNS name or single IP literal, no wildcards, schemes or CIDRs) and
+// returns its canonical form.
+func NormalizeTrustedHost(raw string) (string, bool) {
+	th, ok := parseTrustedHost(raw)
+	if !ok {
+		return "", false
+	}
+	if th.port == "" {
+		return th.host, true
+	}
+	if ip, err := netip.ParseAddr(th.host); err == nil && ip.Is6() {
+		return net.JoinHostPort(th.host, th.port), true
+	}
+	return th.host + ":" + th.port, true
+}
+
+func parseTrustedHost(raw string) (trustedHost, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.Contains(s, "://") || strings.ContainsAny(s, "*/\\?#@% \t\r\n") {
+		return trustedHost{}, false
+	}
+	var host, port string
+	switch {
+	case strings.HasPrefix(s, "["):
+		if strings.HasSuffix(s, "]") {
+			inner := s[1 : len(s)-1]
+			ip, err := netip.ParseAddr(inner)
+			if err != nil || !ip.Is6() {
+				return trustedHost{}, false
+			}
+			host = ip.Unmap().String()
+		} else {
+			h, p, err := net.SplitHostPort(s)
+			if err != nil || !validPortString(p) {
+				return trustedHost{}, false
+			}
+			ip, err := netip.ParseAddr(h)
+			if err != nil || !ip.Is6() {
+				return trustedHost{}, false
+			}
+			host, port = ip.Unmap().String(), p
+		}
+	case func() bool { _, err := netip.ParseAddr(s); return err == nil }():
+		ip, _ := netip.ParseAddr(s)
+		host = ip.Unmap().String()
+	case strings.Contains(s, ":"):
+		h, p, err := net.SplitHostPort(s)
+		if err != nil || !validPortString(p) {
+			return trustedHost{}, false
+		}
+		if ip, err := netip.ParseAddr(h); err == nil {
+			if !ip.Is4() {
+				return trustedHost{}, false
+			}
+			host = ip.Unmap().String()
+		} else {
+			lower := strings.ToLower(h)
+			if !validDNSName(lower) {
+				return trustedHost{}, false
+			}
+			host = lower
+		}
+		port = p
+	default:
+		lower := strings.ToLower(s)
+		if !validDNSName(lower) {
+			return trustedHost{}, false
+		}
+		host = lower
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() {
+			return trustedHost{}, false
+		}
+	}
+	return trustedHost{
+		host:          host,
+		port:          port,
+		allowLoopback: isExplicitLoopbackHost(host),
+	}, true
+}
+
+// WithTrustedHosts marks an allow-list of exact host or host:port entries as
+// owner-approved local destinations. Matching requests (and only redirects
+// that remain within the allow-list) may resolve to private LAN addresses;
+// loopback addresses remain blocked unless the grant explicitly names
+// localhost, 127.0.0.1, or ::1.
+func WithTrustedHosts(ctx context.Context, hosts []string) context.Context {
+	if len(hosts) == 0 {
+		return context.WithValue(ctx, trustedHostsKey{}, ([]trustedHost)(nil))
+	}
+	parsed := make([]trustedHost, 0, len(hosts))
+	for _, raw := range hosts {
+		if th, ok := parseTrustedHost(raw); ok {
+			parsed = append(parsed, th)
+		}
+	}
+	return context.WithValue(ctx, trustedHostsKey{}, parsed)
+}
+
+func trustedHostsFromContext(ctx context.Context) []trustedHost {
+	v, _ := ctx.Value(trustedHostsKey{}).([]trustedHost)
+	return v
+}
+
+func matchTrustedHostList(list []trustedHost, host, port string) (matched, allowLoopback bool) {
+	ch := canonicalHost(host)
+	for _, th := range list {
+		if th.host == ch && (th.port == "" || th.port == port) {
+			matched = true
+			if th.allowLoopback {
+				allowLoopback = true
+			}
+		}
+	}
+	return matched, allowLoopback
+}
+
+// TrustedHostMatchesURL reports whether u's exact host (and port, when an
+// entry specifies one) is covered by hosts.
+func TrustedHostMatchesURL(hosts []string, u *url.URL) bool {
+	if u == nil || u.Hostname() == "" || len(hosts) == 0 {
+		return false
+	}
+	port := urlDefaultPort(u)
+	ch := canonicalHost(u.Hostname())
+	for _, raw := range hosts {
+		th, ok := parseTrustedHost(raw)
+		if !ok {
+			continue
+		}
+		if th.host == ch && (th.port == "" || th.port == port) {
+			return true
+		}
+	}
+	return false
 }
 
 // SameOrigin reports whether two URLs share exactly the same host:port
@@ -367,17 +586,28 @@ func WithTrustedOriginFor(ctx context.Context, trusted, rawURL string) context.C
 	return context.WithValue(ctx, trustedOriginKey{}, "")
 }
 
-// isTrustedRequest reports whether req's destination is exactly the
-// trusted origin marked in its context.
+func trustedRequestPolicy(req *http.Request) (trusted, allowLoopback bool) {
+	ctx := req.Context()
+	if to := trustedOrigin(ctx); to != "" && to == originKey(req.URL) {
+		return true, true
+	}
+	if list := trustedHostsFromContext(ctx); len(list) > 0 {
+		return matchTrustedHostList(list, req.URL.Hostname(), urlDefaultPort(req.URL))
+	}
+	return false, false
+}
+
+// isTrustedRequest reports whether req's destination is covered by a
+// trusted origin or trusted host list in its context.
 func isTrustedRequest(req *http.Request) bool {
-	trusted := trustedOrigin(req.Context())
-	return trusted != "" && trusted == originKey(req.URL)
+	trusted, _ := trustedRequestPolicy(req)
+	return trusted
 }
 
 // DialContext resolves the host in addr, refuses non-public addresses
-// (unless addr is exactly the context's trusted origin) and dials a
-// validated address. Because the check happens here, it applies to the
-// initial request and to every redirect hop alike.
+// (unless addr is covered by the context's trusted origin or hosts) and
+// dials a validated address. Because the check happens here, it applies to
+// the initial request and to every redirect hop alike.
 func (g *Guard) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	return g.dialChecked(ctx, network, addr, false)
 }
@@ -387,7 +617,14 @@ func (g *Guard) dialChecked(ctx context.Context, network, addr string, trustedPo
 	if err != nil {
 		return nil, err
 	}
-	trusted := trustedOrigin(ctx) == hostPortKey(host, port)
+	trusted := false
+	allowLoopback := false
+	if to := trustedOrigin(ctx); to != "" && to == hostPortKey(host, port) {
+		trusted = true
+		allowLoopback = true
+	} else if list := trustedHostsFromContext(ctx); len(list) > 0 {
+		trusted, allowLoopback = matchTrustedHostList(list, host, port)
+	}
 	if dec, ok := decisionFromContext(ctx); ok {
 		// After the rewrite addr is the validated IP:port, not the
 		// original hostname the trusted origin names. Trust then comes
@@ -395,6 +632,7 @@ func (g *Guard) dialChecked(ctx context.Context, network, addr string, trustedPo
 		if decHost, decPort, err := net.SplitHostPort(dec.targetAddr); err == nil &&
 			hostPortKey(decHost, decPort) == hostPortKey(host, port) {
 			trusted = dec.trusted
+			allowLoopback = dec.allowLoopback
 		}
 	}
 	if trustedPool && !trusted {
@@ -403,6 +641,7 @@ func (g *Guard) dialChecked(ctx context.Context, network, addr string, trustedPo
 	if !trustedPool {
 		// The public pool ignores any trusted origin in the context.
 		trusted = false
+		allowLoopback = false
 	}
 	ips, err := g.resolve(ctx, host)
 	if err != nil {
@@ -414,7 +653,12 @@ func (g *Guard) dialChecked(ctx context.Context, network, addr string, trustedPo
 		if network == "tcp4" && ip.Is6() || network == "tcp6" && ip.Is4() {
 			continue
 		}
-		if !trusted && !IsPublicIP(ip) {
+		if !trusted {
+			if !IsPublicIP(ip) {
+				blocked = true
+				continue
+			}
+		} else if !allowedTrustedIP(ip, host, allowLoopback) {
 			blocked = true
 			continue
 		}
@@ -447,8 +691,8 @@ func (g *Guard) checkRedirect(req *http.Request, via []*http.Request) error {
 
 // transport routes each request to one of two transports with
 // separate connection pools, chosen by the request's own policy:
-// requests to exactly the context's trusted origin go to the trusted
-// pool (which may dial private addresses, that origin only); every
+// requests to the context's trusted origin or hosts go to the trusted
+// pool (which may dial private addresses, those hosts only); every
 // other request goes to the public pool (public addresses only).
 // Because the pools never share connections, a connection opened to a
 // private trusted origin cannot be reused by an untrusted request —
@@ -648,12 +892,16 @@ func (p policyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if (req.URL.Scheme != "http" && req.URL.Scheme != "https") || req.URL.Hostname() == "" {
 		return nil, fmt.Errorf("%w: %q is not an http(s) URL with a host", ErrBlocked, req.URL.Redacted())
 	}
-	if p.trusted && !isTrustedRequest(req) {
+	reqTrusted, allowLoopback := trustedRequestPolicy(req)
+	if p.trusted && !reqTrusted {
 		return nil, fmt.Errorf("%w: %q is not the trusted origin", ErrBlocked, req.URL.Redacted())
+	}
+	if !p.trusted {
+		allowLoopback = false
 	}
 	ctx := req.Context()
 	// 1) Resolver+validar o destino ANTES de seletor/proxy/dial.
-	ips, err := p.guard.resolveValidatedIPs(ctx, req.URL.Hostname(), p.trusted)
+	ips, err := p.guard.resolveValidatedIPs(ctx, req.URL.Hostname(), p.trusted, allowLoopback)
 	if err != nil {
 		return nil, err
 	}
@@ -673,20 +921,15 @@ func (p policyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	// 3) Decisão no contexto + rewrite do host para o IP validado.
-	port := req.URL.Port()
-	if port == "" {
-		port = "80"
-		if req.URL.Scheme == "https" {
-			port = "443"
-		}
-	}
+	port := urlDefaultPort(req.URL)
 	dec := &routeDecision{
-		trusted:    p.trusted,
-		proxy:      proxyURL,
-		ip:         ip,
-		ips:        ips,
-		host:       req.URL.Hostname(),
-		targetAddr: net.JoinHostPort(ip.String(), port),
+		trusted:       p.trusted,
+		allowLoopback: allowLoopback,
+		proxy:         proxyURL,
+		ip:            ip,
+		ips:           ips,
+		host:          req.URL.Hostname(),
+		targetAddr:    net.JoinHostPort(ip.String(), port),
 	}
 	bound := req.Clone(context.WithValue(ctx, routeDecisionKey{}, dec))
 	// Include the entire validated set in the pool key: a connection to any

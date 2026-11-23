@@ -168,11 +168,14 @@ func TestAvailabilityCatalogFirstCharacterMatchesBrowse(t *testing.T) {
 			t.Fatalf("bucket %s offset %d out of range (%d)", fv.Title, offset, len(page.Items))
 		}
 		first := page.Items[offset]
-		if fv.Title == "#" && fv.Count != 6 {
-			t.Fatalf("expected # count=6 (excluding 6 hidden recent movies), got %d", fv.Count)
+		// Leading non-alphanumerics are stripped from derived sort titles, so only
+		// "(500) Days of Summer" remains in "#" (while #Alive -> A and [REC]* -> R),
+		// and the 6 hidden numeric "#" titles must not inflate "#".
+		if fv.Title == "#" && fv.Count != 1 {
+			t.Fatalf("expected # count=1 (excluding 6 hidden recent movies), got %d", fv.Count)
 		}
-		if fv.Title == "A" && (offset != 6 || first.Title != "A") {
-			t.Fatalf("expected A at offset 6 landing on \"A\", got offset %d title %q", offset, first.Title)
+		if fv.Title == "A" && (offset != 1 || first.Title != "A") {
+			t.Fatalf("expected A at offset 1 landing on \"A\", got offset %d title %q", offset, first.Title)
 		}
 		offset += fv.Count
 	}

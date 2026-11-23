@@ -35,13 +35,18 @@ func (t nodeControlTarget) Observe() (nodecontrol.Observed, []nodecontrol.Capabi
 		{Key: "draining", Scope: "node", Reason: "ownership_interlock_required"},
 		{Key: "maxStreams", Scope: "fleet", Reason: "fleet_setting"},
 		{Key: "defaultStreamLimit", Scope: "fleet", Reason: "fleet_setting"},
+		{Key: "videoTranscoding", Scope: "node", Reason: "not_allowlisted"},
 		{Key: "maxTranscodes", Scope: "node", Reason: "not_allowlisted"},
 		{Key: "hwAccel", Scope: "node", Reason: "restart_required"},
 		{Key: "roles", Scope: "node", Reason: "role_lifecycle_unavailable"},
 		{Key: "pause", Scope: "node", Reason: "no_safe_setter"},
 	}
 	if a.deployment != nil {
-		caps[4].Reason = "restart_required"
+		for i := range caps {
+			if caps[i].Key == "maxTranscodes" {
+				caps[i].Reason = "restart_required"
+			}
+		}
 	}
 	return nodecontrol.Observed{Weight: a.cfg.Get().Server.ClusterWeight, Draining: a.nodeDraining()}, caps
 }

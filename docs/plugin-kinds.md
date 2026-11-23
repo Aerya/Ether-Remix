@@ -22,18 +22,34 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 {
   "key": "recordings",              // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
   "label": "Field recordings",
-  "library": { "name": "Field Recordings" },   // default name; the owner can rename
+  "media": "music",                 // optional: video|music|audiobook|book|podcast|photo
+  "library": {
+    "name": "Field recordings",     // default name; the owner can rename
+    "card": "landscape",            // optional: poster (default) | landscape | square
+    "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
+    "tabs": [                       // optional (<= 50); defaults to Recommended + Library
+      { "key": "recommended", "label": "Recommended", "kind": "recommended" },
+      { "key": "library", "label": "Library", "kind": "library" },
+      { "key": "albums", "label": "Albums", "kind": "library", "level": "album" }
+    ]
+  },
   "levels": [                       // 1–5 levels, first is the root
-    { "key": "collection", "label": "Collection" },
-    { "key": "album", "label": "Album", "container": true },
-    { "key": "track", "label": "Track", "playable": true }
+    { "key": "collection", "label": "Collection", "role": "artist" },
+    { "key": "album", "label": "Album", "role": "album", "container": true },
+    { "key": "track", "label": "Track", "role": "track", "playable": true }
   ],
   "fields": [                       // validated per item; indexed ones can facet
     { "key": "genre", "type": "string", "label": "Genre", "indexed": true },
-    { "key": "durationSec", "type": "duration", "label": "Duration" }
+    { "key": "durationSec", "type": "duration", "label": "Duration", "indexed": true }
   ],
   "present": { /* see "Publishing" */ },
-  "browse": { "sorts": ["title", "index"], "facets": ["genre"], "search": true, "liveSearch": true },
+  "browse": {
+    "sorts": ["title", "index"],
+    "facets": ["genre", "durationSec"],
+    "search": true,
+    "liveSearch": true,
+    "expand": { "facets": ["genre"], "levels": ["artist", "album"], "ttlHours": 168 } // optional on-demand slice & container expansion
+  },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
   "match": { "thresholdDefault": 0.8 }        // optional
@@ -41,10 +57,75 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 ```
 
 Rules that will bite if ignored: at least one level must be
-`playable`; facet fields must be `indexed`; field keys may not reuse
+`playable`; facet fields must be `indexed` (except `people`, which is
+always indexed); `enum` fields declare a closed `enum` list, while
+`strings` fields may declare an optional `values` vocabulary shown in the
+rules editor even before any item carries them; field keys may not reuse
 envelope names (`id`, `title`, …); declarations are **additive across
 versions** — removing or retyping a field/level is refused at upgrade
 unless the owner agrees to replace the library's contents.
+
+### Library presentation, sub-tabs, sorts and facets in Vela
+
+`library` and `browse` shape how Vela renders the library without per-plugin client logic:
+
+- `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). A level may also declare `parent` (to branch from an earlier level rather than the previous one) and its own `media` class (for example a `video` concert branch under a `music` artist). For containers with stored children, `media.childCounts` carries direct-child counts keyed by child role (or level key when role-less) from the indexed per-level tally on both list and detail responses, and `media.childCount` is the direct-child total (the sum over `media.childCounts`, not the recursive leaf count). On a branching container's detail response (`GET /vela/v0/titles/{id}`), `seasons` lists only the primary child level (the first child level matching the container's media class, else the first declared child level); other child branches are listed via `GET /vela/v0/titles/{id}/children?role=<role>`. Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
+- `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
+- `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
+- `library.tabs`: up to 50 entries of `{key, label, kind, level?, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). `library`, `view`, `collections`, and `people` tabs may set optional `level` (naming a declared `levels[].key`) to scope browsing, facets, facet collections, and people lists to a non-root hierarchy level (for example an `Albums` or `Tracks` tab on an `artist -> album -> track` kind). Vela exposes `level` on each tab and accepts `?level=<key>` on `/items` and `/facets/{field}` (or inherits the tab's `level` from `?tab=<key>`); Plex `?type=8/9/10` and Jellyfin `IncludeItemTypes=MusicArtist/MusicAlbum/Audio` resolve to matching declared levels on the indexed SQL path.
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
+  - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
+  - **`"view"` tabs (Smart Views)**: define filtered, sorted sub-views inside the library — including per-viewer History, Watchlist, Favorites, Unwatched, or field-filtered tabs. Accepts optional `layout` (`"grid"` default, `"list"`, or `"timeline"`), `sort` (one of `browse.sorts` or `"lastViewed"`), `direction` (`"asc"` or `"desc"`, defaulting to `"desc"` for `"lastViewed"`), `search` (`true` by default), `searchPlaceholder` (≤60 characters when `search` is enabled), and `filters` (`{match?: "all"|"any", rules: [...], exclude?: [...]}`). Filter rules may target declared indexed fields (`"browse:<field>"`, `"year"`, `"rating"`, or mapped indexed facts) and per-viewer state (`{"field":"viewer","op":"is","value":{...}}` supporting `history`, `watched`, `unwatched`, `inProgress`, `favorite`, `watchlist`, `lastViewedAfter`, and `lastViewedBefore`, evaluated strictly for the requesting viewer). Vela reads items via `GET /vela/v0/libraries/{id}/items?tab=<tabKey>` and receives `title.watch.lastViewedAt` (RFC3339 UTC) on viewed items.
+  - **`"live"` tabs**: surface ephemeral currently-live streams inside the library without registering Live TV channels or requiring Live TV setup. Accepts optional `card` (`"landscape"` default, `"poster"`, or `"square"`), `search` (`true` by default), and `searchPlaceholder` (≤60 characters when `search` is enabled); `facet`, `order`, `sort`, and `direction` are not used. Vela lists items via `GET /vela/v0/libraries/{id}/live?tab=&query=&filter=&cursor=&limit=` and starts playback via `POST /vela/v0/libraries/{id}/live/play` (returning a standard Vela `PlaybackPlan` and session). Thumbnails are proxied and signed by Ether — upstream URLs never reach clients.
+  - For example, a documentary & broadcasts library can combine dated items (`dateDisplay: "date"`), a searchable `"live"` tab, tournament collections, and a per-viewer `"view"` History tab:
+    ```json
+    "library": {
+      "name": "Documentaries",
+      "card": "landscape",
+      "dateDisplay": "date",
+      "tabs": [
+        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live streams" },
+        { "key": "recommended", "label": "Recommended", "kind": "recommended" },
+        { "key": "library", "label": "Library", "kind": "library" },
+        { "key": "topics", "label": "Topics", "kind": "collections", "facet": "topic", "order": "name", "searchPlaceholder": "Search topics" },
+        {
+          "key": "history",
+          "label": "History",
+          "kind": "view",
+          "layout": "timeline",
+          "sort": "lastViewed",
+          "direction": "desc",
+          "searchPlaceholder": "Search watch history",
+          "filters": {
+            "match": "all",
+            "rules": [
+              { "field": "viewer", "op": "is", "value": { "history": true } }
+            ]
+          }
+        }
+      ]
+    }
+    ```
+- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets` (with `"lastViewed"` always available for recently watched ordering). Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
+- Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
+  - Accepts optional `?tab=<tabKey>` to query a specific `"recommended"` tab's shelves. An unknown `tab` id answers `404` (`not_found`), and a tab whose `kind` is not `"recommended"` answers `400` (`unsupported_library_query`).
+  - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
+  - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
+    ```json
+    "shelves": [
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
+      { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
+      { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
+    ]
+    ```
+    Each shelf accepts:
+    - `key` (required): unique in the library, matching `^[a-z][a-z0-9-]{0,39}$`.
+    - `label` (required): literal or `$t:<key>`, at most 60 characters.
+    - `level` (optional): declared `levels[].key` to query instead of the root level.
+    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
+    - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
+    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
 
 ## The item envelope
 
@@ -70,12 +151,15 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
-| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
+| `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
+| `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
+| `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, never a credential. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -100,23 +184,129 @@ quickly; the Studio template has it on with the explanation beside
 the toggle. Pair it with `browse.search: true` so earlier live
 results stay findable locally.
 
+### On-demand facet, person, and container expansion (`browse.expand`)
+
+When a plugin seeds a starter catalogue (for example top games across studios,
+or artists with 1–4 featured albums out of 80+) and wants to fetch the full
+back-catalogue of a developer, person, or container only when someone actually
+opens it, declare `browse.expand`:
+
+```json
+"browse": {
+  "sorts": ["title", "released", "rating"],
+  "facets": ["developers", "voiceCast"],
+  "search": true,
+  "expand": {
+    "facets": ["developers", "voiceCast"],
+    "levels": ["artist", "album"],
+    "ttlHours": 168
+  }
+}
+```
+
+- `browse.expand` requires `catalog_provider` and must list at least one entry
+  in `facets` or `levels`. Every entry in `facets` must appear in
+  `browse.facets`, and every entry in `levels` must name a declared level with
+  `container: true`. `ttlHours` defaults to `168` (7 days) when omitted or `0`
+  and applies to both facets and container levels.
+- **Facet and person slices (`browse.expand.facets`)**: when a viewer opens a
+  bucket's items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo`
+  or `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin
+  equivalents) or a plugin person's titles (`GET /vela/v0/people/{id}/titles`),
+  Ether checks freshness within `ttlHours` and launches one background
+  expansion job per `(plugin, kind, facet, value)` in the two-slot background
+  job pool at lowered OS priority (waiting up to ~1.8 s on page 1). Listing
+  tabs or collections never triggers expansion. Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
+  (`value` is the bucket label such as `"Nintendo"` or person name; `valueId` is
+  the synthetic plugin person ID when expanding a `people` facet) under
+  owner-granted background limits.
+- **Container expansion on open (`browse.expand.levels`)**: when a viewer opens
+  a container at a declared level — either its title detail (`Item`) or its
+  children list (`Children`, including `?role=` / `?level=`), on every frontend
+  (Vela, Jellyfin/Emby, Plex, Silo, Stremio, Xtream) — Ether checks whether a
+  fresh expansion exists for `(plugin, kind, item)` within `ttlHours` **and**
+  the container has at least one stored child. If no fresh expansion exists or
+  the container has 0 stored children, Ether calls
+  `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level, cursor?}` where
+  `parentId` is the container's external ID and `level` is the **container's**
+  level key (`facet`, `value`, and `valueId` are omitted).
+  - `items` holds the container's direct children at any declared child level
+    (each with `parentId` set to the container and its own `level`), may
+    include grandchildren, and may include the container itself (same
+    external ID and level) to refresh its metadata in place while preserving
+    its stored `parentId` (if the self-refresh names a different `parentId`,
+    such as a collaboration album naming its primary artist, Ether keeps the
+    stored parent rather than reparenting or failing the expansion).
+  - Concurrent opens of the same container (such as detail + children) share
+    one single-flight call per `(plugin, kind, itemRef)`. Page 1 waits at most
+    ~1.8 s, upserts additively (never deleting omitted children; `parentId` and
+    `level` are validated against the declared level tree), then answers with
+    accurate tallied `childCount` / `childCounts`. Further pages continue in
+    the background through the expand job.
+  - Failed expansions record `state = "error"` with their completion time in
+    `plugin_facet_expansions` and enter an error cooldown (default 15 minutes,
+    clamped by `ttlHours`) so repeated opens do not retry in a storm even when
+    the container still has 0 stored children.
+  - Child counts (`childCount`, `childCounts`, `leafCount`) for tallied parent
+    levels come strictly from stored parent tallies — plugin-supplied
+    `childCount` values on container items are ignored for tallied levels.
+  - Never triggered in the background, Search, lists, Home, or artwork loads.
+- Return `{items: [...], cursor?: "next"}` (`nextCursor` is also accepted; Ether
+  pages up to 20 pages or 2,000 items per expansion and upserts them through the
+  standard kind item pipeline so policy, FTS, `v_fold`, tallies, and art apply)
+  or `{job: "/ether/job/..."}` to finish via a continuation job that writes items
+  with `KindUpsert`. Answering `404` or `501` is treated as a clean no-op.
+- While a facet/person expansion for that slice is running, Vela adds
+  `"expanding": true` to `GET /vela/v0/libraries/{id}/items` and
+  `GET /vela/v0/people/{id}/titles`, and bumps the response `ETag` and kind
+  sync generation when it finishes.
+
 ## Resolving bytes
 
-`resolve` returns ordered `PlayableSource`s; Ether tries them in
-order. Patterns:
+`resolve` returns ordered `PlayableSource`s. Ether opens them with the
+same ranked sliding window it uses for movies and TV: two opens stay in
+flight in rank order, failing opens advance immediately, a ready
+equivalent backup may overtake a stalled lead after the 2 s grace
+period, two confirmed permanent failures widen the window to four for
+equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
+or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+in-flight open only as a hedge after the learned health-hedge delay
+(default 1.5 s) so a healthy open normally costs one grab. Losing opens
+are cancelled and their readers closed before playback starts.
+
+When a resolver returns multiple interchangeable releases of the same
+quality (for example a Usenet release and a cached debrid release of the
+same 1080p encode or lossless album), tag them with the same optional
+integer `tier` (`*int` in Go). Within each contiguous tier, Ether
+reorders candidates using its source router — honoring the owner's
+routing setting (`auto`, `usenet`, `debrid`), measured protocol startup
+times (fed by both core and plugin release opens), known-cached debrid
+copies, Usenet backoff, and stall-backed delivery demotion — and lets
+candidates in the same tier overtake each other after the grace period
+or take widened slots. Sources in different tiers always keep the
+plugin's tier order (Ether never swaps a lower tier ahead of a higher
+tier), and omitting `tier` keeps the plugin's exact order.
+
+Patterns:
 
 - **file** — a hosted resolver path inside an owner-picked folder; requires
   `folders: read` and live containment checks when resolving and opening.
 - **range** — a URL Ether reads with HTTP Range (demoted to download
   when the host cannot range and the size fits the cache).
 - **download** — fetched whole into the per-library blob cache
-  (SHA-256 checked when you provide one), then served locally.
+  (digests checked when you provide them), then served locally.
 - **direct** — the client surface is handed the URL (only where the
   surface supports it).
 - **container** — one member of a zip/RAR/7z, possibly multi-volume:
   `{volumes:[{url,size}], member}` or `memberIndex`. Passwords come
   from a named settings secret (`passwordSecret`), never from your
-  response. Ether caches the extracted member.
+  response. Store-mode members stream by byte range; compressed ZIP
+  (deflate), non-solid 7z (LZMA/LZMA2) and RAR4/RAR5 members decode
+  from ranged reads into the library cache; solid 7z caches the volume
+  first under the request context and library cache quota. Encrypted
+  non-stored members and unsupported archive formats or compression
+  methods fail with `archive_unstreamable`.
 - **release** — hand Ether a magnet/infohash/NZB and its existing
   debrid/Usenet/torrent pipeline opens it. For torrents, set
   `release.fileIndex` (zero-based index in the provider's complete file list),
@@ -128,26 +318,203 @@ order. Patterns:
   Without either selector the existing video picker is used. In Go, indices
   are `*int`: a pointer to zero selects the first file; nil leaves selection
   automatic. Indices refer to the provider's ordering, not its file IDs;
-  prefer a path when the provider's ordering is unknown. Explicit selectors
-  on an NZB release are rejected; use a container source for archive members.
-  `fileHint` retains its existing meaning as an archive member hint.
+  prefer a path when the provider's ordering is unknown. On an NZB release
+  the same selectors narrow the NZB to that file (and its archive/PAR2 set):
+  `fileIndex` counts NZB document order and `file` matches a full name or
+  unique basename. `fileHint` retains its exact archive member path or
+  unique basename matching semantics unchanged. When inner filenames inside
+  a multi-track audio release or scene RAR cannot be known before opening,
+  set `release.track` (`{disc?, number?, title?}`) instead: Ether matches
+  candidates by disc and track number first (using `title` to break ties),
+  then by normalised title tokens when no number matches, failing on
+  ambiguity. Torrent releases follow the owner's debrid setting: Ether tries
+  every candidate cached-first, and when the owner has turned "Cached
+  torrents only" off and every candidate is an uncached public torrent (or
+  permanent non-torrent failure), Ether sends the best eligible release to
+  the first debrid service to download and answers `preparing` (`503` with
+  `Retry-After`) until ready, following the queued download on retries and
+  across items that share the same torrent. Set `release.cachedOnly: true`
+  to opt a release out of uncached downloads explicitly. Private torrents
+  and background/warm-up calls are always cached-only. When a torrent has
+  100 or more files (known from parsed `.torrent` / indexer metadata, a
+  prior `release_files` call, or an optional `release.fileCount` hint on a
+  magnet whose file list Ether has not seen yet), debrid providers that
+  keep large torrents cached only as a single server-side ZIP (such as
+  TorBox) ignore a `checkcached` miss, probe with a cached-only add, and
+  read the named file directly from inside the server-side ZIP over HTTP
+  range requests (stored or deflate members). If that member is itself an
+  archive (for example a ROM `.zip`) and the source also sets `container`,
+  Ether unwraps the inner member transparently and checks declared digests
+  against the final bytes served.
 
-`ResolveSources({kind: "indexer_search", query, category})` accepts a
+Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
+polynomial as 8 hex digits) and `size` (plus optional `sizeApproximate: true`
+when `size` is a decoded estimate rather than an exact byte length). Ether
+checks them against the bytes actually served — for a release, the selected
+file; for a container, the member (whose size the archive directory reveals
+before any data is read). Exact sizes (`sizeApproximate` false or omitted)
+require exact byte equality; approximate sizes (`sizeApproximate: true`) are
+treated as a hint with a tolerance band. Bytes that fit `maxBytes` are read
+into the library cache and verified
+before serving; larger sources are hashed as they stream and the read
+fails at the end on a mismatch. A mismatch is an ordinary open failure:
+the next candidate source is tried. When several sources are returned and
+an earlier one fails, Ether logs the failure (plugin, library, item,
+source id, pattern, error) even though a later source plays; if the
+failure contradicts your answer itself (a missing archive member, an
+out-of-range index, a digest, size, or duration mismatch), the fallback
+that played is not saved as the item's resolution, so the next play
+resolves again.
+
+To verify a file's running time on open (for example when picking one
+file out of a multi-file pack by name where a trailer or bonus clip
+could share tokens with the episode), set both `durationSec` and
+`durationToleranceSec` (a positive number of seconds) on the
+`PlayableSource`. Ether consults the durable `release_probes` cache
+first (scoped per selected file/member so entries in a pack never
+collide), otherwise reads the container headers within a 10 s bound
+using its native prober (and ffprobe fallback when configured), and
+refuses the source as wrong content (`core.ErrWrongContent` /
+`ErrPluginAnswer`) when `|observedDurationSec - durationSec| >
+durationToleranceSec`, advancing to the next candidate. Leaving
+`durationToleranceSec` omitted or zero keeps `durationSec` as estimated
+metadata only.
+
+Background jobs, actions, and sync routes can also inspect container
+metadata ahead of time via `ether.media.probe(source)` (hosted) or
+`POST /ether/plugin-host/media/probe` (remote). It accepts the same
+`PlayableSource` shape `/resolve` returns, returns
+`{durationSec, container, width, height, sizeBytes}`, reuses
+`release_probes`, is hard-bounded at 10 s per probe and rate-limited per
+plugin (60/min), requires `permissions.media: "probe"`, and is refused
+on every viewer/client request path (including `/resolve` and search).
+Release probes run strictly cached-only without queuing uncached debrid
+downloads; pattern-specific network, folder, secret, and blob grants
+still apply.
+
+`ResolveSources({kind: "indexer_search", query?, category?, profile?, stream?, firstResults?, settleMs?, minResults?, skipIndexers?, onlyIndexers?, timeoutMs?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
 and the query unchanged, rather than assuming a movie or TV request.
-Invalid categories are rejected. Stremio/addon sources do not support this
-filter and reject scoped searches. Omit `category` for the default media
-search. Results and acquired files are cached separately by category and
-file selection. The wire shapes are documented in
+When `query` is omitted or empty and `category` is set, Ether issues a
+recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
+the newest 100 candidates; an empty `query` with no `category` is refused.
+On a deadline-bounded request (any viewer or interactive route such as `/resolve`
+or `/match`), `indexer_search` is deadline-aware by default: even when no fan-out
+options are passed, Ether caps the wait to the remaining route deadline minus
+`max(1.5 s, 35% of remaining time)` (at least 25% of remaining time when under
+2 s left — for example 3.25 s on a fresh 5 s `/resolve`, leaving 1.75 s for the
+plugin to rank, check cache, and reply). Candidates that have already arrived are
+returned immediately, while slower indexers are reported as `"pending"` (and
+listed in top-level `pending`) and continue finishing into Ether's search cache
+in the background up to the 30 s indexer ceiling. On unbounded or background-job
+calls (`/ether/job/*`, kind sync, Live TV sync) whose remaining deadline exceeds
+the 30 s ceiling, `indexer_search` still waits for every enabled indexer up to
+the 30 s ceiling unchanged.
+
+Indexers that time out or fail repeatedly (3 consecutive transient failures at
+Ether's search ceiling, sharing the same per-indexer circuit breaker as Ether's
+built-in resolver) enter exponential backoff (2 min up to 30 min, with a single
+half-open recovery probe once backoff expires). While paused in backoff, cache
+misses skip the stalled indexer immediately with `status: "skipped"` and
+`reason: "paused_backoff"` (`ms: 0`) so healthy indexers answer without waiting
+out the cut-off window.
+
+Optional fan-out controls let a resolver tune latency further:
+
+- `stream: true`: starts the fan-out (reusing Ether's `SearchWith` arrival
+  callback and `WithIndexerSkip` filters) and answers immediately with
+  `{candidates: [], searchId, pending, done, indexers}`. Poll incremental
+  batches with `sources.resolve({kind: "indexer_search_results", searchId, waitMs?})`,
+  which waits up to `waitMs` (capped at `10000` ms; `0` returns immediately) for
+  at least one new arrival or completion and returns only candidates that
+  arrived since the previous poll alongside `pending: [{indexerId, indexer}]`,
+  `done` (`true` once every indexer has answered, failed, timed out, or been
+  skipped), and per-indexer `indexers` statuses. Stop unfinished indexers at any
+  time with `sources.resolve({kind: "indexer_search_cancel", searchId})`.
+  Streaming searches are scoped strictly to the calling plugin (another plugin's
+  `searchId` returns `"not_found"`), capped per plugin (`4` live searches),
+  bounded by the 30 s indexer ceiling (or a shorter `timeoutMs`), dropped if
+  never polled (`15 s`), and expired after idle polls (`3 min` after the last
+  poll) or cleaned up once `done: true` is consumed or cancelled.
+- `firstResults: true`: return as soon as the fastest indexers produce results
+  plus `settleMs` (default `250` ms when omitted; `0` returns immediately;
+  capped at `30000` ms). Slow indexers still in flight continue in the
+  background (bounded by the 30 s ceiling and coalesced with matching follow-up
+  searches) so their results populate Ether's search cache for subsequent calls.
+- `minResults`: minimum deduplicated candidate count required before returning
+  early. Combined with `firstResults: true`, returns as soon as either
+  `minResults` is reached or the `settleMs` window expires. Without
+  `firstResults`, waits until `minResults` is reached (plus `settleMs` if
+  explicitly provided) or all indexers finish.
+- `skipIndexers` / `onlyIndexers`: case-insensitive lists (up to 256 entries
+  each) of indexer IDs (`indexerId`) or display names (`indexer`) to exclude or
+  include for this search. `skipIndexers` takes precedence over `onlyIndexers`.
+- `timeoutMs`: per-call wait budget in milliseconds, capped by Ether's 30 s
+  ceiling and any tighter deadline-aware reserve on viewer/interactive calls.
+  When the effective wait budget is shorter than the 30 s ceiling and expires
+  while slow indexers keep filling the search cache in the background, those
+  indexers are reported as `"pending"` (and listed in top-level `pending`).
+  Indexers that hit the 30 s ceiling (or are cancelled because the detached
+  background cap is full) are reported as `"timed_out"`.
+
+For `indexer_search`, `indexer_search_results`, and `indexer_search_cancel`,
+the `sources.resolve` response envelope includes
+`indexers: [{indexerId, indexer, status, results?, ms, reason?, error?}]`
+alongside `candidates`, where `status` is `"answered"`, `"pending"`,
+`"timed_out"`, `"skipped"` (carrying `reason: "paused_backoff"` when skipped by
+Ether's stalled-indexer circuit breaker), or `"error"` (with a sanitized short
+`error` code on failure), plus top-level `pending: [{indexerId, indexer}]`
+whenever indexers remain running in the background (and `searchId`/`done` for
+streaming calls).
+
+`ResolveSources({kind: "indexers"})` (gated by the same `permissions.sources: "search"`
+permission) lists the owner's currently enabled indexers in priority order under
+`indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`, where
+`kind` is `"newznab"`, `"torznab"`, `"builtin"`, `"stremio"`, `"zilean"`, or
+`"addon"`, `medianMs` and `lastMs` summarize recent search timings (omitted
+until the indexer has been searched), and `lastError` carries a sanitized error
+code when the indexer's most recent search failed. The listing never includes
+API keys, URLs with secrets, or cookies.
+
+Non-indexer source queries (`debrid_check`, `debrid_acquire`, `release_files`,
+`usenet_check`) omit `indexers`, `pending`, `searchId`, and `done`. In Go,
+TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
+`resolve_sources` continue returning candidates only, while
+`ResolveSourcesWithResult` / `kinds.resolveSourcesWithResult` /
+`resolve_sources_with_result` return the full
+`{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
+`ether.sources.resolve` returns that envelope directly).
+
+Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
+release names also receive `score`, `resolution`, `source` and `codec` scored
+against `profile` (or the owner's default quality profile when `profile` is
+empty); non-video candidates leave those four fields empty, and unknown profile
+names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
+`indexer_search` have the indexer's API key and secrets stripped (standard
+`apikey` query parameters are removed; non-standard credential placements use
+URL-safe origin-confined tokens), and Ether re-attaches credentials only at
+fetch time on the originating indexer's origin when the candidate is handed
+back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
+keyed on the key-less link, so plugins can persist candidates in KV without
+storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
+not support category filters and reject scoped searches. Omit `category` for
+the default media search. Results and acquired files are cached separately by
+category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
 URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
 `{byteStart}`, `{byteEnd}` and `{byteRange}` placeholders; Ether
 substitutes integers only. Resolver `headers` may use
 `{secret:name}` placeholders, substituted host-side — never put a
-raw secret in a response (responses are logged). Returning zero
+raw secret in a response (responses are logged). Redirects on playable
+sources (`range`, `download`, `direct`, and `container` volumes) recheck
+network permissions on every hop and keep credentials/headers only within
+the same origin, strict same-site subdomains (verified via the Public Suffix
+List, with no port change or HTTPS→HTTP downgrade), or hosts listed in
+optional `keepHeadersOnRedirect` (still within granted network hosts and
+never across HTTPS→HTTP downgrades). Returning zero
 sources means "not available right now" and is cached briefly.
 
 With `permissions.sources: "search"` (or `"acquire"` to open debrid
@@ -156,28 +523,226 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
+`ResolveSources({kind: "debrid_check", infoHashes})` (or `infoHash`) checks
+which owner-configured debrid services currently hold each torrent and returns
+one candidate per hash with `cached` and `cachedBy: [{id, name}]` in the
+priority order Ether would acquire from them (using the service's configured
+ID and display name, e.g. `"TorBox"` or the owner's account name; omitted when
+not cached). `indexer_search` candidates that Ether already knows are cached
+and `debrid_acquire` results carry the same `cachedBy` field (for
+`debrid_acquire`, the service that actually served the acquisition).
+
+`ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
+`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+one candidate whose `files` lists what is inside the release:
+`[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
+file selection counts (provider file-list order for torrents, NZB document order
+for Usenet). Torrent candidates carry their download or details page link in
+`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
+`torrentUrl` through the originating indexer first, populates `infoHash` and
+`magnet` on the returned candidate, lists files from a debrid provider when
+cached, and falls back to `.torrent` metainfo files (with `cached: false`)
+when uncached or when no debrid provider is configured. NZBs are fetched
+through their originating indexer (the same fetch playback makes, so the NZB
+is vaulted for playback), reporting exact decoded sizes from PAR2 or yEnc
+`=ybegin size=` headers when readable and falling back to a segment-derived
+decoded estimate with `sizeApproximate: true` when only the encoded segment
+sum is known. When an NZB contains RAR, 7z, or ZIP archives, Ether also reads
+the archive directory (bounded and cached per NZB digest, reusing Ether's
+archive readers) and populates `members: [{index, path, size, stored?}]` on the
+first volume's entry so a plugin can see inner filenames before opening. Match a
+file to your item by name, then return the release with `release.file` or
+`release.fileIndex` set (propagating `sizeApproximate` when copying `file.size`
+to `source.size`, and setting `release.fileHint` to an exact member path from
+`members` or `release.track` when matching by disc/track/title); the choice is
+honoured on Usenet as on debrid.
+
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+NZB's article availability before your resolver offers it, returning a single
+candidate with `usenetCheck: {available, checked, missing, cached?,
+playbackFailed?, reason?, checkedAt?}`:
+
+- **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
+  (capped at 32 articles per NZB, regardless of file or segment count) at
+  background (`prefetch`) NNTP priority through the owner's shared provider
+  connection limits and live-reserve rules, so checks never starve active
+  playback.
+- **Shared verdict & playback-failure cache:** background checks, on-demand
+  checks, Ether's own availability checks, and Play share the same bounded
+  per-NZB verdict cache (indexed by keyless NZB URL, raw NZB SHA-256 hash,
+  and cross-indexer NZB message-ID hash) for 15 min on available verdicts and
+  30 min on missing/failed verdicts. A check made ahead of time is reused at
+  Play, and a release Ether's own availability or playback already found bad
+  is answered from cache without hitting the indexer or NNTP again. Real
+  playback-time article or release failures (`ErrArticleMissing`,
+  `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
+  record `playbackFailed: true` and `available: false` and are never
+  overwritten by a sampled check while live. Transient provider or indexer
+  errors are not cached as unavailable.
+- **On-demand viewer calls (`permissions.sources: "search"` or `"acquire"`):**
+  never count against the daily background allowance; bounded only by the
+  per-plugin burst limit (`20` checks per minute; excess calls fail with
+  `rate_limited` / HTTP 429 carrying `retryAfterSec` / `retryAt` /
+  `Retry-After`).
+- **Background jobs and schedules (`permissions.sources: "search+check"` or
+  `"acquire+check"`):** jobs, scheduled routes, sync, and expand tasks may call
+  `usenet_check` when the plugin declares `"search+check"` or `"acquire+check"`
+  (independently revocable under the `sources.check` live grant). Each uncached
+  background check counts against the plugin's per-day allowance (default `20`
+  candidate checks per UTC day per plugin, configurable under
+  **Sources › Indexers › Daily budgets**; `0` disables background checks) using
+  Ether's `availability` admission machinery and foreground indexer reserve.
+  Cached verdict hits do not consume the daily allowance. Once spent, further
+  uncached background checks answer `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt` (next UTC midnight), and `Retry-After`.
+
+### Multi-file items (`hints.parts` and resolve-time `parts`)
+
+When one playable item consists of several ordered files (multi-disc sets,
+CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?, fileIndex?}` objects
+or filenames; Ether also reads a declared `fields.parts` array when
+`hints.parts` is absent), or return `parts` at resolve time on
+`KindResolveResponse.parts` (or `PlayableSource.parts`) — useful on both push
+and pull kinds when the part list is only learned from the resolved archive or
+release. Ether persists ordered parts with stable child `RatingKey`s (`role:
+"part"`), exposes them as children of the parent item, and lets per-part plays
+target `part.fileIndex` against a cached parent release or resolve with
+zero-based `partIndex`:
+
+```json
+{
+  "id": "ff7",
+  "level": "game",
+  "title": "Final Fantasy VII",
+  "playable": true,
+  "hints": {
+    "parts": [
+      { "name": "Disc 1.chd", "mime": "application/octet-stream", "size": 524288000 },
+      { "name": "Disc 2.chd", "mime": "application/octet-stream", "size": 512000000 },
+      { "name": "Disc 3.chd", "mime": "application/octet-stream", "size": 498000000 }
+    ]
+  }
+}
+```
+
+When `parts` is non-empty, Ether calls `/ether/v1/kinds/{kind}/resolve` per
+part with zero-based `partIndex` (`0 .. len(parts)-1`), caches and invalidates
+resolved sources per `(item, partIndex)`, and isolates pending prepare jobs per
+part:
+
+- **Whole-item opens** (standard protocol playback or `/ether/v1/kind-media/{ticket}`
+  without a part selector) resolve `partIndex: 0` for single-part items and
+  deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
+  parts (`0 .. N-1`).
+- **Per-part and per-source opens** let frontend adapters and multi-file clients
+  fetch a specific file or a specific resolver `PlayableSource.id`:
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+    (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
+    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
+    `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
+    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+  - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
+    to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
+    with no failover to other sources and without clobbering the shared default resolution
+    or candidate cache. A plugin that ignores `source` still works: Ether picks the source
+    with the matching `id` from its response, or answers `409 no_source` if it is absent.
+  - `partIndex` is bounded by the item's declared parts: a playable item that declares no
+    parts rejects any `partIndex` with `404 item_not_found`.
+  - Unpinned item tickets also accept `?part=N` (`/ether/v1/kind-media/{ticket}?part=0`).
+    A malformed or negative `part` answers `400 invalid_part`, an out-of-range
+    part (or a part index on a playable item with no declared parts) answers
+    `404 item_not_found`, and a `?part=N` that disagrees with a part-scoped
+    ticket answers `404 ticket_invalid`. `source` is bound strictly in the
+    ticket grant and cannot be supplied or overridden by query parameters.
+
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
 is the natural unit); containers themselves carry no progress.
 
-## Publishing (`present`)
+## Publishing (`media`, `levels[].role`, and `present`)
 
-Each library publishes per protocol; the owner can override your
-defaults per library afterwards.
+A kind's media class and level roles are **facts about the kind**:
 
-- `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
+- `mediaKinds[].media`: `"video" | "music" | "audiobook" | "book" | "podcast" | "photo"`
+- `mediaKinds[].levels[].role`: `"item" | "artist" | "album" | "track" | "series" | "book" | "audiobook" | "part" | "show" | "episode" | "collection"`
+
+Ether derives a fitting presentation for every app from `(media, levels[].role, levels)`
+using one shared inference table. When `media` or `role` is omitted, Ether infers them
+from declared `present.mediaBrowser` hints (`MusicArtist→artist`, `MusicAlbum→album`,
+`Audio→track`, `AudioBook→audiobook`, `Book→book`, `Photo→photo`), then from `present.plex.base`,
+then from the level keys and hierarchy depth (one playable level → movies; multi-level → shows;
+album/track → music; photo → photos; book/audiobook → books/audiobooks).
+
+An optional `present` block overrides **how** specific apps see the library (types,
+base, `itemTypes`) and may suggest `default: false` to start an app switched off. The
+manifest never owns **whether** an app publishes a library: owner switches in the
+Console's **Show in apps** section are sticky across plugin updates and restarts. When
+a plugin update changes a kind's `media`, `levels[].role`, or `present`, Ether updates
+each app's presentation shape (such as `itemTypes` or `plex.base`) without turning on a
+library the owner switched off or turning off one the owner switched on. Where an app
+has no fitting library type (for example books or audiobooks on Plex, or non-video
+kinds on Stremio, Xtream, and Silo), that app stays off with a plain-language reason
+unless the plugin explicitly declares a custom mapping.
+
+- `vela: {type?: "movies"|"shows", default?: boolean}` — Ether's own app (`shows` needs at
+  least two levels). Fits every media class.
+- `plex: {base?: "movie"|"show"|"artist"|"photo", default?: boolean}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
-- `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
-  Item types: `Movie, Series, Season, Episode, MusicAlbum, Audio,
-  Book, PhotoAlbum, Photo`, mapped per level; unmapped levels use
-  the collection's natural container.
-- `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
+  A single-level `artist` kind is a flat album list in a music
+  section: its items present as albums, never as artists (name the
+  level `artist` or `track` to present as that instead). Fits video,
+  music, and photo kinds; book, audiobook, and podcast kinds stay off
+  unless explicitly declared.
+- `mediaBrowser: {collectionType?, itemTypes?, default?}` — Jellyfin/Emby.
+  `collectionType` is one of `movies, tvshows, music, audiobooks,
+  books, photos, homevideos`. `itemTypes` maps each level key to
+  one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
+  Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
+  manifest error). Any unmapped level is inferred from `media`,
+  `levels[].role`, and hierarchy shape. The resolved type drives the item's `Type`, its
+  `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
+  `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
+  (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
+  children), parent links (a track's `Album`/`AlbumId` name its
+  album) and `IncludeItemTypes` filtering. Audio
+  items serve through the same media routes; their MediaSources
+  carry only the streams the source actually has.
+  A single-level kind whose one playable level is typed
+  `MusicAlbum` (each album is one playable item, no track items)
+  still plays: the album lists itself once as an `Audio` child
+  (same item, `Album`/`AlbumId` naming itself) and answers
+  `IncludeItemTypes=Audio` library queries with that incarnation,
+  which is what Jellyfin's album play button and Songs tab ask
+  for. Plex gets the same shape as one synthetic track under the
+  album.
+- `stremio: {type?, default?}`, `xtream: {category?, default?}`, `silo: {type?, default?}` —
+  inferred for video kinds; stay off for music, books, audiobooks, podcasts, and photos
+  unless explicitly declared.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed
   `/ether/v1/kind-media/{itemId}` stream URLs for bytes (the SDKs'
   `StreamURL`/`stream_url`/`streamUrl` helper) instead of proxying
-  media through the adapter.
+  media through the adapter. A refused stream URL answers
+  `{"error": {"code", "message"}}` with the code also in the
+  `X-Ether-Media-Error` header, and the host log records the cause
+  (`kind media refused`):
+
+  | Status | Code | Meaning |
+  |---|---|---|
+  | 400 | `invalid_part` | `?part=` is not a non-negative integer |
+  | 404 | `ticket_invalid` | Unknown, expired (2 min), out-of-scope, or part-mismatched ticket |
+  | 403 | `viewer_invalid` | The ticket's viewer can no longer play |
+  | 404 | `item_not_found` | The item (or requested part index) is not in a library this viewer can open |
+  | 409 | `no_source` | The item has no playable source (your resolve returned none) |
+  | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
+  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget, or an uncached torrent release was queued on the owner's debrid service (`Retry-After` gives seconds to wait) |
+  | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
+  | 503 | `source_unavailable` | The source is temporarily unavailable (includes `Retry-After` when the plugin instance pool is busy) |
+  | 502 | `open_failed` | The source could not be opened |
 
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
@@ -194,9 +759,32 @@ owner reads them.
 
 Beyond the usual services, kind plugins get (capability-checked on
 every call): `KindUpsert` / `KindDelete` (push kinds), `KindItems`
-(read your own library back), `ResolveSources`, and
-`CachePut` / `CacheOpen` for the per-library blob cache
+(read your own library back unfiltered), `KindVisible` (`kinds.visible`,
+batch-capped at 500 IDs) and `KindBrowse` (`kinds.browse`) for
+viewer-authenticated `frontend_adapter` requests to apply the library's
+Rules, library grants, and viewer safety policy using the request's
+authenticated viewer (never guest-supplied input), `ResolveSources`, and
+`CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
+A `kinds.browse` query filters with three facet maps that combine with
+AND: `facets` (any of the listed values per field), `allFacets` (every
+listed value per field, for "tagged both X and Y"), and `excludeFacets`
+(none of the listed values, for "without X"). All three accept the same
+per-type values as `facets`, including `lo..hi` ranges for numbers and
+dates and people names, and are evaluated inside the browse query so
+paging and `total` stay correct. The total number of facet values
+across the three maps is bounded (256 per query). Pass `total` to
+control whether `KindPage.total` is computed: `"cheap"` (the default)
+returns `total` only when it is O(1) (item or single-facet field
+tallies, an already-cached exact count, or a single-page result) and
+omits `total` otherwise rather than scanning the library; `"none"` never
+computes or returns `total`; `"exact"` computes and caches an exact
+count for the current library generation.
+
+`cache.delete(blobRef)` removes a blob from the calling plugin's own cache
+namespaces and frees its quota immediately (deleting an absent or already
+evicted ref succeeds), so large temporary downloads or extracts do not evict
+smaller kept files.
 Default cache quota is 2 GiB per library under a shared cap of
 min(10 GiB, 5% of the cache disk); your `cache.maxBytes` and the
 owner can override it.
@@ -214,19 +802,19 @@ setup banner instead).
 Same contract in all three, pinned by the shared fixtures in
 `sdk/conformance/kinds` (each SDK's tests replay them):
 
-- **Go** (`sdk/go`): `Plugin.OnCatalog / OnResolve / OnMatch /
-  OnFrontend / OnSetupTest`, the `CatalogProvider`, `KindResolver`,
+- **Go** (`sdk/go`): `Plugin.OnCatalog / OnLive / OnResolve / OnMatch /
+  OnFrontend / OnSetupTest`, the `CatalogProvider`, `ExpandProvider`, `KindLiveProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter` interfaces, host kind methods on
   `Host`, and `sdk/go/kit` helpers — `scrape` (polite host-HTTP
   fetching), `archivex` (zip/cbz/epub members), `metaparse` (EPUB
   OPF, ComicInfo, ID3, FLAC), `feedparse` (RSS/Atom/JSON Feed →
   items), `hints` (typed hints/fields).
-- **Python** (`sdk/python`): `CatalogProvider`, `KindResolver`,
+- **Python** (`sdk/python`): `CatalogProvider` (including optional `expand`), `KindLiveProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter`, `SetupTester` base classes with
-  `on_catalog` etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
+  `on_catalog`, `on_live`, etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
   `archive_list` helpers.
-- **TypeScript** (`sdk/typescript`): `onCatalog / onResolve /
-  onMatch / onFrontend / onSetupTest`, `ctx.ether.kinds` / `.cache`,
+- **TypeScript** (`sdk/typescript`): `onCatalog / onLive / onResolve /
+  onMatch / onFrontend / onSetupTest` (`CatalogProvider.expand?`, `KindLiveProvider`), `ctx.ether.kinds` / `.cache`,
   `parseFeed`, `archiveList`, `scrapeText/Links`.
 
 Content plugins are usually best as `remote` (scraping wants a real
@@ -308,51 +896,130 @@ reason does not grant playback to a nonplayable level.
 ### Large downloads and archive members (v0.3.12)
 
 Hosted and remote clients can keep large data in the host's existing library
-blob cache, without copying the complete file into guest memory:
+blob cache, reading only the metadata or descriptor bytes the plugin itself must parse.
+Big media (video/audio streams, ROMs, disc images, firmware downloads) never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive
+members directly to clients itself (for example via frontend `{ blob: { libraryKey, ref, memberIndex } }`
+descriptors in `internal/plugins/frontend_blob.go`, `frontend.streamURL`, and playable container sources):
 
 ```ts
+const limits = await ctx.ether.runtime!.limits();
+const readBudget = limits.readBytes ?? 8 * 1024 * 1024; // clamp(memoryBytes / 4, 8 MiB, 512 MiB)
 const cached = await ctx.ether.http.fetchToCache!({
   url: "https://datasets.example/platform.zip",
   libraryKey: "pk-community-example-library-games", // this plugin's own library
   name: "platform.zip",
 });
 const members = await ctx.ether.archive!.list(cached.blob);
-const member = members.find(m => m.name === "games/example.json")!;
-const chunk = await ctx.ether.archive!.open(cached.blob, member.index, {
-  offset: 0, length: Math.min(member.size, 1048576),
-}); // Uint8Array; request another range for the next piece
+
+// Batch up to 4096 small/medium members per call within readBytes:
+const xmlMembers = members.filter(m => !m.unsafe && m.name.endsWith(".xml") && m.size > 0);
+let batch: Array<{ member: number; offset: number; length: number }> = [];
+let batchBytes = 0;
+for (const m of xmlMembers) {
+  const length = Math.min(m.size, readBudget);
+  if (batch.length === 4096 || batchBytes + length > readBudget) {
+    const results = await ctx.ether.archive!.read(cached.blob, batch);
+    // results: [{ index, member, size, body: Uint8Array }] in request order
+    batch = [];
+    batchBytes = 0;
+  }
+  batch.push({ member: m.index, offset: 0, length });
+  batchBytes += length;
+}
+if (batch.length > 0) {
+  await ctx.ether.archive!.read(cached.blob, batch);
+}
+
+const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.index);
+// {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
-`http.fetchToCache({url, headers?, libraryKey, name})` performs a GET, streams
+`http.fetchToCache({url, headers?, keepHeadersOnRedirect?, libraryKey, name, timeoutMs?, resume?})` performs a GET, streams
 up to the owner download ceiling (8 GiB by default), further bounded by the library cache quota, into the plugin's own library cache, and returns
 `{blob, size, crc32, md5, sha1, status}`. SHA-256 is the blob reference.
 Digests cover the stored response bytes in one pass. Compare the digest with
 trusted catalogue metadata before serving a verified download. Non-2xx responses,
 network failures, size overflow and quota failures return errors; they do not
 publish a truncated blob. Redirects recheck the live network grant and the
-existing SSRF policy. The existing content capability, network host declaration
-and library cache quota apply; no new permission is needed. The operation is
-synchronous and bounded by the current call's deadline; there is no background
+existing SSRF policy, and follow the same redirect credential policy as
+`http.fetch` (keep credentials/headers on same origin, strict same-site
+subdomains, or explicit `keepHeadersOnRedirect` hosts within granted network
+permissions; never across HTTPS→HTTP downgrades). The existing content capability, network host declaration
+and library cache quota apply; no new permission is needed. `timeoutMs` defaults
+to 10 minutes (also the ceiling on viewer and interactive request paths); in a
+job (`/ether/job/*`), schedule, or background context, `timeoutMs` may extend up
+to the calling job's remaining deadline. Pass `resume: true` to continue an
+incomplete partial blob with `Range: bytes=<cached>-` when the server supports
+ranges and strong `ETag` / `Last-Modified` validators match (restarting cleanly
+from byte 0 when validators mismatch or the server ignores ranges); partial
+blobs obey per-library cache quotas, the shared cap, and the disk free-space
+floor, and become readable via `cache.open` / `cache.read` / `archive.*` only
+when complete. The operation is synchronous; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
-`cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
-`archive.list(blob)` returns `[{index, name, size}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
-without loading all compressed bytes. `archive.open(blob, memberIndex,
-{offset, length})` returns at most 1 MiB from the **uncompressed** member.
-Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
-empty bytes and reads crossing EOF return the available suffix. Raw host calls
-return `{bodyBase64, size}`; SDK clients decode this into bytes. Every call opens
-only the calling plugin's cache namespace and closes the reader afterward.
-The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList` and
-`ArchiveOpen` through the optional `BlobHost` interface, with `DataRange` options.
+The per-call byte ceiling `readBytes` for `cache.read`, `archive.open`, and `archive.read`
+scales with the plugin's granted memory: `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)`
+(default 32 MiB plugin memory → 8 MiB per call; declaring `runtime.limits.memoryBytes` of 1 GiB
+grants 256 MiB per call). Plugins read their live grant via `runtime.limits`
+(`ctx.ether.runtime!.limits()` in TypeScript, `BlobHost.RuntimeLimits(ctx)` in Go,
+`host.runtime.limits()` in Python, or `GET /ether/plugin-host/limits`) so batch sizes never rely
+on hardcoded guesses.
+
+`cache.read(blob, {offset, length})` reads `1..readBytes` from a cached blob.
+`archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
+without loading all compressed bytes. `archive.open(blob, memberIndex, {offset, length})`
+returns `1..readBytes` from one **uncompressed** member, while `archive.read(blob, reads)`
+reads `1..4096` `{member, offset, length}` ranges in one call whose requested `length`s sum
+to at most `readBytes` (returning an error rather than truncating when exceeded) and returns
+`[{index, member, size, body}]` in request order (`bodyBase64` on raw JSON wire calls).
+Use `archive.open` when reading a single member or stepping sequentially through one large
+file across range calls. Use `archive.read` when parsing many small or medium members from the
+same cached archive (such as thousands of XML, DAT, or CUE descriptors), amortizing cache
+ownership checks, directory lookup, and host crossings into one call.
+Offsets are nonnegative integers; a read at EOF returns empty bytes and reads crossing EOF
+return the available suffix. Every call opens only the calling plugin's cache namespace and
+closes every member stream and blob handle before returning.
+`archive.extract(blob, memberIndex[, {libraryKey?, name?}])` streams the
+uncompressed member directly into the plugin's own library blob cache (defaulting to
+the source archive's library namespace) in one pass with no full in-memory buffer,
+computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
+deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `CacheRasterize`, `ArchiveList`,
+`ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
+`RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
+`archive.open`, `archive.read`, and `archive.extract`.
+
+`cache.rasterize(libraryKey, name, sourceBlob[, {width?, height?, format?}])` rasterises an
+SVG already in the plugin's own library cache into a new cached bitmap blob, for clients
+that only draw bitmaps. It returns `{blob, contentType, width, height, size}`; serve the
+result as a blob response like any other cached image. A zero `width` or `height` keeps
+the SVG aspect ratio and `format` is `"png"` (default) or `"jpeg"`. The host bounds the
+source document (512 KiB) and each output dimension (2048), applies the same SVG safety
+rules Ether uses for logos (no external resources, scripts, or unsafe constructs), and
+returns an error for documents it refuses. Rendered variants are cached by source content
+and size, and the stored blob is content-addressed, so repeat calls return the same
+reference. The existing content capability and library cache quota apply; no new
+permission is needed.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`
+as informational warnings so callers never use stored names as filesystem paths.
+Empty names, names over 1024 bytes, NUL, backslashes, absolute paths (including
+drive-rooted paths), and traversal or noncanonical path segments are flagged.
+Because `archive.open`, `archive.read`, `archive.extract`, and frontend blob
+streaming address members by index and never write stored names to disk, any
+non-directory member (including flagged names such as Windows-style backslash
+paths) can be read and extracted by index.
+These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -378,18 +1045,18 @@ An HTTP `Content-Encoding: gzip` response may be transparently decoded by the
 HTTP client; its digests then describe the decoded bytes. A `.gz` file is not
 automatically decompressed by this archive service.
 
-Direct `http.fetch` still limits the raw response to 10 MiB. Its JSON result
-allowance now includes encoding expansion (binary base64 or escaped text), so the
-4 MiB general host-result cap no longer blocks that documented limit. This is
-an I/O ceiling, not a guarantee of guest heap space: the default guest has 32 MiB
-and the owner ceiling defaults to 2 GiB (adjustable up to wasm32 4 GiB), with temporary JSON strings and parsed objects
-using additional memory. Use fetch-to-cache and ranged reads for large inputs;
-do not concatenate all chunks into one guest buffer. Other host results remain
-capped at 4 MiB.
+Direct `http.fetch` still limits the raw response to 10 MiB, with its JSON result
+allowance including encoding expansion. Hosted WASM host-result envelopes also scale
+automatically with the plugin's `readBytes` grant (including base64 and JSON framing
+overhead, with a 4 MiB baseline floor), while hosted QuickJS binary reads (`cache.read`,
+`archive.open`, `archive.read`) transfer decoded bytes directly into guest `ArrayBuffer`s.
+Remember that big media never goes through these read calls — Ether streams blobs and
+archive members directly to clients itself (`internal/plugins/frontend_blob.go`); reserve
+`cache.read`, `archive.open`, and `archive.read` for bytes the plugin must parse.
 
 ### Owner-started multi-call work and resource requests
 
-A page action returning `{job: "build-catalogue"}` starts a background job.
+A page action or scheduled call returning `{job: "build-catalogue"}` starts a background job (up to two owner/scheduled jobs per plugin, separate from playback preparation jobs).
 The job returns `continueInMs`, an opaque JSON `continuation`, and a `progress`
 string to continue; Ether forwards the token in the next POST body. `done: true`
 finishes, `failed: "reason"` fails, and an absent `continueInMs` finishes too.
@@ -399,18 +1066,64 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download and archive
-resources within owner-controlled global/per-plugin ceilings. Defaults: 2 GiB
-memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB), 12h, effectively
-unlimited background work units, 8 GiB download/member, 32 GiB total expansion,
-and 65,535 members. The library cache quota further bounds downloads. The owner
+`ether.runtime.limits` requests memory, time, compute, instance pool size, download,
+archive and catalogue-item resources within owner-controlled global/per-plugin ceilings.
+Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
+12h, effectively unlimited background work units, 2 hosted WASM instances (`poolSize`,
+requestable up to the owner ceiling, default ceiling 4 and raisable up to 16; with
+`poolSize >= 3` at least one instance is reserved exclusively for playback resolves
+and background jobs hold at most `poolSize - 2`; with `poolSize == 2` background jobs
+and frontend adapters share at most one instance so playback resolves and health
+checks keep one free; queued resolves also take priority and start their execution
+deadline once an instance is acquired), 8 GiB download/member,
+32 GiB total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+(`maxItems`, with no upper cap when raised by the owner). Remote plugins can
+also request data and `maxItems` limits. The library cache quota further bounds
+downloads. The owner
 sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.
 
-Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/`,
-`/meta/`, `/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
-`/ether/markers`, and `/ether/v1/kinds/` use at most 10,000 units/30s plus tighter
-route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
-actions, tools, events and jobs use owner grants. Health/configuration/view/options
-keep short protocol deadlines. See the SDK README for exact fields and APIs.
+Viewer search and playback calls derive their unit budget directly from each
+route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
+(30,000 units), `/subtitles/*`, `/ether/subtitles/*` and kind `/resolve`,
+`/live/resolve`, and `/match` get 5 s (50,000 units), and `/catalog/*`,
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, and kind `/search`, `/live`,
+and `/items/*` get 10 s (100,000 units),
+reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
+Background kind catalogue sync (`/browse`, `/changes`, and `/expand`), administrative setup,
+actions, tools, events and jobs use owner grants. Health/configuration/view/options/test
+keep short protocol deadlines. See `sdk/AGENTS.md` and the SDK README for exact
+per-route limits and how owners raise ceilings.
+
+### Pending resolve and match replies
+
+Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
+`job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
+25 seconds total per Play, and keeps each invocation within five seconds.
+Pending is neutral for health. When the 25-second budget expires while the reply is still `pending`,
+Ether returns `503` with `code: "preparing"` and `Retry-After` set from the last
+`retryInMs` (defaulting to `5` seconds) across `kind-media`, Vela,
+Jellyfin/MediaBrowser, and Plex API routes, and never saves a negative resolution.
+Resolver preparation jobs have their own four-slot pool per plugin (separate from
+the two-slot owner/scheduled pool); if all four resolver slots are running, Ether
+returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
+and records the refused job on the plugin Jobs view. A real empty `sources: []`
+answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
+resolving a multi-part item and `source` when opening a source-scoped stream ticket), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
+the next resolve.
+
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers,keepHeadersOnRedirect})`.
+A miss returns pending while a bounded host worker streams digests without
+storing bytes; the next resolve reads the cached result. Optional `headers`
+reject hop-by-hop and framing headers, expand `{secret:<name>}` placeholders via
+`permissions.secrets` just like playable sources, follow redirects only under
+Ether's redirect credential policy (same origin, strict same-site subdomains, or
+explicit `keepHeadersOnRedirect` hosts within granted network permissions; never
+across HTTPS→HTTP downgrades), and are never logged or persisted in the hash cache.
+Plugins that derive temporary session credentials can store them sealed with
+`ether.secret.set(name, value, ttlSec?)` (and clear them with `ether.secret.delete(name)`)
+under a declared non-owner name in `permissions.secrets`, then reference them as
+`{secret:<name>}` in source headers and `http.hash`. See the worked example
+and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).

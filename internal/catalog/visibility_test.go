@@ -142,7 +142,7 @@ func TestFirstCharacterJumpbarOffsetsMatchTitleSortEveryLetter(t *testing.T) {
 	if len(facets) != 28 {
 		t.Fatalf("expected 28 firstCharacter buckets (#, A..Z, ~), got %d: %+v", len(facets), facets)
 	}
-	if facets[0].Key != "#" || facets[0].Title != "#" || facets[0].Count != 4 {
+	if facets[0].Key != "#" || facets[0].Title != "#" || facets[0].Count != 3 {
 		t.Fatalf("unexpected leading # bucket: %+v", facets[0])
 	}
 	if facets[len(facets)-1].Key != "~" || facets[len(facets)-1].Title != "#" || facets[len(facets)-1].Count != 1 {
@@ -251,11 +251,20 @@ func TestFirstCharacterJumpbarOffsetsMatchTitleSortEveryLetter(t *testing.T) {
 		{"M", "m"},
 		{"Été 85", "été 85"},
 		{"\u200e7 Hours to Win Your Heart", "\u200e7 hours to win your heart"},
+		{`"Pimpernel" Smith`, `"pimpernel" smith`},
+		{`"Sr."`, `"sr."`},
+		{"#1 Cheerleader Camp", "#1 cheerleader camp"},
+		{"#Alive", "#alive"},
+		{"Custom Source Title", "zzz custom sort 2"},
 	}
 	for i, row := range seedRows {
 		if _, err := stmt2.ExecContext(ctx, int64(core.MovieKey(int64(i+1))), "movie", row.title, row.rawSort, rel.Unix()); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Simulate an existing v1 database so the v2 backfill must run.
+	if _, err := tx2.ExecContext(ctx, `INSERT INTO catalog_meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, sortTitleFoldedKey, "1"); err != nil {
+		t.Fatal(err)
 	}
 	// Add >2*sortTitleFoldBatchSize rows so keyset paging spans 3 batches.
 	totalSeed := 2*sortTitleFoldBatchSize + 250
@@ -299,5 +308,21 @@ func TestFirstCharacterJumpbarOffsetsMatchTitleSortEveryLetter(t *testing.T) {
 	}
 	if off2 != totalSeed {
 		t.Fatalf("sum of firstCharacter counts (%d) != totalSeed (%d)", off2, totalSeed)
+	}
+	wantBackfill := map[string]string{
+		`"Pimpernel" Smith`:   `pimpernel" smith`,
+		`"Sr."`:               `sr."`,
+		"#1 Cheerleader Camp": "0000000001 cheerleader camp",
+		"#Alive":              "alive",
+		"Custom Source Title": "zzz custom sort 0000000002",
+	}
+	for title, want := range wantBackfill {
+		var got string
+		if err := db2.QueryRowContext(ctx, `SELECT sort_title FROM catalog_titles WHERE title=?`, title).Scan(&got); err != nil {
+			t.Fatalf("select %q: %v", title, err)
+		}
+		if got != want {
+			t.Fatalf("backfilled sort_title(%q) = %q, want %q", title, got, want)
+		}
 	}
 }

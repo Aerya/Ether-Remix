@@ -12,6 +12,7 @@ import (
 )
 
 const detailSourceTTL = time.Hour
+const detailSourceRetain = 7 * 24 * time.Hour
 const maxDetailSourcesPerViewer = 256
 const maxDetailSources = 8192
 
@@ -39,11 +40,11 @@ func (b *Broker) issueDetailSource(ctx context.Context, req frontend.PlanRequest
 	if err = store.LockKey(ctx, store.DialectOf(b.deps.DB), tx, "sessions:detail-source-admission"); err != nil {
 		return "", err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions_detail_sources WHERE expires<=?`, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions_detail_sources WHERE expires<=?`, now-detailSourceRetain.Milliseconds()); err != nil {
 		return "", err
 	}
 	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT handle FROM sessions_detail_sources WHERE viewer_id=? AND surface=? AND device_id=? AND item_id=? AND revision=?`, req.Viewer.ID, string(req.Protocol), req.Device.ID, int64(req.Item), etag).Scan(&existing)
+	err = tx.QueryRowContext(ctx, `SELECT handle FROM sessions_detail_sources WHERE viewer_id=? AND surface=? AND device_id=? AND item_id=? AND revision=? AND expires>?`, req.Viewer.ID, string(req.Protocol), req.Device.ID, int64(req.Item), etag, now).Scan(&existing)
 	if err == nil {
 		if _, err = tx.ExecContext(ctx, `UPDATE sessions_detail_sources SET expires=? WHERE handle=?`, now+detailSourceTTL.Milliseconds(), existing); err != nil {
 			return "", err
@@ -53,11 +54,18 @@ func (b *Broker) issueDetailSource(ctx context.Context, req frontend.PlanRequest
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	var total, viewerCount int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions_detail_sources`).Scan(&total); err != nil {
+	// Preserve an expired row for the same (viewer, surface, device, item, revision)
+	// under a non-colliding revision tag so stale MediaSourceId lookups can still
+	// map the expired handle back to its item without violating UNIQUE or reusing
+	// an expired handle.
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions_detail_sources SET revision='expired:'||handle WHERE viewer_id=? AND surface=? AND device_id=? AND item_id=? AND revision=? AND expires<=?`, req.Viewer.ID, string(req.Protocol), req.Device.ID, int64(req.Item), etag, now); err != nil {
 		return "", err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions_detail_sources WHERE viewer_id=? AND surface=?`, req.Viewer.ID, string(req.Protocol)).Scan(&viewerCount); err != nil {
+	var total, viewerCount int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions_detail_sources WHERE expires>?`, now).Scan(&total); err != nil {
+		return "", err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions_detail_sources WHERE viewer_id=? AND surface=? AND expires>?`, req.Viewer.ID, string(req.Protocol), now).Scan(&viewerCount); err != nil {
 		return "", err
 	}
 	if total >= maxDetailSources || viewerCount >= maxDetailSourcesPerViewer {
@@ -96,7 +104,7 @@ func (b *Broker) resolveDetailSource(ctx context.Context, scope frontend.Version
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, scope.Device, out.item)
+	title, err := lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, out.item)
 	if err != nil || title == nil || title.Key != out.item || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		return detailSourceRecord{}, core.ErrNotFound
 	}
@@ -109,6 +117,41 @@ func (b *Broker) ResolveDetailSource(ctx context.Context, scope frontend.Version
 		return frontend.DetailSourceTarget{}, err
 	}
 	return frontend.DetailSourceTarget{Item: r.item, ETag: r.revision}, nil
+}
+
+// ResolveStaleDetailParent identifies an expired detail-source handle that was
+// issued for the same authenticated viewer, device, and surface, returning its
+// item only when that viewer can still access it.
+func (b *Broker) ResolveStaleDetailParent(ctx context.Context, scope frontend.VersionScope, handle string) (core.RatingKey, error) {
+	if b.deps.DB == nil || scope.Viewer == nil || scope.Device.ID == "" || len(scope.Device.ID) > 512 || scope.Protocol == "" || normalizeVersionHandle(handle) == "" {
+		return 0, core.ErrNotFound
+	}
+	viewer, err := b.viewer(ctx, scope.Viewer)
+	if err != nil {
+		return 0, err
+	}
+	viewer, err = b.confirm(ctx, viewer, scope.Caps)
+	if err != nil {
+		return 0, err
+	}
+	var item int64
+	err = b.deps.DB.QueryRowContext(ctx, `SELECT item_id FROM sessions_detail_sources WHERE handle=? AND viewer_id=? AND surface=? AND device_id=?`, normalizeVersionHandle(handle), viewer.ID, string(scope.Protocol), scope.Device.ID).Scan(&item)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, core.ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	key := core.RatingKey(item)
+	lookup := b.deps.MediaLookup
+	if lookup == nil {
+		lookup = b.deps.Lookup
+	}
+	title, err := lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, key)
+	if err != nil || title == nil || title.Key != key || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
+		return 0, core.ErrNotFound
+	}
+	return key, nil
 }
 
 // MatchDetailSession authorizes an existing session only when it is pinned to

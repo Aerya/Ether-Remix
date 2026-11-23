@@ -44,6 +44,7 @@ func newFrontendSource(cfg frontend.ArtworkSourceConfig) frontend.ArtworkSource 
 		Now:              cfg.Now,
 		Variants:         cfg.Variants,
 		Metadata:         cfg.Metadata,
+		PluginItem:       cfg.PluginItem,
 		VirtualSeason:    cfg.VirtualSeason,
 		URLImages:        cfg.URLImages,
 		Raster:           cfg.Raster,

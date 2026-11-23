@@ -1,8 +1,171 @@
 import { MoreOptions } from "../../components/ConfigSection";
-import { Input, Select, SettingsSection, Switch } from "@braedonsaunders/appkit-ui";
-import { useEffect, useState } from "react";
+import { Input, SearchSelect, Select, SettingsSection, Switch } from "@braedonsaunders/appkit-ui";
+import { ArrowLeft, ArrowRight, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { SettingsRow } from "../../components/SettingsRow";
-import { localized, t } from "../../i18n";
+import { getLocale, localized, t } from "../../i18n";
+import { searchSelectLabels } from "../../i18n/appkit-labels";
+import { useLocale } from "../../i18n/react";
+import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
+import { REGIONAL_TRACK_TAGS, baseLanguage } from "../setup/language";
+
+const BIBLIOGRAPHIC_ISO639: Record<string, string> = {
+  alb: "sq",
+  arm: "hy",
+  baq: "eu",
+  bur: "my",
+  chi: "zh",
+  cze: "cs",
+  dut: "nl",
+  fre: "fr",
+  geo: "ka",
+  ger: "de",
+  gre: "el",
+  ice: "is",
+  mac: "mk",
+  mao: "mi",
+  may: "ms",
+  per: "fa",
+  rum: "ro",
+  slo: "sk",
+  tib: "bo",
+  wel: "cy",
+};
+
+/** Canonicalize an ISO 639 / BCP-47 track code for comparisons without mangling unknown tags. */
+function canonicalTrackCode(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const mapped = BIBLIOGRAPHIC_ISO639[trimmed.toLowerCase()] ?? trimmed;
+  try {
+    return Intl.getCanonicalLocales(mapped)[0] ?? mapped.toLowerCase();
+  } catch {
+    return mapped.toLowerCase();
+  }
+}
+
+/** Human-readable localized language name for an ISO 639 or regional BCP-47 track tag. */
+export function trackLanguageName(code: string, locale = getLocale()): string {
+  const trimmed = code.trim();
+  if (!trimmed) return "";
+  const canonical = canonicalTrackCode(trimmed);
+  try {
+    return new Intl.DisplayNames([locale], { type: "language" }).of(canonical) ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * Ordered multi-select language picker by name. Reuses the console's
+ * `LANGUAGE_TAGS` + `REGIONAL_TRACK_TAGS` vocabulary and AppKit `SearchSelect`,
+ * while preserving explicit preference order via numbered chips.
+ */
+export function OrderedLanguagePicker({
+  value,
+  onChange,
+  ariaLabel,
+  disabled,
+}: {
+  value: string[] | null | undefined;
+  onChange: (next: string[]) => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  const { locale } = useLocale();
+  const list = value ?? [];
+  const options = useMemo(() => {
+    const selectedKeys = new Set(list.map((c) => canonicalTrackCode(c).toLowerCase()));
+    const seen = new Set<string>();
+    const out: { value: string; label: string }[] = [];
+    const push = (code: string) => {
+      const key = canonicalTrackCode(code).toLowerCase();
+      if (!key || seen.has(key) || selectedKeys.has(key)) return;
+      seen.add(key);
+      out.push({ value: code, label: trackLanguageName(code, locale) });
+    };
+    for (const tag of LANGUAGE_TAGS) push(baseLanguage(tag));
+    for (const tag of REGIONAL_TRACK_TAGS) push(tag);
+    return out.sort((a, b) => a.label.localeCompare(b.label, locale));
+  }, [list, locale]);
+
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= list.length) return;
+    const next = [...list];
+    const [picked] = next.splice(from, 1);
+    if (picked !== undefined) {
+      next.splice(to, 0, picked);
+      onChange(next);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      {list.length > 0 ? (
+        <ol
+          aria-label={t("{label} order", { label: ariaLabel })}
+          className="flex flex-wrap gap-1.5"
+        >
+          {list.map((code, idx) => {
+            const label = trackLanguageName(code, locale);
+            return (
+              <li
+                key={`${code}-${idx}`}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-bg-subtle py-0.5 pe-1.5 ps-2.5 text-xs text-fg"
+              >
+                <span className="tabular-nums text-fg-muted">{idx + 1}.</span>
+                <span className="font-medium">{label}</span>
+                {list.length > 1 ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={disabled || idx === 0}
+                      aria-label={t("Move {language} earlier", { language: label })}
+                      onClick={() => move(idx, idx - 1)}
+                      className="rounded p-0.5 text-fg-muted hover:bg-surface-hover hover:text-fg disabled:opacity-35"
+                    >
+                      <ArrowLeft size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={disabled || idx === list.length - 1}
+                      aria-label={t("Move {language} later", { language: label })}
+                      onClick={() => move(idx, idx + 1)}
+                      className="rounded p-0.5 text-fg-muted hover:bg-surface-hover hover:text-fg disabled:opacity-35"
+                    >
+                      <ArrowRight size={12} />
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={disabled}
+                  aria-label={t("Remove {language}", { language: label })}
+                  onClick={() => onChange(list.filter((_, i) => i !== idx))}
+                  className="rounded p-0.5 text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-35"
+                >
+                  <X size={12} />
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      <SearchSelect
+        {...searchSelectLabels()}
+        value=""
+        options={options}
+        onChange={(next) => {
+          if (next) onChange([...list, next]);
+        }}
+        ariaLabel={ariaLabel}
+        searchable
+        disabled={disabled}
+        placeholder={list.length > 0 ? t("Add language…") : t("Any language")}
+      />
+    </div>
+  );
+}
 
 /** Split a comma-separated list, optionally lower-casing (language codes). */
 function parseList(text: string, lower = false): string[] {
@@ -177,13 +340,11 @@ export function StreamRulesFields({
         <SettingsRow
           setting="audio-languages"
           title={t("Audio languages")}
-          description={t("Language codes in preference order, e.g. en, ja.")}
+          description={t("Tried in order from first to last.")}
           control={
-            <div className="w-56">
-              <ListText
+            <div className="w-72 max-w-full">
+              <OrderedLanguagePicker
                 ariaLabel={t("Audio languages")}
-                lower
-                placeholder="en, ja, fr"
                 value={value.audioLanguages}
                 onChange={(v) => set("audioLanguages", v)}
                 disabled={disabled}
@@ -207,13 +368,11 @@ export function StreamRulesFields({
         <SettingsRow
           setting="subtitle-languages"
           title={t("Subtitle languages")}
-          description={t("Language codes in preference order, e.g. en, fr.")}
+          description={t("Tried in order from first to last.")}
           control={
-            <div className="w-56">
-              <ListText
+            <div className="w-72 max-w-full">
+              <OrderedLanguagePicker
                 ariaLabel={t("Subtitle languages")}
-                lower
-                placeholder="en, fr"
                 value={value.subtitleLanguages}
                 onChange={(v) => set("subtitleLanguages", v)}
                 disabled={disabled}
@@ -406,6 +565,17 @@ export type SafetyPolicy = {
   blockedKeywords: string[];
   remoteDisabled: boolean;
   maxBitrateKbps: number;
+  videoTranscodingDisabled?: boolean;
+  /** Owner override for offline downloads; absent follows the server setting. */
+  allowDownloads?: boolean | null;
+  /** Downloads only from releases that need no video conversion. */
+  downloadTranscodingDisabled?: boolean;
+  /** "" follows the server, "none" is no limit, else what the limit counts. */
+  downloadLimitUnit?: "" | "none" | "titles" | "gb";
+  downloadLimitAmount?: number;
+  downloadLimitPeriod?: "" | "day" | "month";
+  /** Highest download resolution for this viewer; 0 follows the server. */
+  downloadMaxHeight?: number;
   allowedHours: number[];
   timezone: string;
 };
@@ -423,7 +593,7 @@ function emptyPolicy(): SafetyPolicy {
 
 export function normalizePolicy(p: Partial<SafetyPolicy> | null | undefined): SafetyPolicy {
   const base = emptyPolicy();
-  return {
+  const out: SafetyPolicy = {
     ...base,
     ...p,
     blockedGenres: p?.blockedGenres ?? [],
@@ -432,6 +602,12 @@ export function normalizePolicy(p: Partial<SafetyPolicy> | null | undefined): Sa
     timezone:
       p?.bedtime?.timezone || p?.timezone || (p?.allowedHours?.length ? "UTC" : base.timezone),
   };
+  if (p?.allowDownloads === true || p?.allowDownloads === false) {
+    out.allowDownloads = p.allowDownloads;
+  } else {
+    delete out.allowDownloads;
+  }
+  return out;
 }
 
 export const KID_PRESETS = localized(

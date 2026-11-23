@@ -11,6 +11,7 @@ services:
       - "32400:32400"
     environment:
       TZ: Europe/Paris
+      # ETHER_CONSOLE_PORT: "8099" # port dédié facultatif pour la console
     volumes:
       - ./config:/config
       - ./cache:/cache
@@ -33,3 +34,4 @@ services:
 # Pour celle-ci, remplacez ports par network_mode: host ; ce mode ne permet
 # pas de joindre MediaFlow par son nom Docker. Le guide utilise le mode bridge.
 # Jellyfin, Emby et Silo utilisent le port de la console, pas le port 8096.
+# Vela peut aussi utiliser un port dédié ; publier ce port si activé dans Applications.

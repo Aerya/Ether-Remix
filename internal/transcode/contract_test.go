@@ -52,8 +52,9 @@ func TestContractOfTranscodeMatchesEncodedOutput(t *testing.T) {
 	_, repl := yellowstone()
 	d := core.Decision{Kind: core.DecisionTranscode, Container: ContainerMatroska, VideoCodec: "hevc", MaxHeight: 960, AudioStream: 1}
 	c, _ := contractOf(repl, d)
-	// 1920x1080 scaled to 960 lines: 1706 wide, as the live header was.
-	if c.width != 1706 || c.height != 960 || c.depth != 8 || c.rng != rangeSDR || c.pic.sarNum != 2560 || c.pic.sarDen != 2559 {
+	// 1920x1080 scaled to 960 lines: 1706 wide, square pixels (the encode
+	// sets setsar=1 rather than keeping scale's 2560:2559 rounding).
+	if c.width != 1706 || c.height != 960 || c.depth != 8 || c.rng != rangeSDR || c.pic.sarNum != 1 || c.pic.sarDen != 1 {
 		t.Fatalf("contract %+v", *c)
 	}
 	// The opening run itself is unchanged by the target.

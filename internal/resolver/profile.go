@@ -5,6 +5,7 @@ package resolver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -294,9 +295,15 @@ func applyClientRules(q config.Quality, caps core.ClientCaps, user *core.User, m
 		if !caps.ExplicitMaxHeight {
 			if rule.MaxHeight > 0 {
 				caps.MaxHeight = rule.MaxHeight
+				caps.MaxHeightSource = fmt.Sprintf("client quality rule (maxHeight=%dp)", rule.MaxHeight)
 				eff.ruleHeight = rule.MaxHeight
 			} else if defaultCappedAndroidClient(caps) && caps.MaxHeight < targetHeight {
 				caps.MaxHeight = targetHeight
+				if targetHeight >= 2160 {
+					caps.MaxHeightSource = ""
+				} else {
+					caps.MaxHeightSource = fmt.Sprintf("client quality rule (%s profile)", prof.Name)
+				}
 				eff.lifted = targetHeight
 			}
 		} else if rule.MaxHeight > 0 {
@@ -408,12 +415,17 @@ func decideProfile(q config.Quality, caps core.ClientCaps, user *core.User, medi
 	prof = snapshotConfiguredMaxHeight(prof)
 
 	if caps.Download {
+		before := prof.MaxHeight
 		prof = downloadProfile(prof, caps)
+		if prof.MaxHeight > 0 && (before == 0 || prof.MaxHeight < before) {
+			prof.CeilingSource = "offline download profile"
+		}
 	}
 
 	// Clamp to client capabilities.
 	if caps.MaxHeight > 0 && (prof.MaxHeight == 0 || prof.MaxHeight > caps.MaxHeight) {
 		prof.MaxHeight = caps.MaxHeight
+		prof.CeilingSource = caps.MaxHeightSource
 	}
 	if prof.MinHeight > prof.MaxHeight && prof.MaxHeight > 0 {
 		prof.MinHeight = prof.MaxHeight

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/webclient"
 )
 
@@ -20,28 +21,25 @@ var errNotAFile = errors.New("not a regular file")
 // Emby keeps today's behaviour (a connection page, or 404 for asset paths).
 // While the first download runs it shows a short self-refreshing page, and
 // after a failure it shows the connection page with a single explanatory line.
-func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, client *webclient.Installer) {
+func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, originFn originResolver, client *webclient.Installer) {
 	rel := r.PathValue("path")
 	if emby {
 		if rel != "" {
 			http.NotFound(w, r)
 			return
 		}
-		webPage(w, r)
+		webPage(w, r, originFn)
 		return
 	}
 	// Relative asset URLs in index.html need the trailing slash, so a bare
 	// /web (path "" with no trailing slash) redirects to /web/.
 	if rel == "" && !strings.HasSuffix(r.URL.Path, "/") {
-		target := "/web/"
-		if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
-			target = prefix + target
-		}
+		target := clientnet.RedirectPath(requestRedirectPrefix(r, originFn), "", "/web/")
 		http.Redirect(w, r, target, http.StatusFound)
 		return
 	}
 	if client == nil {
-		webPage(w, r)
+		webPage(w, r, originFn)
 		return
 	}
 
@@ -51,13 +49,13 @@ func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, client *webclie
 		webPreparing(w)
 		return
 	case webclient.StatusFailed:
-		webFailed(w, r, err)
+		webFailed(w, r, originFn, err)
 		return
 	}
 
 	dir, err := client.Ensure(r.Context())
 	if err != nil {
-		webFailed(w, r, err)
+		webFailed(w, r, originFn, err)
 		return
 	}
 	if rel == "" {
@@ -177,7 +175,7 @@ func webPreparing(w http.ResponseWriter) {
 
 // webFailed keeps the connection page (native apps still work) and adds one
 // line explaining the web client could not be downloaded.
-func webFailed(w http.ResponseWriter, r *http.Request, _ error) {
+func webFailed(w http.ResponseWriter, r *http.Request, originFn originResolver, _ error) {
 	w.Header().Set("X-Web-Client-Error", "download-failed")
-	webPageWithNote(w, r, "The Jellyfin web client could not be downloaded. Native Jellyfin apps still work.")
+	webPageWithNote(w, r, originFn, "The Jellyfin web client could not be downloaded. Native Jellyfin apps still work.")
 }

@@ -230,6 +230,7 @@ type Settings struct {
 	ProfileName           string            `json:"profileName,omitempty"`
 	ProfileMaxHeight      int               `json:"profileMaxHeight,omitempty"`
 	ProfileAllowHDR       bool              `json:"profileAllowHdr,omitempty"`
+	VideoTranscoding      string            `json:"videoTranscoding,omitempty"`
 	HWAccel               string            `json:"hwAccel,omitempty"`
 	MaxTranscodes         int               `json:"maxTranscodes,omitempty"`
 	RemoteMaxBitrateKbps  int               `json:"remoteMaxBitrateKbps,omitempty"`

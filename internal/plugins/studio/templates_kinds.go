@@ -200,7 +200,7 @@ export function handle(req: Request) {
     const title = String(body.item?.title || "").toLowerCase();
     const matches = (body.candidates || []).map((c: any) => {
       const hit = String(c.title || "").toLowerCase().includes(title);
-      const ref = c.infoHash ? "infohash:" + String(c.infoHash).toLowerCase() : c.magnet ? "magnet:" + c.magnet : c.nzbUrl ? "nzb:" + c.nzbUrl : String(c.title || "");
+      const ref = c.infoHash ? "infohash:" + String(c.infoHash).toLowerCase() : c.magnet ? "magnet:" + c.magnet : c.torrentUrl ? "torrent:" + c.torrentUrl : c.nzbUrl ? "nzb:" + c.nzbUrl : String(c.title || "");
       return { candidateRef: ref, score: hit ? 0.95 : 0.1, reasons: [hit ? "Title matches" : "Title does not match"] };
     }).sort((a: any, b: any) => b.score - a.score);
     return { status: 200, body: { matches } };

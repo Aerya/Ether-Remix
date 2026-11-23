@@ -13,6 +13,7 @@ import remarkGfm from "remark-gfm";
 import { Button, buttonVariants } from "@braedonsaunders/appkit-ui";
 import { DomainPage } from "../../components/layout";
 import { t } from "../../i18n";
+import { usePageTitle } from "../../lib/document-title";
 import reference from "./developer-reference.json";
 import guides from "./reference-guides.json";
 import "./reference.css";
@@ -211,6 +212,7 @@ export default function DeveloperReference() {
   const input = useRef<HTMLInputElement>(null);
   const article = useRef<HTMLElement>(null);
   const guide = guides.find((g) => g.id === topic);
+  usePageTitle([t("Plugins"), t("Developer reference"), guide?.title]);
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const results = useMemo(
     () =>

@@ -175,3 +175,200 @@ func TestExactKeyDoesNotDeriveEpisodeFromShow(t *testing.T) {
 		t.Fatalf("ambiguous %v", err)
 	}
 }
+
+func TestLookupWarmsMissingCatalogTitle(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const guid = "plex://movie/5d7768265af944001f1f6976"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Fight Club","year":1999,"Guid":[{"id":"tmdb://550"}]}]}}`, guid)
+	}))
+	defer upstream.Close()
+
+	pg := New(db, Options{
+		BaseURL: upstream.URL,
+		Token:   func() string { return "fixture" },
+		EnsureTitle: func(ctx context.Context, k core.RatingKey) error {
+			if k != core.MovieKey(550) {
+				return core.ErrNotFound
+			}
+			seedCatalogTitle(t, db, k, "movie", "Fight Club", 1999)
+			return nil
+		},
+	})
+	defer pg.Close()
+
+	k, err := pg.Lookup(ctx, guid)
+	if err != nil || k != core.MovieKey(550) {
+		t.Fatalf("Lookup cold title = %v, %v; want %v", k, err, core.MovieKey(550))
+	}
+}
+
+// Issue #654: upgrading across rule-2 (v0.3.10) leaves pre-existing mappings
+// with credits_rule=0 or no plexguid_identity row. Lookup must verify them live
+// against the canonical record instead of failing with ErrNotFound, upgrading
+// valid rows to credits_rule=2 and dropping wrong legacy namesakes.
+func TestLookupUpgradesPreRule2Mappings(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	seedCatalogTitle(t, db, core.MovieKey(550), "movie", "Fight Club", 1999)
+	seedCatalogTitle(t, db, core.MovieKey(603), "movie", "The Matrix", 1999)
+	seedCatalogTitle(t, db, core.MovieKey(770), "movie", "Runner", 2026)
+
+	const (
+		staleGUID  = "plex://movie/5d7768265af944001f1f6976"
+		legacyGUID = "plex://movie/5d7768265af944001f1f6603"
+		wrongGUID  = "plex://movie/5d7768265af944001f1f6962"
+	)
+	now := time.Now().Unix()
+	// Pre-v0.3.10 credits_rule=0 mapping (post-migration-8 state).
+	if _, err = db.Exec(`INSERT INTO plexguid_mappings(rating_key,guid,checked_at) VALUES(?,?,?)`, int64(core.MovieKey(550)), staleGUID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO plexguid_verified(rating_key,guid) VALUES(?,?)`, int64(core.MovieKey(550)), staleGUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO plexguid_identity(rating_key,guid,tmdb,title,year,credits_rule) VALUES(?,?,?,?,?,0)`, int64(core.MovieKey(550)), staleGUID, 550, "Fight Club", 1999); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy mapping without plexguid_identity, plus wrong namesake legacy row.
+	if _, err = db.Exec(`INSERT INTO plexguid_mappings(rating_key,guid,checked_at) VALUES(?,?,?),(?,?,?)`,
+		int64(core.MovieKey(603)), legacyGUID, now,
+		int64(core.MovieKey(770)), wrongGUID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		switch r.URL.Path {
+		case "/library/metadata/" + staleGUID[len(staleGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Fight Club","year":1999,"Guid":[{"id":"tmdb://550"}]}]}}`, staleGUID)
+		case "/library/metadata/" + legacyGUID[len(legacyGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"The Matrix","year":1999,"Guid":[{"id":"tmdb://603"}]}]}}`, legacyGUID)
+		case "/library/metadata/" + wrongGUID[len(wrongGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Runner","year":1962,"Guid":[{"id":"tmdb://770"}]}]}}`, wrongGUID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	// Offline: unproven mappings are never served.
+	pg := New(db, Options{BaseURL: upstream.URL})
+	defer pg.Close()
+	for _, g := range []string{staleGUID, legacyGUID, wrongGUID} {
+		if _, err := pg.Lookup(ctx, g); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("offline Lookup(%s) = %v, want ErrNotFound", g, err)
+		}
+	}
+
+	// Online: valid pre-rule-2 rows verify live and upgrade to credits_rule=2.
+	pg.o.Token = func() string { return "fixture" }
+	if k, err := pg.Lookup(ctx, staleGUID); err != nil || k != core.MovieKey(550) {
+		t.Fatalf("Lookup(staleGUID) = %v, %v; want %v", k, err, core.MovieKey(550))
+	}
+	if k, err := pg.Lookup(ctx, legacyGUID); err != nil || k != core.MovieKey(603) {
+		t.Fatalf("Lookup(legacyGUID) = %v, %v; want %v", k, err, core.MovieKey(603))
+	}
+	// Wrong namesake legacy row is rejected and removed.
+	if _, err := pg.Lookup(ctx, wrongGUID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("Lookup(wrongGUID) = %v, want ErrNotFound", err)
+	}
+	var wrongLeft int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM plexguid_mappings WHERE rating_key=?`, int64(core.MovieKey(770))).Scan(&wrongLeft); err != nil || wrongLeft != 0 {
+		t.Fatalf("wrong legacy row survived Lookup rejection: count=%d err=%v", wrongLeft, err)
+	}
+	// Upgraded rows now serve directly from cache (Cached, CachedMany, ExactKey, Lookup) without hitting upstream again.
+	before := calls.Load()
+	pg.o.Token = nil
+	if got := pg.Cached(ctx, core.MovieKey(550)); got != staleGUID {
+		t.Fatalf("Cached(550) = %q, want %q", got, staleGUID)
+	}
+	if got := pg.Cached(ctx, core.MovieKey(603)); got != legacyGUID {
+		t.Fatalf("Cached(603) = %q, want %q", got, legacyGUID)
+	}
+	if k, err := pg.Lookup(ctx, staleGUID); err != nil || k != core.MovieKey(550) || calls.Load() != before {
+		t.Fatalf("upgraded Lookup hit network or missed: k=%v err=%v calls=%d/%d", k, err, calls.Load(), before)
+	}
+}
+
+// Issue #654: background repair automatically upgrades pre-rule-2 mappings
+// left behind by upgrades without waiting for every title to be opened first.
+func TestBackgroundRepairUpgradesPreRule2Mappings(t *testing.T) {
+	oldTick := repairTickInterval
+	repairTickInterval = time.Millisecond
+	t.Cleanup(func() { repairTickInterval = oldTick })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	seedCatalogTitle(t, db, core.MovieKey(550), "movie", "Fight Club", 1999)
+	seedCatalogTitle(t, db, core.MovieKey(603), "movie", "The Matrix", 1999)
+	seedCatalogTitle(t, db, core.MovieKey(770), "movie", "Runner", 2026)
+
+	const (
+		staleGUID  = "plex://movie/5d7768265af944001f1f6976"
+		legacyGUID = "plex://movie/5d7768265af944001f1f6603"
+		wrongGUID  = "plex://movie/5d7768265af944001f1f6962"
+	)
+	now := time.Now().Unix()
+	if _, err = db.Exec(`INSERT INTO plexguid_mappings(rating_key,guid,checked_at) VALUES(?,?,?),(?,?,?),(?,?,?)`,
+		int64(core.MovieKey(550)), staleGUID, now,
+		int64(core.MovieKey(603)), legacyGUID, now,
+		int64(core.MovieKey(770)), wrongGUID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO plexguid_identity(rating_key,guid,tmdb,title,year,credits_rule) VALUES(?,?,?,?,?,0)`,
+		int64(core.MovieKey(550)), staleGUID, 550, "Fight Club", 1999); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/matches":
+			fmt.Fprint(w, `{"MediaContainer":{"Metadata":[]}}`)
+		case "/library/metadata/" + staleGUID[len(staleGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Fight Club","year":1999,"Guid":[{"id":"tmdb://550"}]}]}}`, staleGUID)
+		case "/library/metadata/" + legacyGUID[len(legacyGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"The Matrix","year":1999,"Guid":[{"id":"tmdb://603"}]}]}}`, legacyGUID)
+		case "/library/metadata/" + wrongGUID[len(wrongGUID)-24:]:
+			fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Runner","year":1962,"Guid":[{"id":"tmdb://770"}]}]}}`, wrongGUID)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	pg := New(db, Options{BaseURL: upstream.URL, Token: func() string { return "fixture" }, Background: true})
+	defer pg.Close()
+
+	for {
+		good550 := pg.Cached(ctx, core.MovieKey(550)) == staleGUID
+		good603 := pg.Cached(ctx, core.MovieKey(603)) == legacyGUID
+		var wrongGuid string
+		_ = db.QueryRow(`SELECT guid FROM plexguid_mappings WHERE rating_key=?`, int64(core.MovieKey(770))).Scan(&wrongGuid)
+		if good550 && good603 && wrongGuid == "" {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("background repair did not finish: 550=%v 603=%v wrong=%q", good550, good603, wrongGuid)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

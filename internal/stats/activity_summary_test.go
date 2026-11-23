@@ -37,6 +37,59 @@ func TestActivitySummary(t *testing.T) {
 	}
 }
 
+func TestSummaryPlatformNormalizationAndMerging(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	start := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	rows := []struct {
+		id, platform string
+		bytes        int64
+	}{
+		{"w1", "web", 1000},
+		{"w2", "Web", 500},
+		{"t1", "tvos", 2000},
+		{"t2", "tvOS", 3000},
+		{"t3", "Apple TV", 4000},
+		{"a1", "Android", 700},
+		{"a2", "android", 300},
+		{"atv", "androidtv", 800},
+		{"l1", "linux", 600},
+		{"u1", "", 100},
+		{"u2", "Unknown", 200},
+	}
+	for _, r := range rows {
+		_, err = db.Exec(`INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,watched_ms,bytes) VALUES(?,1,1000000000000001,'u','t',?,'d','directplay',?,?,?,1000,?)`,
+			r.id, r.platform, start.Unix(), start.Unix()+60, start.Unix()+60, r.bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum, err := New(db, Options{}).Summary(ctx, start.Add(-time.Minute), start.Add(time.Hour), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Bucket{
+		{Label: "Apple TV", Plays: 3, WatchedMS: 3000, Bytes: 9000},
+		{Label: "Web", Plays: 2, WatchedMS: 2000, Bytes: 1500},
+		{Label: "Android", Plays: 2, WatchedMS: 2000, Bytes: 1000},
+		{Label: "", Plays: 2, WatchedMS: 2000, Bytes: 300},
+		{Label: "Android TV", Plays: 1, WatchedMS: 1000, Bytes: 800},
+		{Label: "Linux", Plays: 1, WatchedMS: 1000, Bytes: 600},
+	}
+	if len(sum.Platforms) != len(want) {
+		t.Fatalf("platforms = %+v, want %+v", sum.Platforms, want)
+	}
+	for i := range want {
+		if sum.Platforms[i] != want[i] {
+			t.Fatalf("platforms[%d] = %+v, want %+v", i, sum.Platforms[i], want[i])
+		}
+	}
+}
+
 func TestActivityCatalogueAndLegacyCopy(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.OpenMemory(ctx)

@@ -3,6 +3,7 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
 import { api, apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
+import { trackLanguageName } from "./shared";
 
 type ShareFilterPart = { kind: string; values: string[] };
 
@@ -107,7 +108,9 @@ export function FromPlexDefaults({
         <>
           <SettingsRow
             title={t("Audio language")}
-            control={<Badge>{d.audioLanguage || t("None")}</Badge>}
+            control={
+              <Badge>{d.audioLanguage ? trackLanguageName(d.audioLanguage) : t("None")}</Badge>
+            }
           />
           <SettingsRow
             title={t("Auto-select audio")}
@@ -115,7 +118,11 @@ export function FromPlexDefaults({
           />
           <SettingsRow
             title={t("Subtitle language")}
-            control={<Badge>{d.subtitleLanguage || t("None")}</Badge>}
+            control={
+              <Badge>
+                {d.subtitleLanguage ? trackLanguageName(d.subtitleLanguage) : t("None")}
+              </Badge>
+            }
           />
           <SettingsRow
             title={t("Subtitle mode")}

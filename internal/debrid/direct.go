@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/httpclient"
 	"io"
 	"mime"
 	"net"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -153,7 +153,7 @@ func (s *Service) DirectPayload(ctx context.Context, rel core.Release) ([]byte, 
 		return nil, fmt.Errorf("debrid: %q: invalid stream link: %w", rel.Name, core.ErrReleaseRejected)
 	}
 	req.Header.Set("Range", "bytes=0-0")
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	s.direct.init()
 	resp, err := s.directRequest(s.direct.primary, prepareDirect(req, base), base)
 	if err != nil {

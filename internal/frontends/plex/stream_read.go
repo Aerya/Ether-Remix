@@ -82,6 +82,59 @@ func (s *Server) bindTranscodeStarted(entry *transcodeEntry, dec frontend.Decisi
 	entry.decision, entry.offset, entry.started, entry.updatedAt = dec, offset, true, s.now()
 	s.transcodes.put(entry)
 	s.mintReadCapability(entry.id, entry.clientID, entry.userID)
+	s.retireSupersededTranscodes(entry)
+	s.rebindSessionTranscode(entry)
+}
+
+func (s *Server) retireSupersededTranscodes(entry *transcodeEntry) {
+	if entry == nil || entry.userID == 0 || entry.clientID == "" || entry.key == 0 {
+		return
+	}
+	for _, otherID := range s.transcodes.forClient(entry.userID, entry.clientID, entry.key) {
+		if otherID == entry.id {
+			continue
+		}
+		other, ok := s.transcodes.get(otherID)
+		if !ok {
+			continue
+		}
+		samePlayback := entry.playbackID == "" || other.playbackID == "" || other.playbackID == entry.playbackID
+		stale := other.playbackID != "" && s.playbackOwners.Stale(entry.userID, entry.clientID, entry.key, other.playbackID)
+		if !samePlayback && !stale {
+			continue
+		}
+		if other.started && s.transcodeEntryLive(other) && s.transcoder() != nil {
+			s.stopPlexHLS(otherID)
+		}
+		s.dropTranscode(otherID)
+	}
+}
+
+func (s *Server) rebindSessionTranscode(entry *transcodeEntry) {
+	if entry == nil || entry.id == "" || entry.userID == 0 {
+		return
+	}
+	matched := false
+	for _, act := range s.sessions.list() {
+		if act.user.ID != entry.userID || act.key != entry.key {
+			continue
+		}
+		if entry.clientID != "" && act.client.ClientID != entry.clientID {
+			continue
+		}
+		if entry.playbackID != "" && act.client.SessionID != "" && act.client.SessionID != entry.playbackID {
+			continue
+		}
+		matched = true
+		if act.transcodeID != entry.id {
+			s.sessions.update(act.id, func(e *playEntry) {
+				e.transcodeID = entry.id
+			})
+		}
+	}
+	if matched && s.cl != nil {
+		s.cl.poke()
+	}
 }
 
 func (s *Server) mintReadCapability(sessionID, clientID string, userID int64) string {
@@ -102,6 +155,20 @@ func (s *Server) dropTranscode(id string) {
 	s.revokeReadCapability(id)
 	s.transcodes.retire(id, s.now())
 	s.starts.Forget(id)
+	cleared := false
+	for _, act := range s.sessions.list() {
+		if act.transcodeID == id {
+			s.sessions.update(act.id, func(e *playEntry) {
+				if e.transcodeID == id {
+					e.transcodeID = ""
+				}
+			})
+			cleared = true
+		}
+	}
+	if cleared && s.cl != nil {
+		s.cl.poke()
+	}
 }
 
 func readCapURL(raw, token string) string {

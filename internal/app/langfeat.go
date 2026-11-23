@@ -20,7 +20,7 @@ func (a *App) languageGates() langfeat.Gates {
 	var g langfeat.Gates
 	if a.watchlist != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		st, err := a.watchlist.Settings(ctx)
+		st, err := a.watchlist.FeatureSettings(ctx)
 		cancel()
 		if err == nil {
 			g.SubtitleTranslate = st.SubtitleTranslate

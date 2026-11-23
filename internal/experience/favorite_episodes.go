@@ -40,7 +40,7 @@ func (s *Service) favoriteEpisodePage(ctx context.Context, v *core.User, library
 	if !d.complete() || library == nil || library.Type != core.TypeShow || !q.Recursive ||
 		len(q.Types) != 1 || q.Types[0] != core.TypeEpisode ||
 		q.Favorite == nil || !*q.Favorite || q.Watched != nil || q.Season != nil ||
-		q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 {
+		q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 || q.Filter.IncludeKeys != nil {
 		return core.Page{}, false, nil
 	}
 	// Only the one order this path serves correctly: SortName (SortTitle).
@@ -56,7 +56,7 @@ func (s *Service) favoriteEpisodePage(ctx context.Context, v *core.User, library
 			return core.Page{}, false, err
 		}
 	}
-	show := core.Filter{Type: core.TypeShow, MaxContentRating: v.MaxContentRating}
+	show := scopedShowFilter(q.Filter, v)
 	if s.d.PageExclusions != nil {
 		ex := s.d.PageExclusions(ctx, v, core.TypeEpisode)
 		if ex.Err != nil {
@@ -75,8 +75,10 @@ func (s *Service) favoriteEpisodePage(ctx context.Context, v *core.User, library
 		if s.d.PageExclusions == nil {
 			return core.Page{}, false, nil
 		}
-		if id, ok := s.d.Visibility.SectionFor(core.TypeEpisode); !ok || !SectionAllowed(v, id) {
-			return core.Page{Items: []core.Title{}}, true, nil
+		if !library.Virtual {
+			if id, ok := s.d.Visibility.SectionFor(core.TypeEpisode); !ok || !SectionAllowed(v, id) {
+				return core.Page{Items: []core.Title{}}, true, nil
+			}
 		}
 	}
 	if s.d.ParentTitles == nil {
@@ -98,6 +100,9 @@ func (s *Service) favoriteEpisodePage(ctx context.Context, v *core.User, library
 	kept := make([]core.Title, 0, want)
 	visq := q
 	visq.Favorite = nil
+	if visq.Filter.Type == library.Type {
+		visq.Filter.Type = ""
+	}
 	for reads, at := 0, 0; len(kept) < want && reads < maxFavoriteEpisodeBatches; reads++ {
 		batch, err := d.Page(ctx, show, v.ID, showKey, at, favoriteEpisodeBatch)
 		if err != nil {
@@ -107,7 +112,7 @@ func (s *Service) favoriteEpisodePage(ctx context.Context, v *core.User, library
 			break
 		}
 		at += len(batch)
-		visible, err := s.visibleEpisodes(ctx, v, batch, visq, show.HiddenShowSeq != 0)
+		visible, err := s.visibleEpisodes(ctx, v, batch, visq, show.HiddenShowSeq != 0, library.Virtual)
 		if err != nil {
 			return core.Page{}, false, err
 		}

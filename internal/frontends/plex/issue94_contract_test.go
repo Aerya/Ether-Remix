@@ -153,8 +153,10 @@ func TestIssue94PlezySequence(t *testing.T) {
 								t.Fatalf("expected 720 source and HLS: start=%d release=%s decision=%d %s", start.Code, release, response.MediaContainer.GeneralCode, response.MediaContainer.GeneralText)
 							}
 						} else {
-							if start.Code != 404 || release != "none" || response.MediaContainer.GeneralCode != 2000 || !strings.Contains(response.MediaContainer.GeneralText, "no playable release") {
-								t.Fatalf("expected unavailable: start=%d release=%s decision=%d %s", start.Code, release, response.MediaContainer.GeneralCode, response.MediaContainer.GeneralText)
+							// With no 720p alternative, transcode the healthy 1080p source.
+							// A quality slider must not make a playable title unavailable.
+							if start.Code != 200 || release != "hd" || response.MediaContainer.GeneralCode != 1001 {
+								t.Fatalf("expected 1080 source transcoded to HLS: start=%d release=%s decision=%d %s", start.Code, release, response.MediaContainer.GeneralCode, response.MediaContainer.GeneralText)
 							}
 						}
 						t.Logf("decision HTTP=%d general=%d text=%q diagnostic start=%d release=%s", d.Code, response.MediaContainer.GeneralCode, response.MediaContainer.GeneralText, start.Code, release)
@@ -205,11 +207,11 @@ func TestIssue94SessionTiming(t *testing.T) {
 				if !ok {
 					t.Fatal("missing new session")
 				}
-				if timing == "stopped-before" && current.ID == old.ID {
-					t.Fatal("stopped session reused")
+				if current.ID == old.ID {
+					t.Fatalf("oversized active source reused for 3000 kbps cap (timing=%s)", timing)
 				}
-				if timing != "stopped-before" && current.ID != old.ID {
-					t.Fatal("active source not reused")
+				if current.Resolution == nil || current.Resolution.Release.ID != "sd" {
+					t.Fatalf("expected 3000 kbps re-decision to switch to sd, got %+v", current.Resolution)
 				}
 				if timing == "stale-stop-after" {
 					stop()

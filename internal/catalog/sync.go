@@ -248,9 +248,13 @@ func (c *Catalog) Sync(ctx context.Context) error {
 		return ErrSyncInProgress
 	}
 	defer c.syncing.Store(false)
+	startedAt := c.now()
 	c.setProgress(func(p *SyncProgress) {
-		*p = SyncProgress{Running: true, StartedAt: c.now(), LastError: c.getMeta(ctx, "sync_error")}
+		*p = SyncProgress{Running: true, StartedAt: startedAt, LastError: c.getMeta(ctx, "sync_error")}
 	})
+	if c.onSyncEvent != nil {
+		c.onSyncEvent(SyncEvent{Phase: "started", Trigger: "scheduled"})
+	}
 	resumeCtx, err := c.resumeSync(ctx)
 	if err == nil {
 		if c.tmdb() == nil {
@@ -286,7 +290,9 @@ func (c *Catalog) Sync(ctx context.Context) error {
 	if err != nil && !transient {
 		_ = c.setMeta(ctx, "sync_error", err.Error())
 	}
+	var addedCount int
 	c.setProgress(func(p *SyncProgress) {
+		addedCount = p.TitlesAdded
 		p.Running = false
 		p.FinishedAt = c.now()
 		p.Phase = ""
@@ -299,6 +305,17 @@ func (c *Catalog) Sync(ctx context.Context) error {
 			p.LastError = err.Error()
 		}
 	})
+	if c.onSyncEvent != nil {
+		dur := c.now().Sub(startedAt).Milliseconds()
+		if dur < 0 {
+			dur = 0
+		}
+		if err == nil {
+			c.onSyncEvent(SyncEvent{Phase: "completed", Added: addedCount, DurationMS: dur})
+		} else if !errors.Is(err, tmdb.ErrNoKey) && !errors.Is(err, context.Canceled) {
+			c.onSyncEvent(SyncEvent{Phase: "failed", DurationMS: dur, Error: err.Error()})
+		}
+	}
 	return err
 }
 
@@ -705,6 +722,7 @@ func (c *Catalog) hydratePersonCredits(ctx context.Context, client TMDB, pc pers
 	if personName == "" {
 		if pd, ok := client.(personDetailsSource); ok {
 			if p, err := pd.PersonDetails(bctx, personID); err == nil && p != nil {
+				c.savePersonMetadata(personID, p)
 				personName, personThumb = p.Name, p.ProfilePath
 				if p.ID == personID && validPersonIMDB(p.IMDBID) {
 					personIMDB = p.IMDBID
@@ -756,6 +774,8 @@ func (c *Catalog) hydratePersonCredits(ctx context.Context, client TMDB, pc pers
 			addWork(w, "crew", "Composer", i)
 		case "creator", "series composition", "showrunner":
 			addWork(w, "crew", "Creator", i)
+		case "producer":
+			addWork(w, "crew", "Producer", i)
 		}
 	}
 	if len(summaries) > 0 {

@@ -5,14 +5,15 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-// A successful HLS start is not evidence that an estimated or unprobed video
-// is compatible. Advertise HLS only when the source codec is actually known.
-func knownHLSVideo(info core.MediaInfo) bool {
+// A successful HLS start is not evidence that an estimated or unprobed stream
+// is compatible. Advertise HLS only when at least one video or audio codec is
+// actually known.
+func knownHLSStream(info core.MediaInfo) bool {
 	if info.Estimated {
 		return false
 	}
 	for _, stream := range info.Streams {
-		if stream.Type == "video" && stream.Codec != "" {
+		if (stream.Type == "video" || stream.Type == "audio") && stream.Codec != "" {
 			return true
 		}
 	}
@@ -41,7 +42,7 @@ func (b *Broker) planAlternatives(source *core.PlaySession, req frontend.PlanReq
 		candidate := req
 		candidate.Intent.OriginalPlayback = nil
 		candidate.Intent.Options.DirectPlay = false
-		candidate.Intent.Options.DirectStream = false
+		candidate.Intent.Options.DirectStream = req.Channel == "" && b.videoOff(req.Caps)
 		d, err := b.decideProfile(source, candidate)
 		encode = err == nil && decisionEncodes(d, source.Info)
 	}
@@ -62,7 +63,14 @@ func (b *Broker) hlsPlanOutput(source *core.PlaySession, req frontend.PlanReques
 		}
 	}
 	output, eligible := b.hlsOutputDecision(source, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, decision)
-	if !eligible || source == nil || !knownHLSVideo(source.Info) {
+	if !eligible && decision.Kind == core.DecisionDirectPlay {
+		req.Intent.OriginalPlayback = nil
+		req.Intent.Options.DirectPlay = false
+		if d, err := b.decideProfile(source, req); err == nil {
+			output, eligible = b.hlsOutputDecision(source, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, d)
+		}
+	}
+	if !eligible || source == nil || !knownHLSStream(source.Info) {
 		return false, ""
 	}
 	switch output.Container {
@@ -71,4 +79,17 @@ func (b *Broker) hlsPlanOutput(source *core.PlaySession, req frontend.PlanReques
 	default:
 		return true, ""
 	}
+}
+
+// httpPlanOutput uses the same output decision as StartStream(StreamHTTP) to
+// report whether progressive HTTP transcode delivery is available.
+func (b *Broker) httpPlanOutput(source *core.PlaySession, req frontend.PlanRequest, decision core.Decision) (bool, string) {
+	if source == nil || source.Info.Estimated || !source.Info.HasPlayableMedia() {
+		return false, ""
+	}
+	output, eligible := b.httpOutputDecision(source, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, decision)
+	if !eligible {
+		return false, ""
+	}
+	return true, output.Container
 }

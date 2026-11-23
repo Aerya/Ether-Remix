@@ -34,7 +34,7 @@ const importClaimTimeout = 5 * time.Minute
 // enqueueImport keeps historical writes out of the bounded live timeline
 // queue. Only an integration connected at import time receives the history.
 func (c *Client) enqueueImport(ev state.Event) {
-	if ev.Kind != state.EventScrobble && ev.Kind != state.EventRated || ev.At.IsZero() || !c.Enabled() {
+	if ev.Kind != state.EventScrobble && ev.Kind != state.EventRated || ev.At.IsZero() || !c.Enabled() || !isSyncableTraktEvent(ev) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

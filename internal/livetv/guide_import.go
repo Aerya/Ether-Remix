@@ -285,24 +285,34 @@ func init() {
 // is written only when the source itself changed or a refresh error is to be
 // cleared, and it reports whether it was; every import records its time in
 // livetv_source_refresh. Callers hold lockSourceEdits for the source.
-func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src Source) (bool, error) {
+func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src *Source) (bool, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT data FROM livetv_sources WHERE id=?`, src.ID).Scan(&raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
 	write := err != nil
+	renamed := false
 	if !write {
 		old, _, derr := s.decodeSource(raw)
-		write = derr != nil || old.LastError != "" || old.LastErrorAt != nil || old.RefreshFailures != 0 || !sameStoredSource(old, src)
+		if derr == nil && src.Priority == 0 && old.Priority > 0 {
+			src.Priority = old.Priority
+		}
+		renamed = derr == nil && old.Name != src.Name
+		write = derr != nil || old.LastError != "" || old.LastErrorAt != nil || old.RefreshFailures != 0 || !sameStoredSource(old, *src)
 	}
 	if write {
-		b, err := s.encodeSource(src)
+		b, err := s.encodeSource(*src)
 		if err != nil {
 			return false, err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO livetv_sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
 			return false, err
+		}
+		if renamed {
+			if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+				return false, err
+			}
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO livetv_source_refresh(id,updated_ms) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET updated_ms=excluded.updated_ms`, src.ID, src.UpdatedAt.UnixMilli())

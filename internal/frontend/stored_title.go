@@ -76,6 +76,11 @@ type SearchListDetailsCatalog interface {
 	SearchListDetails(context.Context, []Title) ([]Title, error)
 }
 
+// PeopleTitlesCatalog resolves titles credited to people matching query for a viewer.
+type PeopleTitlesCatalog interface {
+	PeopleTitles(context.Context, *User, string, int) ([]Title, error)
+}
+
 // SQLAvailabilityCatalog reports whether browse queries apply availability filtering in SQL.
 type SQLAvailabilityCatalog interface {
 	BrowseAvailabilityInSQL() bool
@@ -124,6 +129,11 @@ type SupportVisibilityCatalog interface {
 // HomeRowLayoutGate reports whether a home row is enabled for a viewer's layout.
 type HomeRowLayoutGate interface {
 	HomeRowEnabled(context.Context, *User, HubContext, string) bool
+}
+
+// HomeRowBudgetSource reports the effective Home row budget for a viewer and context.
+type HomeRowBudgetSource interface {
+	HomeRowBudget(context.Context, *User, HubContext) int
 }
 
 // PlaylistHeaderLister lists playlist headers without loading item membership.

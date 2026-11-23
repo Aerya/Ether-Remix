@@ -179,6 +179,9 @@ func (c *Client) buildURL(path string, q url.Values, cfg clientSettings) string 
 	if q.Get("language") == "" && cfg.language != "" {
 		q.Set("language", cfg.language)
 	}
+	if lang := q.Get("language"); lang != "" {
+		q.Set("language", MetadataLanguage(lang))
+	}
 	if !cfg.bearer && cfg.key != "" {
 		q.Set("api_key", cfg.key)
 	}

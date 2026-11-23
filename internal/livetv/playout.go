@@ -7,31 +7,70 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/streamgrant"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
-const segmentDuration = 4 * time.Second
+const (
+	segmentDuration = 4 * time.Second
+
+	iptvProbeBudget = 8 * time.Second
+	iptvStartFloor  = 8 * time.Second
+	iptvStartMax    = 12 * time.Second
+)
+
+// iptvSourceStartBudget gives post-probe stream startup its own bounded window
+// once probing proved the input answers. Slower routes (such as an outbound
+// SOCKS5 proxy) take longer per round-trip to open playlists and first
+// segments too, so the window scales from the probe's measured duration rather
+// than a proxy-specific constant.
+func iptvSourceStartBudget(probeElapsed time.Duration) time.Duration {
+	return min(max(iptvStartFloor, probeElapsed+4*time.Second), iptvStartMax)
+}
 
 type channelLimiter interface {
 	BeginChannel(*core.User, core.ClientCaps, string) error
 	EndChannel(string)
 }
 
+const directChannelPrefix = "direct:"
+
+// DirectStream describes an ephemeral direct-URL live stream (such as a
+// plugin library live tab item) tuned through the HLS passthrough/relay
+// pipeline without registering a Live TV channel.
+type DirectStream struct {
+	ID         string
+	Title      string
+	URL        string
+	Headers    map[string]string
+	AllowCheck func(context.Context, *core.User) error
+	Resolve    func(context.Context) (DirectStreamResult, error)
+}
+
 type session struct {
 	broadcastPolicy     broadcastViewerPolicy
 	broadcast           *broadcastLease
+	ephemeral           bool
+	allowCheck          func(context.Context, *core.User) error
+	direct              *directStreamState
+	sniffedManifest     *cachedManifest
 	inputURL            string // selected upstream, immutable once the tune is ready
 	inputSource         StreamSource
 	inputHeaders        http.Header
 	firstMediaDelivered bool
+	firstDeliveredAt    time.Time
 	firstMediaByte      bool
+	bytesServed         int64
 	tuneStartedAt       time.Time
+	startDeadline       time.Time // bounded post-probe startup window for Direct playout
 	lastMediaWarning    time.Time
 	consumed            bool
 	mediaStarted        bool
+	activeReads         atomic.Int32
 	startupCancel       context.CancelFunc // immutable after publication; cancels I/O before locking
 	view                core.PlaySession   // immutable monitoring snapshot, including pending tunes
 	reserved            bool
@@ -46,6 +85,10 @@ type session struct {
 	// httpStart is closed when an in-flight ensureHTTP StartHLS finishes.
 	// Waiters re-check liveHTTP instead of starting a second encoder.
 	httpStart chan struct{}
+	// rejoinDone deduplicates background broadcast rejoin for a retained
+	// session; rejoin runs under ss.ctx rather than a playlist request ctx.
+	rejoinDone chan struct{}
+	rejoinErr  error
 	// mu guards the fields above and below it. It is never held across
 	// Playback.Prepare/Failover, HLS SwapInput, programme lookups, probing
 	// or upstream I/O: preparers work on a staged
@@ -78,6 +121,51 @@ type session struct {
 	caps        core.ClientCaps
 	last        time.Time
 	closed      bool
+}
+
+func (ss *session) setSniffedManifest(cm *cachedManifest) {
+	if ss == nil {
+		return
+	}
+	ss.mu.Lock()
+	ss.sniffedManifest = cm
+	direct := ss.direct
+	ss.mu.Unlock()
+	if direct != nil && cm != nil && cm.isMaster {
+		direct.setManifest(cm)
+	}
+}
+
+func (ss *session) sniffedManifestFor(raw string) *cachedManifest {
+	if ss == nil || raw == "" {
+		return nil
+	}
+	ss.mu.Lock()
+	cm := ss.sniffedManifest
+	direct := ss.direct
+	ss.mu.Unlock()
+	if direct != nil {
+		if dm := direct.manifestFor(raw); dm != nil {
+			return dm
+		}
+		// Never hand back a stale session copy if the direct stream was
+		// invalidated on 403/410.
+		if _, _, _, _, _, invalidated, _ := direct.current(); invalidated {
+			return nil
+		}
+	}
+	if cm != nil && cm.raw == raw {
+		return cm
+	}
+	return nil
+}
+
+func (ss *session) cachedMasterFor(raw string) *cachedManifest {
+	cm := ss.sniffedManifestFor(raw)
+	if cm != nil && cm.isMaster {
+		return cm
+	}
+	return nil
 }
 
 // bindContext derives a context cancelled when parent ends or when the
@@ -151,6 +239,9 @@ func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.H
 	stop := context.AfterFunc(request, cancel)
 	hls, err := s.transcoder().StartHLS(lifetime, req)
 	stop()
+	if errors.Is(err, context.Canceled) && request.Err() != nil {
+		err = request.Err()
+	}
 	if err == nil && request.Err() != nil {
 		err = request.Err()
 	}
@@ -167,7 +258,55 @@ func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.H
 	return hls, cancel, nil
 }
 
-func (ss *session) close(s *Service) {
+func (s *Service) clockNow() time.Time {
+	if s != nil && s.o.Now != nil {
+		return s.o.Now()
+	}
+	return time.Now()
+}
+
+func (s *Service) observeSession(p *core.PlaySession, ended bool, problem string) {
+	if s == nil || s.o.ObserveSession == nil || p == nil || p.ID == "" {
+		return
+	}
+	s.o.ObserveSession(p, ended, problem)
+}
+
+func (s *Service) sessionSnapshotLocked(ss *session, now time.Time) core.PlaySession {
+	p := ss.view
+	if p.LiveChannel != nil {
+		ch := *p.LiveChannel
+		p.LiveChannel = &ch
+	}
+	p.Liveness = s.sessionLivenessLocked(ss, now).State
+	p.LastActive = ss.last
+	p.BytesServed = ss.bytesServed
+	if ss.firstMediaDelivered {
+		p.ViewerState = "playing"
+		startedAt := ss.info.StartedAt
+		deliveredAt := ss.firstDeliveredAt
+		if deliveredAt.IsZero() {
+			deliveredAt = now
+		}
+		var startTime time.Duration
+		if !startedAt.IsZero() && !deliveredAt.IsZero() {
+			startTime = max(0, deliveredAt.Sub(startedAt))
+		}
+		p.Experience = &core.PlayExperience{
+			Requested:   true,
+			RequestedAt: startedAt,
+			Pictured:    true,
+			PicturedAt:  deliveredAt,
+			StartTime:   startTime,
+		}
+	}
+	return p
+}
+
+func (ss *session) close(s *Service)        { ss.closeWithReason(s, false) }
+func (ss *session) closeExpired(s *Service) { ss.closeWithReason(s, true) }
+
+func (ss *session) closeWithReason(s *Service, expired bool) {
 	defer s.onChannelSessionClosed(ss.info.Channel.ID)
 	defer s.endPersonal(ss.info.Channel, ss.info.UserID)
 	if ss.startupCancel != nil {
@@ -194,6 +333,17 @@ func (ss *session) close(s *Service) {
 	ss.http = nil
 	reserved := ss.reserved
 	ready, requested, delivered := ss.ready, ss.consumed, ss.firstMediaDelivered
+	bytesServed := ss.bytesServed
+	mode := sessionPlayoutModeLocked(ss)
+	stopInfo := ss.info
+	stopSrc := ss.inputSource
+	now := s.clockNow()
+	end := now
+	if expired && !ss.last.IsZero() && ss.last.Before(end) {
+		end = ss.last
+	}
+	snap := s.sessionSnapshotLocked(ss, end)
+	snap.LastActive = end
 	ss.mu.Unlock()
 	if broadcast != nil {
 		broadcast.close()
@@ -211,7 +361,14 @@ func (ss *session) close(s *Service) {
 			limiter.EndChannel(ss.info.ID)
 		}
 	}
-	s.sessionLog(ss).Info("live session resources released", "ready", ready, "media_requested", requested, "media_delivered", delivered, "age", s.o.Now().Sub(ss.info.StartedAt), "viewer_reservation_released", reserved)
+	age := now.Sub(stopInfo.StartedAt)
+	if ready {
+		s.emitChannelStopped(stopInfo, stopSrc, age.Milliseconds(), bytesServed, mode)
+	}
+	if delivered {
+		s.observeSession(&snap, true, "")
+	}
+	s.sessionLog(ss).Info("live session resources released", "ready", ready, "media_requested", requested, "media_delivered", delivered, "age", age, "viewer_reservation_released", reserved)
 }
 
 func (s *Service) Tune(ctx context.Context, u *core.User, channelID string, caps core.ClientCaps) (SessionInfo, error) {
@@ -225,7 +382,12 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		return SessionInfo{}, core.ErrNotAvailable
 	}
 	started := time.Now()
+	tuneStarted := s.clockNow()
 	attemptID := liveSessionID()
+	var admitted bool
+	var tunedCh Channel
+	var tunedProg *Programme
+	var tunedSess *session
 	log := s.logger().With("session", attemptID, "channel", channelID, "client", caps.ClientID, "product", caps.Product)
 	log.Info("live tune started")
 	defer func() {
@@ -237,6 +399,37 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 				log.Debug("live tune cancelled", attrs...)
 			} else {
 				log.Info("live tune failed", attrs...)
+				if admitted && u != nil && tunedCh.ID != "" && !(tunedSess != nil && errors.Is(resultErr, core.ErrNotFound) && tunedSess.isClosed()) {
+					var snap core.PlaySession
+					if tunedSess != nil {
+						tunedSess.mu.Lock()
+						snap = s.sessionSnapshotLocked(tunedSess, s.clockNow())
+						tunedSess.mu.Unlock()
+					} else {
+						title := tunedCh.Name
+						if tunedProg != nil && tunedProg.Item.Title != "" {
+							title = tunedProg.Item.Title
+						}
+						snap = core.PlaySession{
+							ID: attemptID, PlaybackGroup: attemptID,
+							UserID: u.ID, Username: u.Username,
+							ClientID: caps.ClientID, Client: caps,
+							TitleName: title, StartedAt: tuneStarted,
+							Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+							DecisionReason: "Live channel playout",
+							Origin:         "Live TV",
+							LiveChannel:    &core.LiveChannel{ID: tunedCh.ID, Name: tunedCh.Name, Number: tunedCh.Number},
+						}
+					}
+					msg := detail.Error()
+					snap.ViewerState = ""
+					snap.Experience = &core.PlayExperience{
+						Requested:    true,
+						RequestedAt:  snap.StartedAt,
+						StartFailure: msg,
+					}
+					s.observeSession(&snap, true, msg)
+				}
 			}
 		} else {
 			log.Info("live tune ready", append(attrs, "source", result.Channel.SourceID, "analyzed", result.MediaInfo != nil)...)
@@ -255,6 +448,11 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 			return SessionInfo{}, err
 		}
 		u = confirmed
+	}
+	if caps.Remote && s.o.RemoteUploadCap != nil {
+		if limit, fromBudget := s.o.RemoteUploadCap(ctx, attemptID, true, true, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			caps.MaxBitrateKbps = limit
+		}
 	}
 	ctx, policy, err := s.withPolicy(ctx, u)
 	if err != nil {
@@ -285,6 +483,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	if !s.allowed(ctx, u, c, p) {
 		return SessionInfo{}, core.ErrUnauthorized
 	}
+	admitted = true
+	tunedCh = c
+	tunedProg = p
 	// Apply the viewer override only to this tune's channel copy. A channel
 	// already requiring conversion remains converted for every viewer.
 	if c.Kind == "iptv" && policy.Transcode {
@@ -293,49 +494,34 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	if c.Kind == "virtual" && p == nil {
 		return SessionInfo{}, core.ErrNotAvailable
 	}
-	// A single client device watches one live channel at a time. When it
-	// retunes without explicitly stopping the previous channel (common on
-	// Fire TV / Android TV), supersede its prior live session immediately
-	// while leaving other devices and viewers intact.
-	if caps.ClientID != "" {
-		var superseded []*session
-		s.mu.Lock()
-		for id, old := range s.sessions {
-			if old.info.UserID == u.ID && old.caps.ClientID == caps.ClientID {
-				delete(s.sessions, id)
-				superseded = append(superseded, old)
-			}
+	var eventProgs map[string]Programme
+	if c.Kind == "iptv" {
+		var ep *Programme
+		c, ep, eventProgs, err = s.expandChannelForTune(ctx, c)
+		if err != nil {
+			return SessionInfo{}, err
 		}
-		s.mu.Unlock()
-		for _, old := range superseded {
-			s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
-			old.close(s)
+		if ep != nil {
+			p = ep
 		}
-		if len(superseded) > 0 {
-			s.notifySessionsChanged()
-		}
+		tunedCh = c
+		tunedProg = p
 	}
+	// A single client device watches one live channel at a time, except tiles
+	// belonging to the same multiview group. A non-group tune supersedes the
+	// entire group; re-tuning a tile is a handover that keeps the old tile
+	// running until the replacement is ready.
+	callerHandover := core.LiveHandover(ctx)
+	handoverIDs := s.supersedeBeforeTune(u.ID, caps, attemptID, callerHandover)
 	var playbackSessions []*core.PlaySession
 	if s.o.Playback != nil {
 		playbackSessions = s.o.Playback.Sessions()
 	}
 	s.mu.Lock()
-	count := 0
-	for _, ss := range s.sessions {
-		if ss.info.UserID == u.ID {
-			count++
-		}
-	}
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions, handoverIDs)
 	limit := u.StreamLimit
 	if s.o.StreamLimit != nil {
 		limit = s.o.StreamLimit(u)
-	}
-	if s.o.Playback != nil {
-		for _, ps := range playbackSessions {
-			if ps.UserID == u.ID && ps.PlaybackGroup == "" {
-				count++
-			}
-		}
 	}
 	if limit > 0 && count >= limit {
 		s.mu.Unlock()
@@ -351,9 +537,10 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 					playing[other.info.Channel.ID] = true
 				}
 			}
-			if !playing[c.ID] && len(playing)+s.inputRelay.taps.externalCount(c.SourceID) >= max {
+			if active := len(playing) + s.inputRelay.taps.externalCount(c.SourceID); !playing[c.ID] && active >= max {
 				s.mu.Unlock()
-				return SessionInfo{}, ErrProviderBusy
+				s.emitProviderLimitReached(c.SourceID, active, max, c.ID)
+				return SessionInfo{}, s.providerConnectionCapError(c.SourceID, max, active, ErrProviderBusy)
 			}
 		}
 	}
@@ -372,26 +559,30 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		base = context.Background()
 	}
 	ss.ctx, ss.cancel = context.WithCancel(base)
-	// Upstream retries and probing share one startup budget. A stalled public
-	// source must not occupy a viewer slot for three HTTP timeouts.
-	var cancel context.CancelFunc
-	if c.Kind == "iptv" {
-		ctx, cancel = context.WithTimeout(ctx, 8*time.Second)
-	} else {
-		ctx, cancel = context.WithCancel(ctx)
-	}
+	// Probing and post-probe stream startup enforce their own bounded budgets
+	// so a dead input still fails fast while a slower route that answered its
+	// probe has room to open. startupCancel aborts whichever stage is running.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ss.startupCancel = cancel
-	ss.view = core.PlaySession{ID: ss.info.ID, PlaybackGroup: ss.info.ID, UserID: u.ID, Username: u.ActivityName(), ClientID: caps.ClientID, Client: caps, TitleName: c.Name, StartedAt: ss.info.StartedAt, Decision: core.DecisionRemux, DecisionReason: "Live channel playout"}
+	ss.view = core.PlaySession{ID: ss.info.ID, PlaybackGroup: ss.info.ID, UserID: u.ID, Username: u.ActivityName(), ClientID: caps.ClientID, Client: caps, TitleName: c.Name, StartedAt: ss.info.StartedAt, Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true, DecisionReason: "Live channel playout", Origin: "Live TV"}
 	ss.view.LiveChannel = &core.LiveChannel{ID: c.ID, Name: c.Name, Number: c.Number}
 	if p != nil {
 		ss.view.Key = p.Item.Key
 		ss.view.TitleName = p.Item.Title
 		ss.view.Info.Duration = p.End.Sub(p.Start)
 	}
+	tunedSess = ss
 	s.sessions[ss.info.ID] = ss
 	s.noteWatchedLocked(c.ID)
+	if u != nil && u.ID > 0 {
+		s.noteViewerWatchedLocked(u.ID, c.ID)
+	}
+	s.noteSourceUsedLocked(c.SourceID)
 	s.mu.Unlock()
+	if c.SourceID != "" && s.hasOnDemand.Load() {
+		s.wakeSourceRefresh()
+	}
 	s.notifySessionsChanged()
 	s.beginPersonal(c, u)
 	if limiter, ok := s.o.Playback.(channelLimiter); ok {
@@ -458,7 +649,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		}
 		if err != nil {
 			s.Stop(ctx, ss.info.ID, u)
-			return SessionInfo{}, err
+			return SessionInfo{}, s.wrapProviderConnectionCap(c.SourceID, err)
 		}
 	} else {
 		err = s.startIPTVSession(ctx, ss)
@@ -467,7 +658,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		}
 		if err != nil {
 			s.Stop(ctx, ss.info.ID, u)
-			return SessionInfo{}, err
+			return SessionInfo{}, s.wrapProviderConnectionCap(c.SourceID, err)
 		}
 	}
 	ss.mu.Lock()
@@ -476,15 +667,230 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		return SessionInfo{}, core.ErrNotFound
 	}
 	ss.ready = true
+	if matched, ok := eventProgs[ss.inputSource.ID]; ok {
+		ss.info.Programme = &matched
+		ss.view.TitleName = matched.Item.Title
+		if d := matched.End.Sub(matched.Start); d > 0 {
+			ss.view.Info.Duration = d
+		}
+	}
 	info := ss.info
+	tunedSrc := ss.inputSource
+	tunedUser := ss.user
+	tunedCaps := ss.caps
+	mode := sessionPlayoutModeLocked(ss)
 	if ss.relayInfo != nil {
 		info.MediaInfo = ss.relayInfo
 	}
 	ss.mu.Unlock()
+	if !callerHandover {
+		s.finishHandover(handoverIDs, attemptID)
+	}
+	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
 	return info, nil
 }
+
+// TuneDirectStream tunes an ephemeral direct-URL live stream (such as a plugin
+// library live tab item) through Ether's HLS passthrough and relay pipeline
+// without requiring Live TV channels to exist or registering one in Live TV.
+func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectStream, caps core.ClientCaps, clientSessionID string) (result SessionInfo, resultErr error) {
+	if !validHTTP(ds.URL) {
+		return SessionInfo{}, core.ErrNotAvailable
+	}
+	started := time.Now()
+	tuneStarted := s.clockNow()
+	attemptID := liveSessionID()
+	title := strings.TrimSpace(ds.Title)
+	if title == "" {
+		title = "Live stream"
+	}
+	var admitted bool
+	var tunedCh Channel
+	var tunedSess *session
+	log := s.logger().With("session", attemptID, "direct_live", ds.ID, "client", caps.ClientID, "product", caps.Product)
+	log.Info("direct live tune started")
+	defer func() {
+		attrs := []any{"elapsed", time.Since(started)}
+		if resultErr != nil {
+			detail := Diagnose("tune", resultErr)
+			attrs = append(attrs, detail.LogAttrs()...)
+			if detail.Code == "cancelled" {
+				log.Debug("direct live tune cancelled", attrs...)
+			} else {
+				log.Info("direct live tune failed", attrs...)
+				if admitted && u != nil && tunedCh.ID != "" && !(tunedSess != nil && errors.Is(resultErr, core.ErrNotFound) && tunedSess.isClosed()) {
+					var snap core.PlaySession
+					if tunedSess != nil {
+						tunedSess.mu.Lock()
+						snap = s.sessionSnapshotLocked(tunedSess, s.clockNow())
+						tunedSess.mu.Unlock()
+					} else {
+						snap = core.PlaySession{
+							ID: attemptID, PlaybackGroup: attemptID,
+							UserID: u.ID, Username: u.Username,
+							ClientID: caps.ClientID, Client: caps,
+							TitleName: title, StartedAt: tuneStarted,
+							Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+							DecisionReason: "Plugin live stream",
+							Origin:         "Live TV",
+							LiveChannel:    &core.LiveChannel{ID: tunedCh.ID, Name: tunedCh.Name},
+						}
+					}
+					msg := detail.Error()
+					snap.ViewerState = ""
+					snap.Experience = &core.PlayExperience{
+						Requested:    true,
+						RequestedAt:  snap.StartedAt,
+						StartFailure: msg,
+					}
+					s.observeSession(&snap, true, msg)
+				}
+			}
+		} else {
+			log.Info("direct live tune ready", append(attrs, "analyzed", result.MediaInfo != nil)...)
+		}
+	}()
+
+	if clientSessionID == "" {
+		clientSessionID = caps.ClientID
+	}
+	if u == nil || (s.o.CanPlay != nil && !s.o.CanPlay(u, caps.Remote, s.o.Now())) {
+		return SessionInfo{}, core.ErrUnauthorized
+	}
+	if s.o.ConfirmAdmission != nil {
+		confirmed, err := s.o.ConfirmAdmission(ctx, u, caps.Remote, s.o.Now())
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		u = confirmed
+	}
+	if ds.AllowCheck != nil {
+		if err := ds.AllowCheck(ctx, u); err != nil {
+			return SessionInfo{}, err
+		}
+	}
+	if caps.Remote && s.o.RemoteUploadCap != nil {
+		if limit, fromBudget := s.o.RemoteUploadCap(ctx, attemptID, true, true, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			caps.MaxBitrateKbps = limit
+		}
+	}
+
+	c := Channel{
+		ID:      directChannelPrefix + attemptID,
+		Name:    title,
+		Kind:    "iptv",
+		Enabled: true,
+		StreamSources: []StreamSource{{
+			ID:      "direct",
+			Name:    title,
+			URL:     ds.URL,
+			Headers: CleanInputHeaders(ds.Headers),
+			Enabled: true,
+		}},
+	}
+	admitted = true
+	tunedCh = c
+
+	callerHandover := core.LiveHandover(ctx)
+	handoverIDs := s.supersedeBeforeTune(u.ID, caps, attemptID, callerHandover)
+	var playbackSessions []*core.PlaySession
+	if s.o.Playback != nil {
+		playbackSessions = s.o.Playback.Sessions()
+	}
+	s.mu.Lock()
+	count := s.activeStreamCountLocked(u.ID, caps.MultiviewGroup, caps.ClientID, playbackSessions, handoverIDs)
+	limit := u.StreamLimit
+	if s.o.StreamLimit != nil {
+		limit = s.o.StreamLimit(u)
+	}
+	if limit > 0 && count >= limit {
+		s.mu.Unlock()
+		return SessionInfo{}, core.ErrStreamLimit
+	}
+	s.nextSubscription++
+	base := s.serviceContext()
+	if base == nil {
+		base = context.Background()
+	}
+	ss := &session{
+		tuneStartedAt: started,
+		ephemeral:     true,
+		allowCheck:    ds.AllowCheck,
+		direct:        newDirectStreamState(base, ds.URL, ds.Headers, ds.Resolve),
+		info: SessionInfo{
+			ID: attemptID, SubscriptionID: s.nextSubscription,
+			ActivityID: liveSessionID(), ClientSessionID: clientSessionID,
+			UserID: u.ID, Channel: c, StartedAt: s.o.Now(),
+		},
+		streamGrant: randomID(), user: *u, caps: caps, last: s.o.Now(),
+	}
+	ss.ctx, ss.cancel = context.WithCancel(base)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ss.startupCancel = cancel
+	ss.view = core.PlaySession{
+		ID: ss.info.ID, PlaybackGroup: ss.info.ID,
+		UserID: u.ID, Username: u.Username,
+		ClientID: caps.ClientID, Client: caps,
+		TitleName: title, StartedAt: ss.info.StartedAt,
+		Decision: core.DecisionRemux, DecisionVideoCopy: true, DecisionAudioCopy: true,
+		DecisionReason: "Plugin live stream", Origin: "Live TV",
+		LiveChannel: &core.LiveChannel{ID: c.ID, Name: c.Name},
+	}
+	tunedSess = ss
+	s.sessions[ss.info.ID] = ss
+	s.mu.Unlock()
+	s.notifySessionsChanged()
+
+	if limiter, ok := s.o.Playback.(channelLimiter); ok {
+		if err := limiter.BeginChannel(u, caps, ss.info.ID); err != nil {
+			s.Stop(ctx, ss.info.ID, u)
+			return SessionInfo{}, err
+		}
+		ss.mu.Lock()
+		if ss.closed {
+			ss.mu.Unlock()
+			limiter.EndChannel(ss.info.ID)
+			return SessionInfo{}, core.ErrNotFound
+		}
+		ss.reserved = true
+		ss.mu.Unlock()
+	}
+
+	err := s.startIPTVSession(ctx, ss)
+	if err == nil {
+		err = s.awaitOwnedStart(ctx, ss)
+	}
+	if err != nil {
+		s.Stop(ctx, ss.info.ID, u)
+		return SessionInfo{}, err
+	}
+	ss.mu.Lock()
+	if ss.closed {
+		ss.mu.Unlock()
+		return SessionInfo{}, core.ErrNotFound
+	}
+	ss.ready = true
+	info := ss.info
+	tunedSrc := ss.inputSource
+	tunedUser := ss.user
+	tunedCaps := ss.caps
+	mode := sessionPlayoutModeLocked(ss)
+	if ss.relayInfo != nil {
+		info.MediaInfo = ss.relayInfo
+	}
+	ss.mu.Unlock()
+	if !callerHandover {
+		s.finishHandover(handoverIDs, attemptID)
+	}
+	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
+	info.Channel.StreamURL = ""
+	info.Channel.StreamSources = nil
+	return info, nil
+}
+
 func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*session, error) {
 	s.mu.Lock()
 	ss := s.sessions[id]
@@ -499,8 +905,16 @@ func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*ses
 	}
 	ss.mu.Lock()
 	shared := ss.broadcast != nil
+	ephemeral := ss.ephemeral
+	allowCheck := ss.allowCheck
 	ss.mu.Unlock()
-	if shared {
+	if ephemeral {
+		if allowCheck != nil {
+			if err := allowCheck(ctx, u); err != nil {
+				return nil, err
+			}
+		}
+	} else if shared {
 		ctx, err := s.broadcastPolicyContext(ctx, ss, u)
 		if err != nil {
 			return nil, err
@@ -582,9 +996,13 @@ func (s *Service) Session(ctx context.Context, id string, u *core.User) (Session
 		}
 	}
 	channel := ss.info.Channel
+	ephemeral := ss.ephemeral
 	ss.mu.Unlock()
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
+	if ephemeral {
+		return info, nil
+	}
 	lookupCtx, cancel := ss.bindContext(ctx)
 	defer cancel()
 	ps, err := s.programmes(lookupCtx, channel, s.o.Now(), s.o.Now().Add(time.Second))
@@ -647,7 +1065,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 		return core.ErrNotFound
 	}
 	gen := ss.generation
-	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused}
+	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused, ephemeral: ss.ephemeral, direct: ss.direct}
 	ss.mu.Unlock()
 
 	ctx, cancel := ss.bindContext(ctx)
@@ -669,8 +1087,10 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 		return core.ErrNotFound
 	}
 	ss.inputURL, ss.inputSource, ss.inputHeaders = stage.inputURL, stage.inputSource, stage.inputHeaders
+	ss.sniffedManifest = stage.sniffedManifest
 	ss.info.MediaInfo, ss.info.ActiveSourceID = stage.info.MediaInfo, stage.info.ActiveSourceID
 	ss.relayInfo, ss.owned = stage.relayInfo, stage.owned
+	ss.startDeadline = stage.startDeadline
 	ss.broadcast = stage.broadcast
 	s.transferInput(stage, ss)
 	if ss.owned != nil && ss.owned.relay != nil {
@@ -738,26 +1158,37 @@ func (s *Service) Failover(ctx context.Context, id string, u *core.User) error {
 	return nil
 }
 
-// startIPTV recognizes HLS without assuming URL suffixes (many owners use
-// signed extensionless URLs). Other HTTP streams are remuxed through ffmpeg,
-// whose existing input layer reconnects on network errors with bounded delay.
-func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent bool) error {
+// startIPTVSource recognizes HLS without assuming URL suffixes (many owners
+// use signed extensionless URLs). Other HTTP streams are remuxed through
+// ffmpeg, whose existing input layer reconnects on network errors with bounded
+// delay. Probing runs under sniffBudget/probeBudget; once the input proves
+// alive, relay/timeline startup gets its own bounded startDeadline.
+func (s *Service) startIPTVSource(ctx context.Context, ss *session, sniffBudget, probeBudget time.Duration, deferSilent bool) error {
 	if ss.closed {
 		return core.ErrNotFound
 	}
+	probeStarted := time.Now()
+	probeCtx, stopProbe := context.WithTimeout(ctx, probeBudget)
+	defer stopProbe()
+	sniffCtx, stopSniff := context.WithTimeout(probeCtx, sniffBudget)
+	defer stopSniff()
+	armStartBudget := func() (context.Context, context.CancelFunc) {
+		ss.startDeadline = time.Now().Add(iptvSourceStartBudget(time.Since(probeStarted)))
+		return context.WithDeadline(ctx, ss.startDeadline)
+	}
 	c := ss.info.Channel
 	c.StreamURL = ss.inputURL
-	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs
+	analyze := len(ss.caps.VideoCodecs) > 0 || len(ss.caps.AudioCodecs) > 0 || ss.caps.ProbeLiveWithoutCodecs || (ss.caps.MultiviewGroup != "" && ss.caps.MaxHeight > 0) || broadcastUsesFMP4(ss.caps)
 	probe := analyze || c.Transcode || ss.caps.ProbeLiveInput
 	// Codec analysis overlaps the playlist prefix read. The first tune of a
 	// channel still waits on the probe; a retune inside liveProbeTTL does not.
-	probeCh, probeCancel := s.startEarlyProbe(ctx, ss, probe)
+	probeCh, probeCancel := s.startEarlyProbe(probeCtx, ss, probe)
 	if probeCancel != nil {
 		defer probeCancel()
 	}
 	// The sniff joins the input's provider connection, which the probe and
 	// ffmpeg then read from too.
-	prefix, ctype, err := s.sniffInput(ctx, ss, 7)
+	prefix, ctype, err := s.sniffInput(sniffCtx, ss, 7)
 	if err != nil {
 		return Diagnose("input_sniff", err)
 	}
@@ -765,13 +1196,13 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	var info *core.MediaInfo
 	if isHLS && !c.Transcode {
 		if s.transcoder() != nil && probe {
-			probeWaitCtx := ctx
+			probeWaitCtx := probeCtx
 			var waitCancel context.CancelFunc
 			if ss.caps.BestEffortLiveStart {
 				// This caller has a < 1s startup budget. Wait briefly for a
 				// cached or fast probe, then proceed with HLS passthrough if
 				// live ffprobe is still sampling segments.
-				probeWaitCtx, waitCancel = context.WithTimeout(ctx, 350*time.Millisecond)
+				probeWaitCtx, waitCancel = context.WithTimeout(probeCtx, 350*time.Millisecond)
 				defer waitCancel()
 			}
 			info, err = s.takeEarlyProbe(probeWaitCtx, ss, probeCh)
@@ -793,14 +1224,20 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 				}
 				if analyze {
 					// A playlist is a transport, not evidence that its codecs are
-					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too.
+					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too,
+					// and clients that only play fMP4 cannot consume MPEG-TS HLS.
 					dec := s.transcoder().Decide(*info, ss.caps, core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1})
-					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" {
-						return s.startIPTVRelay(ctx, ss, *info)
+					needsFMP4 := broadcastUsesFMP4(ss.caps) && !strings.EqualFold(info.Container, "mp4") && !strings.EqualFold(info.Container, "fmp4")
+					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" || needsFMP4 {
+						startCtx, stopStart := armStartBudget()
+						defer stopStart()
+						return s.startIPTVRelay(startCtx, ss, *info)
 					}
 				}
 			}
 		}
+		_, stopStart := armStartBudget()
+		stopStart()
 		ss.owned = s.acquirePassthrough(ss)
 		s.sessionLog(ss).Info("live playback path selected", "path", "hls_passthrough", "analyzed", ss.info.MediaInfo != nil)
 		return nil
@@ -808,7 +1245,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	if s.transcoder() == nil {
 		return core.ErrNotAvailable
 	}
-	info, err = s.takeEarlyProbe(ctx, ss, probeCh)
+	info, err = s.takeEarlyProbe(probeCtx, ss, probeCh)
 	if err != nil {
 		return Diagnose("probe", err)
 	}
@@ -821,7 +1258,9 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	if deferSilent && !liveInputHasAudio(info) {
 		return errSilentInput
 	}
-	return s.startIPTVRelay(ctx, ss, copy)
+	startCtx, stopStart := armStartBudget()
+	defer stopStart()
+	return s.startIPTVRelay(startCtx, ss, copy)
 }
 
 type probeResult struct {
@@ -856,34 +1295,58 @@ func (s *Service) takeEarlyProbe(ctx context.Context, ss *session, ch <-chan pro
 	}
 }
 
+// waitOwnedRelayStart waits for a relay timeline's first playlist. If the
+// outer budget expires while at least one segment is already pending, it lets
+// the timeline's bounded startup depth wait finish rather than failing a
+// live stream that is about to publish.
+func waitOwnedRelayStart(parent, deadlineCtx context.Context, lease *ownedLease) error {
+	err := lease.tl.waitStarted(deadlineCtx)
+	if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil && lease.tl.hasPending() {
+		gctx, cancel := context.WithTimeout(parent, lease.tl.startWaitRemaining()+2*ownedTick)
+		defer cancel()
+		err = lease.tl.waitStarted(gctx)
+	}
+	return err
+}
+
 // awaitOwnedStart holds the tune until a Direct session's owned timeline has
 // its first playlist. An Apple player hangs a live item for good when the
 // first playlist response takes a target duration, so the wait for the
 // first segments belongs to the tune, never to that response. Silo's
-// playback start keeps its sub-second budget: it waits at most 700 ms
-// (passthrough is usually ready by then) and leaves the rest to the
-// playlist request.
+// passthrough start keeps its sub-second budget (700 ms); relay sessions
+// wait for their startup depth so the first playlist request returns ready.
 func (s *Service) awaitOwnedStart(ctx context.Context, ss *session) error {
 	ss.mu.Lock()
 	lease := ss.owned
+	deadline := ss.startDeadline
 	ss.mu.Unlock()
 	if lease == nil {
 		return nil
 	}
-	wait := ctx
-	if ss.caps.BestEffortLiveStart {
+	parentCtx := ctx
+	if !deadline.IsZero() {
 		var cancel context.CancelFunc
-		wait, cancel = context.WithTimeout(ctx, 700*time.Millisecond)
+		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
-	err := lease.tl.waitStarted(wait)
-	if errors.Is(err, errNeedsRelay) {
-		if lease, err = s.passthroughToRelay(ctx, ss); err == nil {
-			err = lease.tl.waitStarted(wait)
+	var err error
+	if lease.relay != nil {
+		err = waitOwnedRelayStart(parentCtx, ctx, lease)
+	} else {
+		wait := ctx
+		if ss.caps.BestEffortLiveStart {
+			var cancel context.CancelFunc
+			wait, cancel = context.WithTimeout(ctx, 700*time.Millisecond)
+			defer cancel()
 		}
-	}
-	if err != nil && wait.Err() != nil && ctx.Err() == nil {
-		return nil // The playlist request waits for the rest
+		err = lease.tl.waitStarted(wait)
+		if errors.Is(err, errNeedsRelay) {
+			if lease, err = s.passthroughToRelay(ctx, ss); err == nil {
+				err = waitOwnedRelayStart(parentCtx, ctx, lease)
+			}
+		} else if err != nil && wait.Err() != nil && ctx.Err() == nil {
+			return nil // The playlist request waits for the rest
+		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		// The tune budget passed without one segment from the source.
@@ -911,11 +1374,18 @@ func (s *Service) serveOwnedPlaylist(w http.ResponseWriter, r *http.Request, ss 
 	lease.tl.mu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), target/2)
 	defer cancel()
-	err := lease.tl.waitStarted(ctx)
-	if errors.Is(err, errNeedsRelay) {
-		lease, err = s.passthroughToRelay(ctx, ss)
-		if err == nil {
-			err = lease.tl.waitStarted(ctx)
+	var err error
+	if lease.relay != nil {
+		err = waitOwnedRelayStart(r.Context(), ctx, lease)
+	} else {
+		err = lease.tl.waitStarted(ctx)
+		if errors.Is(err, errNeedsRelay) {
+			rctx, rcancel := context.WithTimeout(r.Context(), iptvStartFloor)
+			defer rcancel()
+			lease, err = s.passthroughToRelay(rctx, ss)
+			if err == nil {
+				err = waitOwnedRelayStart(r.Context(), rctx, lease)
+			}
 		}
 	}
 	if err != nil {
@@ -998,11 +1468,20 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 	}
 	ss.mu.Lock()
 	shared := ss.broadcast != nil
+	fmp4 := broadcastUsesFMP4(ss.caps)
 	lease := ss.owned
 	ss.mu.Unlock()
 	if shared {
+		if n == transcode.InitSegment {
+			s.serveBroadcastInit(w, r, ss)
+			return
+		}
 		if n < 0 {
 			writeStreamError(w, core.ErrNotFound)
+			return
+		}
+		if fmp4 || strings.HasSuffix(strings.ToLower(r.URL.Path), ".m4s") {
+			s.serveBroadcastFMP4(w, r, ss, int64(n))
 			return
 		}
 		s.serveBroadcastTS(w, r, ss, int64(n))
@@ -1040,16 +1519,219 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 // their planner and never swap a viewer's encoder input.
 func (s *Service) TranscodeFor(string) (core.HLSSession, bool) { return nil, false }
 
+// sessionLivenessLocked evaluates ss under the shared core liveness rule.
+// Caller holds ss.mu.
+func (s *Service) sessionLivenessLocked(ss *session, now time.Time) core.SessionLiveness {
+	started := ss.info.StartedAt
+	if started.IsZero() {
+		started = ss.last
+	}
+	in := core.SessionLivenessInput{
+		Closed:         ss.closed,
+		StartedAt:      started,
+		OpenedAt:       started,
+		IsLive:         true,
+		ActiveReads:    ss.activeReads.Load(),
+		AbandonedAfter: 20 * time.Second,
+		IdleTimeout:    30 * time.Second,
+	}
+	if ss.mediaStarted {
+		in.LastMediaAt = ss.last
+		in.MediaBytes = max(int64(1), ss.bytesServed)
+	}
+	return core.EvaluateSessionLiveness(in, now)
+}
+
 // ViewingSessions reports one trusted reservation unit per live viewer. It is
 // used by ordinary playback's limit accounting, including HLS passthrough
 // viewers that do not own an ffmpeg/source session.
 func (s *Service) ViewingSessions() []*core.PlaySession {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*core.PlaySession, 0, len(s.sessions))
+	list := make([]*session, 0, len(s.sessions))
 	for _, ss := range s.sessions {
-		p := ss.view
+		list = append(list, ss)
+	}
+	s.mu.Unlock()
+	now := s.o.Now()
+	out := make([]*core.PlaySession, 0, len(list))
+	for _, ss := range list {
+		var p core.PlaySession
+		if ss.mu.TryLock() {
+			p = s.sessionSnapshotLocked(ss, now)
+			ss.mu.Unlock()
+		} else {
+			// Startup I/O holds ss.mu: never block monitoring.
+			p = ss.view
+			p.Liveness = core.SessionLivenessStarting
+		}
 		out = append(out, &p)
 	}
 	return out
+}
+
+func shouldSupersedeLiveSession(old *session, userID int64, caps core.ClientCaps) bool {
+	if old.info.UserID != userID || old.caps.ClientID != caps.ClientID {
+		return false
+	}
+	// A non-multiview tune on the same device supersedes every prior session on
+	// that device, including all tiles of an active multiview group.
+	if caps.MultiviewGroup == "" {
+		return true
+	}
+	// Sibling tiles in the same multiview group coexist; re-tuning the same
+	// tile replaces only that tile, and starting a different group replaces
+	// any prior sessions on the device.
+	if old.caps.MultiviewGroup != caps.MultiviewGroup {
+		return true
+	}
+	return old.caps.MultiviewTile == caps.MultiviewTile
+}
+
+func isHandoverLiveSession(old *session, userID int64, caps core.ClientCaps, callerHandover bool) bool {
+	if old.info.UserID != userID || caps.ClientID == "" || old.caps.ClientID != caps.ClientID {
+		return false
+	}
+	if caps.MultiviewGroup != "" && old.caps.MultiviewGroup == caps.MultiviewGroup && old.caps.MultiviewTile == caps.MultiviewTile {
+		return true
+	}
+	return callerHandover && caps.MultiviewGroup == "" && old.caps.MultiviewGroup == ""
+}
+
+func (s *Service) supersedeBeforeTune(userID int64, caps core.ClientCaps, attemptID string, callerHandover bool) map[string]bool {
+	if caps.ClientID == "" {
+		return nil
+	}
+	var superseded []*session
+	var handoverIDs map[string]bool
+	s.mu.Lock()
+	for id, old := range s.sessions {
+		if !shouldSupersedeLiveSession(old, userID, caps) {
+			continue
+		}
+		if isHandoverLiveSession(old, userID, caps, callerHandover) {
+			if handoverIDs == nil {
+				handoverIDs = map[string]bool{}
+			}
+			handoverIDs[id] = true
+			continue
+		}
+		delete(s.sessions, id)
+		superseded = append(superseded, old)
+	}
+	s.mu.Unlock()
+	for _, old := range superseded {
+		s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
+		old.close(s)
+	}
+	if len(superseded) > 0 {
+		s.notifySessionsChanged()
+	}
+	return handoverIDs
+}
+
+func (s *Service) finishHandover(handoverIDs map[string]bool, attemptID string) {
+	if len(handoverIDs) == 0 {
+		return
+	}
+	var replaced []*session
+	s.mu.Lock()
+	for id := range handoverIDs {
+		if old, ok := s.sessions[id]; ok {
+			delete(s.sessions, id)
+			replaced = append(replaced, old)
+		}
+	}
+	s.mu.Unlock()
+	for _, old := range replaced {
+		s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
+		old.close(s)
+	}
+	if len(replaced) > 0 {
+		s.notifySessionsChanged()
+	}
+}
+
+func (s *Service) activeStreamCountLocked(userID int64, incomingGroup, clientID string, playbackSessions []*core.PlaySession, handoverIDs map[string]bool) int {
+	count := 0
+	mvGroups := map[string]bool{}
+	for _, ss := range s.sessions {
+		if ss.info.UserID != userID || handoverIDs[ss.info.ID] {
+			continue
+		}
+		if g := ss.caps.MultiviewGroup; g != "" {
+			if incomingGroup != "" && g == incomingGroup {
+				continue
+			}
+			if !mvGroups[g] {
+				mvGroups[g] = true
+				count++
+			}
+			continue
+		}
+		count++
+	}
+	for _, ps := range playbackSessions {
+		if core.SessionCountsForLimit(ps) && ps.UserID == userID && ps.PlaybackGroup == "" {
+			if clientID != "" && ps.ClientID == clientID {
+				continue
+			}
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) sourceConnectionsInUse(sourceID string) int {
+	if sourceID == "" {
+		return 0
+	}
+	playing := map[string]bool{}
+	s.mu.Lock()
+	for _, other := range s.sessions {
+		if other.info.Channel.SourceID == sourceID {
+			playing[other.info.Channel.ID] = true
+		}
+	}
+	for chID := range s.broadcastProviders[sourceID] {
+		playing[chID] = true
+	}
+	s.mu.Unlock()
+	return len(playing) + s.inputRelay.taps.externalCount(sourceID)
+}
+
+func (s *Service) providerConnectionCapError(sourceID string, maxConns, inUse int, cause error) error {
+	if cause == nil {
+		cause = ErrProviderBusy
+	}
+	name := ""
+	if sourceID != "" {
+		if e, err := s.sourceEntry(s.serviceContext(), sourceID); err == nil {
+			name = strings.TrimSpace(e.name)
+			if maxConns <= 0 {
+				maxConns = e.limit
+			}
+		}
+	}
+	if maxConns > 0 && inUse < maxConns {
+		inUse = maxConns
+	}
+	return &core.ProviderConnectionCapError{
+		Provider: name,
+		Max:      maxConns,
+		InUse:    inUse,
+		Cause:    cause,
+	}
+}
+
+func (s *Service) wrapProviderConnectionCap(sourceID string, err error) error {
+	if err == nil || !errors.Is(err, ErrProviderBusy) {
+		return err
+	}
+	var existing *core.ProviderConnectionCapError
+	if errors.As(err, &existing) {
+		return err
+	}
+	maxConns := s.sourceConnectionLimit(sourceID)
+	inUse := s.sourceConnectionsInUse(sourceID)
+	return s.providerConnectionCapError(sourceID, maxConns, inUse, err)
 }

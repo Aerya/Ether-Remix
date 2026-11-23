@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/stremio"
 )
 
 type metadataRegistry interface {
@@ -130,22 +131,27 @@ func decodeStremioMetadata(body json.RawMessage, req core.MetadataRequest) (*cor
 	if m.ID != req.ID || typ != req.Type {
 		return nil, fmt.Errorf("metadata: add-on returned a different identity")
 	}
+	parsedIMDB, parsedTMDB, parsedTVDB := stremio.ParseCatalogRef(m.ID)
 	id := parseAnyInt64(m.TMDB)
 	if id == 0 {
 		id = parseAnyInt64(m.TMDBAlt)
 	}
-	if id == 0 && strings.HasPrefix(m.ID, "tmdb:") {
-		id, _ = strconv.ParseInt(strings.TrimPrefix(m.ID, "tmdb:"), 10, 64)
+	if id == 0 {
+		id = parsedTMDB
 	}
-	imdb := m.IMDB
-	if imdb == "" && strings.HasPrefix(m.ID, "tt") {
-		imdb = m.ID
+	imdb := stremio.IMDbID(m.IMDB)
+	if imdb == "" {
+		imdb = parsedIMDB
 	}
-	title := &core.Title{Type: typ, Title: m.Name, Summary: m.Description, IDs: core.IDs{TMDB: id, IMDB: imdb, TVDB: parseAnyInt64(m.TVDB)}, PosterPath: m.Poster, BackdropPath: m.Background, LogoPath: m.Logo, Genres: m.Genres, Adult: m.Adult}
+	tvdb := parseAnyInt64(m.TVDB)
+	if tvdb == 0 {
+		tvdb = parsedTVDB
+	}
+	title := &core.Title{Type: typ, Title: m.Name, Summary: m.Description, IDs: core.IDs{TMDB: id, IMDB: imdb, TVDB: tvdb}, PosterPath: m.Poster, BackdropPath: m.Background, LogoPath: m.Logo, Genres: m.Genres, Adult: m.Adult}
 	if match := yearPrefixRe.FindStringSubmatch(m.ReleaseInfo); len(match) == 2 {
 		title.Year, _ = strconv.Atoi(match[1])
 	}
-	title.Released, _ = time.Parse(time.RFC3339Nano, m.Released)
+	title.Released = parseStremioReleased(m.Released)
 	if title.Year == 0 && !title.Released.IsZero() {
 		title.Year = title.Released.Year()
 	}
@@ -164,6 +170,29 @@ func decodeStremioMetadata(body json.RawMessage, req core.MetadataRequest) (*cor
 	return title, nil
 }
 
+func parseStremioReleased(raw string) time.Time {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	if len(s) >= 10 {
+		if t, err := time.Parse("2006-01-02", s[:10]); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
 var yearPrefixRe = regexp.MustCompile(`^(\d{4})`)
 
 func parseAnyInt64(v any) int64 {
@@ -180,6 +209,7 @@ func parseAnyInt64(v any) int64 {
 	case string:
 		s := strings.TrimSpace(val)
 		s = strings.TrimPrefix(strings.ToLower(s), "tmdb:")
+		s = strings.TrimPrefix(strings.ToLower(s), "tvdb:")
 		n, _ := strconv.ParseInt(s, 10, 64)
 		return n
 	default:

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -82,7 +82,6 @@ func TestImageGrantBatchPageAuthorization(t *testing.T) {
 			if calls != 1 {
 				t.Fatalf("page calls=%d", calls)
 			}
-			wantRows := 0
 			if mode == "partial" {
 				if err != nil || len(result) != 2 || result[0].Item != first || result[1].Item != empty || !result[0].Authoritative || !result[1].Authoritative || len(result[1].Images) != 0 {
 					t.Fatalf("partial page: %+v %v", result, err)
@@ -90,7 +89,6 @@ func TestImageGrantBatchPageAuthorization(t *testing.T) {
 				if len(result[0].Images) != 2 || result[0].Images[0].Image.Path != "back" || result[0].Images[1].Image.Path != "primary" || result[0].Images[0].Secret == result[0].Images[1].Secret {
 					t.Fatalf("selected images: %+v", result)
 				}
-				wantRows = 2
 				// An empty request remains a no-op for artwork authorization.
 				if empty, err := service.IssueBatch(ctx, frontend.ImageBatchRequest{Credential: credential, Device: device}); err != nil || len(empty) != 0 || calls != 1 {
 					t.Fatalf("empty batch invoked page authorization: %v calls=%d", err, calls)
@@ -104,11 +102,9 @@ func TestImageGrantBatchPageAuthorization(t *testing.T) {
 					t.Fatalf("failure must close issuance: %+v %v", result, err)
 				}
 			}
-			for _, table := range []string{"frontend_image_grants", "capability_headers"} {
-				var n int
-				if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil || n != wantRows {
-					t.Fatalf("%s rows=%d want%d: %v", table, n, wantRows, err)
-				}
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("capability_headers image rows=%d want 0: %v", n, err)
 			}
 		})
 	}

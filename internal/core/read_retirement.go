@@ -10,10 +10,33 @@ import (
 // their references. It does not wait or cancel those producers and does not
 // prove that the underlying MediaSource.Close succeeded.
 type ReadRetirement struct {
-	mu      sync.Mutex
-	pending int
-	sealed  bool
-	done    chan struct{}
+	mu        sync.Mutex
+	pending   int
+	sealed    bool
+	done      chan struct{}
+	interrupt func()
+}
+
+// OnInterrupt registers how the owning request is cut short when its session
+// retires. Passing nil clears it: a finished request must not be touched.
+func (t *ReadRetirement) OnInterrupt(f func()) {
+	t.mu.Lock()
+	t.interrupt = f
+	t.mu.Unlock()
+}
+
+// Interrupt cuts the owning request short, if it registered how. A retiring
+// session calls it before waiting on Seal, so a reader stalled on a client
+// that stopped reading (a paused or replaced player) cannot hold the
+// retirement, and the next open on that device, for minutes.
+func (t *ReadRetirement) Interrupt() {
+	t.mu.Lock()
+	f := t.interrupt
+	t.interrupt = nil
+	t.mu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 type readRetirementKey struct{}

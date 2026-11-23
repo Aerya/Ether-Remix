@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -19,15 +20,38 @@ import (
 // its direct-play decoder accepts. Plex's enhanced player requests segmented
 // Matroska; AVPlayer and browser HLS keep the standard TS/fMP4 path.
 func HLSContainer(caps core.ClientCaps, videoCodec, audioCodec string) string {
+	ts := false
 	for _, c := range caps.HLSContainers {
 		switch c {
 		case ContainerMatroska:
 			return ContainerMatroska
-		case "mp4", ContainerFMP4:
+		case "mp4", "m4a", "m4s", ContainerFMP4:
 			return ContainerFMP4
+		case "ts", ContainerMPEGTS:
+			ts = true
 		}
 	}
+	// Jellyfin and Emby carry HEVC in MPEG-TS for a client whose transcoding
+	// profile offers only TS (Jellyfin for Android and Android TV, Wholphin,
+	// Streamyfin). Forcing fMP4 there broke the declared profile and turned a
+	// cheap HEVC remux into a 4K H.264 encode. Apple players cannot decode
+	// HEVC in TS and keep fMP4.
+	if ts && videoCodec == "hevc" && (caps.Protocol == "jellyfin" || caps.Protocol == "emby") && !appleClient(caps) && segmentContainer("", audioCodec) == ContainerMPEGTS {
+		return ContainerMPEGTS
+	}
 	return segmentContainer(videoCodec, audioCodec)
+}
+
+// appleClient reports an identity naming an Apple platform or player.
+func appleClient(caps core.ClientCaps) bool {
+	identity := strings.ToLower(caps.Platform + " " + caps.Product + " " + caps.Device + " " + caps.DeviceName)
+	for _, token := range strings.FieldsFunc(identity, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) {
+		switch token {
+		case "ios", "ipados", "tvos", "iphone", "ipad", "ipod", "apple", "appletv", "macos", "mac", "macintosh", "darwin", "safari", "swiftfin", "infuse", "avplayer", "visionos":
+			return true
+		}
+	}
+	return false
 }
 
 // Plex's enhanced player joins an initialization header and Matroska clusters.

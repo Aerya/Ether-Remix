@@ -6,6 +6,8 @@ import { t, tn } from "../../i18n";
 import { formatBytes, formatPercent } from "../../lib/format";
 import type { CacheSnapshot } from "./Cache";
 import { causeLabel, pinLabel } from "./reasons";
+import { useAsync } from "../../lib/hooks";
+import { apiFetch } from "../../lib/api";
 import { Kpi } from "../../components/Kpi";
 
 export function CacheOverview({
@@ -29,6 +31,14 @@ export function CacheOverview({
   onExplore: () => void;
   onWarm: () => void;
 }) {
+  const vault = useAsync(
+    (signal) =>
+      apiFetch<{ releases: number; bytes: number; capBytes: number; grabsAvoided: number }>(
+        "/cache/vault",
+        { signal },
+      ),
+    [],
+  ).data;
   const used = s?.used ?? 0,
     budget = s?.budget ?? p.budgetBytes;
   const protectedBytes = Math.min(used, s?.protectedBytes ?? 0);
@@ -42,7 +52,7 @@ export function CacheOverview({
     let cause = "";
     if (codes.has("playing")) cause = "playing";
     else if (codes.has("paused")) cause = "paused";
-    else if (pins.includes("playback:live")) cause = "playback:live";
+    else if (pins.includes("playback:live")) cause = "playing";
     else if (pins.includes("playback:inprogress")) cause = "playback:inprogress";
     else if (pins.includes("owner")) cause = "owner";
     else if (pins.includes("preloaded")) cause = "preloaded";
@@ -53,7 +63,7 @@ export function CacheOverview({
   const shelfWarming = s?.preload.state === "filling";
   return (
     <div className="flex min-h-0 flex-col gap-4 cockpit:h-full">
-      <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           [
             t("Retained"),
@@ -89,6 +99,22 @@ export function CacheOverview({
             s ? formatBytes(s.metrics.evictedBytes) : "—",
             t("Released by cache retention"),
           ],
+          [
+            t("Release library"),
+            vault ? tn(vault.releases, "{count} release", "{count} releases") : "—",
+            !vault
+              ? "—"
+              : vault.capBytes > 0
+                ? t("{used} / {cap} · {count} indexer grabs avoided", {
+                    used: formatBytes(vault.bytes),
+                    cap: formatBytes(vault.capBytes),
+                    count: vault.grabsAvoided,
+                  })
+                : t("{used} · {count} indexer grabs avoided", {
+                    used: formatBytes(vault.bytes),
+                    count: vault.grabsAvoided,
+                  }),
+          ],
         ].map(([label, value, hint]) => (
           <Kpi key={label} label={label!} value={value} detail={hint} />
         ))}
@@ -101,6 +127,7 @@ export function CacheOverview({
           bodyClassName="flex flex-col gap-4 cockpit:overflow-y-auto"
           actions={
             <button
+              type="button"
               onClick={onExplore}
               className="text-xs font-medium text-primary hover:underline"
             >
@@ -315,6 +342,7 @@ export function CacheOverview({
             </div>
           </dl>
           <button
+            type="button"
             onClick={onPreloading}
             className="flex items-center gap-1.5 text-left text-xs text-primary hover:underline"
           >

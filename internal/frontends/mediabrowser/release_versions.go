@@ -28,7 +28,14 @@ import (
 
 // detailVariantBudget bounds how long an opened detail page waits for the
 // release search it started, matching the Plex frontend's render budget.
-const detailVariantBudget = 3 * time.Second
+// Jellyfin Android TV gets androidTVDetailVariantBudget instead: its
+// FullDetailsFragment.onResume timer fires after 750 ms and dereferences
+// mBaseItem without a null guard if /Items/{id} has not returned yet.
+// RefillSearchCache keeps warming the cache in the background either way.
+const (
+	detailVariantBudget          = 3 * time.Second
+	androidTVDetailVariantBudget = 400 * time.Millisecond
+)
 
 // refillDetailSearch starts the title's release search when its cached
 // results are missing, as the Plex detail page does, and waits up to
@@ -36,7 +43,7 @@ const detailVariantBudget = 3 * time.Second
 // The resolver returns nil (nothing to wait for) when results are cached,
 // a search is cooling off, or both refill slots are busy.
 func (i *instance) refillDetailSearch(r *http.Request, title frontend.Title) {
-	if i.host.Editions == nil || r == nil || (title.Type != "movie" && title.Type != "episode") {
+	if i.host.Editions == nil || r == nil || title.Key.IsPluginKey() || (title.Type != "movie" && title.Type != "episode") {
 		return
 	}
 	if !title.Released.IsZero() && title.Released.After(time.Now()) {
@@ -47,7 +54,11 @@ func (i *instance) refillDetailSearch(r *http.Request, title frontend.Title) {
 	if done == nil {
 		return
 	}
-	timer := time.NewTimer(detailVariantBudget)
+	budget := detailVariantBudget
+	if frontend.JellyfinAndroidTVClient(device(r).Client) {
+		budget = androidTVDetailVariantBudget
+	}
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case <-done:
@@ -162,7 +173,11 @@ func (i *instance) releaseVariants(r *http.Request, scope frontend.VersionScope,
 		return nil
 	}
 	t := title
-	variants, err := i.host.Editions.Variants(i.identityContext(r), frontend.ResolveRequest{Title: &t, Client: scope.Caps, User: scope.Viewer}, frontend.MaxVariants)
+	ctx := i.identityContext(r)
+	if t.Key.IsPluginKey() {
+		ctx = frontend.WithLocalResponse(ctx)
+	}
+	variants, err := i.host.Editions.Variants(ctx, frontend.ResolveRequest{Title: &t, Client: scope.Caps, User: scope.Viewer}, frontend.MaxVariants)
 	if err != nil || len(variants) < 2 {
 		return nil
 	}
@@ -174,12 +189,8 @@ func (i *instance) releaseVariants(r *http.Request, scope frontend.VersionScope,
 // handle machinery (and dialect shaping) the edition versions use. It returns
 // false when this viewer may not be issued the release, so the source is
 // omitted rather than offered with an unusable Id.
-func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, v frontend.ReleaseVariant) (map[string]any, bool) {
-	if i.host.VersionHandles == nil || v.Release.ID == "" {
-		return nil, false
-	}
-	handle, err := i.host.VersionHandles.Issue(i.identityContext(r), scope, key, v.Release.ID)
-	if err != nil || handle == "" {
+func (i *instance) releaseVersionSourceWithHandle(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant, handle string) (map[string]any, bool) {
+	if handle == "" {
 		return nil, false
 	}
 	source := i.detailMediaSourceDTO(handle, v.Info)
@@ -190,8 +201,20 @@ func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionS
 	}
 	if i.protocol == "jellyfin" {
 		i.jellyfinMediaSourceDTO(source, v.Info, false)
+		i.jellyfinViewerStreamDefaults(r, scope.Viewer, key, original, source, v.Info)
 	}
 	return source, true
+}
+
+func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, v frontend.ReleaseVariant) (map[string]any, bool) {
+	if i.host.VersionHandles == nil || v.Release.ID == "" {
+		return nil, false
+	}
+	handle, err := i.host.VersionHandles.Issue(i.identityContext(r), scope, key, v.Release.ID)
+	if err != nil || handle == "" {
+		return nil, false
+	}
+	return i.releaseVersionSourceWithHandle(r, scope, key, original, v, handle)
 }
 
 // releaseVersionSources appends one Auto source (today's source) followed by
@@ -199,26 +222,97 @@ func (i *instance) releaseVersionSource(r *http.Request, scope frontend.VersionS
 // nil when there is no usable version list, so the caller keeps today's
 // single-source shape.
 func (i *instance) releaseVersionSources(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, title frontend.Title, auto map[string]any) []any {
-	return i.releaseVersionSourcesFor(r, scope, key, i.releaseVariants(r, scope, title), auto)
+	return i.releaseVersionSourcesFor(r, scope, key, title.Language, i.releaseVariants(r, scope, title), auto)
+}
+
+// applyProbedMediaFacts enriches an already-built Auto MediaSource with real
+// probed container streams and media attributes without overwriting live
+// PlaybackInfo streams or exposing estimated facts.
+func (i *instance) applyProbedMediaFacts(source map[string]any, itemID string, info frontend.MediaInfo) {
+	if source == nil || info.Estimated || len(info.Streams) == 0 {
+		return
+	}
+	if hasMediaStreams(source) {
+		return
+	}
+	id, _ := source["Id"].(string)
+	probed := i.detailMediaSourceDTO(id, info)
+	for _, field := range []string{"MediaStreams", "Container", "Size", "RunTimeTicks", "Bitrate", "Chapters"} {
+		if val, ok := probed[field]; ok {
+			source[field] = val
+		}
+	}
+	if i.protocol == "emby" {
+		i.embyMediaSourceDTO(source, itemID, info)
+	}
+	if i.protocol == "jellyfin" {
+		i.jellyfinMediaSourceDTO(source, info, false)
+	}
+}
+
+// hasMediaStreams reports whether a MediaSource already lists its streams.
+func hasMediaStreams(source map[string]any) bool {
+	if existing, ok := source["MediaStreams"].([]any); ok && len(existing) > 0 {
+		return true
+	}
+	if existing, ok := source["MediaStreams"].([]map[string]any); ok && len(existing) > 0 {
+		return true
+	}
+	return false
 }
 
 // releaseVersionSourcesFor is releaseVersionSources with an already-resolved
 // variant list, so PlaybackInfo does not resolve it twice.
-func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, variants []frontend.ReleaseVariant, auto map[string]any) []any {
+func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, original string, variants []frontend.ReleaseVariant, auto map[string]any) []any {
 	if len(variants) < 2 {
 		return nil
 	}
 	out := make([]any, 0, len(variants))
 	if auto != nil {
 		auto["Name"] = autoVersionName
+		hadStreams := hasMediaStreams(auto)
+		for _, v := range variants {
+			if v.Auto {
+				i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(key), v.Info)
+				if !hadStreams {
+					i.jellyfinViewerStreamDefaults(r, scope.Viewer, key, original, auto, v.Info)
+				}
+				break
+			}
+		}
 		out = append(out, auto)
+	}
+	var batched map[string]string
+	if batch, ok := i.host.VersionHandles.(frontend.VersionHandleBatch); ok {
+		releases := make([]string, 0, len(variants))
+		seen := make(map[string]bool, len(variants))
+		for _, v := range variants {
+			if v.Auto || v.Release.ID == "" || seen[v.Release.ID] {
+				continue
+			}
+			seen[v.Release.ID] = true
+			releases = append(releases, v.Release.ID)
+		}
+		if len(releases) > 0 {
+			if issued, err := batch.IssueBatch(i.identityContext(r), scope, key, releases); err == nil {
+				batched = issued
+			}
+		}
 	}
 	offered := 0
 	for _, v := range variants {
 		if v.Auto {
 			continue
 		}
-		source, ok := i.releaseVersionSource(r, scope, key, v)
+		var (
+			source map[string]any
+			ok     bool
+		)
+		if batched != nil {
+			source, ok = i.releaseVersionSourceWithHandle(r, scope, key, original, v, batched[v.Release.ID])
+		} else {
+			source, ok = i.releaseVersionSource(r, scope, key, original, v)
+		}
 		if !ok {
 			continue
 		}
@@ -263,13 +357,25 @@ func (i *instance) issueReleaseHandle(r *http.Request, scope frontend.VersionSco
 	return handle
 }
 
-// playbackTitle loads the title facts the variants service needs. It is one
-// cached catalogue read on the single-item PlaybackInfo path.
+// playbackTitle loads the title facts the variants service needs. It uses
+// StoredItem when available to avoid full detail enrichment on PlaybackInfo.
 func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
 	if i.host.Experience == nil || key == 0 || v == nil {
 		return frontend.Title{}, false
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
+	type storedItemReader interface {
+		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	}
+	var (
+		detail frontend.ItemDetail
+		err    error
+	)
+	if stored, ok := i.host.Experience.(storedItemReader); ok {
+		detail, err = stored.StoredItem(i.identityContext(r), req)
+	} else {
+		detail, err = i.host.Experience.Item(i.identityContext(r), req)
+	}
 	if err != nil || detail.Title.Title == "" {
 		return frontend.Title{}, false
 	}
@@ -290,8 +396,22 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		}
 	}
 	needDefault := scopeErr != nil || len(d.Versions) == 0
-	for _, version := range d.Versions {
+	for n, version := range d.Versions {
 		if releaseID != "" && version.ID != releaseID {
+			continue
+		}
+		// The first configured slot is Auto. Keep MediaBrowser's default
+		// item identity for it; explicit alternatives still use scoped handles.
+		if n == 0 && releaseID == "" && scopeErr == nil && strings.HasPrefix(version.ID, frontend.VersionSelectorPrefix) {
+			auto := i.defaultMediaSource(r, v, token, key)
+			hadStreams := hasMediaStreams(auto)
+			i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(d.Title.Key), version.Media)
+			if !hadStreams {
+				// The Auto slot is what the web client plays by default, so it
+				// needs the viewer's track choice as much as a named version.
+				i.jellyfinViewerStreamDefaults(r, v, key, d.Title.Language, auto, version.Media)
+			}
+			sources = append(sources, auto)
 			continue
 		}
 		if scopeErr != nil {
@@ -318,6 +438,7 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		}
 		if i.protocol == "jellyfin" {
 			i.jellyfinMediaSourceDTO(source, version.Media, false)
+			i.jellyfinViewerStreamDefaults(r, v, key, d.Title.Language, source, version.Media)
 			if name, _ := source["Name"].(string); name == "" {
 				if itemName, ok := dto["Name"].(string); ok && itemName != "" {
 					source["Name"] = itemName

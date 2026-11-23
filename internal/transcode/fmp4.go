@@ -559,6 +559,16 @@ func scanChunk(path string, ti trackInit) (fmp4Chunk, error) {
 	if first < 0 {
 		return c, fmt.Errorf("fmp4: no fragment in %s", path)
 	}
+	if !ti.EditBad && ti.EditShift != 0 {
+		first -= ti.EditShift
+		last -= ti.EditShift
+		if first < 0 {
+			first = 0
+		}
+		if last < first {
+			last = first
+		}
+	}
 	c.start = ticksToDuration(first, ti.Timescale)
 	c.end = ticksToDuration(last, ti.Timescale)
 	for _, p := range c.parts {
@@ -590,9 +600,8 @@ func moofTiming(b []byte, trexDefault uint32) (start, end int64, err error) {
 		}
 		kids, _ := readBoxes(b, traf.start+traf.hdr, traf.end)
 		def := trexDefault
-		var base int64
-		haveBase := false
-		var dur int64
+		var base, cto, dur int64
+		haveBase, haveRun := false, false
 		for _, k := range kids {
 			p := k.payload(b)
 			switch k.typ {
@@ -628,17 +637,26 @@ func moofTiming(b []byte, trexDefault uint32) (start, end int64, err error) {
 				}
 				haveBase = true
 			case "trun":
+				if !haveRun {
+					if off, n, ok := trunFirstOffset(p); ok && n > 0 {
+						cto, haveRun = off, true
+					}
+				}
 				dur += trunDuration(p, def)
 			}
 		}
 		if !haveBase {
 			continue
 		}
-		if start < 0 || base < start {
-			start = base
+		pts := base + cto
+		if pts < 0 {
+			pts = 0
 		}
-		if base+dur > end {
-			end = base + dur
+		if start < 0 || pts < start {
+			start = pts
+		}
+		if pts+dur > end {
+			end = pts + dur
 		}
 	}
 	if start < 0 {

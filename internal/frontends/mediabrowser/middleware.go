@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/support"
 )
@@ -46,6 +47,12 @@ var publicRoutesAllowlist = map[route.Route]bool{
 	{Method: "HEAD", Pattern: "/Items/{itemId}/Images/{imageType}"}:         true,
 	{Method: "GET", Pattern: "/Items/{itemId}/Images/{imageType}/{index}"}:  true,
 	{Method: "HEAD", Pattern: "/Items/{itemId}/Images/{imageType}/{index}"}: true,
+	{Method: "GET", Pattern: "/Users/{userId}/Images/Primary"}:              true,
+	{Method: "HEAD", Pattern: "/Users/{userId}/Images/Primary"}:             true,
+	{Method: "GET", Pattern: "/Users/{userId}/Images/Primary/{index}"}:      true,
+	{Method: "HEAD", Pattern: "/Users/{userId}/Images/Primary/{index}"}:     true,
+	{Method: "GET", Pattern: "/UserImage"}:                                  true,
+	{Method: "HEAD", Pattern: "/UserImage"}:                                 true,
 	{Method: "GET", Pattern: "/sessions/lazy/{path...}"}:                    true,
 	{Method: "HEAD", Pattern: "/sessions/lazy/{path...}"}:                   true,
 	{Method: "GET", Pattern: "/sessions/media/{path...}"}:                   true,
@@ -65,6 +72,19 @@ var anonymousStreamRoutes = map[route.Route]bool{
 	{Method: "HEAD", Pattern: "/Videos/{id}/{name}"}: true,
 	{Method: "GET", Pattern: "/Audio/{id}/{name}"}:   true,
 	{Method: "HEAD", Pattern: "/Audio/{id}/{name}"}:  true,
+}
+
+func validStreamAlias(id, name string) bool {
+	name = strings.ToLower(name)
+	if themeParentID(id) != "" {
+		return name == "stream" || name == "stream.m4a"
+	}
+	switch {
+	case name == "stream", strings.HasPrefix(name, "stream."), name == "universal", name == "master.m3u8", name == "main.m3u8":
+		return true
+	default:
+		return false
+	}
 }
 
 // requestLog records only registered templates: concrete paths can contain
@@ -91,7 +111,29 @@ func (i *instance) requestLog(rt route.Route, next http.Handler) http.Handler {
 }
 
 func (i *instance) routeMiddleware(rt route.Route, next http.Handler) http.Handler {
-	return i.requestLog(rt, i.authenticatedRoute(rt, next))
+	inner := i.authenticatedRoute(rt, next)
+	return i.requestLog(rt, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			ctx := r.Context()
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+			r = r.WithContext(ctx)
+		}
+		inner.ServeHTTP(w, r)
+	}))
+}
+
+func isSensitiveAuthRoute(pattern string) bool {
+	switch pattern {
+	case "/Auth/Keys", "/Auth/Keys/{key}", "/Auth/Keys/{key}/Delete",
+		"/Users/New", "/Users/{userId}/Password", "/Users/Password":
+		return true
+	}
+	return false
 }
 
 func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Handler {
@@ -99,7 +141,8 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 	if rt.Pattern == "/Ether/WebSignIn" {
 		return next
 	}
-	if i.pages != nil && i.host.PageFreshness != nil {
+	sensitive := isSensitiveAuthRoute(rt.Pattern)
+	if !sensitive && i.pages != nil && i.host.PageFreshness != nil {
 		original := next
 		cached := i.pages.wrap(next, i.host.PageFreshness)
 		next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,20 +155,30 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 			cached.ServeHTTP(w, r)
 		})
 	}
-	next = support.Wrap(i.host.Support, string(i.protocol), func(r *http.Request) (*frontend.Viewer, frontend.Device) {
-		if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); !ok {
-			return nil, frontend.Device{}
-		}
-		v, _, err := i.viewer(r)
-		if err != nil {
-			return nil, frontend.Device{}
-		}
-		return v, device(r)
-	}, func(path string) string { return path }, next)
+	if !sensitive {
+		next = support.Wrap(i.host.Support, string(i.protocol), func(r *http.Request) (*frontend.Viewer, frontend.Device) {
+			if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); !ok {
+				return nil, frontend.Device{}
+			}
+			v, _, err := i.viewer(r)
+			if err != nil {
+				return nil, frontend.Device{}
+			}
+			return v, device(r)
+		}, func(path string) string { return path }, next)
+	}
 	if publicRoutesAllowlist[rt] {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if anonymousStreamRoutes[rt] && !validStreamAlias(r.PathValue("id"), r.PathValue("name")) {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+		if i.protocol != "jellyfin" && (rt.Pattern == "/Items/{id}" || rt.Pattern == "/Users/{userId}/Items/{id}") && strings.EqualFold(r.PathValue("id"), "Root") {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
 		v, token, err := i.authenticate(r)
 		if err != nil || v == nil {
 			// A stream alias with no credential at all is answered by the
@@ -145,13 +198,15 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token}))
+		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token, apiKey: frontend.IsAPIKeyCredential(token)}))
 		if _, _, err := i.viewer(r); err == nil {
 			if i.host.ClientSeen != nil {
 				i.host.ClientSeen(device(r).ID)
 			}
-			if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); ok {
-				support.Seen(r, i.host.Support, string(i.protocol), v, device(r))
+			if !sensitive {
+				if _, ok := i.host.Identity.(frontend.GrantDeviceIdentity); ok {
+					support.Seen(r, i.host.Support, string(i.protocol), v, device(r))
+				}
 			}
 		}
 		next.ServeHTTP(w, r)

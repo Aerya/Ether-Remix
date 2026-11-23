@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 var ErrIdentityNotFound = errors.New("simkl: history identity not found")
@@ -87,7 +88,7 @@ func (c AuthClient) IsOrdinaryTV(ctx context.Context, tmdb int64) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "Ether/1.0")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	hc := c.HTTP
 	if hc == nil {
 		hc = metadataClient()

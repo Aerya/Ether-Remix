@@ -41,6 +41,12 @@ func DialectOf(db *sql.DB) Dialect {
 	return SQLite
 }
 
+// SQLiteOnly prefixes a statement that only a SQLite branch of
+// dialect-specific code sends. The PostgreSQL plan check replays SQLite's
+// statements against PostgreSQL and skips these: PostgreSQL runs that
+// branch's own statement instead.
+const SQLiteOnly = "/* sqlite */ "
+
 // Like is the case-insensitive pattern operator for user-facing search:
 // SQLite's LIKE already ignores ASCII case, PostgreSQL needs ILIKE.
 func Like(d Dialect) string {

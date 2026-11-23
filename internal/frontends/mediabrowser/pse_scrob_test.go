@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -52,6 +53,27 @@ func TestPSEScrobLibraries(t *testing.T) {
 	var rating float64
 	played := map[core.RatingKey]bool{}
 	exp := frontendtest.Experience{
+		LibraryItemsFunc: func(_ context.Context, v *core.Viewer, _ core.Device, _ string, q frontend.ItemQuery) (core.Page, error) {
+			if v != viewer {
+				t.Fatal("wrong viewer for provider lookup")
+			}
+			var items []core.Title
+			if q.FilterByProviderIDs {
+				for _, provider := range q.ProviderIDs {
+					for _, typ := range q.Types {
+						if provider.Provider != "tmdb" {
+							continue
+						}
+						for _, title := range catalogue {
+							if title.Type == typ && strconv.FormatInt(title.IDs.TMDB, 10) == provider.ID {
+								items = append(items, title)
+							}
+						}
+					}
+				}
+			}
+			return core.Page{Items: items, Total: len(items)}, nil
+		},
 		ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
 			if req.Viewer != viewer {
 				t.Fatal("wrong viewer for episode lookup")

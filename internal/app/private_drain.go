@@ -76,6 +76,7 @@ func (a *App) pollDrain(ctx context.Context) {
 		return
 	}
 	a.draining.Store(true)
+	a.emitClusterNodeDraining(req.Operation)
 	if remote, ok := a.brokerPlayback.(interface{ SetDraining(bool) }); ok {
 		remote.SetDraining(true)
 	}
@@ -100,6 +101,7 @@ func (a *App) pollDrain(ctx context.Context) {
 // Tick/cleanup alive. Deadline ends waiting, never proves ownership retirement.
 func (a *App) drainPrivate() {
 	a.draining.Store(true)
+	a.emitClusterNodeDraining("shutdown")
 	if remote, ok := a.brokerPlayback.(interface{ SetDraining(bool) }); ok {
 		remote.SetDraining(true)
 	}

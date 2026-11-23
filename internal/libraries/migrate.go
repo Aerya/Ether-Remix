@@ -71,7 +71,7 @@ func (s *Service) MigrateConfigNames(ctx context.Context, moviesName, showsName 
 		if rename.name == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET name = ?, updated_at = ? WHERE id = ? AND source = 'builtin'`,
+		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET name = ?, updated_at = ? WHERE id = ? AND source IN ('builtin', 'catalogue')`,
 			rename.name, now, int64(rename.id)); err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func (s *Service) MigrateConfigRules(ctx context.Context, rules []core.LibraryEx
 		return err
 	}
 	var movieRules, showRules []core.LibraryExclusion
-	for _, r := range rules {
+	for _, r := range core.NormalizeLibraryRules(rules) {
 		switch r.MediaType {
 		case string(core.TypeMovie):
 			cp := cloneRule(r)
@@ -154,7 +154,7 @@ func (s *Service) MigrateConfigRules(ctx context.Context, rules []core.LibraryEx
 			rulesJSON = string(b)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE libraries SET rules = ?, visibility_default = ?, updated_at = ? WHERE id = ? AND source = 'builtin' AND rules = '[]' AND visibility_default = ''`,
+			`UPDATE libraries SET rules = ?, visibility_default = ?, updated_at = ? WHERE id = ? AND source IN ('builtin', 'catalogue') AND rules = '[]' AND visibility_default = ''`,
 			rulesJSON, vis, now, int64(target.id)); err != nil {
 			return err
 		}

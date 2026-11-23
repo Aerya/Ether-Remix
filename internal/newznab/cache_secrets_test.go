@@ -54,7 +54,7 @@ func TestCachedResultsHoldNoAPIKeyAndStillDownload(t *testing.T) {
 	defer srv.Close()
 	cfg := config.Indexer{ID: "idx1", Name: "Fake", URL: srv.URL, APIKey: cacheTestKey, Enabled: true}
 	req := core.SearchRequest{Type: core.TypeMovie, Title: "The Signal", Year: 1999}
-	m := NewManager(db, []config.Indexer{cfg}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{cfg}, Options{Vault: &testVault{}})
 	first, err := m.Search(ctx, req)
 	if err != nil || len(first) == 0 || !strings.Contains(first[0].NZBURL, cacheTestKey) {
 		t.Fatalf("search: %v %+v", err, first)
@@ -69,7 +69,7 @@ func TestCachedResultsHoldNoAPIKeyAndStillDownload(t *testing.T) {
 	}
 	// A restarted server (empty NZB directory) answers from the cache and
 	// the hydrated link authenticates the download.
-	m = NewManager(db, []config.Indexer{cfg}, Options{NZBDir: t.TempDir()})
+	m = NewManager(db, []config.Indexer{cfg}, Options{Vault: &testVault{}})
 	cached, err := m.Search(ctx, req)
 	if err != nil || len(cached) == 0 {
 		t.Fatalf("cached search: %v", err)

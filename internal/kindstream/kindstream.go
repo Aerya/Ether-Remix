@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mimepkg "mime"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -22,6 +24,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/newznab"
+	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
 // Retrieval pattern constants (spec §4.1, §4.3).
@@ -35,9 +40,11 @@ const (
 )
 
 var (
-	// ErrMemberUndecodable is returned when an archive member is compressed or
-	// solid in a format/method that internal/archive cannot decode sequentially.
-	ErrMemberUndecodable = errors.New("kindstream: archive member not sequentially decodable")
+	// ErrMemberUndecodable is returned when an archive member is encrypted
+	// without seekable/sequential support or uses an archive format/compression
+	// method that internal/archive cannot decode sequentially. It wraps
+	// core.ErrArchiveUnstreamable so frontends surface it plainly.
+	ErrMemberUndecodable = fmt.Errorf("kindstream: archive member not sequentially decodable: %w", core.ErrArchiveUnstreamable)
 
 	// ErrHostNotAllowed is returned when a source URL's host is rejected by the
 	// plugin's declared network allowlist.
@@ -63,23 +70,103 @@ type ByteSource interface {
 	Close() error
 }
 
+// SourceFailure is one candidate that failed to open before a later
+// candidate succeeded (or before every candidate failed).
+type SourceFailure struct {
+	Source core.PlayableSource
+	Err    error
+}
+
+// PluginAnswer reports whether the failure points at the plugin's own
+// answer (see ErrPluginAnswer) rather than at an unavailable host.
+func (f SourceFailure) PluginAnswer() bool { return errors.Is(f.Err, ErrPluginAnswer) }
+
+// DefaultMaxNonVideoReleaseGrabs bounds how many non-video Usenet release
+// candidates OpenSources will fetch in a single play attempt before stopping,
+// so a failing play never burns an entire page of indexer grabs (#659).
+const DefaultMaxNonVideoReleaseGrabs = 3
+
 // Deps supplies the runtime dependencies needed by Open and OpenSources
 // (spec §5.1).
 type Deps struct {
-	OpenFile         func(context.Context, core.PlayableSource) (ByteSource, error)
-	HTTP             *http.Client
-	Cache            *blobcache.Namespace
-	OpenRelease      func(ctx context.Context, r core.ReleaseHint) (core.MediaSource, error)
-	Secret           func(ctx context.Context, name string) (string, error)
-	AllowHost        func(host string) bool
-	MaxDownloadBytes int64
-	ItemIndex        int
-	Backoff          *HostBackoff
+	OpenFile    func(context.Context, core.PlayableSource) (ByteSource, error)
+	HTTP        *http.Client
+	Cache       *blobcache.Namespace
+	OpenRelease func(ctx context.Context, r core.ReleaseHint) (core.MediaSource, error)
+	// OpenReleaseSource, when set, is preferred over OpenRelease so release
+	// opening receives the full PlayableSource (MIME, Container, Release).
+	OpenReleaseSource func(ctx context.Context, src core.PlayableSource) (core.MediaSource, error)
+	// DefaultReleaseMIME is the kind-level fallback MIME (e.g. "audio/*",
+	// "application/epub+zip") when a release source omits src.MIME.
+	DefaultReleaseMIME string
+	// MaxNonVideoReleaseGrabs caps how many non-video Usenet release grabs
+	// OpenSources attempts per play (0 uses DefaultMaxNonVideoReleaseGrabs;
+	// negative disables the cap).
+	MaxNonVideoReleaseGrabs int
+	// CandidateOpenTimeout, when positive, bounds how long OpenSources spends
+	// opening any single candidate before moving on to the next candidate.
+	CandidateOpenTimeout time.Duration
+	Secret               func(ctx context.Context, name string) (string, error)
+	AllowHost            func(host string) bool
+	MaxDownloadBytes     int64
+	ItemIndex            int
+	Backoff              *HostBackoff
+	// OnSourceFailed, when set, is called each time a candidate fails to open,
+	// regardless of whether a later candidate succeeds.
+	OnSourceFailed func(attempt, total int, src core.PlayableSource, took time.Duration, err error)
+	// OnSourceSkipped, when set, is called for each candidate that failed
+	// before a later one opened, so the caller can log it and decide
+	// whether the winner may be saved as the item's resolution.
+	OnSourceSkipped func(failures []SourceFailure, winning core.PlayableSource)
+	// ProbeMedia, when set, reads container metadata for an already-opened
+	// ByteSource when a source opts into open-time duration verification
+	// (DurationSec > 0 and DurationToleranceSec > 0). Typically wired by
+	// KindResolver to consult and populate the durable release_probes cache
+	// using ProbeByteSource. When nil, Open falls back directly to
+	// ProbeByteSource without a cache or ffprobe fallback.
+	ProbeMedia func(ctx context.Context, src core.PlayableSource, bs ByteSource) (*core.MediaInfo, error)
+	// SourceRouter, when set, applies Ether's tier source routing (auto/usenet/
+	// debrid, measured startup, stall demotion), grab hedge delay, and startup
+	// stat recording in OpenSources. *resolver.Service implements this
+	// interface directly.
+	SourceRouter SourceRouter
+	// SourceRelease, when set, maps a PlayableSource to the core.Release used
+	// for routing, debrid-cache checks, grab detection, startup stats, and
+	// delivery/stall keys (matching the Release later passed to
+	// ObserveSourceStall during playback). When nil, ReleaseForSource is used.
+	SourceRelease func(core.PlayableSource) core.Release
+	// Title optionally supplies title metadata (runtime, popularity, votes)
+	// for tier routing and delivery bitrate checks.
+	Title *core.Title
+}
+
+// SourceRouter plugs Ether's resolver tier routing, grab-hedge timing, and
+// startup statistics into OpenSources. *resolver.Service satisfies this
+// interface directly.
+type SourceRouter interface {
+	RoutePlayableTier(items []resolver.PlayableRouteCandidate, title *core.Title) []int
+	HealthHedgeDelay(rel core.Release) time.Duration
+	ObserveSourceStartup(rel core.Release, took time.Duration)
 }
 
 // Open resolves a single core.PlayableSource into a random-access ByteSource
-// according to its retrieval pattern (spec §4.3, §5.1).
+// according to its retrieval pattern (spec §4.3, §5.1). When the source sets
+// both DurationSec and DurationToleranceSec > 0, Open verifies the container's
+// running time before returning and rejects mismatches as core.ErrWrongContent
+// and ErrPluginAnswer.
 func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
+	bs, err := openSource(ctx, src, deps)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifySourceDuration(ctx, src, bs, deps); err != nil {
+		_ = bs.Close()
+		return nil, err
+	}
+	return bs, nil
+}
+
+func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -104,9 +191,16 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 		if err != nil {
 			return nil, err
 		}
-		if src.Size > 0 && cached.Size() != src.Size {
+		d := digestsOf(src)
+		if err := d.checkSize(cached.Size()); err != nil {
 			_ = cached.Close()
-			return nil, fmt.Errorf("kindstream: blobRef size %d != declared %d", cached.Size(), src.Size)
+			return nil, err
+		}
+		if d.hasHash() {
+			if err := d.verifyReaderAt(cached, cached.Size()); err != nil {
+				_ = cached.Close()
+				return nil, err
+			}
 		}
 		return finalizeSourceMIME(cached, src.MIME, src.ID)
 	}
@@ -127,7 +221,13 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 		if src.Container == nil {
 			return nil, errors.New("kindstream: container pattern requires core.ContainerRef")
 		}
-		return OpenContainer(ctx, *src.Container, src.MIME, src.MaxBytes, deps)
+		bs, err := OpenContainer(ctx, *src.Container, src.MIME, src.MaxBytes, deps)
+		if err != nil {
+			return nil, err
+		}
+		keySum := sha256.Sum256([]byte(containerExtractCacheKey(*src.Container, bs.Name(), 0, deps.ItemIndex)))
+		cacheKey := "container-" + hex.EncodeToString(keySum[:12]) + "-" + bs.Name()
+		return applyDigests(ctx, bs, digestsOf(src), src.MaxBytes, cacheKey, deps)
 	case PatternRelease:
 		return openReleaseSource(ctx, src, deps)
 	default:
@@ -135,26 +235,459 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 	}
 }
 
-// OpenSources tries each candidate core.PlayableSource in order, returning the first
-// ByteSource that opens and validates cleanly. When all candidates fail (or
-// sources is empty), OpenSources returns an error wrapping
+func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool {
+	if strings.TrimSpace(cand.BlobRef) != "" {
+		return false
+	}
+	pattern := strings.ToLower(strings.TrimSpace(cand.Pattern))
+	if pattern == "" && cand.Release != nil && cand.Container == nil {
+		pattern = PatternRelease
+	}
+	if pattern != PatternRelease || cand.Release == nil {
+		return false
+	}
+	effMIME := nzb.NormalizeMIME(cand.MIME)
+	if effMIME == "" {
+		effMIME = nzb.NormalizeMIME(defaultMIME)
+	}
+	if strings.HasPrefix(effMIME, "video/") {
+		return false
+	}
+	explicitFile := hasExplicitReleaseSelector(*cand.Release)
+	archiveMember := strings.TrimSpace(cand.Release.FileHint) != "" ||
+		(cand.Release.Track != nil && (cand.Release.Track.Number > 0 || strings.TrimSpace(cand.Release.Track.Title) != "")) ||
+		(cand.Container != nil && (strings.TrimSpace(cand.Container.Member) != "" || cand.Container.MemberIndex != nil))
+	if !nzb.IsNonVideoMIME(effMIME) && !explicitFile && !archiveMember {
+		return false
+	}
+
+	r := cand.Release
+	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
+	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" || strings.TrimSpace(r.TorrentURL) != "" ||
+		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != "" || strings.TrimSpace(r.Candidate.TorrentURL) != ""))
+	return hasNZB && !hasTorrent
+}
+
+func effectivePattern(src core.PlayableSource) string {
+	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
+	if pattern == "" {
+		if src.Container != nil {
+			return PatternContainer
+		}
+		if src.Release != nil {
+			return PatternRelease
+		}
+		return PatternRange
+	}
+	return pattern
+}
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// ReleaseForSource builds the default core.Release metadata for a
+// PlayableSource (protocol, ID, infohash, magnet, NZB URL, size, seeders) used
+// by OpenSources for grab detection, tier routing, startup stats, and delivery
+// keys when Deps.SourceRelease is not supplied.
+func ReleaseForSource(src core.PlayableSource) core.Release {
+	rel := core.Release{
+		ID:   strings.TrimSpace(src.ID),
+		Name: strings.TrimSpace(src.Label),
+		Size: src.Size,
+	}
+	if effectivePattern(src) != PatternRelease || src.Release == nil || strings.TrimSpace(src.BlobRef) != "" {
+		rel.Protocol = core.ProtocolHTTP
+		if rel.ID == "" {
+			rel.ID = firstNonEmptyStr(src.URL, src.Path, src.BlobRef)
+		}
+		return rel
+	}
+	r := src.Release
+	var torrentURL string
+	if r.Candidate != nil {
+		rel.InfoHash = strings.ToLower(strings.TrimSpace(r.Candidate.InfoHash))
+		rel.MagnetURL = strings.TrimSpace(r.Candidate.Magnet)
+		torrentURL = strings.TrimSpace(r.Candidate.TorrentURL)
+		rel.NZBURL = strings.TrimSpace(r.Candidate.NZBURL)
+		if rel.Name == "" {
+			rel.Name = strings.TrimSpace(r.Candidate.Title)
+		}
+		if rel.Size <= 0 {
+			rel.Size = r.Candidate.Size
+		}
+		rel.Seeders = r.Candidate.Seeders
+		rel.Indexer = r.Candidate.Indexer
+		rel.IndexerID = r.Candidate.IndexerID
+	}
+	if h := strings.ToLower(strings.TrimSpace(r.InfoHash)); h != "" {
+		rel.InfoHash = h
+	}
+	if m := strings.TrimSpace(r.Magnet); m != "" {
+		rel.MagnetURL = m
+	}
+	if t := strings.TrimSpace(r.TorrentURL); t != "" {
+		torrentURL = t
+	}
+	if u := strings.TrimSpace(r.NZBURL); u != "" {
+		rel.NZBURL = u
+	}
+	if strings.HasPrefix(strings.ToLower(torrentURL), "magnet:") {
+		if rel.MagnetURL == "" {
+			rel.MagnetURL = torrentURL
+		}
+		torrentURL = ""
+	}
+	if rel.InfoHash == "" && rel.MagnetURL != "" {
+		if h := newznab.InfoHashFromMagnet(rel.MagnetURL); h != "" {
+			rel.InfoHash = h
+		}
+	}
+	switch {
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+		rel.Protocol = core.ProtocolTorrent
+		if torrentURL != "" {
+			rel.NZBURL = torrentURL
+		} else {
+			rel.NZBURL = ""
+		}
+	case rel.NZBURL != "":
+		rel.Protocol = core.ProtocolUsenet
+	default:
+		rel.Protocol = core.ProtocolHTTP
+	}
+	if rel.ID == "" {
+		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+	}
+	return rel
+}
+
+func isSourceKnownCached(src core.PlayableSource) bool {
+	return src.Release != nil && src.Release.Candidate != nil &&
+		(src.Release.Candidate.Cached || len(src.Release.Candidate.CachedBy) > 0)
+}
+
+func sourceSpendsGrab(src core.PlayableSource, rel core.Release) bool {
+	if effectivePattern(src) != PatternRelease || src.Release == nil || strings.TrimSpace(src.BlobRef) != "" {
+		return false
+	}
+	return resolver.SpendsGrab(rel)
+}
+
+func isReleaseStartupCandidate(src core.PlayableSource, rel core.Release) bool {
+	return effectivePattern(src) == PatternRelease &&
+		src.Release != nil &&
+		strings.TrimSpace(src.BlobRef) == "" &&
+		(rel.Protocol == core.ProtocolUsenet || rel.Protocol == core.ProtocolTorrent)
+}
+
+func sourcesEquivalent(a, b core.PlayableSource) bool {
+	if a.Tier != nil && b.Tier != nil {
+		return *a.Tier == *b.Tier
+	}
+	return a.Tier == nil && b.Tier == nil
+}
+
+// routeTieredSources reorders contiguous runs of sources sharing a non-nil
+// Tier using Ether's resolver routing (auto/usenet/debrid, measured startup,
+// and stall demotion). Untiered sources (Tier == nil) keep exact plugin order,
+// and distinct tiers never cross boundaries.
+func routeTieredSources(sources []core.PlayableSource, router SourceRouter, relFor func(core.PlayableSource) core.Release, title *core.Title) []core.PlayableSource {
+	if len(sources) < 2 || router == nil {
+		return sources
+	}
+	var out []core.PlayableSource
+	for i := 0; i < len(sources); {
+		if sources[i].Tier == nil {
+			if out != nil {
+				out = append(out, sources[i])
+			}
+			i++
+			continue
+		}
+		tier := *sources[i].Tier
+		j := i + 1
+		for j < len(sources) && sources[j].Tier != nil && *sources[j].Tier == tier {
+			j++
+		}
+		if j-i < 2 {
+			if out != nil {
+				out = append(out, sources[i])
+			}
+			i = j
+			continue
+		}
+		if out == nil {
+			out = make([]core.PlayableSource, 0, len(sources))
+			out = append(out, sources[:i]...)
+		}
+		run := sources[i:j]
+		cands := make([]resolver.PlayableRouteCandidate, len(run))
+		tierTitle := title
+		for k, src := range run {
+			cands[k] = resolver.PlayableRouteCandidate{
+				Release:     relFor(src),
+				KnownCached: isSourceKnownCached(src),
+			}
+			if (tierTitle == nil || tierTitle.Runtime <= 0) && src.DurationSec > 0 {
+				var t core.Title
+				if tierTitle != nil {
+					t = *tierTitle
+				}
+				t.Runtime = time.Duration(src.DurationSec * float64(time.Second))
+				tierTitle = &t
+			}
+		}
+		order := router.RoutePlayableTier(cands, tierTitle)
+		if len(order) != len(run) {
+			out = append(out, run...)
+		} else {
+			for _, idx := range order {
+				out = append(out, run[idx])
+			}
+		}
+		i = j
+	}
+	if out == nil {
+		return sources
+	}
+	return out
+}
+
+// OpenSources opens candidate core.PlayableSources using Ether's ranked
+// sliding window (resolver.RunRankedWindow): two opens stay in flight in rank
+// order, failing opens advance immediately, equivalent later sources may win
+// after resolver.RankedSourceGrace, two confirmed failures widen to four for
+// equivalent candidates, and grab-spending opens join a single healthy-sofar
+// in-flight open only as a hedge after the resolver's health hedge delay.
+// Losing opens are cancelled and their ByteSources closed before returning.
+//
+// When Deps.SourceRouter is set, contiguous sources sharing a non-nil Tier are
+// reordered with Ether's source routing (auto/usenet/debrid, measured startup,
+// stall demotion), and winning release open durations feed back into the shared
+// startup statistics. Sources without a Tier keep exact plugin order.
+//
+// When every candidate fails with core.ErrArchiveUnstreamable, that error is
+// preserved rather than masked as core.ErrSourceUnavailable; when every
+// candidate fails with a permanent rejection (e.g. core.ErrReleaseRejected,
+// archive.ErrMissingVolume, core.ErrNoUsableFile, core.ErrArticleMissing), the
+// returned error wraps core.ErrReleaseRejected rather than
+// core.ErrSourceUnavailable; otherwise all-failed candidates wrap
 // core.ErrSourceUnavailable (spec §4.5).
+//
+// For non-video Usenet release candidates (#659), OpenSources caps grabs per
+// play (DefaultMaxNonVideoReleaseGrabs) so a failing play never burns a full
+// page of indexer grabs, while per-release content failures (such as a missing
+// track, missing archive member, missing articles, or an archive with no usable
+// file) still advance to later releases.
 func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) (ByteSource, core.PlayableSource, error) {
 	if len(sources) == 0 {
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, core.PlayableSource{}, err
+	}
+	relFor := deps.SourceRelease
+	if relFor == nil {
+		relFor = ReleaseForSource
+	}
+	ordered := routeTieredSources(sources, deps.SourceRouter, relFor, deps.Title)
+
+	maxUsenetGrabs := deps.MaxNonVideoReleaseGrabs
+	if maxUsenetGrabs == 0 {
+		maxUsenetGrabs = DefaultMaxNonVideoReleaseGrabs
+	}
+
+	rels := make([]core.Release, len(ordered))
+	grabs := make([]bool, len(ordered))
+	nonVideoUsenet := make([]bool, len(ordered))
+	for i, cand := range ordered {
+		rels[i] = relFor(cand)
+		grabs[i] = sourceSpendsGrab(cand, rels[i])
+		nonVideoUsenet[i] = isNonVideoUsenetRelease(cand, deps.DefaultReleaseMIME)
+	}
+
+	type sourceAttempt struct {
+		bs   ByteSource
+		err  error
+		took time.Duration
+	}
+	attempts := make([]*sourceAttempt, len(ordered))
+	skipErrs := make([]error, len(ordered))
+	usenetNonVideoGrabs := 0
+
+	outcome := resolver.RunRankedWindow(ctx, resolver.RankedWindowConfig[sourceAttempt]{
+		Count:     len(ordered),
+		Width:     2,
+		WideWidth: 4,
+		Grace:     resolver.RankedSourceGrace,
+		Run: func(workCtx context.Context, i int, _ bool) sourceAttempt {
+			candCtx := workCtx
+			var candCancel context.CancelFunc
+			if deps.CandidateOpenTimeout > 0 {
+				candCtx, candCancel = context.WithTimeout(workCtx, deps.CandidateOpenTimeout)
+			}
+			attemptStart := time.Now()
+			bs, err := Open(candCtx, ordered[i], deps)
+			took := time.Since(attemptStart)
+			if candCancel != nil {
+				candCancel()
+			}
+			return sourceAttempt{bs: bs, err: err, took: took}
+		},
+		Succeeded: func(a sourceAttempt) bool {
+			return a.err == nil && a.bs != nil
+		},
+		ConfirmedFailure: func(a sourceAttempt) bool {
+			return isConfirmedSourceFailure(a.err)
+		},
+		Equivalent: func(lead, other int) bool {
+			return sourcesEquivalent(ordered[lead], ordered[other])
+		},
+		SpendsGrab: func(i int) bool {
+			return grabs[i]
+		},
+		HedgeDelay: func(i int) time.Duration {
+			if deps.SourceRouter != nil {
+				return deps.SourceRouter.HealthHedgeDelay(rels[i])
+			}
+			return resolver.DefaultHealthHedgeDelay
+		},
+		BeforeLaunch: func(_, next, _ int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
+			if nonVideoUsenet[next] && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
+				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
+				return resolver.LaunchSkip, time.Time{}
+			}
+			return resolver.LaunchAllow, time.Time{}
+		},
+		OnLaunch: func(i int) {
+			if nonVideoUsenet[i] {
+				usenetNonVideoGrabs++
+			}
+		},
+		OnResult: func(i int, a sourceAttempt) {
+			attempts[i] = &a
+		},
+		OnDrop: func(_ int, a sourceAttempt, _ bool) {
+			if a.bs != nil {
+				_ = a.bs.Close()
+			}
+		},
+	})
+
+	if outcome.Err != nil {
+		return nil, core.PlayableSource{}, outcome.Err
+	}
+	if outcome.Winner >= 0 {
+		winIdx := outcome.Winner
+		winning := ordered[winIdx]
+		if deps.SourceRouter != nil && isReleaseStartupCandidate(winning, rels[winIdx]) {
+			deps.SourceRouter.ObserveSourceStartup(rels[winIdx], max(outcome.Result.took, time.Microsecond))
+		}
+		var failures []SourceFailure
+		for i := 0; i < winIdx; i++ {
+			a := attempts[i]
+			if a == nil || a.err == nil {
+				continue
+			}
+			if deps.OnSourceFailed != nil {
+				deps.OnSourceFailed(i+1, len(ordered), ordered[i], a.took, a.err)
+			}
+			failures = append(failures, SourceFailure{Source: ordered[i], Err: a.err})
+		}
+		if len(failures) > 0 && deps.OnSourceSkipped != nil {
+			deps.OnSourceSkipped(failures, winning)
+		}
+		return outcome.Result.bs, winning, nil
+	}
+
 	var errs []error
-	for _, cand := range sources {
-		if err := ctx.Err(); err != nil {
-			return nil, core.PlayableSource{}, err
+	allUnstreamable := true
+	allRejected := true
+	allWrongContent := true
+	for i, cand := range ordered {
+		if skipErrs[i] != nil {
+			errs = append(errs, skipErrs[i])
+			allUnstreamable = false
+			allRejected = false
+			allWrongContent = false
+			continue
 		}
-		bs, err := Open(ctx, cand, deps)
-		if err == nil {
-			return bs, cand, nil
+		a := attempts[i]
+		if a == nil || a.err == nil {
+			continue
 		}
-		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
+		if deps.OnSourceFailed != nil {
+			deps.OnSourceFailed(i+1, len(ordered), cand, a.took, a.err)
+		}
+		if !errors.Is(a.err, core.ErrArchiveUnstreamable) {
+			allUnstreamable = false
+		}
+		if !isPermanentRejection(a.err) {
+			allRejected = false
+		}
+		if !errors.Is(a.err, core.ErrWrongContent) {
+			allWrongContent = false
+		}
+		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, a.err))
+	}
+	if allUnstreamable && len(errs) > 0 {
+		return nil, core.PlayableSource{}, errors.Join(errs...)
+	}
+	if allRejected && len(errs) > 0 {
+		joined := errors.Join(errs...)
+		if errors.Is(joined, core.ErrReleaseRejected) {
+			return nil, core.PlayableSource{}, joined
+		}
+		return nil, core.PlayableSource{}, fmt.Errorf("%w: %w", core.ErrReleaseRejected, joined)
+	}
+	if allWrongContent && len(errs) > 0 {
+		return nil, core.PlayableSource{}, errors.Join(errs...)
 	}
 	return nil, core.PlayableSource{}, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, errors.Join(errs...))
+}
+
+// isConfirmedSourceFailure reports whether a candidate open failure is a
+// definitive per-source rejection (not a timeout, cancellation, or transient
+// provider error) that counts toward widening the ranked window from 2 to 4.
+func isConfirmedSourceFailure(err error) bool {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return isPermanentRejection(err) ||
+		errors.Is(err, core.ErrWrongContent) ||
+		errors.Is(err, ErrPluginAnswer) ||
+		errors.Is(err, ErrDigestMismatch) ||
+		errors.Is(err, ErrMIMEMismatch) ||
+		errors.Is(err, ErrSizeLimitExceeded) ||
+		errors.Is(err, core.ErrNotCached)
+}
+
+func isPermanentRejection(err error) bool {
+	for _, target := range []error{
+		core.ErrReleaseRejected,
+		core.ErrArchiveUnstreamable,
+		core.ErrNoUsableFile,
+		core.ErrArticleMissing,
+		core.ErrArticleCorrupt,
+		archive.ErrMissingVolume,
+		archive.ErrCorrupt,
+		archive.ErrCompressed,
+		archive.ErrEncrypted,
+		archive.ErrSolid,
+		archive.ErrUnsupported,
+		nzb.ErrInvalid,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
@@ -162,21 +695,35 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 	if err != nil {
 		return nil, err
 	}
+	redirectPatterns, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	hdrs, err := ExpandHeaders(ctx, src.Headers, deps.Secret)
 	if err != nil {
 		return nil, err
 	}
+	knownSize := src.Size
+	if src.SizeApproximate {
+		knownSize = 0
+	}
 	hr, err := newHTTPReaderAt(ctx, httpReaderConfig{
-		Template:  tmpl,
-		Headers:   hdrs,
-		ItemIndex: deps.ItemIndex,
-		KnownSize: src.Size,
-		MIME:      src.MIME,
-		Client:    deps.HTTP,
-		AllowHost: deps.AllowHost,
-		Backoff:   deps.Backoff,
+		Template:              tmpl,
+		Headers:               hdrs,
+		SecretHeaderKeys:      secretHeaderNames(src.Headers),
+		KeepHeadersOnRedirect: redirectPatterns,
+		ItemIndex:             deps.ItemIndex,
+		KnownSize:             knownSize,
+		MIME:                  src.MIME,
+		Client:                deps.HTTP,
+		AllowHost:             deps.AllowHost,
+		Backoff:               deps.Backoff,
 	})
 	if err == nil {
+		if derr := digestsOf(src).checkSize(hr.Size()); derr != nil {
+			_ = hr.Close()
+			return nil, derr
+		}
 		resolvedMIME, merr := verifyAndResolveMIME(hr.SniffBytes(), src.MIME, hr.Name())
 		if merr != nil {
 			_ = hr.Close()
@@ -190,7 +737,7 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 	if errors.As(err, &noRange) {
 		defer noRange.closeBody()
 		// Demote range -> download when within maxBytes (spec §4.3, §5.2).
-		return downloadFromNoRangeResponse(ctx, src.URL, noRange, src.SHA256, src.MIME, src.MaxBytes, deps)
+		return downloadFromNoRangeResponse(ctx, src.URL, noRange, digestsOf(src), src.MIME, src.MaxBytes, deps)
 	}
 	return nil, err
 }
@@ -199,7 +746,7 @@ func downloadFromNoRangeResponse(
 	ctx context.Context,
 	rawURL string,
 	noRange *noRangeSupportError,
-	expectedSHA256 string,
+	digests expectedDigests,
 	declaredMIME string,
 	maxBytes int64,
 	deps Deps,
@@ -224,7 +771,7 @@ func downloadFromNoRangeResponse(
 		if noRange.size > 0 {
 			expectedSize = noRange.size
 		}
-		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, combined, expectedSize, expectedSHA256, resolvedMIME)
+		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, newDigestVerifyReader(combined, digests), expectedSize, digests.sha256, resolvedMIME)
 		if err != nil {
 			if errors.Is(err, blobcache.ErrTooLarge) {
 				return nil, fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
@@ -242,7 +789,7 @@ func downloadFromNoRangeResponse(
 		}, nil
 	}
 
-	return readIntoMemoryByteSource(combined, limit, noRange.size, expectedSHA256, defaultNameFromURL(rawURL), resolvedMIME)
+	return readIntoMemoryByteSource(combined, limit, noRange.size, digests, defaultNameFromURL(rawURL), resolvedMIME)
 }
 
 func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
@@ -255,6 +802,10 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	if err != nil {
 		return nil, err
 	}
+	redirectPatterns, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	targetURL, err := tmpl.Expand(TemplateVars{ItemIndex: deps.ItemIndex}, deps.AllowHost)
 	if err != nil {
 		return nil, err
@@ -263,14 +814,15 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	if err != nil {
 		return nil, err
 	}
+	secretKeys := secretHeaderNames(src.Headers)
 
 	cacheKey := downloadCacheKey(targetURL, deps.ItemIndex)
 	name := defaultNameFromURL(targetURL)
 
 	fetchStream := func(ctx context.Context) (*http.Response, error) {
-		client := deps.HTTP
-		if client == nil {
-			client = &http.Client{Timeout: defaultHTTPTimeout}
+		baseClient := deps.HTTP
+		if baseClient == nil {
+			baseClient = defaultStreamingHTTPClient()
 		}
 		backoff := deps.Backoff
 		if backoff == nil {
@@ -286,6 +838,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 		for k, v := range hdrs {
 			req.Header.Set(k, v)
 		}
+		client := wrapRedirectClient(baseClient, req.URL, req.Header, secretKeys, redirectPatterns, deps.AllowHost)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
@@ -312,7 +865,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 			defer resp.Body.Close()
 
 			expectedSize := int64(-1)
-			if src.Size > 0 {
+			if src.Size > 0 && !src.SizeApproximate {
 				expectedSize = src.Size
 			} else if resp.ContentLength > 0 {
 				expectedSize = resp.ContentLength
@@ -325,7 +878,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 			if limit > 0 {
 				r = &limitEnforcingReader{r: resp.Body, max: limit}
 			}
-			ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, r, expectedSize, src.SHA256, src.MIME)
+			ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, newDigestVerifyReader(r, digestsOf(src)), expectedSize, src.SHA256, src.MIME)
 			if err != nil {
 				if errors.Is(err, blobcache.ErrTooLarge) {
 					return "", fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
@@ -353,11 +906,13 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 		return nil, err
 	}
 	defer resp.Body.Close()
-	expectedSize := src.Size
-	if expectedSize <= 0 && resp.ContentLength > 0 {
+	expectedSize := int64(0)
+	if src.Size > 0 && !src.SizeApproximate {
+		expectedSize = src.Size
+	} else if resp.ContentLength > 0 {
 		expectedSize = resp.ContentLength
 	}
-	return readIntoMemoryByteSource(resp.Body, limit, expectedSize, src.SHA256, name, src.MIME)
+	return readIntoMemoryByteSource(resp.Body, limit, expectedSize, digestsOf(src), name, src.MIME)
 }
 
 // DirectSource represents a validated "direct" core.PlayableSource. Callers that
@@ -396,6 +951,9 @@ func openDirectSource(ctx context.Context, src core.PlayableSource, deps Deps) (
 	if err != nil {
 		return nil, err
 	}
+	if _, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost); err != nil {
+		return nil, err
+	}
 	expandedURL, err := tmpl.Expand(TemplateVars{ItemIndex: deps.ItemIndex}, deps.AllowHost)
 	if err != nil {
 		return nil, err
@@ -405,11 +963,21 @@ func openDirectSource(ctx context.Context, src core.PlayableSource, deps Deps) (
 		return nil, err
 	}
 	mime := strings.TrimSpace(src.MIME)
+	if mime == "" || mime == "application/octet-stream" {
+		// A direct link without a declared type gets one from its file
+		// extension (audio/mpeg for .mp3, application/epub+zip for .epub)
+		// so clients receive a usable Content-Type.
+		if u, perr := url.Parse(expandedURL); perr == nil {
+			if t := mimepkg.TypeByExtension(strings.ToLower(path.Ext(u.Path))); t != "" {
+				mime = strings.TrimSpace(strings.SplitN(t, ";", 2)[0])
+			}
+		}
+	}
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
 	return &DirectSource{
-		ctx:     ctx,
+		ctx:     context.WithoutCancel(ctx),
 		src:     src,
 		deps:    deps,
 		url:     expandedURL,
@@ -427,7 +995,9 @@ func (d *DirectSource) ensureDelegate() (ByteSource, error) {
 	}
 	cp := d.src
 	cp.Pattern = PatternRange
-	bs, err := openRangeSource(d.ctx, cp, d.deps)
+	openCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+	bs, err := openRangeSource(openCtx, cp, d.deps)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +1014,7 @@ func (d *DirectSource) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func (d *DirectSource) Size() int64 {
-	if d.src.Size > 0 {
+	if d.src.Size > 0 && !d.src.SizeApproximate {
 		return d.src.Size
 	}
 	if bs, err := d.ensureDelegate(); err == nil {
@@ -471,31 +1041,111 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	if src.Release == nil {
 		return nil, errors.New("kindstream: release pattern requires core.ReleaseHint")
 	}
-	if deps.OpenRelease == nil {
+	var (
+		ms  core.MediaSource
+		err error
+	)
+	if deps.OpenReleaseSource != nil {
+		ms, err = deps.OpenReleaseSource(ctx, src)
+	} else if deps.OpenRelease != nil {
+		ms, err = deps.OpenRelease(ctx, *src.Release)
+	} else {
 		return nil, errors.New("kindstream: OpenRelease dependency is not configured")
 	}
-	ms, err := deps.OpenRelease(ctx, *src.Release)
 	if err != nil {
+		if hasExplicitReleaseOrMemberSelector(src) && errors.Is(err, core.ErrWrongContent) {
+			// The plugin named a file or archive member the release does not
+			// contain as named: its answer is wrong, the release is not down.
+			return nil, fmt.Errorf("%w: %w", ErrPluginAnswer, err)
+		}
 		return nil, err
+	}
+
+	effMIME := strings.TrimSpace(src.MIME)
+	if effMIME == "" {
+		effMIME = strings.TrimSpace(deps.DefaultReleaseMIME)
+	}
+
+	// Compressed or solid multi-volume non-video archives planned by
+	// stream.Engine hand over their raw volumes so openContainerOverVolumes
+	// decodes them through the shared internal/archive stack into deps.Cache.
+	if avs, ok := ms.(core.ArchiveVolumeSource); ok {
+		rawVols, fmtHint, member := avs.ArchiveVolumes()
+		if len(rawVols) == 0 {
+			_ = ms.Close()
+			return nil, fmt.Errorf("kindstream: archive volume source has no volumes: %w", core.ErrNoUsableFile)
+		}
+		vols := make([]archive.Volume, len(rawVols))
+		for i, rv := range rawVols {
+			vols[i] = archive.Volume{R: rv, Size: rv.Size()}
+		}
+		pwSecret := src.Release.PasswordSecret
+		var memberIdx *int
+		if src.Container != nil {
+			if src.Container.PasswordSecret != "" {
+				pwSecret = src.Container.PasswordSecret
+			}
+			if member == "" {
+				member = src.Container.Member
+				memberIdx = src.Container.MemberIndex
+			}
+			if fmtHint == "" {
+				fmtHint = src.Container.Format
+			}
+		} else if member == "" && src.Release.FileHint != "" {
+			member = src.Release.FileHint
+		}
+		cacheSeed := ms.ReleaseID() + "|" + ms.Name()
+		return openContainerOverVolumes(ctx, vols, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, src.Release.Track, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
+	}
+
+	// A deflate-compressed member streamed out of a provider's server-side ZIP
+	// (such as TorBox's 100+-file auto-zip) is inflated into deps.Cache first,
+	// then continues through normal container unwrapping (member-inside-a-member)
+	// and digest verification (#709).
+	if czs, ok := ms.(core.CompressedZipMemberSource); ok {
+		decoded, err := extractCompressedZipMember(ctx, ms, czs, effMIME, src.MaxBytes, deps)
+		_ = ms.Close()
+		if err != nil {
+			return nil, err
+		}
+		ms = decoded
 	}
 
 	wrapped := &mediaSourceByteSource{
 		ms:   ms,
 		name: path.Base(ms.Name()),
-		mime: src.MIME,
+		mime: effMIME,
 	}
 	if wrapped.name == "" || wrapped.name == "." || wrapped.name == "/" {
 		wrapped.name = ms.ReleaseID()
 	}
 
+	resolvedMember := false
+	if rms, ok := ms.(core.ResolvedMemberSource); ok && rms.ResolvedArchiveMember() {
+		resolvedMember = true
+	}
+
 	// Check if the release should compose with Container extraction (spec §4.3:
 	// "If the resolved file in the release is itself an archive (.rar, .cbz, .7z),
-	// release and container compose").
+	// release and container compose"). Use PrefetchReaderAt when available so a
+	// backing-off Usenet candidate fails fast here instead of holding candidate
+	// iteration for 45s.
 	var head [probeHeadBytes]byte
 	headLen := min(ms.Size(), int64(probeHeadBytes))
 	var headSlice []byte
 	if headLen > 0 {
-		n, rerr := ms.ReadAt(head[:headLen], 0)
+		var (
+			n    int
+			rerr error
+		)
+		if pr, ok := ms.(core.PrefetchReaderAt); ok {
+			n, rerr = pr.ReadAtPrefetchContext(ctx, head[:headLen], 0)
+		} else if cr, ok := ms.(core.ContextReaderAt); ok {
+			n, rerr = cr.ReadAtContext(ctx, head[:headLen], 0)
+		} else {
+			n, rerr = ms.ReadAt(head[:headLen], 0)
+		}
 		if rerr != nil && !errors.Is(rerr, io.EOF) {
 			_ = ms.Close()
 			return nil, rerr
@@ -504,7 +1154,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	}
 
 	archFmt := archive.Detect(headSlice)
-	if src.Container != nil || (archFmt != archive.FormatUnknown && !isDeclaredArchiveMIME(src.MIME)) {
+	if !resolvedMember && (src.Container != nil || (archFmt != archive.FormatUnknown && shouldAutoComposeReleaseArchive(src, effMIME, wrapped.name, headSlice))) {
 		pwSecret := src.Release.PasswordSecret
 		var member string
 		var memberIdx *int
@@ -516,30 +1166,104 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Container.Member
 			memberIdx = src.Container.MemberIndex
 			fmtHint = src.Container.Format
-		} else if src.Release.FileHint != "" {
+		} else if src.Release.FileHint != "" && !fileHintMatchesFile(src.Release.FileHint, wrapped.name) {
 			member = src.Release.FileHint
 		}
-		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, fmtHint, member, memberIdx, pwSecret, src.MIME, deps)
+		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
+		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, src.Release.Track, pwSecret, effMIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
-	resolvedMIME, merr := verifyAndResolveMIME(headSlice, src.MIME, wrapped.name)
+	declaredMIME := effMIME
+	if declaredMIME == "" && !hasVideoFileExtension(wrapped.name) {
+		// Non-video release files without an explicit plugin MIME must never
+		// receive a guessed video/* MIME (#574).
+		declaredMIME = "application/octet-stream"
+	}
+	resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, wrapped.name)
 	if merr != nil {
 		_ = ms.Close()
 		return nil, merr
 	}
 	wrapped.mime = resolvedMIME
-	return wrapped, nil
+	keySum := sha256.Sum256([]byte(ms.ReleaseID() + "|" + wrapped.name))
+	cacheKey := "rel-" + hex.EncodeToString(keySum[:12]) + "-" + wrapped.name
+	return applyDigests(ctx, wrapped, digestsOf(src), src.MaxBytes, cacheKey, deps)
+}
+
+func fileHintMatchesFile(fileHint, fileName string) bool {
+	hint := strings.TrimSpace(strings.ReplaceAll(fileHint, "\\", "/"))
+	if hint == "" || fileName == "" {
+		return false
+	}
+	return strings.EqualFold(path.Base(fileName), path.Base(hint))
+}
+
+func shouldAutoComposeReleaseArchive(src core.PlayableSource, effectiveMIME, fileName string, head []byte) bool {
+	decl := normalizeMIME(effectiveMIME)
+	if nzb.IsArchiveMIME(decl) {
+		return false
+	}
+	switch strings.ToLower(path.Ext(fileName)) {
+	case ".epub", ".cbz", ".cbr", ".cb7":
+		return false
+	}
+	if magic, ok := sniffMagicBytes(head); ok && magic == "application/epub+zip" {
+		return false
+	}
+	if nzb.MIMEFamily(decl) == "comic" {
+		return false
+	}
+	if src.Release != nil && ((strings.TrimSpace(src.Release.FileHint) != "" && !fileHintMatchesFile(src.Release.FileHint, fileName)) || (src.Release.Track != nil && (src.Release.Track.Number > 0 || strings.TrimSpace(src.Release.Track.Title) != ""))) {
+		return true
+	}
+	if decl == "application/octet-stream" {
+		return false
+	}
+	// When a plugin explicitly selects a file in the release without a
+	// ContainerRef or inner media MIME, serve the selected file itself rather
+	// than unwrapping its first archive entry.
+	if decl == "" && src.Release != nil && (hasExplicitReleaseSelector(*src.Release) || fileHintMatchesFile(src.Release.FileHint, fileName)) {
+		return false
+	}
+	return true
+}
+
+func hasExplicitReleaseSelector(h core.ReleaseHint) bool {
+	if strings.TrimSpace(h.File) != "" || h.FileIndex != nil {
+		return true
+	}
+	return h.Candidate != nil && h.Candidate.FileIndex != nil
+}
+
+func hasExplicitReleaseOrMemberSelector(src core.PlayableSource) bool {
+	if src.Release != nil && hasExplicitReleaseSelector(*src.Release) {
+		return true
+	}
+	return src.Container != nil && (strings.TrimSpace(src.Container.Member) != "" || src.Container.MemberIndex != nil)
+}
+
+func hasVideoFileExtension(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mpg", ".mpeg", ".wmv", ".flv":
+		return true
+	default:
+		return false
+	}
 }
 
 func openContainerOverVolumes(
 	ctx context.Context,
 	vols []archive.Volume,
 	closers []io.Closer,
+	cacheSeed string,
 	formatHint string,
 	memberName string,
 	memberIdx *int,
+	track *core.TrackHint,
 	passwordSecret string,
 	declaredMIME string,
+	maxBytes int64,
+	digests expectedDigests,
 	deps Deps,
 ) (ByteSource, error) {
 	closeAll := func() {
@@ -560,48 +1284,78 @@ func openContainerOverVolumes(
 		}
 		password = pw
 	}
-	format, err := detectContainerFormat(vols[0], formatHint)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	members, err := listContainerMembers(ctx, format, vols, password)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	selected, _, err := selectArchiveMember(members, memberName, memberIdx)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	mr, err := archive.NewMemberReader(selected, vols)
-	if err != nil {
-		closeAll()
-		if errors.Is(err, archive.ErrCompressed) || errors.Is(err, archive.ErrSolid) {
-			return nil, fmt.Errorf("%w: %v", ErrMemberUndecodable, err)
+	bufVols := make([]archive.Volume, len(vols))
+	for i, v := range vols {
+		bufVols[i] = archive.Volume{
+			R:    newSeqBufferedReaderAt(ctx, v.R, v.Size),
+			Size: v.Size,
 		}
+	}
+	format, err := detectContainerFormat(bufVols[0], formatHint)
+	if err != nil {
+		closeAll()
+		return nil, wrapArchiveUnstreamable(err)
+	}
+	members, zipEntries, err := listContainerMembers(ctx, format, bufVols, password)
+	if err != nil {
+		closeAll()
+		return nil, wrapArchiveUnstreamable(err)
+	}
+	selected, nonDirIdx, err := selectArchiveMemberForMIME(members, memberName, memberIdx, track, declaredMIME)
+	if err != nil {
+		closeAll()
 		return nil, err
 	}
-	var head [probeHeadBytes]byte
-	headLen := min(selected.Size, int64(probeHeadBytes))
-	var headSlice []byte
-	if headLen > 0 {
-		n, _ := mr.ReadAt(head[:headLen], 0)
-		headSlice = head[:n]
-	}
-	resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, selected.Name)
-	if merr != nil {
+	// The archive directory already knows the member's size: a declared
+	// size that disagrees rejects the wrong member before any data reads.
+	if err := digests.checkSize(selected.Size); err != nil {
 		closeAll()
-		return nil, merr
+		return nil, err
 	}
-	return &containerMemberSource{
-		r:       mr,
-		size:    selected.Size,
-		name:    memberDisplayName(selected.Name),
-		mime:    resolvedMIME,
-		closers: closers,
-	}, nil
+	streamErr := selected.Streamable()
+	if streamErr == nil {
+		if format == archive.FormatZIP && len(selected.Extents) == 0 && selected.Size > 0 {
+			resolved, rerr := resolveZIPMemberAt(bufVols, zipEntries, nonDirIdx)
+			if rerr != nil {
+				closeAll()
+				return nil, wrapArchiveUnstreamable(rerr)
+			}
+			selected = resolved
+		}
+		mr, err := archive.NewMemberReader(selected, vols)
+		if err != nil {
+			closeAll()
+			return nil, wrapArchiveUnstreamable(err)
+		}
+		var head [probeHeadBytes]byte
+		headLen := min(selected.Size, int64(probeHeadBytes))
+		var headSlice []byte
+		if headLen > 0 {
+			n, _ := mr.ReadAt(head[:headLen], 0)
+			headSlice = head[:n]
+		}
+		resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, selected.Name)
+		if merr != nil {
+			closeAll()
+			return nil, merr
+		}
+		memberSrc := &containerMemberSource{
+			r:       mr,
+			size:    selected.Size,
+			name:    memberDisplayName(selected.Name),
+			mime:    resolvedMIME,
+			closers: closers,
+		}
+		keySum := sha256.Sum256([]byte(cacheSeed + "|" + selected.Name))
+		memberKey := "relmember-" + hex.EncodeToString(keySum[:12]) + "-" + memberSrc.name
+		return applyDigests(ctx, memberSrc, digests, maxBytes, memberKey, deps)
+	}
+	if errors.Is(streamErr, archive.ErrCompressed) || errors.Is(streamErr, archive.ErrSolid) {
+		defer closeAll()
+		return extractFromOpenVolumes(ctx, vols, cacheSeed, format, memberName, selected, nonDirIdx, declaredMIME, maxBytes, digests, deps)
+	}
+	closeAll()
+	return nil, wrapArchiveUnstreamable(streamErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -655,16 +1409,28 @@ func verifyAndResolveMIME(head []byte, declared string, filename string) (string
 		if magicMIME == "text/html" && declaredBase != "" && declaredBase != "text/html" {
 			return "", fmt.Errorf("%w: declared %q, sniffed %q", ErrMIMEMismatch, declaredBase, magicMIME)
 		}
-		if declaredBase != "" && declaredBase != "application/octet-stream" {
+		if declaredBase == "application/octet-stream" {
+			return "application/octet-stream", nil
+		}
+		if declaredBase != "" {
 			declFam := mimeFamily(declaredBase)
 			sniffFam := mimeFamily(magicMIME)
-			if declFam != "" && sniffFam != "" && declFam != sniffFam && !compatibleArchiveMIME(declaredBase, magicMIME) {
+			if declFam != "" && sniffFam != "" && declFam != sniffFam &&
+				!compatibleArchiveMIME(declaredBase, magicMIME) &&
+				!compatibleBookMIME(declaredBase, magicMIME) {
 				return "", fmt.Errorf("%w: declared %q (%s), sniffed %q (%s)", ErrMIMEMismatch, declaredBase, declFam, magicMIME, sniffFam)
+			}
+			if declFam == "" {
+				// Preserve explicit custom application/* or vendor MIME types.
+				return declaredBase, nil
 			}
 		}
 		// Keep comicbook/ebook subtype if magic is the underlying container (e.g. application/vnd.comicbook+zip over zip).
-		if compatibleArchiveMIME(declaredBase, magicMIME) && declaredBase != "application/octet-stream" && declaredBase != "" {
+		if compatibleArchiveMIME(declaredBase, magicMIME) && declaredBase != "" {
 			return declaredBase, nil
+		}
+		if declaredBase == "" && strings.HasPrefix(magicMIME, "video/") && filename != "" && !hasVideoFileExtension(filename) {
+			return "application/octet-stream", nil
 		}
 		return magicMIME, nil
 	}
@@ -674,7 +1440,7 @@ func verifyAndResolveMIME(head []byte, declared string, filename string) (string
 	}
 	if len(head) > 0 {
 		detected := normalizeMIME(http.DetectContentType(head))
-		if detected != "" {
+		if detected != "" && !strings.HasPrefix(detected, "video/") {
 			return detected, nil
 		}
 	}
@@ -805,6 +1571,10 @@ func compatibleArchiveMIME(declared, sniffed string) bool {
 	return false
 }
 
+func compatibleBookMIME(declared, sniffed string) bool {
+	return nzb.MIMEFamily(declared) == "book" && nzb.MIMEFamily(sniffed) == "book"
+}
+
 // ---------------------------------------------------------------------------
 // Transcode bridge & HTTP serving helpers for Slice J (spec §15.1)
 
@@ -844,10 +1614,12 @@ func (b *byteSourceSeeker) Close() error {
 // Content-Length).
 func Handler(src ByteSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := src.MIME(); m != "" {
-			w.Header().Set("Content-Type", m)
+		m := strings.TrimSpace(src.MIME())
+		if m == "" {
+			m = "application/octet-stream"
 		}
-		sr := io.NewSectionReader(src, 0, src.Size())
+		w.Header().Set("Content-Type", m)
+		sr := io.NewSectionReader(ReadAhead(r.Context(), src, src.Size()), 0, src.Size())
 		http.ServeContent(w, r, src.Name(), time.Time{}, sr)
 	})
 }
@@ -902,6 +1674,31 @@ type byteSourceMediaAdapter struct {
 
 func (a *byteSourceMediaAdapter) ReleaseID() string { return a.releaseID }
 
+func (a *byteSourceMediaAdapter) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := a.ByteSource.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
+	return a.ByteSource.ReadAt(p, off)
+}
+
+// UnwrapMediaSource returns the underlying core.MediaSource when bs wraps one
+// directly without archive extraction, preserving optional playback interfaces.
+func UnwrapMediaSource(bs ByteSource) core.MediaSource {
+	for bs != nil {
+		switch v := bs.(type) {
+		case *mediaSourceByteSource:
+			return v.ms
+		case *renamedByteSource:
+			bs = v.ByteSource
+		case interface{ UnwrapByteSource() ByteSource }:
+			bs = v.UnwrapByteSource()
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 
@@ -940,7 +1737,7 @@ func (l *limitEnforcingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, expectedSHA256, name, declaredMIME string) (ByteSource, error) {
+func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, digests expectedDigests, name, declaredMIME string) (ByteSource, error) {
 	if limit > 0 {
 		r = &limitEnforcingReader{r: r, max: limit}
 	}
@@ -951,12 +1748,11 @@ func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, expectedSH
 	if expectedSize > 0 && int64(len(data)) != expectedSize {
 		return nil, fmt.Errorf("kindstream: size mismatch: got %d bytes, want %d", len(data), expectedSize)
 	}
-	if strings.TrimSpace(expectedSHA256) != "" {
-		sum := sha256.Sum256(data)
-		got := hex.EncodeToString(sum[:])
-		if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
-			return nil, fmt.Errorf("kindstream: sha256 mismatch: got %s, want %s", got, expectedSHA256)
-		}
+	if digests.size <= 0 {
+		digests.size = expectedSize
+	}
+	if err := digests.verifyBytes(data); err != nil {
+		return nil, err
 	}
 	head := data[:min(len(data), probeHeadBytes)]
 	resolvedMIME, err := verifyAndResolveMIME(head, declaredMIME, name)
@@ -1007,6 +1803,13 @@ func (r *renamedByteSource) MIME() string {
 	return r.ByteSource.MIME()
 }
 
+func (r *renamedByteSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := r.ByteSource.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
+	return r.ByteSource.ReadAt(p, off)
+}
+
 type mediaSourceByteSource struct {
 	ms   core.MediaSource
 	name string
@@ -1014,6 +1817,13 @@ type mediaSourceByteSource struct {
 }
 
 func (m *mediaSourceByteSource) ReadAt(p []byte, off int64) (int, error) {
+	return m.ms.ReadAt(p, off)
+}
+
+func (m *mediaSourceByteSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := m.ms.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
 	return m.ms.ReadAt(p, off)
 }
 

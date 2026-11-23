@@ -159,6 +159,9 @@ func (s *Service) commitGuideReview(ctx context.Context, req GuideMatchRequest) 
 	if _, e = tx.ExecContext(ctx, `DELETE FROM livetv_guide_undo WHERE expires_ms<=?`, s.o.Now().UnixMilli()); e != nil {
 		return res, e
 	}
+	if _, _, e = s.reconcileAutoBackupsTx(ctx, tx, 0, nil); e != nil {
+		return res, e
+	}
 	res.Matched = len(entries)
 	return res, tx.Commit()
 }

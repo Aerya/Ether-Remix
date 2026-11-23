@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 // embyItemDTO adds facts that apply to both Emby list and detail items.
@@ -41,6 +43,16 @@ func (i *instance) embyItemDTO(m map[string]any, t frontend.Title, _ frontend.Wa
 	if len(urls) > 0 {
 		m["ExternalUrls"] = urls
 	}
+	if t.ChildCount > 0 {
+		if _, ok := m["ChildCount"]; !ok {
+			m["ChildCount"] = t.ChildCount
+		}
+	}
+	if t.LeafCount > 0 {
+		if _, ok := m["RecursiveItemCount"]; !ok {
+			m["RecursiveItemCount"] = t.LeafCount
+		}
+	}
 	// List and detail responses both carry these collections. An empty value
 	// means this item has no such asset.
 	if _, ok := m["BackdropImageTags"]; !ok {
@@ -61,13 +73,19 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 	m["SupportsSync"] = false
 	trailers := 0
 	for _, extra := range d.Extras {
-		if strings.EqualFold(extra.Kind, "trailer") {
+		if extra.Key != 0 && isTrailerExtra(extra) {
 			trailers++
 		}
 	}
 	m["LocalTrailerCount"] = trailers
 	if remote := jellyfinRemoteTrailers(d); len(remote) > 0 {
 		m["RemoteTrailers"] = remote
+	} else if d.Title.RemoteTrailerURL != "" {
+		name := d.Title.RemoteTrailerName
+		if name == "" {
+			name = "Trailer"
+		}
+		m["RemoteTrailers"] = []any{map[string]string{"Name": name, "Url": d.Title.RemoteTrailerURL}}
 	}
 	for _, key := range []string{"RemoteTrailers", "People", "Studios", "TagItems", "Taglines", "GenreItems"} {
 		if _, ok := m[key]; !ok {
@@ -85,10 +103,15 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 		if _, ok := m["DisplayOrder"]; !ok {
 			m["DisplayOrder"] = "Aired"
 		}
-		if d.Title.ChildCount > 0 {
-			if _, ok := m["ChildCount"]; !ok {
-				m["ChildCount"] = d.Title.ChildCount
-			}
+	}
+	if d.Title.ChildCount > 0 {
+		if _, ok := m["ChildCount"]; !ok {
+			m["ChildCount"] = d.Title.ChildCount
+		}
+	}
+	if d.Title.LeafCount > 0 {
+		if _, ok := m["RecursiveItemCount"]; !ok {
+			m["RecursiveItemCount"] = d.Title.LeafCount
 		}
 	}
 	if id, ok := m["Id"].(string); ok && id != "" {
@@ -98,7 +121,30 @@ func (i *instance) embyItemDetailDTO(m map[string]any, d frontend.ItemDetail) {
 	if container, ok := m["Container"].(string); ok {
 		if mime, ok := embyVideoMime(container); ok {
 			m["MimeType"] = mime
+		} else if _, mime, ok := reading.CanonicalFormat(container); ok {
+			m["MimeType"] = mime
 		}
+	}
+	if mbIsBookItem(d.Title) {
+		if _, ok := m["FileName"]; !ok {
+			if p, ok := m["Path"].(string); ok && p != "" {
+				m["FileName"] = path.Base(p)
+			}
+		}
+	}
+	// Item-level chapters (declared, or derived from an audiobook's ordered
+	// parts) are known before any source is probed; a probed version's own
+	// chapters replace them below.
+	if len(d.Chapters) > 0 {
+		chapters := make([]any, 0, len(d.Chapters))
+		for index, chapter := range d.Chapters {
+			entry := map[string]any{"ChapterIndex": index, "MarkerType": "Chapter", "StartPositionTicks": chapter.Start.Nanoseconds() / 100}
+			if chapter.Title != "" {
+				entry["Name"] = chapter.Title
+			}
+			chapters = append(chapters, entry)
+		}
+		m["Chapters"] = chapters
 	}
 	v, ok := embyDetailVersion(d.Versions)
 	if !ok {

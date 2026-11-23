@@ -3,18 +3,24 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/plugins/catalogue"
 	"github.com/braedonsaunders/ether/internal/plugins/kit"
+	"go.yaml.in/yaml/v3"
 )
 
 const pluginUsage = `usage:
@@ -39,9 +45,10 @@ const pluginUsage = `usage:
       Watch files in <dir>, hot-reload into a running Ether server via the
       Studio API, and stream plugin logs.
 
-  ether plugin publish [<dir|pkg>]
-      Validate the plugin and print instructions for opening a pull request
-      against the Ether community catalogue repository.
+  ether plugin publish [--url <asset-url>] [-o <out.etherpkg>] [<dir|pkg>]
+      Pack a verified .etherpkg, compute its SHA-256 digest, and print a
+      validated plugins/<id>.yaml entry and PR steps for
+      https://github.com/braedonsaunders/ether-plugins.
 `
 
 func runPlugin(args []string, stdout, stderr io.Writer) int {
@@ -392,9 +399,29 @@ func dirSnapshot(dir string) string {
 	return b.String()
 }
 
+const marketplaceRepoURL = "https://github.com/braedonsaunders/ether-plugins"
+
+type publishEntryYAML struct {
+	ID           string              `yaml:"id"`
+	Name         string              `yaml:"name"`
+	Summary      string              `yaml:"summary"`
+	Description  string              `yaml:"description,omitempty"`
+	Kind         string              `yaml:"kind"`
+	Icon         string              `yaml:"icon,omitempty"`
+	Repo         string              `yaml:"repo,omitempty"`
+	Homepage     string              `yaml:"homepage,omitempty"`
+	Author       string              `yaml:"author,omitempty"`
+	License      string              `yaml:"license,omitempty"`
+	Capabilities []string            `yaml:"capabilities,omitempty"`
+	Permissions  plugins.Permissions `yaml:"permissions,omitempty"`
+	Versions     []catalogue.Version `yaml:"versions"`
+}
+
 func runPluginPublish(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ether plugin publish", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	assetURL := fs.String("url", "", "public release asset URL for the .etherpkg")
+	outPath := fs.String("o", "", "output .etherpkg path")
 	pos := parseInterleaved(fs, args)
 	target := "."
 	if len(pos) == 1 {
@@ -403,6 +430,16 @@ func runPluginPublish(ctx context.Context, args []string, stdout, stderr io.Writ
 		fmt.Fprint(stderr, pluginUsage)
 		return 2
 	}
+
+	cleanURL := strings.TrimSpace(*assetURL)
+	if cleanURL != "" {
+		u, err := url.Parse(cleanURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			fmt.Fprintln(stderr, "ether plugin publish: --url must be an http(s) release asset URL")
+			return 2
+		}
+	}
+
 	pkg, err := kit.Load(target)
 	if err != nil {
 		fmt.Fprintln(stderr, "ether plugin publish:", err)
@@ -413,28 +450,140 @@ func runPluginPublish(ctx context.Context, args []string, stdout, stderr io.Writ
 		fmt.Fprint(stderr, pluginReport(rep))
 		return 1
 	}
-	pkgBytes, err := kit.Pack(pkg)
-	if err != nil {
-		fmt.Fprintln(stderr, "ether plugin publish:", err)
+	if pkg.Manifest.Ether == nil {
+		fmt.Fprintln(stderr, "ether plugin publish: marketplace entries require an ether manifest block")
 		return 1
 	}
-	unpacked, err := kit.LoadPkgBytes(pkgBytes)
-	if err != nil {
-		fmt.Fprintln(stderr, "ether plugin publish:", err)
-		return 1
-	}
-	digest := strings.TrimSpace(string(unpacked.Files["digest"]))
 
-	fmt.Fprintf(stdout, "Verified %s %s (%s)\n", pkg.Manifest.ID, pkg.Manifest.Version, pkg.Manifest.Ether.Kind)
-	fmt.Fprintf(stdout, "Package digest: %s\n\n", digest)
-	fmt.Fprintf(stdout, "To publish %s to the Ether community catalogue:\n", pkg.Manifest.Name)
-	fmt.Fprintf(stdout, "  1. Pack the release archive:\n")
-	fmt.Fprintf(stdout, "       ether plugin pack -o %s-%s.etherpkg %s\n", pkg.Manifest.ID, pkg.Manifest.Version, target)
-	fmt.Fprintf(stdout, "  2. Attach %s-%s.etherpkg to a GitHub release in your plugin repository.\n", pkg.Manifest.ID, pkg.Manifest.Version)
-	fmt.Fprintf(stdout, "  3. Open a pull request against https://github.com/ether-media/catalogue adding or updating:\n")
-	fmt.Fprintf(stdout, "       plugins/%s/manifest.json (version %s, sha256 %s)\n", pkg.Manifest.ID, pkg.Manifest.Version, digest)
-	fmt.Fprintf(stdout, "  4. Catalogue CI will run `ether plugin check` automatically on your pull request.\n")
+	var pkgBytes []byte
+	if info, statErr := os.Stat(target); statErr == nil && !info.IsDir() {
+		pkgBytes, err = os.ReadFile(target)
+		if err != nil {
+			fmt.Fprintln(stderr, "ether plugin publish:", err)
+			return 1
+		}
+	} else {
+		pkgBytes, err = kit.Pack(pkg)
+		if err != nil {
+			fmt.Fprintln(stderr, "ether plugin publish:", err)
+			return 1
+		}
+	}
+
+	man := pkg.Manifest
+	pkgName := fmt.Sprintf("%s-%s.etherpkg", man.ID, man.Version)
+	dest := strings.TrimSpace(*outPath)
+	if dest == "" {
+		cleanTarget := filepath.Clean(target)
+		if cleanTarget == "." {
+			dest = pkgName
+		} else {
+			dest = filepath.Join(filepath.Dir(cleanTarget), pkgName)
+		}
+	}
+	if filepath.Clean(dest) != filepath.Clean(target) {
+		if err := os.WriteFile(dest, pkgBytes, 0o644); err != nil {
+			fmt.Fprintln(stderr, "ether plugin publish:", err)
+			return 1
+		}
+	}
+
+	sum := sha256.Sum256(pkgBytes)
+	digest := hex.EncodeToString(sum[:])
+
+	if cleanURL == "" {
+		fmt.Fprintf(stdout, "Packed %s %s (%s) -> %s\n", man.ID, man.Version, man.Ether.Kind, dest)
+		fmt.Fprintf(stdout, "SHA-256: %s\n\n", digest)
+		fmt.Fprintf(stdout, "To submit %s to the Ether plugin marketplace (%s):\n", man.Name, marketplaceRepoURL)
+		fmt.Fprintf(stdout, "  1. Upload %s to a GitHub release in your plugin repository.\n", dest)
+		fmt.Fprintf(stdout, "  2. Re-run with --url set to that release asset URL to print plugins/%s.yaml:\n", man.ID)
+		fmt.Fprintf(stdout, "       ether plugin publish --url https://github.com/<owner>/<repo>/releases/download/v%s/%s %s\n", man.Version, pkgName, target)
+		fmt.Fprintf(stdout, "  3. Fork %s, write plugins/%s.yaml, and open a pull request.\n", marketplaceRepoURL, man.ID)
+		return 0
+	}
+
+	e := man.Ether
+	caps := make([]string, len(e.Capabilities))
+	for i, c := range e.Capabilities {
+		caps[i] = string(c)
+	}
+	icon := ""
+	if strings.HasPrefix(e.Icon, "http://") || strings.HasPrefix(e.Icon, "https://") {
+		icon = e.Icon
+	} else if strings.HasPrefix(man.Logo, "http://") || strings.HasPrefix(man.Logo, "https://") {
+		icon = man.Logo
+	}
+	repo := strings.TrimSpace(e.Repo)
+	homepage := strings.TrimSpace(e.Author.URL)
+	if homepage == repo {
+		homepage = ""
+	}
+
+	entryDoc := publishEntryYAML{
+		ID:           man.ID,
+		Name:         man.Name,
+		Summary:      resolvePublishSummary(pkg),
+		Description:  strings.TrimSpace(man.Description),
+		Kind:         string(e.Kind),
+		Icon:         icon,
+		Repo:         repo,
+		Homepage:     homepage,
+		Author:       strings.TrimSpace(e.Author.Name),
+		License:      strings.TrimSpace(e.License),
+		Capabilities: caps,
+		Permissions:  e.Permissions,
+		Versions: []catalogue.Version{{
+			Version:    man.Version,
+			URL:        cleanURL,
+			SHA256:     digest,
+			ReleasedAt: time.Now().UTC().Format(time.RFC3339),
+			MinEther:   "0.3.14",
+		}},
+	}
+
+	yamlBytes, err := yaml.Marshal(entryDoc)
+	if err != nil {
+		fmt.Fprintln(stderr, "ether plugin publish:", err)
+		return 1
+	}
+	if _, err := catalogue.ParseEntryYAML(yamlBytes); err != nil {
+		fmt.Fprintln(stderr, "ether plugin publish: generated entry failed validation:", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Packed %s %s (%s) -> %s\n", man.ID, man.Version, e.Kind, dest)
+	fmt.Fprintf(stdout, "SHA-256: %s\n\n", digest)
+	fmt.Fprintf(stdout, "# plugins/%s.yaml\n%s\n", man.ID, strings.TrimRight(string(yamlBytes), "\n"))
+	fmt.Fprintf(stdout, "\nPull request steps:\n")
+	fmt.Fprintf(stdout, "  1. Upload %s at %s.\n", dest, cleanURL)
+	fmt.Fprintf(stdout, "  2. Fork %s and save the YAML above to plugins/%s.yaml (or add the versions entry when updating an existing plugin).\n", marketplaceRepoURL, man.ID)
+	fmt.Fprintf(stdout, "  3. Open a pull request against %s. Marketplace CI verifies the SHA-256 digest and runs `ether plugin check`.\n", marketplaceRepoURL)
 	return 0
+}
+
+func resolvePublishSummary(pkg *kit.Package) string {
+	if pkg.Manifest.Ether == nil {
+		return strings.TrimSpace(pkg.Manifest.Description)
+	}
+	summary := strings.TrimSpace(pkg.Manifest.Ether.Summary)
+	if key, ok := strings.CutPrefix(summary, "$t:"); ok {
+		if enRaw, hasEN := pkg.Manifest.Ether.Strings["en"]; hasEN {
+			var doc map[string]string
+			var relPath string
+			if json.Unmarshal(enRaw, &relPath) == nil && relPath != "" {
+				if b, ok := pkg.Files[relPath]; ok {
+					_ = json.Unmarshal(b, &doc)
+				}
+			} else {
+				_ = json.Unmarshal(enRaw, &doc)
+			}
+			if v := strings.TrimSpace(doc[key]); v != "" {
+				return v
+			}
+		}
+		return strings.TrimSpace(pkg.Manifest.Description)
+	}
+	return summary
 }
 
 // pluginReport leaves JSON reports stable while giving CLI users direct repair links.

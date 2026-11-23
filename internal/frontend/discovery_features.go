@@ -39,6 +39,7 @@ type DiscoveryRatings interface {
 	Settings(ctx context.Context) (DiscoveryRatingsSettings, error)
 	Queue(t core.Title)
 	WithSettingsSnapshot(ctx context.Context) context.Context
+	WithPage(ctx context.Context, titles []core.Title) context.Context
 }
 
 type DiscoveryOverlays interface {
@@ -48,6 +49,7 @@ type DiscoveryOverlays interface {
 	Paths(ctx context.Context, viewer *core.User, t *core.Title, lang string) (string, string)
 	WithSettingsSnapshot(ctx context.Context) context.Context
 	WithArtworkPage(ctx context.Context, keys []core.RatingKey) (context.Context, error)
+	WithTitlePage(ctx context.Context, viewer *core.User, titles []core.Title) (context.Context, error)
 }
 
 type DiscoveryPersonal interface {

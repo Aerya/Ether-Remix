@@ -68,3 +68,22 @@ func TestAvailabilityModeValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginUsenetChecksValidation(t *testing.T) {
+	for _, tc := range []struct {
+		n       int
+		invalid bool
+	}{{-1, true}, {0, false}, {20, false}, {100000, false}, {100001, true}} {
+		c := config.Defaults(t.TempDir())
+		c.Availability.PluginUsenetChecks = tc.n
+		found := false
+		for _, e := range admin.ValidateConfig(c) {
+			if e.Field == "availability.pluginUsenetChecks" {
+				found = true
+			}
+		}
+		if found != tc.invalid {
+			t.Fatalf("pluginUsenetChecks %d: invalid=%v", tc.n, found)
+		}
+	}
+}

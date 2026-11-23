@@ -83,7 +83,7 @@ func (c *Catalog) rememberListSummaries(titles []core.Title) []core.Title {
 	}
 	accepted := make([]core.Title, 0, len(titles))
 	for _, t := range titles {
-		if t.Type != core.TypeMovie && t.Type != core.TypeShow || t.Key == 0 {
+		if t.Key.IsPluginKey() || t.Type != core.TypeMovie && t.Type != core.TypeShow || t.Key == 0 {
 			continue
 		}
 		if _, ok := c.listSummaries[t.Key]; !ok && len(c.listSummaries) >= listSummaryLimit {

@@ -125,6 +125,67 @@ const UPDATE_STATE: Record<UpdateStatus["state"], string> = localized(() => ({
   "rolled-back": t("Rolled back"),
 }));
 
+/** Maps internal Go updater strings to plain owner language so raw `updater:` messages never surface. */
+export function describeUpdaterMessage(raw?: string | null): string {
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (raw === "update checks are turned off in Maintenance › Updates")
+    return t("Update checks are turned off below.");
+  if (
+    lower.includes("no release public key configured") ||
+    lower.includes("decode public key") ||
+    lower.includes("public key size")
+  )
+    return t("This build can't check for signed updates.");
+  if (
+    lower.includes("manifest signature verification failed") ||
+    lower.includes("bad private key size")
+  )
+    return t("The update feed's signature couldn't be verified.");
+  if (lower.includes("update feed is expired or lacks signed freshness"))
+    return t("The update feed is out of date. Check this server's clock, or try again later.");
+  if (
+    lower.includes("no artifact for this platform") ||
+    lower.includes("manifest has no artifacts")
+  )
+    return t("No update package is available for this platform.");
+  if (lower.includes("artifact checksum mismatch"))
+    return t("The downloaded update didn't match its checksum.");
+  if (lower.includes("installed version is too old to update directly"))
+    return t(
+      "This version is too old to update automatically. Install the latest release manually.",
+    );
+  if (lower.includes("this installation cannot update itself"))
+    return t("This installation can't update itself automatically.");
+  if (lower.includes("rolled back on another cluster node"))
+    return t("This release was rolled back on another server in the cluster.");
+  if (lower.includes("download over size cap"))
+    return t("The update download was larger than expected.");
+  if (lower.includes("updates are disabled in this build"))
+    return t("Updates are disabled in this build");
+  if (/\bupdater(?:\s+rollback)?:/i.test(raw)) {
+    if (lower.startsWith("check:") || lower.startsWith("update feed settings:"))
+      return t("Couldn't check for updates. Check the server logs for details.");
+    if (lower.startsWith("download:"))
+      return t("Couldn't download the update. Check the server logs for details.");
+    return t("Update failed. Check the server logs for details.");
+  }
+  return raw;
+}
+
+/** True when the build itself cannot check for updates (e.g. missing release signing key). */
+export function buildCannotCheckUpdates(s: UpdateStatus | null | undefined): boolean {
+  if (!s || s.enabled) return false;
+  const reason = (s.disabledReason ?? "").toLowerCase();
+  if (!reason) return true;
+  return (
+    reason.includes("no release public key configured") ||
+    reason.includes("decode public key") ||
+    reason.includes("public key size") ||
+    reason.includes("updates are disabled in this build")
+  );
+}
+
 /** When a self-applying install will put the available update in, in plain words. */
 function installPlanText(s: UpdateStatus): string | null {
   const a = s.available;
@@ -247,16 +308,23 @@ function ManualUpdate({ s }: { s: UpdateStatus }) {
     default:
       return s.capabilityReason ? (
         <span className="block">
-          {t("Install manually: {reason}.", { reason: s.capabilityReason })}
+          {t("Install manually: {reason}.", { reason: describeUpdaterMessage(s.capabilityReason) })}
         </span>
       ) : null;
   }
 }
 
-export function UpdatesStatus() {
+export function UpdatesStatus({
+  onStatus,
+}: {
+  onStatus?: (status: UpdateStatus | null) => void;
+} = {}) {
   const status = useAsync(() => api.updateStatus(), []);
   const [busy, setBusy] = useState(false);
   const s = status.data;
+  useEffect(() => {
+    onStatus?.(s ?? null);
+  }, [onStatus, s]);
   const starting =
     status.error instanceof ApiError &&
     status.error.code === "starting" &&
@@ -314,12 +382,15 @@ export function UpdatesStatus() {
       );
       await status.reload();
     } catch (e) {
-      toast.error(t("Couldn't start the update"), { description: (e as Error).message });
+      toast.error(t("Couldn't start the update"), {
+        description: describeUpdaterMessage((e as Error).message),
+      });
     } finally {
       setBusy(false);
     }
   };
   const canApply = s.capability === "self-apply" && s.state !== "applying";
+  const lastError = describeUpdaterMessage(s.lastError);
   let availableText = t("Ether is up to date");
   if (s.available)
     availableText = t("Version {version} — {state}", {
@@ -330,15 +401,17 @@ export function UpdatesStatus() {
     availableText = t("Version {version} was rolled back and will be skipped", {
       version: s.failedVersion,
     });
-  else if (!s.enabled) availableText = s.disabledReason || t("Updates are disabled in this build");
-  else if (s.lastError) availableText = s.lastError;
+  else if (!s.enabled)
+    availableText =
+      describeUpdaterMessage(s.disabledReason) || t("Updates are disabled in this build");
+  else if (lastError) availableText = lastError;
   else if (!s.lastCheck) availableText = t("Not checked yet");
 
   const dismissInstalled = async () => {
     try {
       status.setData(await api.dismissInstalledUpdate());
     } catch (e) {
-      toast.error((e as Error).message);
+      toast.error(describeUpdaterMessage((e as Error).message));
     }
   };
   const plan = installPlanText(s);
@@ -454,12 +527,18 @@ export function UpdatesStatus() {
             size="sm"
             variant="outline"
             disabled={!s.enabled || busy || s.checking}
+            title={
+              !s.enabled
+                ? describeUpdaterMessage(s.disabledReason) ||
+                  t("Updates are disabled in this build")
+                : undefined
+            }
             onClick={() => {
               setBusy(true);
               void api
                 .checkUpdates()
                 .then(status.setData)
-                .catch((e) => toast.error((e as Error).message))
+                .catch((e) => toast.error(describeUpdaterMessage((e as Error).message)))
                 .finally(() => setBusy(false));
             }}
           >
@@ -468,8 +547,8 @@ export function UpdatesStatus() {
         }
         description={
           <>
-            {s.lastError
-              ? s.lastError
+            {lastError
+              ? lastError
               : s.lastCheck
                 ? relativeTime(s.lastCheck)
                 : s.enabled

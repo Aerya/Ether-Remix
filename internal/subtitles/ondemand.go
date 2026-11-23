@@ -80,25 +80,184 @@ type indexedSelection struct {
 	sel       selection
 }
 
+// parseIndexFileKey parses a filename in <dir>/index of the form
+// "<ratingKey>.<lang>.<sig>.json".
+func parseIndexFileKey(name string) (core.RatingKey, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return 0, false
+	}
+	dot := strings.IndexByte(name, '.')
+	if dot <= 0 {
+		return 0, false
+	}
+	rawKey, err := strconv.ParseInt(name[:dot], 10, 64)
+	if err != nil || rawKey <= 0 {
+		return 0, false
+	}
+	parts := strings.Split(name[dot+1:], ".")
+	if len(parts) != 3 || parts[2] != "json" || parts[0] == "" {
+		return 0, false
+	}
+	return core.RatingKey(rawKey), true
+}
+
+func (s *Service) indexNamesFor(key core.RatingKey) []string {
+	if s == nil || s.dir == "" || key == 0 {
+		return nil
+	}
+	dir := filepath.Join(s.dir, "index")
+	fi, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.indexMu.RLock()
+			loaded := s.indexLoaded
+			s.indexMu.RUnlock()
+			if loaded {
+				s.indexMu.Lock()
+				s.indexLoaded = false
+				s.indexByKey = nil
+				s.indexMu.Unlock()
+			}
+		}
+		return nil
+	}
+	mod, size := fi.ModTime(), fi.Size()
+	s.indexMu.RLock()
+	if s.indexLoaded && mod.Equal(s.indexDirMod) && size == s.indexDirSize {
+		names := s.indexByKey[key]
+		if len(names) == 0 {
+			s.indexMu.RUnlock()
+			return nil
+		}
+		out := append([]string(nil), names...)
+		s.indexMu.RUnlock()
+		return out
+	}
+	s.indexMu.RUnlock()
+
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	if s.indexLoaded && mod.Equal(s.indexDirMod) && size == s.indexDirSize {
+		if names := s.indexByKey[key]; len(names) > 0 {
+			return append([]string(nil), names...)
+		}
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	byKey := make(map[core.RatingKey][]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if k, ok := parseIndexFileKey(e.Name()); ok {
+			byKey[k] = append(byKey[k], e.Name())
+		}
+	}
+	s.indexByKey = byKey
+	s.indexDirMod = mod
+	s.indexDirSize = size
+	s.indexLoaded = true
+	if names := s.indexByKey[key]; len(names) > 0 {
+		return append([]string(nil), names...)
+	}
+	return nil
+}
+
+// HasTitleSelections reports whether any subtitle index entry exists on disk
+// for key, in O(1) without scanning the index directory.
+func (s *Service) HasTitleSelections(key core.RatingKey) bool {
+	return len(s.indexNamesFor(key)) > 0
+}
+
+func (s *Service) writeIndexFile(path string, data []byte) error {
+	if err := writeFileAtomic(path, data); err != nil {
+		return err
+	}
+	s.noteIndexAdd(filepath.Base(path))
+	return nil
+}
+
+func (s *Service) removeIndexFile(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	s.noteIndexRemove(filepath.Base(path))
+	return nil
+}
+
+func (s *Service) noteIndexAdd(name string) {
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	if !s.indexLoaded {
+		return
+	}
+	if k, ok := parseIndexFileKey(name); ok {
+		cur := s.indexByKey[k]
+		found := false
+		for _, existing := range cur {
+			if existing == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cur = append(cur, name)
+			sort.Strings(cur)
+			s.indexByKey[k] = cur
+		}
+	}
+	if fi, err := os.Stat(filepath.Join(s.dir, "index")); err == nil {
+		s.indexDirMod = fi.ModTime()
+		s.indexDirSize = fi.Size()
+	}
+}
+
+func (s *Service) noteIndexRemove(name string) {
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	if !s.indexLoaded {
+		return
+	}
+	if k, ok := parseIndexFileKey(name); ok {
+		cur := s.indexByKey[k]
+		for i, existing := range cur {
+			if existing == name {
+				cur = append(cur[:i], cur[i+1:]...)
+				if len(cur) == 0 {
+					delete(s.indexByKey, k)
+				} else {
+					s.indexByKey[k] = cur
+				}
+				break
+			}
+		}
+	}
+	if fi, err := os.Stat(filepath.Join(s.dir, "index")); err == nil {
+		s.indexDirMod = fi.ModTime()
+		s.indexDirSize = fi.Size()
+	}
+}
+
 // titleSelections reads every remembered selection of a title whose files
 // are still cached: one per language and release signature, plus viewer
 // picks (sig manualSig).
 func (s *Service) titleSelections(key core.RatingKey) []indexedSelection {
-	if s.dir == "" {
+	names := s.indexNamesFor(key)
+	if len(names) == 0 {
 		return nil
 	}
+	dir := filepath.Join(s.dir, "index")
 	prefix := strconv.FormatInt(int64(key), 10) + "."
-	matches, err := filepath.Glob(filepath.Join(s.dir, "index", prefix+"*.json"))
-	if err != nil {
-		return nil
-	}
 	var out []indexedSelection
-	for _, path := range matches {
-		parts := strings.Split(strings.TrimPrefix(filepath.Base(path), prefix), ".")
+	for _, name := range names {
+		parts := strings.Split(strings.TrimPrefix(name, prefix), ".")
 		if len(parts) != 3 || parts[2] != "json" || parts[0] == "" {
 			continue
 		}
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || len(b) > 64<<10 {
 			continue
 		}
@@ -303,7 +462,7 @@ func (s *Service) DownloadOnDemand(ctx context.Context, title *core.Title, fileI
 	}
 	b, _ := json.Marshal(sel)
 	s.pickMu.Lock()
-	err := writeFileAtomic(p, b)
+	err := s.writeIndexFile(p, b)
 	s.pickMu.Unlock()
 	if err != nil {
 		return core.StreamInfo{}, err

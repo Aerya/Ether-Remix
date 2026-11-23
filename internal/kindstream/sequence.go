@@ -7,6 +7,8 @@ import (
 	"io"
 	"sort"
 	"sync"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Leaf describes one part/page/chapter in a multi-part Sequence (spec §4.4, §5.1).
@@ -180,8 +182,16 @@ func (s *Sequence) acquireLeaf(ctx context.Context, idx int, keepIdx int) (ByteS
 
 // ReadAt reads len(p) bytes at offset off across the concatenated leaves.
 func (s *Sequence) ReadAt(p []byte, off int64) (int, error) {
+	return s.ReadAtContext(context.Background(), p, off)
+}
+
+// ReadAtContext reads len(p) bytes at offset off across the concatenated leaves using ctx.
+func (s *Sequence) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
 	if !s.concatOK {
 		return 0, s.concatErr
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	if off < 0 {
 		return 0, fmt.Errorf("kindstream: negative sequence read offset %d", off)
@@ -219,19 +229,27 @@ func (s *Sequence) ReadAt(p []byte, off int64) (int, error) {
 			chunk = int(avail)
 		}
 
-		src, err := s.acquireLeaf(context.Background(), leafIdx, leafIdx+1)
+		src, err := s.acquireLeaf(ctx, leafIdx, leafIdx+1)
 		if err != nil {
 			return totalRead, err
 		}
 
-		n, rerr := src.ReadAt(p[totalRead:totalRead+chunk], relOff)
+		var (
+			n    int
+			rerr error
+		)
+		if cr, ok := src.(core.ContextReaderAt); ok {
+			n, rerr = cr.ReadAtContext(ctx, p[totalRead:totalRead+chunk], relOff)
+		} else {
+			n, rerr = src.ReadAt(p[totalRead:totalRead+chunk], relOff)
+		}
 		totalRead += n
 
 		// Prefetch leafIdx+1 when read crosses 90% of leafIdx.
 		endInLeaf := relOff + int64(n)
 		threshold := (leafSize * 9) / 10
 		if endInLeaf >= threshold && leafIdx+1 < len(s.leaves) {
-			_, _ = s.acquireLeaf(context.Background(), leafIdx+1, leafIdx)
+			_, _ = s.acquireLeaf(ctx, leafIdx+1, leafIdx)
 		}
 
 		if n < chunk {

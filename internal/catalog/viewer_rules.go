@@ -21,18 +21,21 @@ import (
 
 func init() {
 	store.RegisterViewerTable("catalog", "catalog_viewer_rules", "viewer_id", store.ViewerMergeMove)
+	libraryfilter.RegisterMediaTypeMigration("catalog_viewer_rules", 2, "catalog_viewer_rules", "document", "viewer_id")
 	store.Register("catalog_viewer_rules", 1, `CREATE TABLE catalog_viewer_rules(viewer_id INTEGER PRIMARY KEY, document TEXT NOT NULL, revision INTEGER NOT NULL);`)
 }
 
 // ViewerRules keeps catalogue preferences separate from mandatory safety policy.
 // Exemptions identify the exact global rule, so reordering cannot change them.
 type ViewerRules struct {
+	Broken            bool                    `json:"broken,omitempty"`
 	Mode              string                  `json:"mode"`
 	Exclusions        []core.LibraryExclusion `json:"exclusions"`
 	VisibilityDefault string                  `json:"visibilityDefault"`
 	Exemptions        []string                `json:"exemptions"`
 }
 type compiledViewerRules struct {
+	invalidJSON    bool
 	document       ViewerRules
 	browse, search *libraryfilter.Filter
 	revision       int64
@@ -72,6 +75,9 @@ func compileViewerRulesDocument(p ViewerRules, pol LibraryPolicies) (*libraryfil
 	case "", "inherit":
 		return libraryfilter.CompileLibraryPolicies(pol.MovieRules, pol.MovieDefault, pol.ShowRules, pol.ShowDefault)
 	case "custom":
+		if core.HasLibraryScopedRules(p.Exclusions) {
+			return nil, fmt.Errorf("only library rules can use library scope")
+		}
 		return libraryfilter.CompilePolicy(p.Exclusions, p.VisibilityDefault)
 	case "exempt":
 		skip := map[string]bool{}
@@ -104,8 +110,11 @@ func (c *Catalog) recompileViewerRules(pol LibraryPolicies) error {
 	entries := make(map[int64]compiledViewerRules, len(c.viewerRules.entries))
 	for id, v := range c.viewerRules.entries {
 		f, err := c.compileViewerRules(v.document, pol)
-		if err != nil {
-			return err
+		v.document.Broken = false
+		if err != nil || v.invalidJSON {
+			v.document.Broken = true
+			c.log.Warn("catalog: broken viewer rules", "viewer_id", id, "err", err)
+			f, _ = libraryfilter.CompilePolicy(nil, "hide")
 		}
 		v.browse, v.search = f, f.ForSearch()
 		entries[id] = v
@@ -129,12 +138,20 @@ func (c *Catalog) reloadViewerRules(ctx context.Context) error {
 		if err := rows.Scan(&id, &raw, &v.revision); err != nil {
 			return err
 		}
-		if err := json.Unmarshal([]byte(raw), &v.document); err != nil {
-			return err
-		}
-		v.browse, err = c.compileViewerRules(v.document, pol)
+		normalized, _ := core.NormalizeRuleDocument([]byte(raw))
+		err = json.Unmarshal(normalized, &v.document)
+		v.document.Broken = false
 		if err != nil {
-			return err
+			v.invalidJSON = true
+			v.document = ViewerRules{Mode: "custom", VisibilityDefault: "hide"}
+		}
+		if err == nil {
+			v.browse, err = c.compileViewerRules(v.document, pol)
+		}
+		if err != nil {
+			v.document.Broken = true
+			c.log.Warn("catalog: broken viewer rules; hiding content until repaired", "viewer_id", id, "err", err)
+			v.browse, _ = libraryfilter.CompilePolicy(nil, "hide")
 		}
 		v.search = v.browse.ForSearch()
 		entries[id] = v
@@ -165,7 +182,7 @@ func ReadViewerRulesInputs(ctx context.Context, tx *sql.Tx) (viewerpolicy.Inputs
 		}
 		var doc ViewerRules
 		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-			return nil, err
+			continue // Broken viewer documents are denied by the catalogue.
 		}
 		viewerpolicy.RulesInputs(in, doc.Exclusions)
 	}
@@ -223,6 +240,8 @@ func (c *Catalog) PutViewerRules(ctx context.Context, id int64, p ViewerRules) e
 	if id <= 0 {
 		return fmt.Errorf("invalid viewer")
 	}
+	p.Broken = false
+	p.Exclusions = core.NormalizeLibraryRules(p.Exclusions)
 	pol := c.LibraryPolicies()
 	if _, err := c.compileViewerRules(p, pol); err != nil {
 		return err
@@ -260,7 +279,7 @@ func (c *Catalog) viewerFilter(id int64, search bool) *libraryfilter.Filter {
 	c.viewerRules.RLock()
 	v, ok := c.viewerRules.entries[id]
 	c.viewerRules.RUnlock()
-	if ok && v.document.Mode != "inherit" && v.document.Mode != "" {
+	if ok && (v.document.Broken || (v.document.Mode != "inherit" && v.document.Mode != "")) {
 		if search {
 			return v.search
 		}
@@ -279,7 +298,7 @@ func (c *Catalog) hasCustomViewerRules(id int64) bool {
 	c.viewerRules.RLock()
 	v, ok := c.viewerRules.entries[id]
 	c.viewerRules.RUnlock()
-	return ok && v.document.Mode == "custom"
+	return ok && (v.document.Broken || v.document.Mode == "custom")
 }
 
 // strictViewer reports a viewer whose catalogue rules must fail closed on
@@ -409,4 +428,31 @@ func (c *Catalog) compileViewerRules(p ViewerRules, pol LibraryPolicies) (*libra
 		return nil, err
 	}
 	return c.bindLibraryRules(f)
+}
+
+// Stored policies are independent recovery boundaries. Keep each broken
+// library closed, while allowing the owner to reach its rules drawer.
+func (c *Catalog) compileStoredLibraryPolicies(p LibraryPolicies) *libraryfilter.Filter {
+	for _, movie := range []bool{true, false} {
+		one := LibraryPolicies{}
+		name := "TV Shows"
+		if movie {
+			one.MovieRules, one.MovieDefault = p.MovieRules, p.MovieDefault
+			name = "Movies"
+		} else {
+			one.ShowRules, one.ShowDefault = p.ShowRules, p.ShowDefault
+		}
+		if _, err := c.compileLibraryPolicies(one); err != nil {
+			c.log.Warn("catalog: broken library rules; hiding library until repaired", "library", name, "err", err)
+			if movie {
+				p.MovieRules = nil
+				p.MovieDefault = "hide"
+			} else {
+				p.ShowRules = nil
+				p.ShowDefault = "hide"
+			}
+		}
+	}
+	f, _ := c.compileLibraryPolicies(p)
+	return f
 }

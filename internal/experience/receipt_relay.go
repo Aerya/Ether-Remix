@@ -45,7 +45,7 @@ func (s *Receipts) bindHeaders(ctx context.Context, tx *sql.Tx, headers []capabi
 	}
 	// An expired receipt authorizes nothing and maintenance drains it, so only
 	// live receipts are charged; the admission trigger counts the same way.
-	return capability.AdmitHeadersInTx(ctx, s.opts.DB, tx, headers, capability.Limits{PerScope: receiptPerScope, PerShard: receiptPerShard, LiveAfterMillis: s.opts.Now().Unix() * 1000})
+	return capability.AdmitPageHeadersInTx(ctx, s.opts.DB, tx, headers, capability.Limits{PerScope: receiptPerScope, PerShard: receiptPerShard, LiveAfterMillis: s.opts.Now().Unix() * 1000})
 }
 
 func (s *Receipts) dropHeaders(ctx context.Context, tx *sql.Tx, scope capability.HeaderScope, digests []string) error {
@@ -64,6 +64,13 @@ func (s *Receipts) sweepExpired(ctx context.Context, tx *sql.Tx, viewer int64, d
 	const cleanupMax = 128
 	if s.opts.beforeSweep != nil {
 		s.opts.beforeSweep(tx)
+	}
+	var expired bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires<=?)`, viewer, device, now).Scan(&expired); err != nil {
+		return err
+	}
+	if !expired {
+		return nil
 	}
 	query := `DELETE FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires<=? AND hash IN (SELECT hash FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires<=? ORDER BY expires,hash LIMIT ?)`
 	args := []any{viewer, device, now, viewer, device, now, cleanupMax}

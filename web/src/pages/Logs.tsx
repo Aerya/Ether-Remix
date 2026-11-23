@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "react-router-dom";
+import { ActionMenu } from "../components/ActionMenu";
 import { ErrorPanel, LoadingRows } from "../components/feedback";
 import { Segmented } from "../components/fields";
 import { getLocale, localized, t, tn } from "../i18n";
@@ -200,7 +201,7 @@ export default function Logs() {
             "Newest entries first. {count} entries retained in memory.",
           )}
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setRecord(true)}>
             <CircleDot size={14} /> {t("Record a problem")}
           </Button>
@@ -210,15 +211,37 @@ export default function Logs() {
           <Button
             variant="outline"
             size="sm"
+            className="max-sm:hidden"
             disabled={downloading}
             title={t("Log files with passwords, tokens and keys removed, for a bug report.")}
             onClick={() => void download()}
           >
             <Download size={14} /> {t("Download logs")}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => void clear()}>
+          <Button variant="ghost" size="sm" className="max-sm:hidden" onClick={() => void clear()}>
             <Trash2 size={14} /> {t("Clear")}
           </Button>
+          <ActionMenu
+            variant="outline"
+            size="sm"
+            className="px-2 sm:hidden"
+            items={[
+              {
+                key: "download",
+                label: t("Download logs"),
+                icon: Download,
+                disabled: downloading,
+                onSelect: () => void download(),
+              },
+              {
+                key: "clear",
+                label: t("Clear"),
+                icon: Trash2,
+                danger: true,
+                onSelect: () => void clear(),
+              },
+            ]}
+          />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-3" role="search">
@@ -274,27 +297,32 @@ export default function Logs() {
             {(e) => (
               <div
                 key={e.id}
+                data-log-entry=""
                 className={cn(
-                  "flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-border-subtle px-3 py-1.5 ",
+                  "flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border-subtle px-3 py-2 sm:gap-y-0.5 sm:py-1.5",
                   e.level.toLowerCase().startsWith("err") && "bg-danger-subtle/40",
                 )}
               >
-                <time
-                  className="shrink-0 tabular-nums text-fg-subtle"
-                  dateTime={e.time}
-                  title={new Date(e.time).toLocaleString(getLocale())}
-                >
-                  {new Date(e.time).toLocaleTimeString(getLocale())}
-                </time>
-                <Badge
-                  variant={levelVariant(e.level)}
-                  className="w-14 justify-center font-mono text-[10px] uppercase"
-                >
-                  {e.level}
-                </Badge>
-                <span className="min-w-0 flex-1 break-words text-fg">{e.message}</span>
+                <div className="flex w-full items-center gap-2 sm:w-auto sm:shrink-0 sm:gap-3">
+                  <time
+                    className="shrink-0 tabular-nums text-fg-subtle"
+                    dateTime={e.time}
+                    title={new Date(e.time).toLocaleString(getLocale())}
+                  >
+                    {new Date(e.time).toLocaleTimeString(getLocale())}
+                  </time>
+                  <Badge
+                    variant={levelVariant(e.level)}
+                    className="w-14 justify-center font-mono text-[10px] uppercase"
+                  >
+                    {e.level}
+                  </Badge>
+                </div>
+                <span className="min-w-0 basis-full break-words text-fg sm:flex-1 sm:basis-auto">
+                  {e.message}
+                </span>
                 {e.attrs && Object.keys(e.attrs).length ? (
-                  <span className="w-full break-all pl-[calc(4.5rem+3.5rem)] text-fg-muted sm:w-auto sm:pl-0">
+                  <span className="w-full break-words text-fg-muted sm:w-auto">
                     {Object.entries(e.attrs).map(([k, v]) => (
                       <span key={k} className="mr-2">
                         <span className="text-fg-subtle">{k}=</span>

@@ -88,7 +88,7 @@ func (s *sourceOffers) authorize(ctx context.Context, scope frontend.VersionScop
 	if lookup == nil {
 		lookup = s.broker.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, scope.Device, item)
+	title, err := lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, item)
 	if err != nil || title == nil || title.Key != item || title.Type == core.TypeShow || title.Type == core.TypeSeason || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
 		return scope, core.ErrNotFound
 	}

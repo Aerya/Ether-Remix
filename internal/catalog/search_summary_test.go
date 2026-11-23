@@ -31,9 +31,7 @@ func TestSearchSummaryProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			if indexed {
-				if c.searchIndex(ctx, true) == nil {
-					t.Fatal("index unavailable")
-				}
+				waitSearchIndex(t, c, ctx)
 			} else {
 				c.searchIx.next = c.now().Add(time.Hour)
 			}

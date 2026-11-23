@@ -65,21 +65,16 @@ func TestXtreamVODIndexResolutionAndRange(t *testing.T) {
 	var fail atomic.Bool
 	var trailing, stall atomic.Bool
 	cancelDone := make(chan struct{})
-	var active, peak atomic.Int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.UserAgent() != sourceUserAgent {
 			t.Errorf("provider player identity: %q", r.UserAgent())
 		}
-		n := active.Add(1)
 		isCancelledRead := false
 		defer func() {
-			active.Add(-1)
 			if isCancelledRead {
 				close(cancelDone)
 			}
 		}()
-		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
-		}
 		if strings.HasPrefix(r.URL.Path, "/movie/") || strings.HasPrefix(r.URL.Path, "/series/") {
 			w.Header().Set("Content-Type", "video/x-matroska")
 			http.ServeContent(w, r, "file.mkv", time.Time{}, &vodPattern{})
@@ -208,7 +203,21 @@ func TestXtreamVODIndexResolutionAndRange(t *testing.T) {
 	}
 	// The normal resolver chooses the provider's 1080p file above a 720p source.
 	cfg := config.Defaults(t.TempDir())
-	svc := debrid.NewService(cfg.Debrid, debrid.Options{AcquireStreamProvider: s.AcquireProvider})
+	// Count the client-owned provider leases, not upstream handlers. After
+	// a seek closes its response body, the remote handler may still be
+	// unwinding the cancelled write when the next request arrives.
+	var active, peak atomic.Int64
+	acquire := func(ctx context.Context, provider string) (func(), error) {
+		release, err := s.AcquireProvider(ctx, provider)
+		if err != nil {
+			return nil, err
+		}
+		n := active.Add(1)
+		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
+		}
+		return func() { active.Add(-1); release() }, nil
+	}
+	svc := debrid.NewService(cfg.Debrid, debrid.Options{AcquireStreamProvider: acquire})
 	ix := debrid.NewIndexer(&VODIndexer{Inner: vodInner{}, Service: func() *Service { return s }}, svc)
 	res := resolver.New(ix, nil, nil, cfg, resolver.Options{})
 	defer res.Close()
@@ -249,8 +258,8 @@ func TestXtreamVODIndexResolutionAndRange(t *testing.T) {
 			}
 		}
 	}
-	if peak.Load() > 1 {
-		t.Fatalf("oversubscribed provider: %d", peak.Load())
+	if peak.Load() != 1 {
+		t.Fatalf("provider lease peak: %d", peak.Load())
 	}
 	_ = media.Close()
 	_ = eng.Close()

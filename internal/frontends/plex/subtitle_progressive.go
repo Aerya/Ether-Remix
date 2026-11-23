@@ -20,15 +20,20 @@ type playbackTextSubtitles interface {
 
 // Native Apple HLS supports WebVTT renditions. Android's Matroska path and
 // Plex Web's authored ASS stream retain their existing delivery contracts.
+// Android-platform players that do not take the Matroska path (Plex for
+// Amazon FireTV, whose product name contains no "Android", and Android TV
+// without a Matroska target) receive segmented TS/fMP4, which cannot carry
+// the embedded text track in-band: without a rendition the decision marks
+// the track selected but no cues ever reach the player (#618).
 func plexTextRenditions(pr *Request, dec frontend.Decision) bool {
 	if pr == nil || dec.BurnSubtitles || dec.Container == frontend.ContainerMatroska {
 		return false
 	}
 	switch strings.ToLower(pr.Platform) {
-	case "ios", "tvos":
+	case "ios", "tvos", "android":
 		return true
 	}
-	return false
+	return plexAndroidClient(pr)
 }
 
 func (s *Server) plexTextTracks(pr *Request, info frontend.MediaInfo, dec frontend.Decision) []int {
@@ -46,7 +51,7 @@ func (s *Server) plexTextTracks(pr *Request, info frontend.MediaInfo, dec fronte
 
 func (s *Server) textRenditionTags(r *http.Request, id string, hs frontend.HLSSession, entry *transcodeEntry, info frontend.MediaInfo, dec frontend.Decision) (string, string) {
 	source, ok := hs.(playbackTextSubtitles)
-	if !ok || entry == nil || !plexTextRenditions(FromContext(r.Context()), dec) {
+	if !ok || entry == nil || !plexTextRenditions(mergeSessionProfile(FromContext(r.Context()), entry), dec) {
 		return "", ""
 	}
 	var tags strings.Builder

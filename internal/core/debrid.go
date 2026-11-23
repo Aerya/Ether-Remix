@@ -2,9 +2,11 @@ package core
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Release protocols (Release.Protocol).
@@ -23,16 +25,47 @@ const (
 	ProtocolHTTP = "http"
 )
 
-// ReleaseTarget is the episode wanted from a multi-file release such as a
-// season pack.
+// ReleaseTarget is the episode or movie wanted from a multi-file release such
+// as a season pack or dual-language movie pack.
 type ReleaseTarget struct {
+	// CanonicalSeason/CanonicalEpisode retain TMDB identity when Season/Episode
+	// select a file using the owner's alternate release numbering.
+	CanonicalSeason  int `json:"canonicalSeason,omitempty"`
+	CanonicalEpisode int `json:"canonicalEpisode,omitempty"`
+	// Aliases lists verified alternate season/episode numbers for the same
+	// canonical episode so open-time file checks accept alias-numbered files.
+	Aliases []EpisodeNumber `json:"aliases,omitempty"`
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`
-	// FileIndex is an explicit zero-based torrent file list index (including non-video files).
+	// WantedLanguages and OriginalLanguage rank full-length language versions
+	// inside multi-file movie torrents and NZB archives before falling back to
+	// byte size (additive).
+	WantedLanguages  []string `json:"wantedLanguages,omitempty"`
+	OriginalLanguage string   `json:"originalLanguage,omitempty"`
+	// FileIndex is a zero-based index in the complete torrent/NZB file list; the selected file must be a video unless AllowNonVideo is set.
 	FileIndex *int `json:"fileIndex,omitempty"`
-	// ExactFile selects a plugin-requested path or unambiguous basename, including non-video files.
+	// ExactFile selects a plugin-requested path or unambiguous basename.
 	ExactFile string `json:"exactFile,omitempty"`
+	// AllowNonVideo permits an explicit FileIndex/ExactFile, archive member
+	// selector (Member/MemberIndex), or non-video MIME target to choose a
+	// non-video file instead of requiring video.
+	AllowNonVideo bool `json:"allowNonVideo,omitempty"`
+	// Member selects an archive member path or unambiguous basename (e.g.
+	// from release.fileHint or container.member) when AllowNonVideo is set.
+	Member string `json:"member,omitempty"`
+	// MemberIndex selects a zero-based archive member index when AllowNonVideo
+	// is set (e.g. from container.memberIndex).
+	MemberIndex *int `json:"memberIndex,omitempty"`
+	// Track selects an audio track inside a multi-track release or archive by
+	// disc/track number first, then normalised title tokens, failing on ambiguity.
+	Track *TrackHint `json:"track,omitempty"`
+	// MIME is the declared or kind-default media type for non-video release
+	// file selection (e.g. "audio/flac", "application/epub+zip", "audio/*").
+	MIME string `json:"mime,omitempty"`
+	// ArchivePassword is an optional archive password resolved from a plugin
+	// secret for opening encrypted Usenet archives; never serialized.
+	ArchivePassword string `json:"-"`
 	// FileName is the source-matched file hint, never proof of episode identity.
 	FileName string `json:"fileName,omitempty"`
 	// AbsoluteEpisode is the verified anime episode number across seasons.
@@ -43,6 +76,7 @@ type ReleaseTarget struct {
 	CourEpisode   int      `json:"courEpisode,omitempty"`
 	Season        int      `json:"season,omitempty"`
 	Episode       int      `json:"episode,omitempty"`
+	AirDate       string   `json:"airDate,omitempty"`
 	ShowYear      int      `json:"showYear,omitempty"`
 	EpisodeTitle  string   `json:"episodeTitle,omitempty"`
 	ShowTitles    []string `json:"showTitles,omitempty"`
@@ -67,9 +101,76 @@ var ErrWrongContent = fmt.Errorf("release contains different content: %w", ErrNo
 // so it wraps ErrNotAvailable and is not a permanent failure.
 var ErrNotCached = fmt.Errorf("not cached by any debrid provider: %w", ErrNotAvailable)
 
+// PrivateTorrentReason explains why an uncached private-tracker torrent is
+// skipped rather than added to or downloaded by a debrid service.
+const PrivateTorrentReason = "private tracker torrent: only an existing debrid cache is used"
+
+type privateUncachedError struct{}
+
+func (privateUncachedError) Error() string { return PrivateTorrentReason }
+func (privateUncachedError) Unwrap() error { return ErrNotCached }
+
+// ErrPrivateUncached reports that a private-tracker torrent is not already
+// cached on any debrid provider and therefore was never added or queued.
+var ErrPrivateUncached error = privateUncachedError{}
+
 // ErrDownloadQueued reports that an uncached torrent was handed to a debrid
 // account to download (cached-only off): not playable yet, but it will be.
 var ErrDownloadQueued = fmt.Errorf("sent to the debrid service to download: %w", ErrNotCached)
+
+// DownloadQueuedError wraps ErrDownloadQueued with optional provider queue
+// context (for example TorBox holding a download behind active slots).
+type DownloadQueuedError struct {
+	Provider        string
+	ActiveDownloads int
+	Err             error
+}
+
+func (e *DownloadQueuedError) Error() string {
+	if e == nil {
+		return ErrDownloadQueued.Error()
+	}
+	if detail := e.Detail(); detail != "" {
+		if e.Err != nil {
+			return fmt.Sprintf("%s: %s", detail, e.Err.Error())
+		}
+		return detail
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ErrDownloadQueued.Error()
+}
+
+func (e *DownloadQueuedError) Unwrap() []error {
+	if e == nil || e.Err == nil {
+		return []error{ErrDownloadQueued}
+	}
+	return []error{e.Err, ErrDownloadQueued}
+}
+
+// Detail describes why the download is waiting in the provider's queue, or ""
+// when no active-download queue count is known.
+func (e *DownloadQueuedError) Detail() string {
+	if e == nil || e.Provider == "" || e.ActiveDownloads <= 0 {
+		return ""
+	}
+	unit := "active downloads"
+	if e.ActiveDownloads == 1 {
+		unit = "active download"
+	}
+	return fmt.Sprintf("queued at %s behind %d %s", e.Provider, e.ActiveDownloads, unit)
+}
+
+// DownloadQueuedDetail returns the provider queue reason (for example
+// "queued at TorBox behind 3 active downloads") when err carries one, else "".
+func DownloadQueuedDetail(err error) string {
+	var qe *DownloadQueuedError
+	if errors.As(err, &qe) && qe != nil {
+		return qe.Detail()
+	}
+	return ""
+}
 
 // ErrDownloadRefused reports that an uncached torrent could not be sent to
 // a debrid account to download (cached-only off): the service refused it
@@ -136,4 +237,37 @@ var ErrDebridQuota = errors.New("debrid: account quota reached")
 func TargetReleaseID(releaseID string, t ReleaseTarget) string {
 	h := sha1.Sum([]byte(fmt.Sprintf("%s|s%de%d", releaseID, t.Season, t.Episode)))
 	return hex.EncodeToString(h[:])
+}
+
+// fileSelectionKey returns a stable hash suffix when t names an explicit file,
+// archive member, or audio track inside a multi-file release, or "" when no
+// explicit selector is set.
+func (t ReleaseTarget) fileSelectionKey() string {
+	exact := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(t.ExactFile), "\\", "/"), "/")
+	member := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(t.Member), "\\", "/"), "/")
+	var trackKey string
+	if t.Track != nil && (t.Track.Disc > 0 || t.Track.Number > 0 || strings.TrimSpace(t.Track.Title) != "") {
+		trackKey = fmt.Sprintf("d=%d|n=%d|t=%s", t.Track.Disc, t.Track.Number, strings.ToLower(strings.TrimSpace(t.Track.Title)))
+	}
+	if t.FileIndex == nil && exact == "" && member == "" && t.MemberIndex == nil && trackKey == "" {
+		return ""
+	}
+	var b strings.Builder
+	if t.FileIndex != nil {
+		fmt.Fprintf(&b, "fi=%d|", *t.FileIndex)
+	}
+	if exact != "" {
+		fmt.Fprintf(&b, "ef=%s|", strings.ToLower(exact))
+	}
+	if member != "" {
+		fmt.Fprintf(&b, "m=%s|", strings.ToLower(member))
+	}
+	if t.MemberIndex != nil {
+		fmt.Fprintf(&b, "mi=%d|", *t.MemberIndex)
+	}
+	if trackKey != "" {
+		fmt.Fprintf(&b, "tr=%s|", trackKey)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
 }

@@ -16,14 +16,15 @@ import (
 func TestCreditsUseParentAuthorizedFacetAndPortrait(t *testing.T) {
 	viewer := &frontend.Viewer{ID: 1}
 	personID, _ := ids.GUID(ids.User, 12)
+	producerID, _ := ids.GUID(ids.User, 14)
 	grants := &imageGrantsFake{}
 	exp := frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
-		return frontend.ItemDetail{Title: frontend.Title{Key: 5, Type: "movie", Cast: []core.Person{{TMDB: 12, Name: "Actor", Role: "Hero"}, {TMDB: 13, Name: "Hidden"}}, Directors: []core.Person{{TMDB: 12, Name: "Actor"}}}, ImagesAuthoritative: true, Images: []frontend.Image{{Kind: frontend.ImagePerson, Subject: "tmdb:12", Path: "/poster", Width: 400, Height: 200, BlurHash: "LGF5"}, {Kind: frontend.ImagePerson, Subject: "tmdb:13", Path: "/hidden"}}}, nil
+		return frontend.ItemDetail{Title: frontend.Title{Key: 5, Type: "movie", Cast: []core.Person{{TMDB: 12, Name: "Actor", Role: "Hero"}, {TMDB: 13, Name: "Hidden"}}, Directors: []core.Person{{TMDB: 12, Name: "Actor"}}, Crew: []core.Person{{TMDB: 14, Name: "Producer Name", Role: "Producer"}, {TMDB: 15, Name: "Composer Name", Role: "Composer"}}}, ImagesAuthoritative: true, Images: []frontend.Image{{Kind: frontend.ImagePerson, Subject: "tmdb:12", Path: "/poster", Width: 400, Height: 200, BlurHash: "LGF5"}, {Kind: frontend.ImagePerson, Subject: "tmdb:13", Path: "/hidden"}}}, nil
 	}, PersonFacetIDsFunc: func(_ context.Context, v *frontend.Viewer, _ frontend.Device, key frontend.RatingKey, requested []int64) (map[int64]string, error) {
-		if v != viewer || key != 5 || len(requested) != 2 {
+		if v != viewer || key != 5 || len(requested) != 3 {
 			t.Fatal(v, key, requested)
 		}
-		return map[int64]string{12: personID}, nil
+		return map[int64]string{12: personID, 14: producerID}, nil
 	}}
 	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
 	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, Experience: exp, ImageGrants: grants})
@@ -37,7 +38,7 @@ func TestCreditsUseParentAuthorizedFacetAndPortrait(t *testing.T) {
 	var got struct {
 		People []struct{ Id, Name, Role, Type, PrimaryImageTag string }
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.People) != 2 || got.People[0].Id != personID || got.People[0].PrimaryImageTag != "scoped-image/poster" || got.People[1].Type != "Director" || grants.issued != 1 {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.People) != 3 || got.People[0].Id != personID || got.People[0].PrimaryImageTag != "scoped-image/poster" || got.People[1].Type != "Director" || got.People[2].Type != "Producer" || got.People[2].Id != producerID || grants.issued != 1 {
 		t.Fatal(w.Code, w.Body.String(), grants.issued)
 	}
 	if !strings.Contains(w.Body.String(), `"ImageBlurHashes":{"Primary":{"scoped-image/poster":"LGF5"}}`) || strings.Contains(w.Body.String(), "PrimaryImageAspectRatio") {
@@ -45,6 +46,11 @@ func TestCreditsUseParentAuthorizedFacetAndPortrait(t *testing.T) {
 	}
 }
 
+// #614 changed this contract: jellyfin-sdk-kotlin (Jellyfin Android TV)
+// requires BaseItemPerson.Id to be a UUID, so a catalogue person id that
+// is not a GUID can no longer be emitted on the Jellyfin surface — the
+// credit is dropped rather than crashing the client's detail page. The
+// person remains reachable through /Persons and person search.
 func TestCataloguePersonIDIsEmittedWithoutAFacet(t *testing.T) {
 	exp := frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
 		return frontend.ItemDetail{Title: frontend.Title{Key: 5, Type: "movie", Cast: []core.Person{{ID: "lab-person", Name: "Actor", Role: "Hero"}}}}, nil
@@ -60,7 +66,7 @@ func TestCataloguePersonIDIsEmittedWithoutAFacet(t *testing.T) {
 	r.Header.Set("X-Emby-Token", "grant")
 	w := httptest.NewRecorder()
 	inst.Handler().ServeHTTP(w, r)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"Id":"lab-person"`) || strings.Contains(w.Body.String(), "PrimaryImageTag") {
+	if w.Code != 200 || strings.Contains(w.Body.String(), `"Id":"lab-person"`) || strings.Contains(w.Body.String(), "PrimaryImageTag") || !strings.Contains(w.Body.String(), `"People":[]`) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 }

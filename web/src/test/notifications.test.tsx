@@ -2,6 +2,12 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router-dom";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { webcrypto } from "node:crypto";
+import { confirmDialog } from "@braedonsaunders/appkit-ui";
+
+vi.mock("@braedonsaunders/appkit-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@braedonsaunders/appkit-ui")>()),
+  confirmDialog: vi.fn(async () => true),
+}));
 import { resetRegistryCache, type Descriptor } from "../lib/extend";
 import { descriptors as notifyDescriptors } from "../mock/extend/descriptors/notify";
 import { BrowserPush } from "../pages/notifications/BrowserPush";
@@ -172,6 +178,8 @@ describe("Notification setup", () => {
       "smtp",
       "ntfy",
       "gotify",
+      "pushover",
+      "mqtt",
     ]);
     expect(events).toHaveLength(22);
 
@@ -374,5 +382,76 @@ describe("Notification setup", () => {
       ).toBe(true),
     );
     expect(await screen.findByText("Watcher running on this node")).toBeInTheDocument();
+  });
+
+  it("uses the atomic server customize-notification endpoint for Customize as Flow", async () => {
+    vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    const onFlowCreated = vi.fn();
+    const fetcher = stubFetch(async (url, init) => {
+      if (url.endsWith("/flows/customize-notification") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            flow: {
+              id: "flow_atomic_1",
+              name: "Owner Discord notifications",
+              enabled: true,
+              version: 1,
+              graph: { schemaVersion: 1, nodes: [], edges: [] },
+              createdAt: "2026-11-20T00:00:00Z",
+              updatedAt: "2026-11-20T00:00:00Z",
+            },
+            channelId: "ch-discord",
+            migrated: ["playback.error"],
+            kept: ["server.crash"],
+            notes: ["server.crash remains on the notification channel."],
+          }),
+          { status: 201 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+
+    render(
+      <Channels
+        data={{
+          ...empty,
+          channels: [
+            {
+              ...blankChannel(notifyDescriptors, "discord"),
+              id: "ch-discord",
+              name: "Owner Discord",
+              kind: "discord",
+              enabled: true,
+              events: ["server.crash", "playback.error"],
+            },
+          ],
+        }}
+        onChanged={onChanged}
+        onFlowCreated={onFlowCreated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize as Flow" }));
+    await waitFor(() => expect(onFlowCreated).toHaveBeenCalledWith("flow_atomic_1"));
+
+    const customizeCalls = fetcher.mock.calls.filter(([u]) =>
+      String(u).endsWith("/flows/customize-notification"),
+    );
+    expect(customizeCalls).toHaveLength(1);
+    expect(customizeCalls[0]![1]?.method).toBe("POST");
+    expect(JSON.parse(String(customizeCalls[0]![1]?.body))).toEqual({
+      channelId: "ch-discord",
+      enabled: true,
+      removeLegacyRule: true,
+    });
+    // Must not perform the old client-side create-then-PUT dance.
+    expect(
+      fetcher.mock.calls.some(
+        ([u, init]) =>
+          (String(u).endsWith("/flows") && init?.method === "POST") ||
+          (String(u).includes("/notifications/ch-discord") && init?.method === "PUT"),
+      ),
+    ).toBe(false);
   });
 });

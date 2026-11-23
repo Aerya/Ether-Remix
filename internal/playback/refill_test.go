@@ -18,7 +18,7 @@ type refillCountingResolver struct {
 	refills atomic.Int32
 }
 
-func (r *refillCountingResolver) RefillSearchCache(*core.Title) <-chan struct{} {
+func (r *refillCountingResolver) RefillWarmupSearchCache(*core.Title) <-chan struct{} {
 	r.refills.Add(1)
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -55,9 +56,32 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 			origin := ""
 			if info.Descriptor.ID == "vela" {
 				if info.Enabled && info.Status.Mounted && info.Status.WebPlayerReady {
-					scheme, host, valid := requestOrigin(r, h.proxyPrefixes())
-					if valid {
-						origin = originURL(scheme, host, "/vela/")
+					if u, e := h.resolveAppAddress(r.Context(), r, "vela", "/vela", false); e == nil {
+						origin = strings.TrimRight(u.String(), "/") + "/"
+					} else {
+						var cfg config.Config
+						if h.deps.Config != nil {
+							cfg = h.deps.Config.Get()
+						}
+						if sharedPrefixActive(cfg, "vela", "/vela") {
+							if reqOrigin, valid := requestOriginInfo(r, h.proxyPrefixes()); valid {
+								host := mainPortHost(reqOrigin.Host, cfg)
+								if host == reqOrigin.Host {
+									origin = reqOrigin.BaseURL("/vela") + "/"
+								} else if !viaProxy(r) {
+									origin = originURL(reqOrigin.Scheme, host, "/vela") + "/"
+								}
+							}
+						}
+						if origin == "" {
+							info = h.presentConnectURLs(r, info)
+							for _, raw := range info.Status.ConnectURLs {
+								if u, e := url.Parse(raw); e == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") {
+									origin = strings.TrimRight(raw, "/") + "/"
+									break
+								}
+							}
+						}
 					}
 				}
 				if origin != "" {
@@ -73,12 +97,14 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			info = h.presentConnectURLs(r, info)
-			// Prefer the browser's current host with the active native listener port.
-			scheme, host, valid := requestOrigin(r, h.proxyPrefixes())
-			// Native MediaBrowser listeners use HTTP. For a secure console or
-			// reverse proxy use its published/shared route instead of guessing TLS.
-			if valid && scheme == "http" && !viaProxy(r) {
-				hostname := hostOnly(host)
+			reqOrigin, valid := requestOriginInfo(r, h.proxyPrefixes())
+			// Use the shared app address resolver first (honouring published
+			// addresses and reverse-proxy layouts). For a direct local HTTP
+			// console with no published address, prefer the native listener
+			// port on the browser's current host.
+			hasPublished := h.deps.Config != nil && len(frontendPublishedURLs(h.deps.Config.Get(), "jellyfin")) > 0
+			if !hasPublished && valid && reqOrigin.Scheme == "http" && !viaProxy(r) {
+				hostname := reqOrigin.Hostname()
 				for _, address := range info.Status.Addresses {
 					if _, port, e := net.SplitHostPort(address); e == nil {
 						origin = (&url.URL{Scheme: "http", Host: net.JoinHostPort(hostname, port)}).String()
@@ -86,13 +112,13 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if origin == "" && h.deps.Config != nil {
-				if published, ok := frontendPublicURL(h.deps.Config.Get(), "jellyfin"); ok {
-					origin = strings.TrimRight(published, "/")
+			if origin == "" {
+				if u, e := h.resolveAppAddress(r.Context(), r, "jellyfin", "/jellyfin", false); e == nil {
+					origin = strings.TrimRight(u.String(), "/")
 				}
 			}
 			if origin == "" && valid {
-				origin = originURL(scheme, host, "/jellyfin")
+				origin = reqOrigin.BaseURL("/jellyfin")
 			}
 
 			if origin == "" {

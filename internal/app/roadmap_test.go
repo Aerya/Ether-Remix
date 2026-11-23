@@ -69,9 +69,18 @@ func TestRoadmapOwnerAPIsAreWiredAndPrivate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		info, err := a.livetv.Tune(context.Background(), &core.User{ID: 1, Username: "fixture-viewer", StreamLimit: 1}, channel.ID, core.ClientCaps{ClientID: "fixture-client", Platform: "Fixture"})
+		viewer := &core.User{ID: 1, Username: "fixture-viewer", StreamLimit: 1}
+		info, err := a.livetv.Tune(context.Background(), viewer, channel.ID, core.ClientCaps{ClientID: "fixture-client", Platform: "Fixture"})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if sessions := (ownerPlayback{Playback: a.playback, app: a}).Sessions(); len(sessions) != 0 {
+			t.Fatalf("unplayed live tune should not show as playing before a segment is delivered: %+v", sessions)
+		}
+		segRec := httptest.NewRecorder()
+		a.livetv.ServeRelaySegment(segRec, httptest.NewRequest("GET", "/", nil), info.ID, 0, viewer)
+		if segRec.Code != http.StatusOK {
+			t.Fatalf("segment status=%d body=%q", segRec.Code, segRec.Body.String())
 		}
 		sessions := (ownerPlayback{Playback: a.playback, app: a}).Sessions()
 		if len(sessions) != 1 || sessions[0].ID != info.ID || sessions[0].Username != "fixture-viewer" {

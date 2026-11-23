@@ -260,6 +260,49 @@ function NewReleaseBudget({
   );
 }
 
+/**
+ * Per-plugin daily allowance for background `usenet_check` calls
+ * (`availability.pluginUsenetChecks`), edited alongside Ether's own budget on
+ * Sources › Indexers.
+ */
+function PluginUsenetCheckBudget({
+  availability,
+  onChange,
+}: {
+  availability: AvailabilityConfig;
+  onChange: (next: AvailabilityConfig) => void;
+}) {
+  return (
+    <SettingsRow
+      setting="daily-plugin-usenet-checks"
+      title={t("Daily background Usenet checks per plugin")}
+      description={t(
+        "Maximum background checks each plugin may run per day (0 disables). Viewer playback never counts toward this limit.",
+      )}
+      control={
+        <Input
+          aria-label={t("Daily background Usenet checks per plugin")}
+          type="number"
+          inputMode="numeric"
+          min={0}
+          max={100000}
+          className="w-28 tabular-nums"
+          value={availability.pluginUsenetChecks ?? 20}
+          onChange={(e) => {
+            const raw = e.currentTarget.value.trim();
+            const value = raw === "" ? 0 : Number(raw);
+            if (!Number.isFinite(value)) return;
+            onChange({
+              ...availability,
+              pluginUsenetChecks: Math.max(0, Math.min(100000, Math.round(value))),
+            });
+          }}
+        />
+      }
+    />
+  );
+}
+
 /** The `availability` section (new-release modes, budget) as a draft with its own save. */
 export function useAvailabilityDraft() {
   const config = useAsync(() => api.getConfig(), []);
@@ -296,7 +339,7 @@ export function useAvailabilityDraft() {
   return { draft, setDraft, saveBar };
 }
 
-/** Sources › Indexers: the new-release check budget, under More options. */
+/** Sources › Indexers: daily availability budgets, under More options. */
 export function NewReleaseBudgetSection() {
   const availability = useAvailabilityDraft();
   if (!availability.draft) return null;
@@ -307,6 +350,10 @@ export function NewReleaseBudgetSection() {
         label={t("More options: {title}", { title: t("Daily budgets") })}
       >
         <NewReleaseBudget availability={availability.draft} onChange={availability.setDraft} />
+        <PluginUsenetCheckBudget
+          availability={availability.draft}
+          onChange={availability.setDraft}
+        />
       </MoreOptions>
       {availability.saveBar}
     </SettingsSection>

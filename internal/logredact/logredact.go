@@ -33,7 +33,7 @@ var sensitive = map[string]bool{
 	"xetherstreamtoken": true, "streamtoken": true, "xetherreadtoken": true, "readtoken": true,
 	"plugintoken": true, "sharetoken": true, "downloadtoken": true,
 	"credential": true, "xetherplugincredential": true, "xetherbackuppassword": true, "xetherpick": true, "xembytoken": true, "xembyauthorization": true, "xmediabrowsertoken": true, "xroomtoken": true, "jointoken": true, "roomaccesstoken": true, "opentoken": true, "ticket": true, "code": true, "devicecode": true, "pincode": true, "codeverifier": true, "invite": true, "secrets": true, "tag": true, "imagetags": true, "backdropimagetags": true,
-	"username": true, "password": true, "passwd": true, "pwd": true, "passkey": true,
+	"username": true, "password": true, "passwd": true, "pwd": true, "pw": true, "newpw": true, "currentpw": true, "currentpassword": true, "pass": true, "passkey": true, "authkey": true, "torrentpass": true,
 	"secret": true, "clientsecret": true, "apikey": true, "xapikey": true, "apitoken": true,
 	"authorization": true, "proxyauthorization": true, "cookie": true, "setcookie": true,
 	"rsskey": true,
@@ -65,7 +65,14 @@ func Sensitive(name string) bool {
 }
 
 var (
-	xtreamPath = regexp.MustCompile(`(?i)(/(?:live|movie|series)/)[^/\s?#"']+/[^/\s?#"']+/`)
+	xtreamPath        = regexp.MustCompile(`(?i)(/(?:live|movie|series)/)[^/\s?#"']+/[^/\s?#"']+/`)
+	trackerPathAfter  = regexp.MustCompile(`(?i)(/(?:announce|scrape)(?:\.php)?/)[0-9a-z]{32,}\b`)
+	trackerPathBefore = regexp.MustCompile(`(?i)(/)[0-9a-z]{32,}(/(?:announce|scrape)(?:\.php)?(?:$|[/?#&"'\s;,)\]}]))`)
+
+	// Magnet tracker/source parameters (tr, xs, as, ws, optionally numbered)
+	// and percent-encoded URLs whose inner query or path may carry passkeys.
+	magnetParam = regexp.MustCompile(`(?i)(^|[?&#;\s,(\[{])((?:tr|xs|as|ws)(?:\.[0-9]+)?)=((?:[^&#\s"'<>;,)\[\]{}]|\[redacted\])+)`)
+	encodedURL  = regexp.MustCompile(`(?i)(?:(?:https?|udp|wss?)%3a%2f%2f|magnet%3a)(?:[^&#\s"'<>;,)\[\]{}]|\[redacted\])+`)
 
 	// name=value after a query, form or log-text boundary. A value stops at
 	// '?' so that url=https://host/?apikey=… is still seen as apikey=….
@@ -86,20 +93,28 @@ var (
 	// Ether's own credentials: console sessions and cast delegations.
 	own = regexp.MustCompile(`\bether-(admin|cast|recovery)-[A-Za-z0-9]+`)
 	// Path capabilities and WebSocket subprotocol credentials have no key=value name.
-	pathCapability   = regexp.MustCompile(`(?i)(/(?:stremio/image|m3u/image|xtream/image|api/v2/images|sessions/lazy|ether/api/addon-relay)/|/(?:sessions/media|src)/[^/\s?#"']+/)([^/\s?#"']+)`)
+	pathCapability   = regexp.MustCompile(`(?i)(/(?:stremio/image|m3u/image|xtream/image|api/v2/images|sessions/lazy|ether/api/addon-relay|auth/keys)/|/(?:sessions/media|src)/[^/\s?#"']+/)([^/\s?#"']+)`)
 	appPath          = regexp.MustCompile(`(?i)(/(?:stremio|m3u)/)([^/\s?#"']+)`)
-	opaqueCredential = regexp.MustCompile(`\b(?:eg1_|er1_|ether-credential\.|silo\.ticket\.)[A-Za-z0-9_-]+`)
+	opaqueCredential = regexp.MustCompile(`\b(?:eg1_|er1_|ek1_|ether-credential\.|silo\.ticket\.)[A-Za-z0-9_-]+`)
 	// JSON Web Tokens by shape (header.payload.signature, base64url), so a
 	// signed stream URL or a token under any name is masked.
 	jwt = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 )
 
+const maxNestedDepth = 3
+
 // String returns s with credentials replaced by Mask.
 func String(s string) string {
+	return stringDepth(s, 0)
+}
+
+func stringDepth(s string, depth int) string {
 	if s == "" {
 		return s
 	}
 	s = replaceIf(xtreamPath, s, "${1}"+Mask+"/"+Mask+"/")
+	s = replaceIf(trackerPathAfter, s, "${1}"+Mask)
+	s = replaceIf(trackerPathBefore, s, "${1}"+Mask+"${2}")
 	s = replaceIf(pathCapability, s, "${1}"+Mask)
 	s = replaceFuncIf(appPath, s, func(m string) string {
 		sub := appPath.FindStringSubmatch(m)
@@ -118,6 +133,21 @@ func String(s string) string {
 	s = replaceIf(scheme, s, "${1} "+Mask)
 	s = replaceIf(userinfo, s, "${1}:"+Mask+"@")
 	s = replaceIf(own, s, "ether-${1}-"+Mask)
+	if depth < maxNestedDepth && strings.Contains(s, "%") {
+		s = replaceFuncIf(magnetParam, s, func(m string) string {
+			sub := magnetParam.FindStringSubmatch(m)
+			if clean, ok := scrubPercentURL(sub[3], depth+1); ok {
+				return sub[1] + sub[2] + "=" + clean
+			}
+			return m
+		})
+		s = replaceFuncIf(encodedURL, s, func(m string) string {
+			if clean, ok := scrubPercentURL(m, depth+1); ok {
+				return clean
+			}
+			return m
+		})
+	}
 	s = replaceFuncIf(param, s, func(m string) string {
 		sub := param.FindStringSubmatch(m)
 		if !Sensitive(sub[2]) || sub[3] == "" || masked(sub[3]) {
@@ -133,6 +163,55 @@ func String(s string) string {
 		return sub[1] + `"` + Mask + `"`
 	})
 	return s
+}
+
+func scrubPercentURL(raw string, depth int) (string, bool) {
+	decoded, ok := unescapePercent(raw)
+	if !ok {
+		return raw, false
+	}
+	clean := stringDepth(decoded, depth)
+	if clean == decoded {
+		return raw, false
+	}
+	encoded := strings.ReplaceAll(url.QueryEscape(clean), "+", "%20")
+	encoded = strings.ReplaceAll(encoded, "%5Bredacted%5D", Mask)
+	return encoded, true
+}
+
+func unescapePercent(s string) (string, bool) {
+	if !strings.Contains(s, "%") {
+		return s, false
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); {
+		if i+2 < len(s) && s[i] == '%' && isHexDigit(s[i+1]) && isHexDigit(s[i+2]) {
+			b.WriteByte(fromHex(s[i+1])<<4 | fromHex(s[i+2]))
+			i += 3
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String(), changed
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+func fromHex(b byte) byte {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0'
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10
+	default:
+		return b - 'A' + 10
+	}
 }
 
 // maskValue replaces the third group of re's matches (name, separator,

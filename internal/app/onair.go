@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/backup"
 	"github.com/braedonsaunders/ether/internal/cluster"
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,8 +54,9 @@ func (a *App) buildOnAir() error {
 	o.StaticRequests = func(ctx context.Context, id string) []core.ClipRequest { return a.livetv.GraphicsRequests(ctx, id) }
 	o.Upcoming = func(ctx context.Context) []core.ClipRequest { return a.livetv.GraphicsRequests(ctx, "") }
 	if a.images != nil {
+		o.ArtworkBytes = a.onairArtworkBytes
 		o.Artwork = func(ctx context.Context, ref string) (image.Image, error) {
-			b, e := a.onairArtwork(ctx, ref)
+			b, _, e := a.onairArtworkBytes(ctx, ref)
 			if e != nil {
 				return nil, e
 			}
@@ -115,9 +118,29 @@ func (a *App) onairMembers(ctx context.Context) ([]onair.Member, error) {
 	}
 	return out, nil
 }
+
+// onairPreviewImageURL converts an On Air artwork reference (TMDB path or
+// title:<key>/<poster|art>) into a browser-loadable URL served by Ether's
+// image proxies instead of a bare root path that 401s against Plex routes.
+func onairPreviewImageURL(ref string, width int) string {
+	if ref == "" {
+		return ""
+	}
+	if artwork.ValidPath(ref) {
+		return admin.ImageURL(ref, width)
+	}
+	if _, _, ok := livetv.ParseArtworkRef(ref); ok {
+		return "/ether/api/onair/artwork?ref=" + url.QueryEscape(ref)
+	}
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	return ""
+}
+
 func (a *App) onairBindings(ctx context.Context, channel, viewer string, at time.Time) (any, error) {
 	empty := func() map[string]string {
-		return map[string]string{"title": "", "time": "", "reason": "", "meta": "", "logline": "", "backdrop": ""}
+		return map[string]string{"title": "", "time": "", "reason": "", "meta": "", "logline": "", "poster": "", "backdrop": ""}
 	}
 	out := map[string]any{"channel": map[string]string{"name": ""}, "viewer": map[string]string{"name": "", "greeting": ""}, "now": empty(), "next": empty(), "list": []map[string]string{empty(), empty(), empty(), empty()}, "offair": map[string]string{"message": "Off air"}}
 	if a.livetv == nil {
@@ -175,44 +198,66 @@ func (a *App) onairBindings(ctx context.Context, channel, viewer string, at time
 		v := empty()
 		v["title"] = p.Item.Title
 		v["time"] = p.Start.Format("15:04")
+		v["reason"] = p.Reason
 		v["meta"] = livetv.ProgrammeMeta(p.Item)
 		v["logline"] = livetv.Logline(p.Item.Summary)
-		v["backdrop"] = livetv.ArtworkRef(p.Item.Key, p.Item.Art, "art")
+		v["poster"] = onairPreviewImageURL(livetv.ArtworkRef(p.Item.Key, p.Item.Thumb, "poster"), 780)
+		v["backdrop"] = onairPreviewImageURL(livetv.ArtworkRef(p.Item.Key, p.Item.Art, "art"), 1280)
 		list = append(list, v)
 		if len(list) == 4 {
 			break
+		}
+	}
+	if len(list) > 0 {
+		out["now"] = list[0]
+		if len(list) > 1 {
+			out["next"] = list[1]
+		} else {
+			out["next"] = list[0]
 		}
 	}
 	for len(list) < 4 {
 		list = append(list, empty())
 	}
 	out["list"] = list
-	if len(list) > 0 {
-		out["now"] = list[0]
-	}
-	if len(list) > 1 {
-		out["next"] = list[1]
-	}
 	return out, nil
 }
 
 var _ core.ChannelGraphics = (*onair.Service)(nil)
 
-// onairArtwork loads an On Air artwork reference: a TMDB image path, or a
-// title's poster/backdrop by key, which resolves Plex-sourced art through the
-// verified Plex metadata cache the Plex apps use for the same title.
 func (a *App) onairArtwork(ctx context.Context, ref string) ([]byte, error) {
+	b, _, err := a.onairArtworkBytes(ctx, ref)
+	return b, err
+}
+
+// onairArtworkBytes loads an On Air artwork reference: a TMDB image path, a
+// console proxy URL wrapping one, or a title's poster/backdrop by key, which
+// resolves Plex-sourced art through the verified Plex metadata cache the Plex
+// apps use for the same title.
+func (a *App) onairArtworkBytes(ctx context.Context, ref string) ([]byte, string, error) {
+	if strings.HasPrefix(ref, "/ether/api/image?") {
+		if u, err := url.Parse(ref); err == nil {
+			if p := u.Query().Get("path"); p != "" {
+				ref = p
+			}
+		}
+	} else if strings.HasPrefix(ref, "/ether/api/onair/artwork?") {
+		if u, err := url.Parse(ref); err == nil {
+			if inner := u.Query().Get("ref"); inner != "" {
+				ref = inner
+			}
+		}
+	}
 	key, element, ok := livetv.ParseArtworkRef(ref)
 	if !ok {
-		b, _, e := a.images.Get(ctx, ref, 1920)
-		return b, e
+		return a.images.Get(ctx, ref, 1920)
 	}
 	if a.catalog == nil {
-		return nil, artwork.ErrNotFound
+		return nil, "", artwork.ErrNotFound
 	}
 	t, e := a.catalog.Get(ctx, key)
 	if e != nil {
-		return nil, e
+		return nil, "", e
 	}
 	path := t.PosterPath
 	if element == "art" {
@@ -221,15 +266,14 @@ func (a *App) onairArtwork(ctx context.Context, ref string) ([]byte, error) {
 		path = t.StillPath
 	}
 	if artwork.ValidPath(path) {
-		b, _, e := a.images.Get(ctx, path, 1920)
-		return b, e
+		return a.images.Get(ctx, path, 1920)
 	}
 	if path != plexmeta.RemoteArt || a.plexMeta == nil || a.plexGUID == nil {
-		return nil, artwork.ErrNotFound
+		return nil, "", artwork.ErrNotFound
 	}
 	row, ok := a.plexMeta.Cached(ctx, key)
 	if !ok || row.Empty() || row.GUID == "" || row.GUID != a.plexGUID.Cached(ctx, key) {
-		return nil, artwork.ErrNotFound
+		return nil, "", artwork.ErrNotFound
 	}
 	remote := row.ThumbURL
 	if element == "art" {
@@ -237,8 +281,7 @@ func (a *App) onairArtwork(ctx context.Context, ref string) ([]byte, error) {
 	}
 	u, e := url.Parse(remote)
 	if e != nil || !u.IsAbs() || !plexmeta.ImageHost(u.Host) {
-		return nil, artwork.ErrNotFound
+		return nil, "", artwork.ErrNotFound
 	}
-	b, _, e := a.images.GetUntrustedURL(ctx, remote)
-	return b, e
+	return a.images.GetUntrustedURL(ctx, remote)
 }

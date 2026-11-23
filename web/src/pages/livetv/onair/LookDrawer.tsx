@@ -9,7 +9,7 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Drawer } from "../../../components/Drawer";
+import { Drawer, resetShellHorizontalScroll } from "../../../components/Drawer";
 import { SubtabNav } from "../../../components/layout";
 import { useUnsavedGuard } from "../../../components/SaveBar";
 import { t } from "../../../i18n";
@@ -270,6 +270,15 @@ export function LookDrawer({
     change({ ...draft, scenes: draft.scenes.map((s) => (s.id === next.id ? next : s)) });
   const dirty = !draft.id || JSON.stringify(draft) !== JSON.stringify(saved);
   useUnsavedGuard(dirty);
+  useEffect(
+    () => () => {
+      resetShellHorizontalScroll();
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(resetShellHorizontalScroll);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     void tv.channelSummaries().then((rows) => {
       setChannels(rows);
@@ -352,6 +361,7 @@ export function LookDrawer({
       size="2xl"
       initialFullscreen
       onClose={() => void close()}
+      documentTitle={draft.name || t("Untitled style")}
       title={
         <div className="flex min-w-0 items-center gap-3">
           <Input
@@ -494,7 +504,7 @@ export function LookDrawer({
                   }
                 }}
               >
-                {t("Export pack")}
+                {t("Export as plugin")}
               </Button>
               <Button
                 variant="ghost"
@@ -541,11 +551,21 @@ export function LookDrawer({
             ))}
         </div>
       )}
-      {tab === "create" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <CreateTab style={draft} onChange={change} selectedSceneId={scene?.id} />
-        </div>
-      ) : tab === "screens" ? (
+      <div
+        hidden={tab !== "create"}
+        className={
+          tab === "create" ? "min-h-0 flex-1 overflow-y-auto lg:overflow-hidden" : "hidden"
+        }
+      >
+        <CreateTab
+          style={draft}
+          onChange={change}
+          selectedSceneId={scene?.id}
+          bindings={bound}
+          active={tab === "create"}
+        />
+      </div>
+      {tab === "screens" ? (
         <div className="min-h-0 flex-1 overflow-y-auto bg-surface p-4 sm:p-8">
           <div className="mx-auto max-w-4xl space-y-8">
             <section className="space-y-4 rounded-xl border border-border p-4 sm:p-6">
@@ -561,7 +581,7 @@ export function LookDrawer({
             <StyleScreensEditor look={draft} onChange={change} />
           </div>
         </div>
-      ) : (
+      ) : tab !== "create" ? (
         <div
           inert={saving}
           className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:overflow-hidden"
@@ -916,7 +936,7 @@ export function LookDrawer({
             </aside>
           )}
         </div>
-      )}
+      ) : null}
       {sequence && (
         <SequencePreview
           style={draft}

@@ -1187,3 +1187,32 @@ func TestExplicitClaimChangeRequiresOwner(t *testing.T) {
 		t.Fatal("explicit owner unclaim ignored")
 	}
 }
+
+func TestPutConfigPreservesExtrasDefaultOnMigrated(t *testing.T) {
+	store := newStore(t, func(c *config.Config) { seededConfig(c); c.SetupComplete = true })
+	h := admin.NewHandler(admin.Deps{Config: store, IsOwnerToken: storedOwner(store)})
+	get := req(http.MethodGet, "/ether/api/config", "")
+	get.Header.Set("X-Plex-Token", ownerToken)
+	res := serve(h, get)
+	if res.Code != http.StatusOK {
+		t.Fatalf("get status %d: %s", res.Code, res.Body)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doc["config"].(map[string]any)
+	extras := cfg["extras"].(map[string]any)
+	extras["enabled"] = false
+	delete(extras, "defaultOnMigrated")
+	b, _ := json.Marshal(cfg)
+	put := req(http.MethodPut, "/ether/api/config", string(b))
+	put.Header.Set("X-Plex-Token", ownerToken)
+	if res := serve(h, put); res.Code != http.StatusOK {
+		t.Fatalf("put status %d: %s", res.Code, res.Body)
+	}
+	got := store.Get().Extras
+	if got.Enabled || !got.DefaultOnMigrated {
+		t.Fatalf("Extras = %+v, want Enabled=false DefaultOnMigrated=true", got)
+	}
+}

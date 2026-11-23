@@ -34,30 +34,36 @@ import {
   loadStyleFonts,
   type SceneBindings,
 } from "../scene-renderer";
-import { onair } from "../model";
+import { onair, type Bindings } from "../model";
 import { LibraryPicker } from "../../library/LibraryPicker";
 
-export function styleBindings(style: Style, slots: Record<string, string> = {}): SceneBindings {
-  const bindings = engineBindings(style);
+export function styleBindings(
+  style: Style,
+  slots: Record<string, string> = {},
+  live?: Bindings,
+): SceneBindings {
+  const bindings = engineBindings(style, live);
   return { ...bindings, slots: { ...bindings.slots, ...slots } };
 }
 export function StyleThumbnail({
   style,
   scene = style.scenes.find((x) => x.role === "ident"),
   slots = {},
+  bindings,
   playing = false,
   time,
 }: {
   style: Style;
   scene?: StyleScene;
   slots?: Record<string, string>;
+  bindings?: Bindings;
   playing?: boolean;
   time?: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null),
     [hover, setHover] = useState(false);
   const [loaded, setLoaded] = useState<SceneBindings | null>(null);
-  const bindingKey = JSON.stringify(styleBindings(style, slots));
+  const bindingKey = JSON.stringify(styleBindings(style, slots, bindings));
   const documentKey = JSON.stringify(scene?.document);
   useEffect(() => {
     let live = true;
@@ -240,8 +246,11 @@ export function RemixPanel(p: {
     (Math.min(luminance(s.brand.palette.text), luminance(s.brand.palette.background)) + 0.05);
   return (
     <div className="space-y-8">
-      <fieldset className="space-y-4 rounded-xl border border-border bg-surface p-4">
-        <legend className="font-semibold">{t("Brand kit")}</legend>
+      <section
+        aria-label={t("Brand kit")}
+        className="space-y-4 rounded-xl border border-border bg-surface p-4"
+      >
+        <h3 className="text-sm font-semibold text-fg">{t("Brand kit")}</h3>
         <div className="flex items-center gap-4">
           <LogoPreview logo={s.brand.logo ?? ""} />
           <div className="min-w-0 flex-1">
@@ -373,10 +382,14 @@ export function RemixPanel(p: {
             </Button>
           ))}
         </div>
-      </fieldset>
+      </section>
       {Array.from(new Set(s.controls.map((c) => c.group ?? t("Controls")))).map((group) => (
-        <fieldset key={group} className="space-y-4 rounded-xl border border-border bg-surface p-4">
-          <legend className="font-semibold">{t(group)}</legend>
+        <section
+          key={group}
+          aria-label={t(group)}
+          className="space-y-4 rounded-xl border border-border bg-surface p-4"
+        >
+          <h3 className="text-sm font-semibold text-fg">{t(group)}</h3>
           {s.controls
             .filter((c) => (c.group ?? t("Controls")) === group)
             .map((c) => (
@@ -393,7 +406,7 @@ export function RemixPanel(p: {
                 />
               </div>
             ))}
-        </fieldset>
+        </section>
       ))}
     </div>
   );
@@ -473,7 +486,6 @@ function RemixControl({
       {t(c.label)}
       <Input
         type="text"
-
         value={String(c.value)}
         min={c.min}
         max={c.max}

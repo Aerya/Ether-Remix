@@ -1,0 +1,685 @@
+{
+  "uid": "s:600~l:700",
+  "id": "23",
+  "name": "English Premier League",
+  "abbreviation": "Premier League",
+  "children": [
+    {
+      "id": "1",
+      "name": "2026-27 English Premier League",
+      "abbreviation": "2026-2027",
+      "standings": {
+        "id": "0",
+        "name": "overall",
+        "entries": [
+          {
+            "team": {
+              "id": "359",
+              "uid": "s:600~t:359",
+              "location": "Arsenal",
+              "name": "Arsenal",
+              "abbreviation": "ARS",
+              "displayName": "Arsenal",
+              "shortDisplayName": "Arsenal",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/359.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2019-05-08T16:07Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#81D6AC",
+              "description": "Champions League",
+              "rank": 1
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 11.0,
+                "displayValue": "11"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": 10.0,
+                "displayValue": "+10"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 28.0,
+                "displayValue": "28"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 17.0,
+                "displayValue": "17"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 9.0,
+                "displayValue": "9"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "9-1-1"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "331",
+              "uid": "s:600~t:331",
+              "location": "Brighton & Hove Albion",
+              "name": "Brighton & Hove Albion",
+              "abbreviation": "BHA",
+              "displayName": "Brighton & Hove Albion",
+              "shortDisplayName": "Brighton",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/331.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-01-04T17:49Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#81D6AC",
+              "description": "Champions League",
+              "rank": 2
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 10.0,
+                "displayValue": "10"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": 19.0,
+                "displayValue": "+19"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 22.0,
+                "displayValue": "22"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 26.0,
+                "displayValue": "26"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "7-1-2"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "382",
+              "uid": "s:600~t:382",
+              "location": "Manchester City",
+              "name": "Manchester City",
+              "abbreviation": "MNC",
+              "displayName": "Manchester City",
+              "shortDisplayName": "Man City",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/382.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2019-05-08T16:07Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#81D6AC",
+              "description": "Champions League",
+              "rank": 3
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 11.0,
+                "displayValue": "11"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": 8.0,
+                "displayValue": "+8"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 22.0,
+                "displayValue": "22"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 22.0,
+                "displayValue": "22"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "7-1-3"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "366",
+              "uid": "s:600~t:366",
+              "location": "Sunderland",
+              "name": "Sunderland",
+              "abbreviation": "SUN",
+              "displayName": "Sunderland",
+              "shortDisplayName": "Sunderland",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/366.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2019-05-08T16:07Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#FF7F84",
+              "description": "Relegation",
+              "rank": 18
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 11.0,
+                "displayValue": "11"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": -9.0,
+                "displayValue": "-9"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 9.0,
+                "displayValue": "9"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 17.0,
+                "displayValue": "17"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 18.0,
+                "displayValue": "18"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "2-3-6"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "360",
+              "uid": "s:600~t:360",
+              "location": "Manchester United",
+              "name": "Manchester United",
+              "abbreviation": "MAN",
+              "displayName": "Manchester United",
+              "shortDisplayName": "Man Utd",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/360.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2019-05-08T16:07Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#FF7F84",
+              "description": "Relegation",
+              "rank": 19
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 10.0,
+                "displayValue": "10"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 4.0,
+                "displayValue": "4"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": -5.0,
+                "displayValue": "-5"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 19.0,
+                "displayValue": "19"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 19.0,
+                "displayValue": "19"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "1-5-4"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "384",
+              "uid": "s:600~t:384",
+              "location": "Crystal Palace",
+              "name": "Crystal Palace",
+              "abbreviation": "CRY",
+              "displayName": "Crystal Palace",
+              "shortDisplayName": "C Palace",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/soccer/500/384.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2019-05-08T16:07Z"
+                }
+              ],
+              "isActive": true
+            },
+            "note": {
+              "color": "#FF7F84",
+              "description": "Relegation",
+              "rank": 20
+            },
+            "stats": [
+              {
+                "name": "gamesPlayed",
+                "displayName": "Games Played",
+                "shortDisplayName": "GP",
+                "abbreviation": "GP",
+                "value": 11.0,
+                "displayValue": "11"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Goal Difference",
+                "shortDisplayName": "GD",
+                "abbreviation": "GD",
+                "value": -15.0,
+                "displayValue": "-15"
+              },
+              {
+                "name": "points",
+                "displayName": "Points",
+                "shortDisplayName": "P",
+                "abbreviation": "P",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Goals Against",
+                "shortDisplayName": "A",
+                "abbreviation": "A",
+                "value": 27.0,
+                "displayValue": "27"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Goals For",
+                "shortDisplayName": "F",
+                "abbreviation": "F",
+                "value": 12.0,
+                "displayValue": "12"
+              },
+              {
+                "name": "ties",
+                "displayName": "Draws",
+                "shortDisplayName": "D",
+                "abbreviation": "D",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "rank",
+                "displayName": "Rank",
+                "shortDisplayName": "Rank",
+                "abbreviation": "R",
+                "value": 20.0,
+                "displayValue": "20"
+              },
+              {
+                "name": "overall",
+                "displayName": "Overall",
+                "shortDisplayName": "OVER",
+                "abbreviation": "Total",
+                "displayValue": "2-1-8"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

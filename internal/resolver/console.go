@@ -101,20 +101,22 @@ type rememberedRelease struct {
 // from the database; remembered releases fill blocklist metadata and let
 // the owner act on a search result by id.
 type consoleState struct {
-	mu         sync.Mutex
-	pins       map[core.RatingKey]Pin
-	recent     map[string]rememberedRelease
-	order      []string
-	checks     map[string]HealthResult
-	blocks     map[string]BlockEntry // memory-only mode (no database)
-	history    []HistoryRecord       // memory-only mode (no database)
-	historySeq int64
-	historyMax int
-	historyAge time.Duration
+	mu            sync.Mutex
+	pins          map[core.RatingKey]Pin
+	viewerChoices map[viewerChoiceKey]ViewerChoice
+	recent        map[string]rememberedRelease
+	order         []string
+	checks        map[string]HealthResult
+	blocks        map[string]BlockEntry // memory-only mode (no database)
+	history       []HistoryRecord       // memory-only mode (no database)
+	historySeq    int64
+	historyMax    int
+	historyAge    time.Duration
 }
 
 func (c *consoleState) init(opts Options) {
 	c.pins = map[core.RatingKey]Pin{}
+	c.viewerChoices = map[viewerChoiceKey]ViewerChoice{}
 	c.recent = map[string]rememberedRelease{}
 	c.checks = map[string]HealthResult{}
 	c.blocks = map[string]BlockEntry{}
@@ -162,18 +164,25 @@ func (s *Service) rememberReleases(t *core.Title, results []core.Release) {
 // LookupRelease finds a release by id among recent search results and
 // owner pins.
 func (s *Service) LookupRelease(id string) (core.Release, bool) {
+	rel, _, ok := s.LookupReleaseMeta(id)
+	return rel, ok
+}
+
+// LookupReleaseMeta finds a release and its associated catalogue key in memory
+// (recent search results and owner pins) without touching disk or database.
+func (s *Service) LookupReleaseMeta(id string) (core.Release, core.RatingKey, bool) {
 	c := &s.con
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if r, ok := c.recent[id]; ok {
-		return r.rel, true
+		return r.rel, r.titleKey, true
 	}
 	for _, p := range c.pins {
 		if p.Release.ID == id {
-			return p.Release, true
+			return p.Release, p.TitleKey, true
 		}
 	}
-	return core.Release{}, false
+	return core.Release{}, 0, false
 }
 
 // consoleTitleName is the owner-facing name of a title: "Show S01E02" for
@@ -376,7 +385,7 @@ func (s *Service) SearchReleases(ctx context.Context, t *core.Title, opts Search
 	}
 	sreq := s.searchRequest(ctx, t)
 	start := time.Now()
-	results, cached, err := s.searchCached(ctx, sreq, opts.Fresh)
+	results, cached, err := s.searchWithNumbering(ctx, &sreq, opts.Fresh)
 	if err != nil {
 		return nil, err
 	}
@@ -438,9 +447,9 @@ func (s *Service) SearchReleases(ctx context.Context, t *core.Title, opts Search
 			}
 		}
 		cr.Release.Score = cr.Score
-		reason, bad := s.badReason(rel.ID)
+		reason, bad := s.badReasonRelease(rel)
 		cr.Blocked, cr.BlockReason = bad, reason
-		if h, ok := s.lastHealth(ctx, rel.ID); ok {
+		if h, ok := s.lastHealthRelease(ctx, rel); ok {
 			cr.Health = &h
 		}
 		out.Releases = append(out.Releases, cr)
@@ -620,10 +629,13 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, seasonSearchParallel)
 
+	// The pack search gets its own copy: episode searches rewrite their
+	// request in place (searchWithNumbering) while this one runs.
+	packReq := sreqs[0]
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		rescuePacks = s.searchSeasonPacks(ctx, sreqs[0], opts.Fresh)
+		rescuePacks = s.searchSeasonPacks(ctx, packReq, opts.Fresh)
 	}()
 
 	for i := range eps {
@@ -638,7 +650,7 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 				return
 			}
 			defer func() { <-sem }()
-			fetched[i].results, _, fetched[i].err = s.searchCached(ctx, sreqs[i], opts.Fresh)
+			fetched[i].results, _, fetched[i].err = s.searchWithNumbering(ctx, &sreqs[i], opts.Fresh)
 		}()
 	}
 	wg.Wait()
@@ -705,7 +717,7 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 			results = withRelease(results, pin.Release)
 		}
 		var trace Trace
-		cands, _, err := s.rankCandidates(ctx, req, sreqs[i], profile, results, &trace, pinID)
+		cands, _, err := s.rankCandidatesLocal(ctx, req, sreqs[i], profile, results, &trace, pinID, true)
 		if err != nil {
 			return nil, err
 		}
@@ -750,9 +762,9 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 				}
 			}
 			cr.Release.Score = cr.Score
-			reason, bad := s.badReason(rel.ID)
+			reason, bad := s.badReasonRelease(rel)
 			cr.Blocked, cr.BlockReason = bad, reason
-			if h, ok := s.lastHealth(ctx, rel.ID); ok {
+			if h, ok := s.lastHealthRelease(ctx, rel); ok {
 				cr.Health = &h
 			}
 			epOut.Releases = append(epOut.Releases, cr)
@@ -827,17 +839,25 @@ type HealthResult struct {
 // lastHealth reports what is known about a release's health without
 // checking it.
 func (s *Service) lastHealth(ctx context.Context, id string) (HealthResult, bool) {
+	if rel, ok := s.LookupRelease(id); ok {
+		return s.lastHealthRelease(ctx, rel)
+	}
+	return s.lastHealthRelease(ctx, core.Release{ID: id})
+}
+
+func (s *Service) lastHealthRelease(ctx context.Context, rel core.Release) (HealthResult, bool) {
+	id := rel.ID
 	s.con.mu.Lock()
 	h, ok := s.con.checks[id]
 	s.con.mu.Unlock()
 	if ok {
 		return h, true
 	}
-	reason, bad := s.badReason(id)
+	reason, bad := s.badReasonRelease(rel)
 	if bad {
 		return HealthResult{ReleaseID: id, Reason: reason, Source: "blocked"}, true
 	}
-	if at, ok := s.verifiedAt(ctx, id); ok {
+	if at, ok := s.verifiedAtRelease(ctx, rel); ok {
 		return HealthResult{ReleaseID: id, CheckedAt: at, Healthy: true, Source: "verified"}, true
 	}
 	return HealthResult{}, false
@@ -874,10 +894,14 @@ func (s *Service) CheckRelease(ctx context.Context, releaseID string, titleKey c
 	res := HealthResult{ReleaseID: releaseID, Source: "check"}
 	definitive := false
 	nzb, err := s.indexer.FetchNZB(ctx, rel)
+	var extraKeys []string
+	if err == nil {
+		rel, extraKeys = s.learnReleaseContent(ctx, rel, nzb)
+	}
 	switch {
 	case err != nil:
 		res.Reason = "nzb fetch: " + err.Error()
-		definitive = permanentFailure(err)
+		definitive = permanentGrabFailure(err)
 	case s.health == nil:
 		res.Healthy = true
 		res.Reason = "no health checker configured"
@@ -886,7 +910,7 @@ func (s *Service) CheckRelease(ctx context.Context, releaseID string, titleKey c
 		switch {
 		case healthy && herr == nil:
 			res.Healthy = true
-			s.markVerified(ctx, releaseID)
+			s.markVerifiedKeys(ctx, s.allVerificationKeys(rel, extraKeys...))
 		case herr == nil:
 			res.Reason, definitive = "health: unhealthy", true
 		default:
@@ -964,13 +988,21 @@ func (s *Service) Forget(ctx context.Context, t *core.Title) error {
 	}
 	key := searchCacheKey(searchRequestFor(t))
 	s.mu.Lock()
-	delete(s.searchCache, key)
+	if s.vault != nil {
+		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !s.now().Before(e.expires) })
+		s.searchCache[key] = searchCacheEntry{forgotten: true}
+	} else {
+		delete(s.searchCache, key)
+	}
 	delete(s.avail, int64(t.Key))
 	s.mu.Unlock()
+	s.InvalidateDetailVariants()
 	return s.forgetAvailability(ctx, t.Key)
 }
 
 func (s *Service) forgetAvailability(ctx context.Context, key core.RatingKey) error {
+	s.availPersistMu.Lock()
+	defer s.availPersistMu.Unlock()
 	s.mu.Lock()
 	s.forgetAvailabilityEpochLocked(int64(key))
 	delete(s.avail, int64(key))

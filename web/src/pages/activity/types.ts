@@ -6,6 +6,8 @@ export type Bucket = {
   label: string;
   /** A title's or show's rating key, or a viewer's user id, when known. */
   key?: string;
+  /** A Live TV channel id, when the bucket represents a Live TV channel. */
+  channelId?: string;
   plays: number;
   watchedMs: number;
   bytes: number;
@@ -33,15 +35,19 @@ export type Summary = {
   genres?: Bucket[];
   heatmap?: { weekday: number; hour: number; plays: number; watchedMs: number }[];
   dailyDelivery?: { label: string; direct: number; transcode: number; bytes: number }[];
-  dailyKinds?: { label: string; movieMs: number; episodeMs: number }[];
+  dailyKinds?: { label: string; movieMs: number; episodeMs: number; liveMs?: number }[];
 };
 
 export type Play = {
   music?: { artist: string; album: string; duration: number };
   id: string;
   userId: number;
+  ratingKey?: number;
   username: string;
   title: string;
+  channelId?: string;
+  channelName?: string;
+  channelNumber?: string;
   device: string;
   platform: string;
   decision: string;
@@ -129,6 +135,9 @@ export type ExperienceOverview = {
 export type ExperiencePlay = {
   id: string;
   title: string;
+  channelId?: string;
+  channelName?: string;
+  channelNumber?: string;
   device: string;
   platform: string;
   started: number;
@@ -190,8 +199,31 @@ export type PlayDetail = Play &
     platform: string;
     durationMs: number;
     ip?: string;
+    networkReason?: string;
     avgBitrateKbps?: number;
     sourceKbps?: number;
     uhd?: boolean;
     hdr?: boolean;
   };
+
+export type TimelineLevel = "debug" | "info" | "warn" | "error";
+
+export type TimelineEntry = {
+  seq: number;
+  atMs: number;
+  offsetMs: number;
+  type: "event" | "log";
+  kind?: string;
+  level: TimelineLevel;
+  message: string;
+  detail?: string;
+};
+
+export type PlayTimeline = {
+  playId: string;
+  startedMs: number;
+  failed: boolean;
+  error: string;
+  capped?: boolean;
+  entries: TimelineEntry[];
+};

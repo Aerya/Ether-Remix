@@ -96,6 +96,17 @@ func replayPlay(p playRequest, entry *transcodeEntry) *playRequest {
 	p.opts = entry.opts
 	p.protocol = entry.requested.protocol
 	p.mde = entry.requested.mde
+	p.manualSubtitle = entry.requested.manualSubtitle
+	if pos := entryAudioPosition(entry); pos >= 0 {
+		st := entry.info.Streams[pos]
+		p.audioSel, p.audioStream = pos, &st
+	}
+	if entry.subtitle >= 0 && entry.subtitle < len(entry.info.Streams) && entry.info.Streams[entry.subtitle].Type == "subtitle" {
+		st := entry.info.Streams[entry.subtitle]
+		p.subSel, p.subSet, p.subStream = entry.subtitle, true, &st
+	} else if entry.requested.subSet {
+		p.subSel, p.subSet, p.subStream = -1, true, nil
+	}
 	return &p
 }
 

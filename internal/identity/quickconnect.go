@@ -8,7 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"math/big"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -41,6 +44,20 @@ type QuickConnect struct {
 	ttl, grantTTL  time.Duration
 	now            func() time.Time
 	expire, insert *sql.Stmt
+	onApproved     atomic.Pointer[func(viewerID int64, target ApprovedTarget)]
+}
+
+// SetOnApproved installs an optional non-blocking observer notified when a
+// Quick Connect code is approved by a viewer.
+func (q *QuickConnect) SetOnApproved(fn func(viewerID int64, target ApprovedTarget)) {
+	if q == nil {
+		return
+	}
+	if fn == nil {
+		q.onApproved.Store(nil)
+		return
+	}
+	q.onApproved.Store(&fn)
 }
 
 const (
@@ -74,7 +91,20 @@ func NewQuickConnect(db *sql.DB, ttl, grantTTL time.Duration, now func() time.Ti
 
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-func quickCode() (string, error) {
+var jellyfinCodeRange = big.NewInt(900000)
+
+// quickCode generates a 6-character Quick Connect code. Jellyfin's server
+// generates a 6-digit number in [100000, 999999] and Jellyfin Web's Quick
+// Connect input enforces numeric digits (pattern="[0-9\s]*" minLength={6}),
+// so the jellyfin surface uses the same 6-digit space.
+func quickCode(surface string) (string, error) {
+	if surface == "jellyfin" {
+		n, err := rand.Int(rand.Reader, jellyfinCodeRange)
+		if err != nil {
+			return "", err
+		}
+		return strconv.FormatInt(100000+n.Int64(), 10), nil
+	}
 	var raw [6]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
@@ -118,7 +148,7 @@ func (q *QuickConnect) Initiate(ctx context.Context, surface string, device core
 		return "", "", err
 	}
 	for i := 0; i < 10; i++ {
-		code, err = quickCode()
+		code, err = quickCode(surface)
 		if err != nil {
 			return
 		}
@@ -176,6 +206,10 @@ func (q *QuickConnect) approve(ctx context.Context, surface, code string, viewer
 	}
 	if n != 1 {
 		return q.rejectCode(ctx, code)
+	}
+	if fn := q.onApproved.Load(); fn != nil && *fn != nil {
+		target, _ := q.ApprovedTarget(ctx, code, viewerID)
+		(*fn)(viewerID, target)
 	}
 	return nil
 }

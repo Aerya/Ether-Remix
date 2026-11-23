@@ -13,8 +13,10 @@ import {
   Code2,
   ExternalLink,
   FlaskConical,
+  Globe,
   Info,
   MoreHorizontal,
+  Network,
   PowerOff,
   RefreshCw,
   RotateCcw,
@@ -43,8 +45,10 @@ import { openInStudio } from "./openInStudio";
 import {
   isAddon,
   kindLabel,
+  translatePermissionLine,
   type JournalEntry,
   type PluginDetail,
+  type PluginFeedOverview,
   type PluginSummary,
 } from "./types";
 
@@ -52,8 +56,8 @@ type DrawerTab = "overview" | "adds" | "setup" | "activity";
 
 /**
  * One installed plugin. The header carries what you reach for every time
- * (health, on/off, Studio, and the ⋯ menu for updates, undo and removal);
- * the tabs are Overview, what it adds, Setup and Activity.
+ * (health, on/off, and the ⋯ menu for Studio, updates, undo and removal);
+ * the tabs are Overview, what it adds, Settings and Activity.
  */
 export function InstalledPluginDrawer({
   pluginId,
@@ -84,10 +88,14 @@ export function InstalledPluginDrawer({
   const [menu, setMenu] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [undoFirst, setUndoFirst] = useState(true);
+  const [liveFeeds, setLiveFeeds] = useState<PluginFeedOverview[] | undefined>(undefined);
   const { calls, reload: reloadCalls } = usePluginCalls(pluginId, logRevision);
 
   useEffect(() => setTab(params.get("tab") === "setup" ? "setup" : "overview"), [pluginId, params]);
-  useEffect(() => setBusy(null), [pluginId]);
+  useEffect(() => {
+    setBusy(null);
+    setLiveFeeds(undefined);
+  }, [pluginId]);
 
   const loadDetail = useCallback(async (id: string, quiet = false) => {
     if (!quiet) setLoading(true);
@@ -128,6 +136,13 @@ export function InstalledPluginDrawer({
     if (pluginId && logRevision) void loadDetail(pluginId, true);
   }, [pluginId, logRevision, loadDetail]);
 
+  useEffect(() => {
+    if (pluginId && tab === "activity") {
+      void reloadCalls();
+      void loadDetail(pluginId, true);
+    }
+  }, [pluginId, tab, reloadCalls, loadDetail]);
+
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
     setMutationError(null);
@@ -157,9 +172,43 @@ export function InstalledPluginDrawer({
 
   const retry = () =>
     run("retry", async () => {
-      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/test`, { method: "POST" });
+      const res = await apiFetch<{ ok: boolean; message?: string }>(
+        `/plugins/${encodeURIComponent(detail!.id)}/test`,
+        { method: "POST" },
+      );
       await reload();
       await reloadCalls();
+      if (res.ok && res.message) {
+        toast.success(res.message);
+      } else if (!res.ok && res.message) {
+        setMutationError(new Error(res.message));
+      }
+    });
+
+  const allowLocalHost = (host: string) =>
+    run(`allow:${host}`, async () => {
+      const cur = detail!.permissions.grants ?? {};
+      const existing = cur.localHosts ?? [];
+      const localHosts = existing.includes(host) ? existing : [...existing, host];
+      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/grants`, {
+        method: "PUT",
+        body: JSON.stringify({ ...cur, localHosts }),
+      });
+      await reload();
+      toast.success(t("Access updated"));
+    });
+
+  const approveOperatorHost = (host: string) =>
+    run(`approve-host:${host}`, async () => {
+      const cur = detail!.permissions.grants ?? {};
+      const existing = cur.operatorHosts ?? [];
+      const operatorHosts = existing.includes(host) ? existing : [...existing, host];
+      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/grants`, {
+        method: "PUT",
+        body: JSON.stringify({ ...cur, operatorHosts }),
+      });
+      await reload();
+      toast.success(t("Access updated"));
     });
 
   const makeLive = () =>
@@ -195,7 +244,7 @@ export function InstalledPluginDrawer({
         title: t("Update {name}?", { name: detail.name }),
         message: t("Version {version} asks for new access: {access}", {
           version: detail.updateVersion ?? "",
-          access: pendingPerms.map((p) => t(p)).join(", "),
+          access: pendingPerms.map(translatePermissionLine).join(", "),
         }),
         confirmLabel: t("Allow and update"),
       });
@@ -279,30 +328,11 @@ export function InstalledPluginDrawer({
       onClose={onClose}
       size="xl"
       title={detail?.name ?? t("Plugin")}
-      description={detail ? <HeaderLine detail={detail} /> : undefined}
+      documentTitle={detail?.id === pluginId ? detail.name : t("Plugin")}
+      description={detail ? <HeaderLine detail={detail} liveFeeds={liveFeeds} /> : undefined}
       headerActions={
         detail ? (
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={t("Open in Studio")}
-              disabled={busy === "studio"}
-              onClick={() => {
-                setBusy("studio");
-                void openInStudio(detail.id)
-                  .then((to) => navigate(to))
-                  .catch((e) => {
-                    setMutationError(e);
-                    setBusy(null);
-                  });
-              }}
-            >
-              <Code2 size={14} />
-              <span className="hidden sm:inline">
-                {busy === "studio" ? t("Opening…") : t("Open in Studio")}
-              </span>
-            </Button>
             <label
               className="ml-1 hidden text-xs font-medium text-fg-muted sm:inline"
               htmlFor="drawer-plugin-enabled"
@@ -335,6 +365,21 @@ export function InstalledPluginDrawer({
               }
             >
               <div role="menu" aria-label={t("More actions")}>
+                <MenuItem
+                  icon={<Code2 size={14} />}
+                  label={busy === "studio" ? t("Opening…") : t("Open in Studio")}
+                  disabled={busy === "studio"}
+                  onClick={() => {
+                    setMenu(false);
+                    setBusy("studio");
+                    void openInStudio(detail.id)
+                      .then((to) => navigate(to))
+                      .catch((e) => {
+                        setMutationError(e);
+                        setBusy(null);
+                      });
+                  }}
+                />
                 {detail.sourceKind !== "studio" && !detail.stremioOnly ? (
                   <MenuItem
                     icon={<RefreshCw size={14} />}
@@ -401,6 +446,44 @@ export function InstalledPluginDrawer({
         <ErrorPanel error={loadError} onRetry={() => pluginId && void loadDetail(pluginId)} />
       ) : detail ? (
         <div className="space-y-5">
+          {active !== "setup" && detail.pendingOperatorHosts?.length
+            ? detail.pendingOperatorHosts.map((host) => (
+                <Banner
+                  key={`op:${host}`}
+                  icon={<Globe size={16} className="text-warning" />}
+                  text={t("Needs approval to connect to {host}", { host })}
+                  action={
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy === `approve-host:${host}`}
+                      onClick={() => void approveOperatorHost(host)}
+                    >
+                      {t("Approve")}
+                    </Button>
+                  }
+                />
+              ))
+            : null}
+          {active !== "setup" && detail.blockedLocalHosts?.length
+            ? detail.blockedLocalHosts.map((host) => (
+                <Banner
+                  key={host}
+                  icon={<Network size={16} className="text-warning" />}
+                  text={t("Blocked {host} (on your network)", { host })}
+                  action={
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy === `allow:${host}`}
+                      onClick={() => void allowLocalHost(host)}
+                    >
+                      {t("Allow")}
+                    </Button>
+                  }
+                />
+              ))
+            : null}
           {detail.updateVersion ? (
             <Banner
               icon={<ArrowUpCircle size={16} className="text-primary" />}
@@ -479,7 +562,11 @@ export function InstalledPluginDrawer({
               calls={calls}
               onClose={onClose}
               onRetry={retry}
-              onFresh={() => void loadDetail(detail.id, true)}
+              onLiveFeeds={setLiveFeeds}
+              onFresh={() => {
+                void loadDetail(detail.id, true);
+                void reloadCalls();
+              }}
               onActivity={() => setTab("activity")}
             />
           ) : active === "adds" ? (
@@ -491,7 +578,14 @@ export function InstalledPluginDrawer({
             />
           ) : active === "setup" ? (
             <>
-              <PluginCatalogueSettings pluginId={detail.id} onSetup={() => setSetupWizard(true)} />{" "}
+              <PluginCatalogueSettings
+                pluginId={detail.id}
+                onSetup={() => setSetupWizard(true)}
+                onSyncActivity={() => {
+                  void loadDetail(detail.id, true);
+                  void reloadCalls();
+                }}
+              />{" "}
               <PluginSetup
                 detail={detail}
                 onDetail={() => loadDetail(detail.id, true)}
@@ -503,6 +597,7 @@ export function InstalledPluginDrawer({
             <PluginActivity
               detail={detail}
               calls={calls}
+              liveFeeds={liveFeeds}
               onReloadCalls={reloadCalls}
               journal={journal}
               onReloadJournal={async () => {
@@ -570,8 +665,14 @@ export function InstalledPluginDrawer({
 }
 
 /** Type, version and author, then health in one word, then About behind ⓘ. */
-function HeaderLine({ detail }: { detail: PluginDetail }) {
-  const health = healthSummary(detail);
+function HeaderLine({
+  detail,
+  liveFeeds,
+}: {
+  detail: PluginDetail;
+  liveFeeds?: PluginFeedOverview[];
+}) {
+  const health = healthSummary(detail, liveFeeds);
   const ether = detail.manifest.ether;
   const author = ether?.author?.name;
   const edited = detail.sourceKind === "studio";

@@ -69,6 +69,7 @@ func TestFavoritePolicyNilAppDependencies(t *testing.T) {
 		{Kind: favorites.KindTitle, ID: core.MovieKey(1).String()},
 		{Kind: favorites.KindCollection, ID: core.CollectionKey(1).String()},
 		{Kind: favorites.KindChannel, ID: "channel"},
+		{Kind: favorites.KindEntity, ID: "community.example.scores:scores:team:t1"},
 		{Kind: favorites.KindPerson, ID: "tmdb:1"},
 		{Kind: favorites.Kind("other"), ID: "x"},
 	}
@@ -77,7 +78,7 @@ func TestFavoritePolicyNilAppDependencies(t *testing.T) {
 			t.Fatalf("nil dependencies allowed %+v", subject)
 		}
 	}
-	if string(favorites.KindTitle) != string(experience.FavoriteKindTitle) || string(favorites.KindPerson) != string(experience.FavoriteKindPerson) || string(favorites.KindCollection) != string(experience.FavoriteKindCollection) || string(favorites.KindChannel) != string(experience.FavoriteKindChannel) {
+	if string(favorites.KindTitle) != string(experience.FavoriteKindTitle) || string(favorites.KindPerson) != string(experience.FavoriteKindPerson) || string(favorites.KindCollection) != string(experience.FavoriteKindCollection) || string(favorites.KindChannel) != string(experience.FavoriteKindChannel) || string(favorites.KindEntity) != string(experience.FavoriteKindEntity) {
 		t.Fatal("favorite kind strings drifted from the experience port")
 	}
 }
@@ -142,6 +143,15 @@ func TestFavoritePolicyDecisions(t *testing.T) {
 	}, false)
 	compareAllowed(experience.FavoriteSubject{Kind: experience.FavoriteKindChannel, ID: "news"}, experience.FavoriteSources{
 		ChannelIDs: func(context.Context, *core.User) ([]string, error) { return nil, dbErr },
+	}, false)
+	compareAllowed(experience.FavoriteSubject{Kind: experience.FavoriteKindEntity, ID: "community.example.scores:scores:team:t1"}, experience.FavoriteSources{
+		EntityAllowed: func(context.Context, *core.User, string) (bool, error) { return true, nil },
+	}, true)
+	compareAllowed(experience.FavoriteSubject{Kind: experience.FavoriteKindEntity, ID: "community.example.scores:scores:team:t1"}, experience.FavoriteSources{
+		EntityAllowed: func(context.Context, *core.User, string) (bool, error) { return false, nil },
+	}, false)
+	compareAllowed(experience.FavoriteSubject{Kind: experience.FavoriteKindEntity, ID: "community.example.scores:scores:team:t1"}, experience.FavoriteSources{
+		EntityAllowed: func(context.Context, *core.User, string) (bool, error) { return false, dbErr },
 	}, false)
 	compareAllowed(experience.FavoriteSubject{Kind: experience.FavoriteKindPerson, ID: "tmdb:01"}, experience.FavoriteSources{
 		PersonPage: func(context.Context, int64, int, int) ([]core.Title, error) {

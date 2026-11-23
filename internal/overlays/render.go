@@ -19,6 +19,9 @@ import (
 )
 
 func normalizeSettings(v Settings) Settings {
+	if v.RatingStyle == "" {
+		v.RatingStyle = "sources"
+	}
 	if v.Style == "" {
 		v.Style = "glass"
 	}
@@ -32,10 +35,34 @@ func normalizeSettings(v Settings) Settings {
 		v.Size = "medium"
 	}
 	v.Accent = strings.ToLower(v.Accent)
+	if len(v.DisabledBadgeSets) > 0 {
+		seen := make(map[string]bool, len(v.DisabledBadgeSets))
+		clean := make([]string, 0, len(v.DisabledBadgeSets))
+		for _, raw := range v.DisabledBadgeSets {
+			k := strings.TrimSpace(raw)
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			clean = append(clean, k)
+		}
+		if len(clean) == 0 {
+			v.DisabledBadgeSets = nil
+		} else {
+			v.DisabledBadgeSets = clean
+		}
+	} else {
+		v.DisabledBadgeSets = nil
+	}
 	return v
 }
 
 func validateSettings(v Settings) error {
+	switch v.RatingStyle {
+	case "sources", "combined":
+	default:
+		return errors.New("rating style must be sources or combined")
+	}
 	switch v.Style {
 	case "glass", "solid", "minimal":
 	default:
@@ -56,6 +83,14 @@ func validateSettings(v Settings) error {
 	}
 	if _, err := hex.DecodeString(v.Accent[1:]); err != nil {
 		return errors.New("accent must be a six-digit hex color")
+	}
+	if len(v.DisabledBadgeSets) > 256 {
+		return errors.New("too many disabled badge sets")
+	}
+	for _, k := range v.DisabledBadgeSets {
+		if len(k) > 160 {
+			return errors.New("disabled badge set key is too long")
+		}
 	}
 	return nil
 }
@@ -238,7 +273,11 @@ func (s *Service) SampleContext(ctx context.Context, cfg Settings) ([]byte, stri
 			labels = append(labels, "4K HDR")
 		}
 		if cfg.Ratings {
-			labels = append(labels, "IMDb 8.6")
+			if cfg.RatingStyle == "combined" {
+				labels = append(labels, "8.6")
+			} else {
+				labels = append(labels, "IMDb 8.6")
+			}
 		}
 	}
 	return s.compositeContext(ctx, s.sampleData, labels, cfg)

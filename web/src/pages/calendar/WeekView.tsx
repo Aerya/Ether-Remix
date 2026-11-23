@@ -145,12 +145,12 @@ function Tile({
           <span className="block truncate text-[11px] text-fg-muted">{entry.episodeTitle}</span>
         ) : null}
       </span>
-      <span className="flex items-center justify-between gap-2 px-2.5 py-1.5">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-fg-muted">
+      <span className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 px-2.5 pb-2 pt-1.5">
+        <span className="flex min-w-0 max-w-full items-center gap-1.5 text-[11px] font-medium text-fg-muted">
           <span className={cn("size-2 shrink-0 rounded-full", meta.dot)} aria-hidden />
           <span className="truncate">{meta.label}</span>
         </span>
-        <ViewerStack entry={entry} viewers={viewers} size={18} max={3} />
+        <ViewerStack entry={entry} viewers={viewers} size={18} max={3} className="shrink-0" />
       </span>
     </button>
   );

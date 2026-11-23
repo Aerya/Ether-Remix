@@ -3,6 +3,7 @@ import { interpretDemo } from "./catalogInterpret";
 import { indexerUsage, infrastructure, saveCost, sourceHistory } from "./source-stats";
 import { matchesCatalogFilter } from "./catalogFilter";
 import { createOnAirMock } from "./onair";
+import { createVelaSkinsMock } from "./velaSkins";
 /**
  * In-memory fake of the Ether admin API. Used by `vite --mode mock` and by the
  * tests; never shipped. It evaluates collection rules against a generated
@@ -10,14 +11,26 @@ import { createOnAirMock } from "./onair";
  * realistically offline.
  */
 import { createPrerollsMock } from "./prerolls";
+import { createVelaBrandingMock, VELA_SETTINGS_SCHEMA } from "./velaBranding";
 import type {
   ActivityDay,
+  AddonCatalogImportRequest,
+  AddonCatalogPreview,
+  AddonCatalogPreviewItem,
+  AddonCatalogSubscription,
+  AddonImportNameMode,
+  AvailableRow,
   CollectionSpec,
   Device,
   HomeLayout,
   HomeRow,
+  LayoutDefaultsMaxRows,
   LayoutPage,
   LayoutSection,
+  LibraryMediaSurface,
+  RowGroup,
+  RowSectionTag,
+  ViewerLibraryPage,
   Rule,
   Source,
   TasteOverride,
@@ -28,14 +41,21 @@ import type {
 import {
   collectionIdOf,
   daypartOf,
+  defaultRowsForSection,
   effectivePolicy,
+  clearLibraryLayout,
+  prune,
+  libraryIdOfSection,
   matchRank,
+  mediaSectionForLibrary,
   overrideCount,
   pageOf,
+  parseLayoutSection,
   rowFits,
   tidySchedule,
   whenMatches,
 } from "../lib/layout";
+import { createLibraryTabsMock } from "./libraryTabs";
 import { assemble } from "./assemble";
 import { normalizeSpec } from "../lib/rules";
 import { resolutionGroups } from "../lib/qualityRanking";
@@ -50,7 +70,6 @@ import type {
   ClusterStatus,
   EtherConfig,
   EtherUser,
-  IdentityPreset,
   JoinTokenInfo,
   LogEntry,
 } from "../lib/types";
@@ -79,6 +98,7 @@ import { createSitesMock } from "./sites";
 import { createTrashMock } from "./trash";
 import { createCacheMock } from "./cache";
 import { createCalendarMock } from "./calendar";
+import { createFlowsMock } from "./flows";
 import { createLiveTVMock } from "./livetv";
 import { createExtendMock } from "./extend";
 import { TEMPLATE_BUNDLES, TEMPLATES } from "./templates";
@@ -96,9 +116,14 @@ const MOCK_EQUIVALENTS: Record<string, string[]> = {
 const NOW = () => new Date();
 
 export interface FakeOptions {
+  /** Owner-installed Vela client; absent by default. */
+  velaInstalled?: boolean;
+  velaDistribution?: "installing" | "rollback";
   liveTVEmpty?: boolean;
   onAirLayout?: string;
   capabilityOverrides?: Array<Record<string, unknown>>;
+  /** Override /status/hwaccel and dashboard.sections.hwaccel for OS/GPU tests. */
+  hwaccel?: Record<string, unknown>;
   bootstrap?: Partial<Bootstrap>;
   /** Artificial latency for realism in the browser; 0 in tests. */
   latencyMs?: number;
@@ -118,8 +143,12 @@ export interface FakeOptions {
   restore?: string;
   /** Household audio and subtitle choices, for the Playback screen in the browser mock. */
   householdAudio?: boolean;
+  /** Include a remote stream capped by the shared upload budget (browser mock preview). */
+  remoteBudgetDemo?: boolean;
   /** Seed pre-rolls, their recent plays and a video still converting. */
   prerolls?: boolean;
+  /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
+  portConflict?: boolean | string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -132,32 +161,9 @@ function err(status: number, code: string, message: string): Response {
   return json({ error: { code, message } }, status);
 }
 
-/** Mirrors internal/config/clientid.go identityPresets. */
-const IDENTITY_PRESETS: IdentityPreset[] = [
-  { key: "ether", userAgent: "Ether/1.0" },
-  {
-    key: "sonarr",
-    userAgent: "Sonarr/4.0.20.3014 (ubuntu 26.04)",
-    headers: { Accept: "application/rss+xml, text/rss+xml, application/xml, text/xml" },
-  },
-  {
-    key: "radarr",
-    userAgent: "Radarr/6.4.4.10685 (ubuntu 26.04)",
-    headers: { Accept: "application/rss+xml, text/rss+xml, application/xml, text/xml" },
-  },
-  {
-    key: "prowlarr",
-    userAgent: "Prowlarr/2.7.0.5723 (ubuntu 26.04)",
-    headers: { Accept: "application/rss+xml, text/rss+xml, application/xml, text/xml" },
-  },
-  {
-    key: "nzbhydra2",
-    userAgent: "NZBHydra2 9.2.0",
-    headers: { Accept: "application/xml", "Content-Type": "application/xml" },
-  },
-  { key: "sabnzbd", userAgent: "SABnzbd/5.1.3" },
-  { key: "nzbget", userAgent: "nzbget/26.3", headers: { Accept: "*/*" } },
-];
+/** Mirrors internal/config/clientid.go DefaultUserAgent(). */
+const DEFAULT_USER_AGENT =
+  "Ether/dev (+https://github.com/braedonsaunders/ether/blob/main/docs/indexer-operators.md)";
 
 function defaultConfig(): EtherConfig {
   return {
@@ -194,6 +200,7 @@ function defaultConfig(): EtherConfig {
       checkRequests: 100,
       grabs: 20,
       checks: 20,
+      pluginUsenetChecks: 20,
       checkBytes: 536870912,
       reservePercent: 80,
     },
@@ -306,6 +313,7 @@ function defaultConfig(): EtherConfig {
         kind: "stremio",
       },
     ],
+    clientIdentity: { rules: [] },
     debrid: {
       providers: [
         {
@@ -367,6 +375,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(2160, 1080),
           customFormatScores: {
             "ether:viewer-language": 20000,
+            "ether:viewer-subtitles": 15,
             "ether:remux": 6000,
             "ether:bluray": 4000,
             "ether:webdl": 2000,
@@ -384,6 +393,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 15,
           maxSizeMbPerMin: 1000,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
@@ -396,6 +406,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(1080, 720),
           customFormatScores: {
             "ether:viewer-language": 10000,
+            "ether:viewer-subtitles": 15,
             "ether:webdl": 2000,
             "ether:bluray": 1000,
             "ether:codec-h264": 12,
@@ -409,6 +420,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
@@ -421,6 +433,7 @@ function defaultConfig(): EtherConfig {
           qualityOrder: resolutionGroups(1080, 720),
           customFormatScores: {
             "ether:viewer-language": 10000,
+            "ether:viewer-subtitles": 15,
             "ether:series-year-differs": -5000,
             "ether:webdl": 2000,
             "ether:bluray": 1000,
@@ -435,6 +448,7 @@ function defaultConfig(): EtherConfig {
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
           preferredLanguages: null,
+          audioLanguageMode: "preferred",
           allowCam: false,
         },
       ],
@@ -444,13 +458,16 @@ function defaultConfig(): EtherConfig {
       sync: { enabled: false, interval: "24h0m0s" },
     },
     transcode: {
+      videoTranscoding: "on",
       ffmpegPath: "",
       ffprobePath: "",
       hwAccel: "auto",
       vaapiDevice: "",
       tempDir: "/tmp/ether-transcode",
       maxTranscodes: 2,
+      throttleSeconds: 0,
       remoteMaxBitrateKbps: 8000,
+      remoteUploadBudgetKbps: 0,
       rtxVideo: {
         mode: "off",
         executablePath: "",
@@ -470,6 +487,7 @@ function defaultConfig(): EtherConfig {
       automaticPreferred: false,
     },
     subdl: { enabled: false, apiKey: "" },
+    subsource: { enabled: false, apiKey: "" },
     llm: { enabled: true, provider: "ollama", baseUrl: "", apiKey: "", model: "llama3" },
     updates: {
       enabled: true,
@@ -496,7 +514,12 @@ function defaultConfig(): EtherConfig {
       sessionIntent: true,
       clockFormat: "",
     },
-    extras: { enabled: false, resolverTimeout: "20s", prewarmBytes: 48 * 1024 ** 2 },
+    extras: {
+      themeMusic: true,
+      enabled: true,
+      resolverTimeout: "20s",
+      prewarmBytes: 48 * 1024 ** 2,
+    },
     markers: { theIntroDb: true, apiKey: "" },
     setupComplete: true,
   };
@@ -556,7 +579,7 @@ const VIEWERS: Viewer[] = [
       plexShared: true,
       canRemove: false,
       canMerge: false,
-      canPause: false,
+      canPause: true,
       managedBy: "plex",
     },
   },
@@ -575,13 +598,13 @@ const VIEWERS: Viewer[] = [
       plexShared: true,
       canRemove: false,
       canMerge: false,
-      canPause: false,
+      canPause: true,
       managedBy: "plex",
     },
   },
 ];
 
-/** Lifecycle as the real API reports it: Plex accounts are managed on plex.tv. */
+/** Lifecycle as the real API reports it: Plex accounts can be paused, while remove/merge stay on plex.tv. */
 function mockLifecycle(
   v: Pick<Viewer, "isOwner" | "plexId" | "title" | "username" | "accessStatus" | "lifecycle">,
 ) {
@@ -612,7 +635,7 @@ function mockLifecycle(
       paused: false,
       plexShared: v.accessStatus !== "inactive",
       managedBy: "plex" as const,
-      canPause: false,
+      canPause: true,
       canRemove: false,
       canMerge: false,
     };
@@ -646,9 +669,36 @@ function durationMs(w: string): number {
 }
 
 export function createFakeServer(opts: FakeOptions = {}) {
+  const velaStatus = {
+    installed: opts.velaInstalled === true,
+    installedVersion: opts.velaInstalled ? "0.1.41" : "",
+    availableVersion: "0.1.42",
+    rollbackAvailable: opts.velaDistribution === "rollback",
+    busy: opts.velaDistribution === "installing",
+    phase: opts.velaDistribution === "installing" ? "downloading" : "",
+    downloaded: opts.velaDistribution === "installing" ? 82_000_000 : 0,
+    total: opts.velaDistribution === "installing" ? 193_700_293 : 0,
+  };
+  const velaSkins = createVelaSkinsMock((removedId) => {
+    const velaSettings = state.config.frontends?.vela?.settings as
+      Record<string, unknown> | undefined;
+    if (velaSettings && velaSettings.defaultSkinId === removedId) {
+      velaSettings.defaultSkinId = "cinematic";
+    }
+  });
   // Keep the fixture stable when a setup link changes the page's query string.
   const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
-  const xtreamGrants = new Map<string, { hash: string; surface: string; lastUsed: number }[]>();
+  const xtreamGrants = new Map<
+    string,
+    {
+      hash: string;
+      surface: string;
+      lastUsed: number;
+      xtreamUsername?: string;
+      revealAvailable?: boolean;
+      xtreamStreamLimit?: number;
+    }[]
+  >();
   const catalog = buildCatalog();
   const byKey = new Map(catalog.map((t) => [t.key, t]));
   const ownerTags = new Map<string, string[]>();
@@ -665,12 +715,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
   const liveTV = createLiveTVMock(catalog, opts.liveTVEmpty);
   const onAir = createOnAirMock(liveTV, opts.onAirLayout);
   const calendar = createCalendarMock();
+  const flowsMock = createFlowsMock({
+    llmEnabled: () => Boolean(state.config.llm.enabled && state.config.llm.model),
+    channels: maintenance.channels,
+  });
   const qualityMock = createQualityMock();
   const safetyPolicies = new Map<number, Record<string, unknown>>();
   const simklAccounts = new Map<number, { connected: boolean; lastSync?: string }>();
   const mdblistAccounts = new Map<number, { connected: boolean; lastSync?: string }>();
   const traktAccounts = new Map<number, { connected: boolean; username?: string }>();
   const extendMock = createExtendMock();
+  const velaBranding = createVelaBrandingMock();
   const prerolls = createPrerollsMock({
     seed: opts.prerolls,
     title: (key) => byKey.get(key),
@@ -687,7 +742,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
       signInMethods: ["local", "plex"],
       ...opts.bootstrap,
     } as Bootstrap,
-    config: defaultConfig(),
+    config: {
+      ...defaultConfig(),
+      ...(opts.capabilityOverrides
+        ? {
+            clients: {
+              overrides: opts.capabilityOverrides as NonNullable<
+                ReturnType<typeof defaultConfig>["clients"]
+              >["overrides"],
+            },
+          }
+        : {}),
+    },
     // Null until a caller opts in (the browser mock does). Viewer tests still
     // overlay these routes on a 404 from the shared fake.
     streamDefaults: (opts.householdAudio
@@ -728,7 +794,71 @@ export function createFakeServer(opts: FakeOptions = {}) {
     favoritesMirror: new Map<number, boolean>(),
     dlnaGuests: [] as Viewer[],
     addedViewers: [] as Viewer[],
+    frontendApiKeys: {
+      jellyfin: [
+        {
+          id: 1,
+          appName: "Wizarr",
+          createdAt: "2026-11-18T14:20:00Z",
+          lastUsed: "2026-11-22T17:45:00Z",
+        },
+        {
+          id: 2,
+          appName: "Jellyseerr",
+          createdAt: "2026-11-20T09:10:00Z",
+        },
+      ],
+      emby: [],
+    } as Record<string, { id: number; appName: string; createdAt: string; lastUsed?: string }[]>,
+    lockouts: [
+      {
+        key: "lock-firetv-jordan",
+        namespace: "login",
+        scope: "identity-ip",
+        remoteIp: "192.168.1.48",
+        identity: "jordan",
+        app: "Jellyfin Android TV",
+        attempts: 9,
+        limit: 8,
+        remainingMs: 742000,
+        expiresAt: new Date(Date.now() + 742000).toISOString(),
+      },
+      {
+        key: "lock-ip-203",
+        namespace: "login",
+        scope: "ip",
+        remoteIp: "203.0.113.19",
+        app: "Ether viewer portal",
+        attempts: 31,
+        limit: 30,
+        remainingMs: 265000,
+        expiresAt: new Date(Date.now() + 265000).toISOString(),
+      },
+      {
+        key: "lock-poll-192",
+        namespace: "poll",
+        scope: "identity-ip",
+        remoteIp: "192.168.1.48",
+        app: "Jellyfin Android TV",
+        attempts: 61,
+        limit: 60,
+        remainingMs: 38000,
+        expiresAt: new Date(Date.now() + 38000).toISOString(),
+      },
+    ] as {
+      key: string;
+      namespace: string;
+      scope: string;
+      remoteIp?: string;
+      identity?: string;
+      app?: string;
+      attempts: number;
+      limit: number;
+      remainingMs: number;
+      expiresAt: string;
+    }[],
     collections: [] as CollectionSpec[],
+    addonImports: [] as AddonCatalogSubscription[],
     overrides: new Map<number, TasteOverride[]>(),
     layout: {
       global: [
@@ -738,6 +868,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
             { row: "continue-watching", status: "always", slot: 1 },
             { row: "short-on-time", status: "eligible", when: { days: [1, 2, 3, 4, 5] } },
             { row: "something-different", status: "eligible", maxDaysPerWeek: 3 },
+          ],
+        },
+        {
+          section: "library:7",
+          rows: [
+            { row: "finish-what-you-started", status: "always", slot: 1 },
+            { row: "new-seasons", status: "always", slot: 2 },
+            { row: "popular-on-server", status: "off" },
           ],
         },
       ],
@@ -915,6 +1053,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function fieldValues(t: FakeTitle, field: string): (string | number | boolean)[] {
     switch (field) {
+      case "title":
+        return [t.key];
       case "genre":
         return t.genres ?? [];
       case "keyword":
@@ -987,9 +1127,31 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return r.op === "isNot" ? !hit : hit;
     }
 
+    if (r.field === "viewer" && r.value && typeof r.value === "object") {
+      const v = r.value as Record<string, unknown>;
+      if (v.unwatched) return hash("w" + t.key) % 4 !== 0;
+      if (v.inProgress) return hash("p" + t.key) % 9 === 0;
+      if (v.onWatchlist) return hash("wl" + t.key) % 6 === 0;
+      return hash("rt" + t.key) % 5 === 0;
+    }
+    if (r.field.startsWith("browse:")) {
+      const bk = r.field.slice("browse:".length);
+      if (bk === "playable") return true;
+      if (bk === "debridCached") return hash("dc" + t.key) % 2 === 0;
+      if (bk === "minRating") return (t.rating ?? 0) >= Number(r.value);
+      if (bk === "maxRating") return (t.rating ?? 0) <= Number(r.value);
+      if (bk === "yearFrom") return (t.year ?? 0) >= Number(r.value);
+      if (bk === "yearTo") return (t.year ?? 0) <= Number(r.value);
+      if (bk === "anime") return Boolean(t.genres?.includes("Animation")) === Boolean(r.value);
+      if (bk === "kids") return Boolean(t.genres?.includes("Family")) === Boolean(r.value);
+      return hash(bk + t.key) % 3 === 0;
+    }
     if (r.field === "contentRating") return ratingMatches(t, r);
     const vals = fieldValues(t, r.field);
-    const eq = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
+    const norm = (v: unknown) =>
+      typeof v === "object" && v !== null && "key" in v ? (v as { key: unknown }).key : v;
+    const eq = (a: unknown, b: unknown) =>
+      String(norm(a)).toLowerCase() === String(norm(b)).toLowerCase();
     switch (r.op) {
       case "in":
         return Array.isArray(r.value) && r.value.some((v) => vals.some((x) => eq(x, v)));
@@ -1173,7 +1335,95 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   // ---- Homes (layered Home Designer) ---------------------------------------------------
 
-  const DEFAULT_ROWS: Record<LayoutSection, number> = { home: 10, movies: 8, shows: 8 };
+  const DEFAULT_ROWS: LayoutDefaultsMaxRows = { home: 10, library: 8 };
+  let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
+  let listMockLibs: () => Record<string, unknown>[] = () => [];
+
+  function pluginLibraryCandidates(
+    libId: number,
+    lib: Record<string, unknown>,
+  ): {
+    descriptors: AvailableRow[];
+    rows: HomeRow[];
+  } {
+    const label = String(lib.name ?? "Items");
+    const section = `library:${libId}` as const;
+    const itemsA = pickTitles(`plugin-${libId}-recent`, 8, () => true).map(card);
+    const itemsB = pickTitles(`plugin-${libId}-top`, 8, (x) => (x.rating ?? 0) > 7.2).map(card);
+    const itemsC = pickTitles(`plugin-${libId}-subject`, 8, () => true).map(card);
+    const defs = [
+      {
+        hubId: `plugin.${libId}.recently-added`,
+        kind: "recentlyAdded",
+        title: `Recently Added ${label}`,
+        description: `Newest items synced into ${label}.`,
+        group: "picks" as const,
+        items: itemsA,
+      },
+      {
+        hubId: `plugin.${libId}.top-rated`,
+        kind: "topRated",
+        title: `Top Rated ${label}`,
+        description: `Highest rated items in ${label}.`,
+        group: "explore" as const,
+        items: itemsB,
+      },
+      {
+        hubId: `plugin.${libId}.facet-subject`,
+        kind: "facet",
+        title: "Featured Subjects",
+        description: `Grouped by indexed facets in ${label}.`,
+        group: "explore" as const,
+        items: itemsC,
+      },
+    ];
+    return {
+      descriptors: defs.map((d) => ({
+        hubId: d.hubId,
+        title: d.title,
+        kind: d.kind,
+        description: d.description,
+        group: d.group,
+        sections: [section],
+      })),
+      rows: defs.map((d, idx) => ({
+        hubId: d.hubId,
+        title: d.title,
+        kind: d.kind,
+        reason: d.description,
+        score: 0.9 - idx * 0.1,
+        source: "engine" as const,
+        items: d.items,
+      })),
+    };
+  }
+
+  function resolveSectionMedia(section: LayoutSection): {
+    mediaSurface?: LibraryMediaSurface;
+    isPluginLibrary: boolean;
+    effectiveMedia: "home" | "movies" | "shows";
+    mediaFilter: (x: FakeTitle) => boolean;
+  } {
+    if (section === "home") {
+      return { isPluginLibrary: false, effectiveMedia: "home", mediaFilter: () => true };
+    }
+    const libId = libraryIdOfSection(section);
+    const lib = libId !== null ? lookupMockLib(libId) : undefined;
+    const isPluginLibrary = lib?.source === "plugin";
+    const mediaSurface = isPluginLibrary ? undefined : mediaSectionForLibrary(lib as never);
+    const effectiveMedia = mediaSurface ?? "movies";
+    const baseFilter = (x: FakeTitle) =>
+      effectiveMedia === "shows" ? x.type === "show" : x.type === "movie";
+    const rules = Array.isArray(lib?.rules) ? (lib.rules as VisibilityGroup[]) : [];
+    const visDefault = String(lib?.visibilityDefault ?? "show");
+    if (!isPluginLibrary && (rules.length > 0 || visDefault === "hide")) {
+      const scoped = (x: FakeTitle) => baseFilter(x) && !hiddenByRules(x, rules, visDefault);
+      if (catalog.filter(scoped).length >= 4) {
+        return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: scoped };
+      }
+    }
+    return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: baseFilter };
+  }
 
   /** Candidate rows the "engine" proposes for a viewer (null = the typical viewer). */
   function candidatesFor(
@@ -1188,15 +1438,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const weekend = day === 0 || day === 6;
     const t = userId === null ? null : taste(userId);
     const top = t?.genres[0]?.name ?? "Drama";
-    const media =
-      section === "movies"
-        ? (x: FakeTitle) => x.type === "movie"
-        : section === "shows"
-          ? (x: FakeTitle) => x.type === "show"
-          : () => true;
+    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
+    if (isPluginLibrary) {
+      const libId = libraryIdOfSection(section)!;
+      return pluginLibraryCandidates(libId, lookupMockLib(libId) ?? {}).rows;
+    }
     const short = device === "mobile" || (!weekend && hour >= 21);
     const seed = `${userId ?? "typical"}-${section}`;
-    const prefix = section === "movies" ? "movie" : section === "shows" ? "tv" : "home";
+    const prefix =
+      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const mk = (
       stem: string,
       title: string,
@@ -1452,7 +1702,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     for (const c of state.collections) {
       if (!c.enabled || c.builtIn) continue;
       const targeted =
-        c.targets.homeRow &&
+        (section === "home" ? c.targets.homeRow : c.targets.sectionRow) &&
         (c.targets.users === "all" || (userId !== null && c.targets.users.includes(userId)));
       if (!targeted && !placed.has(String(c.id))) continue;
       // The collection's schedule (a draft's edit in a preview), unless this
@@ -1489,7 +1739,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     section: string,
     layout: HomeLayout = state.layout,
   ) {
-    const sec = (["home", "movies", "shows"].includes(section) ? section : "home") as LayoutSection;
+    const sec = parseLayoutSection(section);
+    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(sec);
     const day = at.getDay();
     const hour = at.getHours();
     const weekend = day === 0 || day === 6 || (day === 5 && hour >= 17);
@@ -1499,9 +1750,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
         ? null
         : { id: userId, title: VIEWERS.find((v) => v.id === userId)?.title ?? `Viewer ${userId}` };
     let rows = candidatesFor(userId, device, at, sec, layout);
-    if (sec !== "home") {
-      const prefix = sec === "movies" ? "movie" : "tv";
-      const media = (x: FakeTitle) => (sec === "movies" ? x.type === "movie" : x.type === "show");
+    if (sec !== "home" && !isPluginLibrary) {
+      const prefix = effectiveMedia === "movies" ? "movie" : "tv";
       rows = [
         {
           hubId: `${prefix}.inprogress.1`,
@@ -1531,7 +1781,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       section: sec,
       device: device as Device,
       at,
-      defaultRows: DEFAULT_ROWS[sec],
+      defaultRows: defaultRowsForSection(DEFAULT_ROWS, sec),
     });
     rows = appendAbsentAlwaysRows(rows, userId, device, at, sec, layout);
     return {
@@ -1582,16 +1832,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
   ): HomeRow[] {
     const day = at.getDay();
     const hour = at.getHours();
-    const prefix = sec === "movies" ? "movie" : sec === "shows" ? "tv" : "home";
+    const { mediaSurface, isPluginLibrary, effectiveMedia } = resolveSectionMedia(sec);
+    if (isPluginLibrary) return rows;
+    const prefix =
+      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const availList = availableRows();
     const active: { pol: LayoutPage["rows"][number]; layer: "global" | "override" }[] = [];
     if (userId !== null) {
-      for (const pol of pageOf(layout, userId, sec)?.rows ?? []) {
+      const viewerPage = pageOf(layout, userId, sec);
+      for (const pol of viewerPage?.rows ?? []) {
         if ((pol.status === "always" || pol.slot) && !/[*?[]/.test(pol.row))
           active.push({ pol, layer: "override" });
       }
     }
-    for (const pol of pageOf(layout, "global", sec)?.rows ?? []) {
+    const globalPage = pageOf(layout, "global", sec);
+    for (const pol of globalPage?.rows ?? []) {
       if ((pol.status !== "always" && !pol.slot) || /[*?[]/.test(pol.row)) continue;
       const colId = collectionIdOf(pol.row);
       const avail = availList.find((a) => a.hubId === pol.row || a.kind === pol.row);
@@ -1645,8 +1900,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
           hiddenCode = "collection_not_shared";
           hiddenReason = "Collection is not shared with this viewer";
         } else if (
-          (sec === "movies" && col.mediaType === "show") ||
-          (sec === "shows" && col.mediaType === "movie")
+          (effectiveMedia === "movies" && col.mediaType === "show") ||
+          (effectiveMedia === "shows" && col.mediaType === "movie")
         ) {
           hiddenCode = "wrong_surface";
           hiddenReason = "Not available on this page";
@@ -1666,7 +1921,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             hiddenReason = "Collection has no titles for this viewer";
           }
         }
-      } else if (avail && !rowFits(avail as { sections?: LayoutSection[] }, sec)) {
+      } else if (avail && !rowFits(avail as { sections?: RowSectionTag[] }, sec, mediaSurface)) {
         hiddenCode = "wrong_surface";
         hiddenReason = "Not available on this page";
       } else if (userId === null && PERSONAL_KINDS.has(kind)) {
@@ -1720,7 +1975,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return out;
   }
 
-  const ROW_META: Record<string, { group: string; sections?: string[] }> = {
+  const ROW_META: Record<string, { group: RowGroup; sections?: RowSectionTag[] }> = {
     "continue-watching": { group: "picks", sections: ["home", "movies", "shows"] },
     "up-next": { group: "shows", sections: ["home", "shows"] },
     "top-10": { group: "picks", sections: ["home"] },
@@ -1732,7 +1987,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     "popular-on-server": { group: "household" },
     trending: { group: "household" },
   };
-  const SECTION_ROWS = [
+  const SECTION_ROWS: AvailableRow[] = [
     {
       hubId: "fans-also-loved",
       title: "Fans of What You Watch Also Loved",
@@ -1849,10 +2104,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
     },
   ];
 
-  function availableRows() {
-    return baseRows()
-      .map((r) => ({ ...r, ...(ROW_META[r.kind] ?? { group: "picks" }) }))
-      .concat(SECTION_ROWS);
+  function availableRows(): AvailableRow[] {
+    return [
+      ...baseRows().map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" as RowGroup }), ...r })),
+      ...SECTION_ROWS,
+    ];
   }
 
   function baseRows() {
@@ -1973,6 +2229,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
           title: c.name,
           kind: `collection:${c.id}`,
           description: "Owner collection (Collection Studio).",
+          group: "collections" as const,
+          sections: (c.mediaType === "movie"
+            ? ["home", "movies"]
+            : c.mediaType === "show"
+              ? ["home", "shows"]
+              : ["home", "movies", "shows"]) as RowSectionTag[],
         })),
     ];
   }
@@ -1983,12 +2245,74 @@ export function createFakeServer(opts: FakeOptions = {}) {
         c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
       ),
     );
+    const libraries = listMockLibs()
+      .filter((l) => l.source === "plugin" || l.mediaType === "movie" || l.mediaType === "show")
+      .map((l) => {
+        const id = Number(l.id);
+        const section = `library:${id}` as const;
+        const type =
+          l.source === "plugin" ? ("plugin" as const) : (l.mediaType as "movie" | "show");
+        return {
+          id,
+          name: String(l.name),
+          slug: String(l.key),
+          type,
+          section,
+          customized: state.layout.global.some((p) => p.section === section),
+        };
+      });
     return {
       layout: Object.keys(collectionSchedules).length
         ? { ...state.layout, collectionSchedules }
         : state.layout,
       availableRows: availableRows(),
       defaults: { maxRows: DEFAULT_ROWS },
+      libraries,
+    };
+  }
+
+  function libraryLayoutDoc(libId: number) {
+    const raw = lookupMockLib(libId);
+    if (!raw) return null;
+    const section = `library:${libId}` as const;
+    const isPlugin = raw.source === "plugin";
+    const type = isPlugin ? ("plugin" as const) : (raw.mediaType as "movie" | "show");
+    const customPage = state.layout.global.find((p) => p.section === section);
+    const customized = Boolean(customPage);
+    const effectivePage: LayoutPage = customPage
+      ? structuredClone(customPage)
+      : { section, rows: [] };
+    const viewerPages: ViewerLibraryPage[] = state.layout.viewers.flatMap((v) => {
+      const vp = v.pages.find((p) => p.section === section);
+      return vp ? [{ userId: v.userId, page: structuredClone(vp) }] : [];
+    });
+    const collectionSchedules = Object.fromEntries(
+      state.collections.flatMap((c) =>
+        c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
+      ),
+    );
+    const surface: LibraryMediaSurface = type === "show" ? "shows" : "movies";
+    const candidates: AvailableRow[] = isPlugin
+      ? pluginLibraryCandidates(libId, raw).descriptors
+      : availableRows().filter((r) => rowFits(r, section, surface));
+    return {
+      library: {
+        id: libId,
+        name: String(raw.name),
+        slug: String(raw.key),
+        type,
+        section,
+        customized,
+      },
+      customized,
+      effectivePage,
+      viewerPages,
+      defaults: { maxRows: DEFAULT_ROWS.library ?? 8 },
+      availableRows: candidates,
+      collectionSchedules,
+      layout: Object.keys(collectionSchedules).length
+        ? { ...state.layout, collectionSchedules }
+        : state.layout,
     };
   }
 
@@ -2050,7 +2374,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const moved = after.filter(
         (r) => bi.has(r.hubId) && bi.get(r.hubId) !== ai.get(r.hubId),
       ).length;
-      const sec = (section || "home") as LayoutSection;
+      const sec = parseLayoutSection(section);
       return {
         viewerId: v.id,
         title: v.title,
@@ -2176,6 +2500,84 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function dashboard() {
     const session = catalog[3]!;
+    const remoteTitle = catalog[1] ?? session;
+    const overrideKbps = Math.max(0, Number(state.config.transcode.remoteUploadBudgetKbps) || 0);
+    const measuredKbps = 42_000;
+    const effectiveKbps = overrideKbps > 0 ? overrideKbps : measuredKbps;
+    const usableKbps = Math.round(effectiveKbps * 0.85);
+    const uploadBudget = {
+      enabled: true,
+      source: overrideKbps > 0 ? "override" : "measured",
+      overrideKbps,
+      measuredKbps,
+      measuredSamples: 18,
+      effectiveKbps,
+      usableKbps,
+      etherRemoteKbps: 16_000,
+      etherRemoteStreams: 2,
+      budgetCappedStreams: 1,
+      otherPmsKbps: 6_500,
+      otherPmsStreams: 1,
+      totalUsedKbps: 22_500,
+      otherServers: [
+        {
+          machineId: "pms-home",
+          name: "Home Plex Server",
+          source: "linked_pms",
+          remoteStreams: 1,
+          bandwidthKbps: 6_500,
+          reachable: true,
+          lastChecked: NOW().toISOString(),
+        },
+      ],
+    };
+    const remoteSession = {
+      ID: "s2",
+      UserID: 3,
+      Key: remoteTitle.key,
+      ratingKey: Number(remoteTitle.key) || 0,
+      TitleName: `${remoteTitle.title} (${remoteTitle.year})`,
+      Username: "Jordan Lee",
+      Client: {
+        product: "Plex for iOS",
+        deviceName: "iPad Pro",
+        platform: "iOS",
+        remote: true,
+      },
+      ip: "198.51.100.24",
+      Decision: "transcode",
+      decisionReason: "Shared upload budget (8.0 Mbps cap)",
+      decisionVideoCopy: false,
+      decisionAudioCopy: false,
+      bitrateKbps: 8000,
+      bitrateCapKbps: 8000,
+      bitrateCapSource: "upload_budget",
+      sourceVideo: "HEVC 2160p HDR10",
+      outputVideo: "H.264 1080p SDR",
+      sourceAudio: "TrueHD 7.1",
+      outputAudio: "AAC 2.0",
+      container: "mpegts",
+      BytesServed: 1.4 * 1024 ** 3,
+      BufferedBytes: 92 * 1024 ** 2,
+      BufferedUntil: 2250e9,
+      SpeedBps: 1.05e6,
+      StartedAt: new Date(Date.now() - 24 * 60000).toISOString(),
+      Info: { size: 22.8 * 1024 ** 3, duration: 132 * 60 * 1e9, bitrateKbps: 23_400 },
+      viewOffset: 34 * 60 * 1000,
+      origin: "Usenet",
+      experience: {
+        requested: true,
+        pictured: true,
+        startTime: 2.3e9,
+        bufferEvents: 0,
+        buffering: 0,
+      },
+      Resolution: {
+        release: {
+          name: `${remoteTitle.title.replace(/ /g, ".")}.${remoteTitle.year}.2160p.REMUX.HEVC.TrueHD`,
+        },
+      },
+    };
     return {
       names: [
         "cache",
@@ -2187,10 +2589,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "providers",
         "remote",
         "sessions",
+        "upload-budget",
       ],
       setupComplete: state.config.setupComplete,
       version: state.boot.version,
       sections: {
+        "upload-budget": uploadBudget,
         cache: { used: 87 * 1024 ** 3, budget: state.config.cache.budgetBytes },
         database: state.clustered
           ? { clustered: true, state: "ok", reachable: true, held: 0 }
@@ -2242,7 +2646,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
             { protocol: "torrent", average: 410_000_000, last: 380_000_000, samples: 22 },
           ],
         },
-        hwaccel: {
+        hwaccel: opts.hwaccel ?? {
+          os: "darwin",
+          arch: "arm64",
           ffmpeg: "8.0.1",
           filtersProbed: true,
           toneMap: ["videotoolbox"],
@@ -2298,26 +2704,47 @@ export function createFakeServer(opts: FakeOptions = {}) {
             ID: "s1",
             UserID: 2,
             Key: session.key,
+            ratingKey: Number(session.key) || 0,
             TitleName: `${session.title} (${session.year})`,
             Username: "Sam Rivera",
-            Client: { product: "Plex for Apple TV", deviceName: "Living Room", remote: false },
+            Client: {
+              product: "Plex for Apple TV",
+              deviceName: "Living Room",
+              platform: "tvOS",
+              remote: false,
+            },
+            ip: "192.168.1.42",
             Decision: "directplay",
             decisionVideoCopy: true,
             decisionAudioCopy: true,
+            bitrateKbps: 6540,
+            sourceVideo: "H.264 1080p SDR",
+            outputVideo: "H.264 1080p SDR",
+            sourceAudio: "EAC3 5.1",
+            outputAudio: "EAC3 5.1",
+            container: "mkv",
             BytesServed: 2.1 * 1024 ** 3,
             BufferedBytes: 183 * 1024 ** 2,
             BufferedUntil: 3000e9,
             SpeedBps: 3.2e6,
             StartedAt: new Date(Date.now() - 40 * 60000).toISOString(),
-            Info: { size: 5.4 * 1024 ** 3, duration: 118 * 60 * 1e9 },
+            Info: { size: 5.4 * 1024 ** 3, duration: 118 * 60 * 1e9, bitrateKbps: 6540 },
             viewOffset: 46 * 60 * 1000,
             origin: "Real-Debrid",
+            experience: {
+              requested: true,
+              pictured: true,
+              startTime: 1.8e9,
+              bufferEvents: 0,
+              buffering: 0,
+            },
             Resolution: {
               release: {
                 name: `${session.title.replace(/ /g, ".")}.${session.year}.1080p.WEB-DL.H264`,
               },
             },
           },
+          ...(opts.remoteBudgetDemo ? [remoteSession] : []),
         ],
       },
     };
@@ -2540,6 +2967,136 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   const viewerStreamRules = new Map<string, unknown>();
   const restoredHidden = new Set<string>();
+  let nextMockPlexViewerId = 200;
+  const mockPlexCandidateServers = [
+    {
+      serverId: 1,
+      serverName: "Living room PMS",
+      plexDirectoryTotal: 42,
+      filteredOutCount: 19,
+      accounts: [
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1,
+          accountName: "Alex Rivera",
+          isOwner: true,
+          matchedViewerId: 1,
+          matchedViewerName: "Alex Rivera",
+          matchedViewerUsername: "owner",
+          plexRelation: "owner",
+          plexSources: ["owner"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1003,
+          accountName: "The Kids",
+          isOwner: false,
+          matchedViewerId: 3,
+          matchedViewerName: "The Kids",
+          matchedViewerUsername: "kids",
+          plexUsername: "kids",
+          plexRelation: "home",
+          plexSources: ["home", "ether_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 10421011,
+          accountName: "Morgan Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "morganr",
+          plexRelation: "home",
+          plexSources: ["home", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 1004,
+          accountName: "Jordan Lee",
+          isOwner: false,
+          matchedViewerId: 4,
+          matchedViewerName: "Jordan Lee",
+          matchedViewerUsername: "jordan",
+          plexUsername: "jordan",
+          plexRelation: "shared",
+          plexSources: ["ether_share", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 25815033,
+          accountName: "Sam Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          suggestedViewerId: 2,
+          suggestedViewerName: "Sam Rivera",
+          plexUsername: "samr",
+          plexRelation: "shared",
+          plexSources: ["pms_share", "friend"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 703916194,
+          accountName: "Alice Chen",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "alice99",
+          plexRelation: "shared",
+          plexSources: ["ether_share", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 99002211,
+          accountName: "Devon Patel",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "dpatel",
+          plexRelation: "pending",
+          plexSources: ["pending_invite"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 88123456,
+          accountName: "Taylor Brooks",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "tbrooks",
+          plexRelation: "friend",
+          plexSources: ["community_friend", "friend"],
+        },
+        {
+          serverId: 1,
+          serverName: "Living room PMS",
+          accountId: 143639010,
+          accountName: "Patricson Poliard",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexRelation: "historical",
+          plexSources: ["pms_history"],
+        },
+      ] as Array<{
+        serverId: number;
+        serverName: string;
+        accountId: number;
+        accountName: string;
+        isOwner: boolean;
+        matchedViewerId: number;
+        matchedViewerName?: string;
+        matchedViewerUsername?: string;
+        suggestedViewerId?: number;
+        suggestedViewerName?: string;
+        plexUsername?: string;
+        plexRelation?: string;
+        plexSources?: string[];
+      }>,
+    },
+  ];
 
   // ---- Router ------------------------------------------------------------------------
 
@@ -2577,7 +3134,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       source: "plugin",
       pluginId: "demo",
       kindKey: "book",
-      present: {},
+      present: {
+        vela: { type: "movies" },
+        mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+      },
       sort: 3,
       hidden: false,
       createdAt: "2026-01-01T00:00:00Z",
@@ -2587,11 +3147,46 @@ export function createFakeServer(opts: FakeOptions = {}) {
       kind: {
         key: "book",
         label: "Books",
+        media: "book",
         library: { name: "Books" },
-        levels: [{ key: "book", label: "Book", playable: true }],
-        fields: [{ key: "author", type: "string", label: "Author", indexed: true }],
+        levels: [{ key: "book", label: "Book", role: "book", playable: true }],
+        fields: [
+          { key: "author", type: "people", label: "Author", indexed: true },
+          {
+            key: "subject",
+            type: "strings",
+            label: "Subject",
+            indexed: true,
+            values: [
+              "Science Fiction",
+              "Space Opera",
+              "Cyberpunk",
+              "Classic Literature",
+              "Solarpunk",
+              "Historical Fiction",
+            ],
+          },
+          { key: "series", type: "string", label: "Series", indexed: true },
+          { key: "publisher", type: "string", label: "Publisher", indexed: true },
+          {
+            key: "format",
+            type: "enum",
+            label: "Format",
+            indexed: true,
+            enum: ["Hardcover", "EPUB", "Audiobook", "Paperback"],
+          },
+          { key: "pages", type: "int", label: "Page count", indexed: true },
+          { key: "duration", type: "duration", label: "Audio length", indexed: true },
+          { key: "published", type: "date", label: "Published", indexed: true },
+          { key: "abridged", type: "bool", label: "Abridged", indexed: true },
+          { key: "language", type: "string", label: "Book language", indexed: true },
+        ],
         present: {},
-        browse: { sorts: ["title"], facets: ["author"], search: true },
+        browse: {
+          sorts: ["title", "added", "year", "rating"],
+          facets: ["author", "subject", "series"],
+          search: true,
+        },
         sync: { mode: "push" },
       },
       sync: { pluginId: "demo", kindKey: "book", generation: 1, items: 2 },
@@ -2664,7 +3259,265 @@ export function createFakeServer(opts: FakeOptions = {}) {
     hidden: false,
     itemCount: 4500,
   });
+  mockLibs.push({
+    id: 8,
+    key: "pk-demo-clips",
+    name: "Studio Clips",
+    source: "plugin",
+    pluginId: "demo-clips",
+    kindKey: "clip",
+    present: {
+      vela: { type: "movies" },
+      plex: { base: "movie" },
+      mediaBrowser: { collectionType: "movies", itemTypes: { clip: "Movie" } },
+      stremio: { type: "movie" },
+      xtream: { category: "movie" },
+      silo: { type: "movies" },
+    },
+    sort: 8,
+    hidden: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    itemCount: 24,
+    pluginName: "Studio Clips",
+    kind: {
+      key: "clip",
+      label: "Clips",
+      media: "video",
+      library: { name: "Studio Clips", card: "landscape" },
+      levels: [{ key: "clip", label: "Clip", role: "item", playable: true }],
+      present: { vela: { type: "movies" } },
+      browse: { sorts: ["added", "title"], search: true },
+      sync: { mode: "push" },
+    },
+    sync: { pluginId: "demo-clips", kindKey: "clip", generation: 1, items: 24 },
+  });
+  mockLibs.push({
+    id: 9,
+    key: "pk-demo-music",
+    name: "Field Recordings",
+    source: "plugin",
+    pluginId: "demo-music",
+    kindKey: "recording",
+    present: {
+      vela: { type: "shows" },
+      plex: { base: "artist" },
+      mediaBrowser: {
+        collectionType: "music",
+        itemTypes: { album: "MusicAlbum", track: "Audio" },
+      },
+    },
+    sort: 9,
+    hidden: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    itemCount: 18,
+    pluginName: "Field Recordings",
+    kind: {
+      key: "recording",
+      label: "Field recordings",
+      media: "music",
+      library: { name: "Field Recordings", card: "square" },
+      levels: [
+        { key: "album", label: "Album", role: "album", container: true },
+        { key: "track", label: "Track", role: "track", playable: true },
+      ],
+      present: {
+        mediaBrowser: {
+          collectionType: "music",
+          itemTypes: { album: "MusicAlbum", track: "Audio" },
+        },
+      },
+      browse: { sorts: ["title", "added"], search: true },
+      sync: { mode: "push" },
+    },
+    sync: { pluginId: "demo-music", kindKey: "recording", generation: 1, items: 18 },
+  });
+  lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
+  listMockLibs = () => mockLibs;
+  const libraryTabs = createLibraryTabsMock({
+    catalog,
+    getCollections: () => state.collections,
+    matchesRule: matches,
+    toCard: card,
+  });
   const mockMatches: Record<string, unknown>[] = [];
+  function mockResolvePresentations(lib: Record<string, unknown>) {
+    const present = (lib.present && typeof lib.present === "object" ? lib.present : {}) as Record<
+      string,
+      unknown
+    >;
+    const adapterOnly = Boolean(present.adapterOnly);
+    if (lib.source !== "plugin") {
+      const isShow = lib.mediaType === "show";
+      const avail: Record<string, unknown> = {
+        vela: { type: isShow ? "shows" : "movies" },
+        plex: { base: isShow ? "show" : "movie" },
+        mediaBrowser: { collectionType: isShow ? "tvshows" : "movies" },
+        stremio: { type: isShow ? "series" : "movie" },
+        xtream: { category: isShow ? "series" : "movie" },
+        silo: { type: isShow ? "tvshows" : "movies" },
+      };
+      const hints: Record<string, string> = {
+        vela: isShow ? "shows" : "movies",
+        plex: isShow ? "show" : "movie",
+        mediaBrowser: isShow ? "tvshows" : "movies",
+        stremio: isShow ? "series" : "movie",
+        xtream: isShow ? "series" : "movie",
+        silo: isShow ? "tvshows" : "movies",
+      };
+      const isBuiltin = lib.source === "builtin";
+      return {
+        mediaClass: "video",
+        adapterOnly: !isBuiltin && adapterOnly,
+        effective: present,
+        available: avail,
+        apps: ["vela", "plex", "mediaBrowser", "stremio", "xtream", "silo"].map((app) => ({
+          app,
+          available: true,
+          enabled: isBuiltin ? true : !adapterOnly && Boolean(present[app]),
+          defaultOn: isBuiltin,
+          source: "inferred",
+          hintValue: hints[app],
+        })),
+      };
+    }
+    const kind = (lib.kind && typeof lib.kind === "object" ? lib.kind : {}) as {
+      media?: string;
+      levels?: { key: string; role?: string }[];
+      present?: Record<string, Record<string, unknown>>;
+    };
+    const kp = kind.present ?? {};
+    const levels = kind.levels ?? [];
+    const multi = levels.length >= 2;
+    const mediaClass =
+      kind.media ||
+      (levels.some((l) => l.key === "book")
+        ? "book"
+        : levels.some((l) => l.key === "album" || l.key === "track")
+          ? "music"
+          : "video");
+    const avail: Record<string, unknown> = {};
+    const apps: Record<string, unknown>[] = [];
+    const velaHint = String(kp.vela?.type ?? (multi ? "shows" : "movies"));
+    avail.vela = { type: velaHint };
+    apps.push({
+      app: "vela",
+      available: true,
+      enabled: !adapterOnly && Boolean(present.vela),
+      defaultOn: true,
+      source: kp.vela?.type ? "plugin" : "inferred",
+      hintValue: velaHint,
+    });
+    if (
+      kp.plex?.base ||
+      mediaClass === "video" ||
+      mediaClass === "music" ||
+      mediaClass === "photo"
+    ) {
+      const plexBase = String(
+        kp.plex?.base ??
+          (mediaClass === "music"
+            ? "artist"
+            : mediaClass === "photo"
+              ? "photo"
+              : multi
+                ? "show"
+                : "movie"),
+      );
+      avail.plex = { base: plexBase };
+      apps.push({
+        app: "plex",
+        available: true,
+        enabled: !adapterOnly && Boolean(present.plex),
+        defaultOn: true,
+        source: kp.plex?.base ? "plugin" : "inferred",
+        hintValue: plexBase,
+      });
+    } else {
+      apps.push({
+        app: "plex",
+        available: false,
+        enabled: false,
+        defaultOn: false,
+        source: "unavailable",
+        reason:
+          mediaClass === "book"
+            ? "Plex does not have a book library type."
+            : mediaClass === "audiobook"
+              ? "Plex does not have an audiobook library type."
+              : "Plex does not have a podcast library type.",
+      });
+    }
+    const mbType = String(
+      kp.mediaBrowser?.collectionType ??
+        (mediaClass === "music"
+          ? "music"
+          : mediaClass === "book"
+            ? "books"
+            : mediaClass === "audiobook"
+              ? "audiobooks"
+              : mediaClass === "photo"
+                ? "photos"
+                : multi
+                  ? "tvshows"
+                  : "movies"),
+    );
+    avail.mediaBrowser = { collectionType: mbType };
+    apps.push({
+      app: "mediaBrowser",
+      available: true,
+      enabled: !adapterOnly && Boolean(present.mediaBrowser),
+      defaultOn: true,
+      source: kp.mediaBrowser?.collectionType ? "plugin" : "inferred",
+      hintValue: mbType,
+    });
+    for (const [app, field, val, reason] of [
+      [
+        "stremio",
+        "type",
+        multi ? "series" : "movie",
+        "Stremio only supports movies, shows, and channels.",
+      ],
+      [
+        "xtream",
+        "category",
+        multi ? "series" : "movie",
+        "Xtream only supports movies, series, and live TV.",
+      ],
+      [
+        "silo",
+        "type",
+        multi ? "tvshows" : "movies",
+        "Silo only supports movie and TV show libraries.",
+      ],
+    ] as const) {
+      const declared = kp[app]?.[field];
+      if (declared || mediaClass === "video") {
+        const hint = String(declared ?? val);
+        avail[app] = { [field]: hint };
+        apps.push({
+          app,
+          available: true,
+          enabled: !adapterOnly && Boolean(present[app]),
+          defaultOn: true,
+          source: declared ? "plugin" : "inferred",
+          hintValue: hint,
+        });
+      } else {
+        apps.push({
+          app,
+          available: false,
+          enabled: false,
+          defaultOn: false,
+          source: "unavailable",
+          reason,
+        });
+      }
+    }
+    return { mediaClass, adapterOnly, effective: present, available: avail, apps };
+  }
+
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
       lib.sources = [
@@ -2679,6 +3532,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
       lib.rules = structuredClone(cat.exclusions ?? []);
       lib.visibilityDefault = cat.visibilityDefault ?? "show";
     }
+    const tabsDto = libraryTabs.getTabs(lib);
+    lib.tabsCustomized = tabsDto.customized;
+    lib.tabs = tabsDto.tabs;
+    lib.effectiveTabs = tabsDto.effectiveTabs;
+    lib.presentations = mockResolvePresentations(lib);
     return lib;
   }
   function mockLibraries(method: string, seg: string[], url: URL, body: unknown): Response {
@@ -2763,6 +3621,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
             health: "ok",
             pluginId: "demo",
             kindKey: "book",
+            libraries: [],
+          },
+          {
+            id: "plugin:demo-clips:clip",
+            name: "Clips",
+            owner: "Studio Clips",
+            group: "plugin",
+            mediaTypes: ["movie"],
+            health: "ok",
+            pluginId: "demo-clips",
+            kindKey: "clip",
             libraries: [],
           },
           {
@@ -2860,7 +3729,50 @@ export function createFakeServer(opts: FakeOptions = {}) {
     hydrateLib(lib);
     if (!seg[2]) {
       if (method === "PATCH") {
-        Object.assign(lib, b);
+        if (b.presentApps && typeof b.presentApps === "object") {
+          const resolved = mockResolvePresentations(lib);
+          const patch = b.presentApps as Record<string, boolean | undefined>;
+          const curPresent = (
+            lib.present && typeof lib.present === "object"
+              ? { ...(lib.present as Record<string, unknown>) }
+              : {}
+          ) as Record<string, unknown>;
+          const wasAdapter = Boolean(curPresent.adapterOnly);
+          const nextAdapter = patch.adapterOnly !== undefined ? patch.adapterOnly : wasAdapter;
+          if (nextAdapter) {
+            lib.present = { adapterOnly: true };
+          } else {
+            delete curPresent.adapterOnly;
+            for (const app of resolved.apps as {
+              app: string;
+              available: boolean;
+              defaultOn: boolean;
+              reason?: string;
+            }[]) {
+              const val = patch[app.app];
+              if (val === undefined) {
+                if (wasAdapter && app.available && app.defaultOn) {
+                  curPresent[app.app] = resolved.available[app.app];
+                }
+                continue;
+              }
+              if (!app.available) {
+                if (val) return err(400, "validation", app.reason ?? "Unavailable");
+                continue;
+              }
+              if (val) curPresent[app.app] = resolved.available[app.app];
+              else delete curPresent[app.app];
+            }
+            lib.present = curPresent;
+          }
+          const rest = { ...b };
+          delete rest.presentApps;
+          Object.assign(lib, rest);
+        } else {
+          Object.assign(lib, b);
+        }
+        if (b.cardShape === "") delete lib.cardShape;
+        hydrateLib(lib);
         return json(lib);
       }
       if (method === "DELETE") {
@@ -2890,8 +3802,47 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const shown = q ? items.filter((i) => i.title.toLowerCase().includes(q)) : items;
       return json({ items: shown, total: shown.length });
     }
-    if (seg[2] === "facets")
-      return json({ field: seg[3], values: [{ value: "Herbert", count: 1 }] });
+    if (seg[2] === "tabs") {
+      if (seg[3] === "preview" && method === "POST") {
+        const res = libraryTabs.previewTab(lib, body);
+        return res.ok ? json(res.data) : err(400, "validation", res.message);
+      }
+      if (!seg[3] && method === "GET") return json(libraryTabs.getTabs(lib));
+      if (!seg[3] && method === "PUT") {
+        const res = libraryTabs.putTabs(lib, body);
+        return res.ok ? json(res.data) : err(400, "validation", res.message);
+      }
+      if (!seg[3] && method === "DELETE") return json(libraryTabs.resetTabs(lib));
+      return err(405, "method_not_allowed", "method not allowed");
+    }
+    if (seg[2] === "facets") {
+      const q = url.searchParams.get("q") ?? undefined;
+      const offsetRaw = url.searchParams.get("offset");
+      const limitRaw = url.searchParams.get("limit");
+      const orderRaw = url.searchParams.get("order");
+      const declaredRaw = url.searchParams.get("declared");
+      const hasOpts =
+        q !== undefined ||
+        offsetRaw !== null ||
+        limitRaw !== null ||
+        orderRaw !== null ||
+        declaredRaw !== null;
+      return json(
+        libraryTabs.facetValuesFor(
+          lib,
+          decodeURIComponent(seg[3] ?? ""),
+          hasOpts
+            ? {
+                q,
+                offset: offsetRaw ? Number(offsetRaw) : undefined,
+                limit: limitRaw ? Number(limitRaw) : undefined,
+                order: orderRaw === "name" ? "name" : "count",
+                declared: declaredRaw === "1" || declaredRaw === "true",
+              }
+            : undefined,
+        ),
+      );
+    }
     if (seg[2] === "sync") return json({ upserted: 1, deleted: 0, skipped: 0 });
     if (seg[2] === "cache") {
       if (seg[3])
@@ -2956,6 +3907,30 @@ export function createFakeServer(opts: FakeOptions = {}) {
   let uploadedPosters = 24;
   async function handle(method: string, url: URL, body: unknown): Promise<Response> {
     const p = url.pathname.replace(/^\/ether\/api/, "");
+    if (p === "/vela/status" && method === "GET") return json(velaStatus);
+    if (p === "/vela/check" && method === "POST") return json(velaStatus);
+    if (p === "/vela/install" && method === "POST") {
+      velaStatus.busy = true;
+      velaStatus.phase = "downloading";
+      velaStatus.downloaded = 82_000_000;
+      velaStatus.total = 193_700_293;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      velaStatus.busy = false;
+      velaStatus.phase = "";
+      velaStatus.rollbackAvailable = velaStatus.installed;
+      velaStatus.installed = true;
+      opts.velaInstalled = true;
+      velaStatus.installedVersion = "0.1.42";
+      velaStatus.availableVersion = "";
+      return json(velaStatus);
+    }
+    if (p === "/vela/rollback" && method === "POST") {
+      velaStatus.installedVersion = "0.1.41";
+      velaStatus.availableVersion = "0.1.42";
+      return json(velaStatus);
+    }
+    const vs = velaSkins.handle(method, p, body);
+    if (vs) return json(vs.body, vs.status);
     if (method === "GET" && p.startsWith("/viewer-plex-defaults/")) {
       const id = Number(p.split("/").pop());
       return json({
@@ -3084,6 +4059,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 scope: "fleet" as const,
                 supported: false,
                 reason: "fleet_setting",
+              })),
+              ...["videoTranscoding"].map((key) => ({
+                key,
+                scope: "node" as const,
+                supported: false,
+                reason: "not_allowlisted",
               })),
               ...["maxTranscodes", "hwAccel"].map((key) => ({
                 key,
@@ -3376,8 +4357,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "m3u",
         "xtream",
       ].filter((id) => state.config.frontends?.[id]?.enabled);
-      if (method === "GET" && seg.length === appsOffset + 1) return json({ apps: enabled });
-      const surface = seg[appsOffset + 1];
+      const adapters: Record<string, { name: string; logo?: string; auth?: string }> = {};
+      for (const [id, entry] of Object.entries(state.config.frontends ?? {})) {
+        if (!id.startsWith("plugin:") || !entry?.enabled) continue;
+        enabled.push(id);
+        adapters[id] = { name: id.split(":").at(-1) || id, auth: "ether_token" };
+      }
+      if (method === "GET" && seg.length === appsOffset + 1)
+        return json(Object.keys(adapters).length ? { apps: enabled, adapters } : { apps: enabled });
+      const surface = seg[appsOffset + 1] ? decodeURIComponent(seg[appsOffset + 1]!) : undefined;
       if (method === "POST" && surface && enabled.includes(surface)) {
         const qr =
           "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
@@ -3387,14 +4375,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
           grants.push({
             hash: `mock-xtream-${grants.length + 1}`,
             surface: "xtream",
+            xtreamUsername: "alice42",
+            revealAvailable: true,
+            xtreamStreamLimit: 0,
             lastUsed: Date.now(),
           });
           xtreamGrants.set(id ?? "1", grants);
           return json({
             surface,
             url: "http://ether.local/xtream",
-            username: "xt_demo",
-            password: "eg1_private-mock-login",
+            username: "alice42",
+            password: "k7m2-9qxr-4t",
             qr: "",
           });
         }
@@ -3409,13 +4400,25 @@ export function createFakeServer(opts: FakeOptions = {}) {
           });
         if (surface === "jellyfin" || surface === "emby" || surface === "silo") {
           const viewer = state.users.find((u) => String(u.id) === id) ?? state.users[0];
+          const published = state.config.frontends?.[surface]?.publishedAddresses?.[0];
           return json({
             surface,
-            url: `http://ether.local/${surface}`,
+            url: published || `http://ether.local/${surface}`,
             username: viewer?.username || id,
             password: "mock-app-password",
             qr,
           });
+        }
+        if (surface.startsWith("plugin:")) {
+          const key = surface.split(":").at(-1) || "adapter";
+          return json({ surface, url: `http://ether.local/${key}`, token: "mock-grant", qr });
+        }
+        const published = state.config.frontends?.[surface]?.publishedAddresses?.[0];
+        if (published) {
+          const trimmed = published.replace(/\/+$/, "");
+          const suffix =
+            surface === "m3u" ? "/mock-grant/playlist.m3u" : "/mock-grant/manifest.json";
+          return json({ surface, url: `${trimmed}${suffix}`, qr });
         }
         const path =
           surface === "m3u" ? "m3u/mock-grant/playlist.m3u" : "stremio/mock-grant/manifest.json";
@@ -3435,6 +4438,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
     const cal = calendar.handle(method, seg, q);
     if (cal) return json(cal.body, cal.status);
+
+    const flw = flowsMock.handle(method, seg, q, body);
+    if (flw) return json(flw.body, flw.status);
 
     const oar = onAir.handle(method, seg, q, body);
     if (oar) return json(oar.body, oar.status);
@@ -3457,20 +4463,150 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const mr = maintenance.handle(method, seg, body);
     if (mr) return json(mr.body, mr.status);
 
+    if (
+      method === "GET" &&
+      seg[0] === "stats" &&
+      seg[1] === "plays" &&
+      seg[2] &&
+      seg.length === 3
+    ) {
+      const targetId = decodeURIComponent(seg[2]);
+      const exPlay = experience.handle(method, seg, q);
+      if (exPlay && exPlay.status === 200) return json(exPlay.body, exPlay.status);
+      const liveSession = (dashboard().sections.sessions as Array<Record<string, unknown>>).find(
+        (s) => s.ID === targetId || s.id === targetId,
+      );
+      if (liveSession) {
+        const started = liveSession.StartedAt
+          ? Math.floor(new Date(String(liveSession.StartedAt)).getTime() / 1000)
+          : Math.floor(Date.now() / 1000);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const info = (liveSession.Info ?? {}) as Record<string, unknown>;
+        const client = (liveSession.Client ?? {}) as Record<string, unknown>;
+        const exp = (liveSession.experience ?? {}) as Record<string, unknown>;
+        const res = (liveSession.Resolution ?? {}) as Record<string, unknown>;
+        const rel = (res.release ?? {}) as Record<string, unknown>;
+        const durationMs = Math.round(Number(info.duration || 0) / 1e6);
+        const watchedMs = Math.max(0, (nowSec - started) * 1000);
+        const bytes = Number(liveSession.BytesServed || 0);
+        return json({
+          id: targetId,
+          userId: Number(liveSession.UserID || 0),
+          username: String(liveSession.Username || ""),
+          ratingKey: Number(liveSession.ratingKey || liveSession.Key || 0),
+          title: String(liveSession.TitleName || ""),
+          platform: String(client.platform || client.product || ""),
+          device: String(client.deviceName || client.product || ""),
+          decision: String(liveSession.Decision || ""),
+          started,
+          updated: nowSec,
+          ended: 0,
+          watchedMs,
+          durationMs,
+          bytes,
+          completed: false,
+          failovers: Number(liveSession.Failovers || 0),
+          switches: Number(liveSession.Failovers || 0),
+          origin: String(liveSession.origin || ""),
+          release: String(rel.name || ""),
+          ip: String(liveSession.ip || ""),
+          remote: Boolean(client.remote),
+          measured: Boolean(exp.requested),
+          startMs: exp.pictured ? Math.round(Number(exp.startTime || 0) / 1e6) : null,
+          bufferEvents: exp.requested ? Number(exp.bufferEvents || 0) : null,
+          bufferMs: exp.requested ? Math.round(Number(exp.buffering || 0) / 1e6) : null,
+          failed: false,
+          error: "",
+          reasonKind: "",
+          reasonDetail: "",
+          sourceKbps: Number(info.bitrateKbps || liveSession.bitrateKbps || 0),
+          avgBitrateKbps: watchedMs > 0 && bytes > 0 ? Math.round((bytes * 8) / watchedMs) : 0,
+          uhd: /2160p|4k/i.test(String(liveSession.sourceVideo || "")),
+          hdr: /hdr|dolby vision|hlg/i.test(String(liveSession.sourceVideo || "")),
+        });
+      }
+      if (exPlay) return json(exPlay.body, exPlay.status);
+    }
     const ex = experience.handle(method, seg, q);
     if (ex) return json(ex.body, ex.status);
 
+    if (seg[0] === "frontends" && seg[1] === "qr" && seg.length === 2 && method === "GET") {
+      const target = q.get("url") ?? "";
+      if (!target || /:\/\/[^/]*@/.test(target)) {
+        return err(400, "invalid_url", "Invalid URL");
+      }
+      const b64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAMAAAADAAQMAAABoEv5EAAAABlBMVEX///8AAABVwtN+AAABJklEQVR42uzWMa6rMBCF4R+5oPQSvBR2BsnOvJRZAiWFlfPkASV5UaorBbvgNAh9zQgP4+HKlR9FNUGSLTJ/uXUABUgwSbfR/OVMSNoSUBhkJar0A0GZdO8PFGzpCYAUVoAvZ94K9m5fp2Dz+OU3+C0AEJQd+EwrKAxbUgVIkt4+YkOAQUaUdPdnMDqAIEkFqF1fmAo9gPTwLpfN3vWyHgDmUVoJNni5b7/B70E2bJS4X2zE/DzBpgBeJn7XhvV1gm3BLxSmYMtGWCdZDyBbtkTMskE6Gr89AHiZteuJ+VQ4VrVcUt2WougCCpD2Lh/3oXnrAY69BBglvT5ieyCqpEedW9P/5TaGLJvBpyk9wHG0viLso/Q8OHa4ZzWfy10buHLlj/k3ACp8cxu0+Cr1AAAAAElFTkSuQmCC";
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Response(bytes, { status: 200, headers: { "Content-Type": "image/png" } });
+    }
+    const mockRuntimePort = (id: string, configuredPort?: number) => {
+      if (
+        opts.portConflict &&
+        id === "jellyfin" &&
+        state.config.frontendPorts?.jellyfin == null &&
+        configuredPort
+      ) {
+        return {
+          actualPort: 8098,
+          busyPort: configuredPort,
+          busyPortHolder: opts.portConflict === "unknown" ? undefined : "Jellyfin Server",
+        };
+      }
+      return { actualPort: configuredPort, busyPort: undefined, busyPortHolder: undefined };
+    };
     const mockConnectUrls = (id: string, port?: number) => {
-      if (port)
+      if (id === "plex" && port) {
         return [
           `http://192.168.1.20:${port}`,
-          id === "plex"
-            ? `https://203-0-113-7.abc.plex.direct:${port}`
-            : `https://${id}.example.com`,
+          `http://100.64.0.20:${port}`,
+          `https://203-0-113-7.abc.plex.direct:${port}`,
         ];
+      }
+      if ((id === "jellyfin" || id === "emby" || id === "silo") && port) {
+        return [
+          `http://192.168.1.20:${port}`,
+          `http://100.64.0.20:${port}`,
+          `http://[fd00::20]:${port}`,
+          `http://192.168.1.20:${state.config.server.port}/${id}`,
+        ];
+      }
+      if (id === "vela") {
+        if (opts.velaInstalled !== true) return [];
+        const serveMain = state.config.frontends?.vela?.settings?.serveOnMainPort !== false;
+        const urls: string[] = [];
+        if (port) {
+          urls.push(`http://192.168.1.20:${port}`, `http://100.64.0.20:${port}`);
+        }
+        if (!port || serveMain) {
+          urls.push(
+            `http://192.168.1.20:${state.config.server.port}/vela`,
+            `http://100.64.0.20:${state.config.server.port}/vela`,
+          );
+        }
+        return urls;
+      }
       if (id === "stremio" || id === "webdav" || id === "dlna" || id === "m3u" || id === "xtream") {
         return [`http://192.168.1.20:${state.config.server.port}/${id}`];
       }
+      return [];
+    };
+    const mockObservedAddresses = (id: string, enabled: boolean): string[] => {
+      if (!enabled) return [];
+      if (id === "jellyfin") {
+        return ["https://jellyfin.example.com", "https://media.example.com/jellyfin"];
+      }
+      return [];
+    };
+    const mockPublishedAddresses = (id: string): string[] => {
+      if (id === "plex") {
+        return [...(state.config.plex?.customUrls ?? [])];
+      }
+      const entry = state.config.frontends?.[id];
+      if (entry?.publishedAddresses?.length) return [...entry.publishedAddresses];
+      if (entry?.publicUrl) return [entry.publicUrl];
       return [];
     };
     // Settings schemas mirror internal/frontend (WS1d): keep beside the
@@ -3513,6 +4649,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sections: [{ key: "connect", fields: [{ key: note, kind: "note" }] }],
     });
     const protocolDefs = [
+      { id: "vela", name: "Vela", defaultPort: 8098, settingsSchema: VELA_SETTINGS_SCHEMA },
       {
         id: "plex",
         name: "Plex",
@@ -3572,14 +4709,43 @@ export function createFakeServer(opts: FakeOptions = {}) {
         protocolDefs.map((descriptor) => {
           const entry = state.config.frontends?.[descriptor.id];
           const enabled =
-            entry?.enabled ?? (state.config.frontends == null && descriptor.id === "plex");
-          const port = state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort;
+            entry?.enabled ??
+            (descriptor.id === "vela" ||
+              (state.config.frontends == null && descriptor.id === "plex"));
+          const configuredPort =
+            descriptor.id === "plex"
+              ? (state.config.frontendPorts?.plex ??
+                state.config.server.port ??
+                descriptor.defaultPort)
+              : descriptor.id === "vela"
+                ? state.config.frontendPorts?.vela
+                : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
+          const runtime = mockRuntimePort(descriptor.id, configuredPort);
+          const port = runtime.actualPort;
+          const observed = mockObservedAddresses(descriptor.id, enabled);
+          const published = mockPublishedAddresses(descriptor.id);
           return {
             descriptor,
             enabled,
             status: {
+              webPlayerReady:
+                descriptor.id === "vela"
+                  ? opts.velaInstalled === true
+                  : descriptor.id === "jellyfin",
               addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
               connectUrls: enabled ? mockConnectUrls(descriptor.id, port) : [],
+              ...(observed.length ? { observedAddresses: observed } : {}),
+              ...(published.length ? { publishedAddresses: published } : {}),
+              ...(enabled && runtime.busyPort
+                ? {
+                    busyPort: runtime.busyPort,
+                    actualPort: runtime.actualPort,
+                    ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                    warnings: [
+                      `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                    ],
+                  }
+                : {}),
               lan: "unknown",
               wan: "unknown",
               clients24h: 0,
@@ -3600,11 +4766,35 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (action === "status" && method === "GET") {
         const enabled =
           state.config.frontends?.[id!]?.enabled ??
-          (state.config.frontends == null && id === "plex");
-        const port = state.config.frontendPorts?.[id!] ?? descriptor.defaultPort;
+          (id === "vela" || (state.config.frontends == null && id === "plex"));
+        const configuredPort =
+          id === "plex"
+            ? (state.config.frontendPorts?.plex ??
+              state.config.server.port ??
+              descriptor.defaultPort)
+            : id === "vela"
+              ? state.config.frontendPorts?.vela
+              : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
+        const runtime = mockRuntimePort(id ?? "", configuredPort);
+        const port = runtime.actualPort;
+        const observed = mockObservedAddresses(id ?? "", enabled);
+        const published = mockPublishedAddresses(id ?? "");
         return json({
+          webPlayerReady: id === "vela" ? opts.velaInstalled === true : id === "jellyfin",
           addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
           connectUrls: enabled ? mockConnectUrls(id ?? "", port) : [],
+          ...(observed.length ? { observedAddresses: observed } : {}),
+          ...(published.length ? { publishedAddresses: published } : {}),
+          ...(enabled && runtime.busyPort
+            ? {
+                busyPort: runtime.busyPort,
+                actualPort: runtime.actualPort,
+                ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                warnings: [
+                  `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                ],
+              }
+            : {}),
           lan: "unknown",
           wan: "unknown",
           clients24h: 0,
@@ -3615,20 +4805,80 @@ export function createFakeServer(opts: FakeOptions = {}) {
           conformance: "unknown",
         });
       }
-      if (action === "settings" && method === "GET")
+      if (action === "settings" && method === "GET") {
+        const published = mockPublishedAddresses(id!);
+        const storedPort =
+          id === "vela"
+            ? state.config.frontendPorts?.vela
+            : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
         return json({
           ...state.config.frontends?.[id!]?.settings,
-          ...((state.config.frontendPorts?.[id!] ?? descriptor.defaultPort)
-            ? { port: state.config.frontendPorts?.[id!] ?? descriptor.defaultPort }
-            : {}),
+          ...(id !== "plex" && published.length ? { publishedAddresses: published } : {}),
+          ...(storedPort ? { port: storedPort } : {}),
         });
+      }
       const entries =
         state.config.frontends ?? (state.config.frontends = { plex: { enabled: true } });
-      const entry = entries[id!] ?? (entries[id!] = { enabled: false });
+      const entry = entries[id!] ?? (entries[id!] = { enabled: id === "vela" });
+      if (id === "vela" && action === "wordmark" && method === "POST") {
+        const uploaded = await velaBranding.upload(body);
+        return json(uploaded.body, uploaded.status);
+      }
+      if (id === "vela" && action === "icon" && method === "POST") {
+        const uploaded = await velaBranding.uploadIcon(body);
+        return json(uploaded.body, uploaded.status);
+      }
       if (action === "settings" && method === "PUT") {
-        const { port, ...settings } = body as Record<string, unknown>;
+        const { port, publishedAddresses, publicUrl, ...settings } = body as Record<
+          string,
+          unknown
+        >;
+        if (publishedAddresses !== undefined) {
+          if (id === "plex") {
+            return err(400, "invalid", "configure Plex published addresses under Plex settings");
+          }
+          if (!Array.isArray(publishedAddresses)) {
+            return err(400, "invalid", "publishedAddresses must be a list of URLs");
+          }
+          const clean = publishedAddresses
+            .map((v) => String(v).trim().replace(/\/+$/, ""))
+            .filter(Boolean);
+          if (clean.length) entry.publishedAddresses = clean;
+          else delete entry.publishedAddresses;
+          delete entry.publicUrl;
+        } else if (typeof publicUrl === "string") {
+          const clean = publicUrl.trim().replace(/\/+$/, "");
+          if (clean) entry.publishedAddresses = [clean];
+          else delete entry.publishedAddresses;
+          delete entry.publicUrl;
+        }
+        if (id === "vela") {
+          if (typeof settings.appName === "string") {
+            const trimmed = settings.appName.trim();
+            if (trimmed) settings.appName = trimmed;
+            else delete settings.appName;
+          }
+          if (settings.wordmark == null) delete settings.wordmark;
+          if (
+            settings.livePreview !== undefined &&
+            settings.livePreview !== "auto" &&
+            settings.livePreview !== "on-click" &&
+            settings.livePreview !== "off"
+          ) {
+            return json({ error: { message: "invalid livePreview" } }, 400);
+          }
+          if (settings.appIcon == null) delete settings.appIcon;
+        }
+        if (id === "vela" && typeof port !== "number") {
+          delete settings.serveOnMainPort;
+        }
         entry.settings = settings;
-        if (typeof port === "number") (state.config.frontendPorts ??= {})[id!] = port;
+        if (typeof port === "number") {
+          (state.config.frontendPorts ??= {})[id!] = port;
+          if (id === "plex") state.config.server.port = port;
+        } else if (state.config.frontendPorts) {
+          delete state.config.frontendPorts[id!];
+        }
         return json({ ok: true });
       }
       if (
@@ -3639,6 +4889,23 @@ export function createFakeServer(opts: FakeOptions = {}) {
         entry.enabled = (body as { enabled: boolean }).enabled;
         return json({ ok: true });
       }
+      if (action === "api-keys" && method === "GET" && (id === "jellyfin" || id === "emby")) {
+        return json(state.frontendApiKeys[id] ?? []);
+      }
+    }
+    if (
+      seg[0] === "frontends" &&
+      seg.length === 4 &&
+      seg[2] === "api-keys" &&
+      method === "DELETE" &&
+      (seg[1] === "jellyfin" || seg[1] === "emby")
+    ) {
+      const keyId = Number(seg[3]);
+      const list = state.frontendApiKeys[seg[1]] ?? [];
+      const idx = list.findIndex((k) => k.id === keyId);
+      if (idx < 0) return err(404, "not_found", "API key not found");
+      list.splice(idx, 1);
+      return json({ ok: true });
     }
 
     // Static routes
@@ -3725,15 +4992,29 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /web-player":
       case "POST /web-player": {
         const players = [
-          { id: "vela", url: `${window.location.origin}/vela/` },
+          ...(opts.velaInstalled ? [{ id: "vela", url: `${window.location.origin}/vela/` }] : []),
           { id: "jellyfin", url: `${window.location.origin}/jellyfin/web/ether-signin` },
         ];
-        const target = players.find((player) => player.id === q.get("app")) ?? players[1]!;
+        const target =
+          players.find((player) => player.id === q.get("app")) ??
+          players.find((player) => player.id === "jellyfin")!;
         return json({ available: true, players, url: target.url });
       }
       case "GET /bootstrap":
       case "GET /health":
         return json(state.boot);
+      case "GET /server/console-listener": {
+        const mainPort = state.config.server.port ?? 32400;
+        const configuredPort = state.config.server.consolePort ?? 0;
+        const disableOnMain = Boolean(state.config.server.disableConsoleOnMainPort);
+        return json({
+          configuredPort,
+          activePort: configuredPort > 0 && configuredPort !== mainPort ? configuredPort : 0,
+          mainPort,
+          onMainPort: configuredPort <= 0 || !disableOnMain,
+          fallback: false,
+        });
+      }
       case "GET /dashboard":
         return json(dashboard());
       case "GET /indexer-usage":
@@ -3788,6 +5069,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ done: true, token: "ether-admin-mock", expiresAt: 0 });
       case "DELETE /auth/session":
         return json({ ok: true });
+      case "GET /auth/lockouts":
+        return json({ lockouts: state.lockouts });
+      case "DELETE /auth/lockouts": {
+        const cleared = state.lockouts.length;
+        state.lockouts = [];
+        return json({ ok: true, cleared });
+      }
       case "GET /llm/providers":
         return json({ providers: MOCK_LLM_PROVIDERS });
       case "POST /llm/models": {
@@ -3826,6 +5114,425 @@ export function createFakeServer(opts: FakeOptions = {}) {
           proxyEnabled: false,
         });
       }
+      case "POST /indexer/preview": {
+        type MockKV = { name: string; value?: string; remove?: boolean };
+        type MockRule = {
+          id?: string;
+          target: string;
+          indexerId?: string;
+          host?: string;
+          scope?: string;
+          mediaType?: string;
+          profile?: string;
+          headers?: MockKV[] | null;
+          params?: MockKV[] | null;
+        };
+        const req = (body ?? {}) as {
+          rule?: MockRule;
+          rules?: MockRule[];
+          indexer?: { id?: string; url?: string; protocol?: string };
+          url?: string;
+        };
+        const arrAccept = "application/rss+xml, text/rss+xml, application/xml, text/xml";
+        const profiles: Record<string, { name: string; value: string }[]> = {
+          ether: [{ name: "User-Agent", value: DEFAULT_USER_AGENT }],
+          sonarr: [
+            { name: "User-Agent", value: "Sonarr/4.0.20.3014 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          radarr: [
+            { name: "User-Agent", value: "Radarr/7.0.3.10918 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          prowlarr: [
+            { name: "User-Agent", value: "Prowlarr/2.7.0.5723 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          nzbhydra2: [
+            { name: "User-Agent", value: "NZBHydra2 9.3.1" },
+            { name: "Accept", value: "application/xml" },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          sabnzbd: [
+            { name: "User-Agent", value: "SABnzbd/5.1.3" },
+            { name: "Accept-Encoding", value: "gzip" },
+            { name: "Connection", value: "close" },
+          ],
+          nzbget: [
+            { name: "User-Agent", value: "nzbget/26.3" },
+            { name: "Accept", value: "*/*" },
+            { name: "Accept-Encoding", value: "gzip" },
+            { name: "Connection", value: "close" },
+          ],
+          browser: [
+            {
+              name: "User-Agent",
+              value:
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
+            },
+            {
+              name: "Accept",
+              value:
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            },
+            { name: "Accept-Encoding", value: "gzip, deflate" },
+          ],
+          custom: [{ name: "User-Agent", value: DEFAULT_USER_AGENT }],
+        };
+        const sensitiveHeader = (name: string) => {
+          const n = name.toLowerCase();
+          return (
+            n === "authorization" ||
+            n === "proxy-authorization" ||
+            n === "cookie" ||
+            n === "x-api-key" ||
+            n.includes("token") ||
+            n.includes("secret") ||
+            n.includes("auth") ||
+            n.includes("key")
+          );
+        };
+        const sensitiveParam = (name: string) => {
+          const n = name.toLowerCase();
+          return (
+            n === "apikey" ||
+            n === "api_key" ||
+            n === "key" ||
+            n === "token" ||
+            n === "passkey" ||
+            n === "password" ||
+            n === "secret" ||
+            n === "auth" ||
+            n.includes("token") ||
+            n.includes("secret") ||
+            n.includes("key")
+          );
+        };
+        const applyHeaders = (profileId: string, overrides?: MockKV[] | null) => {
+          const base = (profiles[profileId] ?? profiles.ether!).map((h) => ({ ...h }));
+          for (const ov of overrides ?? []) {
+            const name = ov.name.trim();
+            if (!name) continue;
+            const idx = base.findIndex((h) => h.name.toLowerCase() === name.toLowerCase());
+            if (ov.remove) {
+              if (idx >= 0) base.splice(idx, 1);
+              continue;
+            }
+            const val = sensitiveHeader(name) && ov.value ? "••••" : (ov.value ?? "");
+            if (idx >= 0) base[idx] = { name: base[idx]!.name, value: val };
+            else base.push({ name, value: val });
+          }
+          return base;
+        };
+        const applyParams = (base: [string, string][], overrides?: MockKV[] | null) => {
+          const map = new Map<string, string>(base);
+          for (const ov of overrides ?? []) {
+            const name = ov.name.trim();
+            if (!name) continue;
+            if (ov.remove) {
+              if (name !== "apikey" && name !== "t") map.delete(name);
+              continue;
+            }
+            map.set(name, sensitiveParam(name) ? "••••" : (ov.value ?? ""));
+          }
+          const keys = [...map.keys()].sort();
+          return keys
+            .map((k) => {
+              const v = map.get(k) ?? "";
+              return `${encodeURIComponent(k)}=${v === "••••" ? "••••" : encodeURIComponent(v)}`;
+            })
+            .join("&");
+        };
+        const matchHost = (pattern: string, host: string) => {
+          const p = pattern.trim().toLowerCase();
+          const h = host.trim().toLowerCase().replace(/:\d+$/, "");
+          if (!p || !h) return false;
+          if (p.startsWith("*.")) {
+            const suf = p.slice(1);
+            return h.length > suf.length && h.endsWith(suf);
+          }
+          return h === p;
+        };
+        const activeRules: MockRule[] =
+          req.rules ?? (state.config.clientIdentity?.rules as MockRule[] | null | undefined) ?? [];
+        const resolve = (
+          rules: MockRule[],
+          kind: "search" | "nzb_download" | "torrent_download",
+          indexerId: string,
+          host: string,
+          mediaType = "",
+        ): { profile: string; ruleId: string; headers: MockKV[]; params: MockKV[] } => {
+          let bestSpec = 0;
+          let best: MockRule | null = null;
+          const isDownload = kind !== "search";
+          const reqMedia = mediaType.trim().toLowerCase();
+          for (const r of rules) {
+            const ruleMedia = (r.mediaType ?? "").trim().toLowerCase();
+            if (ruleMedia && ruleMedia !== reqMedia) continue;
+            let targetRank = 0;
+            if (r.target === "indexer") {
+              if (r.indexerId !== indexerId) continue;
+              if (r.scope === "search" && isDownload) continue;
+              if (r.scope === "download" && !isDownload) continue;
+              targetRank = 4;
+            } else if (r.target === "host") {
+              if (!matchHost(r.host ?? "", host)) continue;
+              if (r.scope === "search" && isDownload) continue;
+              if (r.scope === "download" && !isDownload) continue;
+              targetRank = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
+            } else if (r.target === "nzb_downloads") {
+              if (kind !== "nzb_download") continue;
+              targetRank = 1;
+            } else if (r.target === "torrent_downloads") {
+              if (kind !== "torrent_download") continue;
+              targetRank = 1;
+            } else if (r.target === "all_searches") {
+              if (kind !== "search") continue;
+              targetRank = 1;
+            }
+            if (targetRank === 0) continue;
+            const spec = targetRank * 2 + (ruleMedia ? 1 : 0);
+            if (spec > bestSpec) {
+              bestSpec = spec;
+              best = r;
+            }
+          }
+          if (!best) return { profile: "ether", ruleId: "", headers: [], params: [] };
+          return {
+            profile: best.profile || "ether",
+            ruleId: best.id || "",
+            headers: best.headers ?? [],
+            params: best.params ?? [],
+          };
+        };
+
+        const indexers = state.config.indexers ?? [];
+        const rule = req.rule;
+        const previewMedia = (rule?.mediaType ?? "").trim().toLowerCase();
+        let sampleHost = "indexer.example.com";
+        let sampleIndexerId = "";
+        let downloadKind: "nzb" | "torrent" = "nzb";
+        const isShadowed = (id: string) =>
+          activeRules.some((r) => {
+            if (r.target !== "indexer" || r.indexerId !== id) return false;
+            const rm = (r.mediaType ?? "").trim().toLowerCase();
+            return !rm || rm === previewMedia;
+          });
+        const pickUnshadowed = (wantTorrent: boolean) =>
+          indexers.find(
+            (x) =>
+              (!x.kind || x.kind === "newznab") &&
+              (x.protocol === "torrent") === wantTorrent &&
+              x.url &&
+              !isShadowed(x.id),
+          );
+        if (rule) {
+          if (rule.target === "indexer" && rule.indexerId) {
+            sampleIndexerId = rule.indexerId;
+            const ix = indexers.find((x) => x.id === rule.indexerId);
+            if (ix?.url) {
+              try {
+                sampleHost = new URL(ix.url).host || sampleHost;
+              } catch {
+                /* keep default */
+              }
+            }
+            if (ix?.protocol === "torrent") downloadKind = "torrent";
+          } else if (rule.target === "host" && rule.host?.trim()) {
+            const h = rule.host.trim();
+            sampleHost = h.startsWith("*.") ? `api.${h.slice(2)}` : h;
+          } else if (rule.target === "torrent_downloads") {
+            downloadKind = "torrent";
+            const ix = pickUnshadowed(true);
+            if (ix) {
+              sampleIndexerId = ix.id;
+              try {
+                sampleHost = new URL(ix.url).host || "tracker.example.org";
+              } catch {
+                sampleHost = "tracker.example.org";
+              }
+            } else {
+              sampleHost = "tracker.example.org";
+            }
+          } else if (rule.target === "nzb_downloads" || rule.target === "all_searches") {
+            const ix = pickUnshadowed(false);
+            if (ix) {
+              sampleIndexerId = ix.id;
+              try {
+                sampleHost = new URL(ix.url).host || sampleHost;
+              } catch {
+                /* keep default */
+              }
+            }
+          }
+        } else {
+          const ix = req.indexer ?? (req.url ? { url: req.url } : undefined);
+          if (ix?.id) sampleIndexerId = ix.id;
+          if (ix?.url) {
+            try {
+              sampleHost = new URL(ix.url).host || sampleHost;
+            } catch {
+              /* keep default */
+            }
+          }
+          if (ix?.protocol === "torrent") downloadKind = "torrent";
+        }
+        const evalRules = rule ? (req.rules ? req.rules : [rule]) : activeRules;
+        let searchId = resolve(evalRules, "search", sampleIndexerId, sampleHost, previewMedia);
+        const dlKind = downloadKind === "torrent" ? "torrent_download" : "nzb_download";
+        let dlId = resolve(evalRules, dlKind, sampleIndexerId, sampleHost, previewMedia);
+        if (rule) {
+          const direct = {
+            profile: rule.profile || "ether",
+            ruleId: rule.id || "",
+            headers: rule.headers ?? [],
+            params: rule.params ?? [],
+          };
+          if (rule.target === "all_searches") {
+            searchId = direct;
+          } else if (rule.target === "nzb_downloads" || rule.target === "torrent_downloads") {
+            dlId = direct;
+          } else if (rule.target === "indexer" || rule.target === "host") {
+            if (rule.scope !== "download") searchId = direct;
+            if (rule.scope !== "search") dlId = direct;
+          }
+        }
+        const sampleSearchBase: [string, string][] =
+          previewMedia === "movie"
+            ? [
+                ["apikey", "••••"],
+                ["cat", "2000"],
+                ["extended", "1"],
+                ["imdbid", "0133093"],
+                ["limit", "100"],
+                ["t", "movie"],
+              ]
+            : previewMedia === "music"
+              ? [
+                  ["apikey", "••••"],
+                  ["cat", "3000"],
+                  ["extended", "1"],
+                  ["limit", "100"],
+                  ["q", "Example Album"],
+                  ["t", "search"],
+                ]
+              : previewMedia === "books"
+                ? [
+                    ["apikey", "••••"],
+                    ["cat", "7000"],
+                    ["extended", "1"],
+                    ["limit", "100"],
+                    ["q", "Example Book"],
+                    ["t", "search"],
+                  ]
+                : [
+                    ["apikey", "••••"],
+                    ["cat", "5000"],
+                    ["ep", "1"],
+                    ["extended", "1"],
+                    ["limit", "100"],
+                    ["q", "Example Show"],
+                    ["season", "1"],
+                    ["t", "tvsearch"],
+                  ];
+        const searchQuery = applyParams(sampleSearchBase, searchId.params);
+        const downloadPath =
+          downloadKind === "torrent"
+            ? `/download/example.torrent${
+                dlId.params.length ? `?${applyParams([], dlId.params)}` : ""
+              }`
+            : `/api?${applyParams(
+                [
+                  ["apikey", "••••"],
+                  ["id", "example-guid"],
+                  ["t", "get"],
+                ],
+                dlId.params,
+              )}`;
+        const primary =
+          rule &&
+          (rule.target === "nzb_downloads" ||
+            rule.target === "torrent_downloads" ||
+            rule.scope === "download")
+            ? dlId
+            : searchId;
+        return json({
+          profile: primary.profile,
+          matchedRuleId: primary.ruleId || undefined,
+          downloadKind,
+          search: {
+            requestLine: `GET /api?${searchQuery} HTTP/1.1\nHost: ${sampleHost}`,
+            headers: applyHeaders(searchId.profile, searchId.headers),
+            profile: searchId.profile,
+            matchedRuleId: searchId.ruleId || undefined,
+          },
+          download: {
+            requestLine: `GET ${downloadPath} HTTP/1.1\nHost: ${sampleHost}`,
+            headers: applyHeaders(dlId.profile, dlId.headers),
+            profile: dlId.profile,
+            matchedRuleId: dlId.ruleId || undefined,
+          },
+          profiles: Object.entries(profiles).map(([id, hs]) => ({
+            id,
+            userAgent: hs[0]?.value ?? DEFAULT_USER_AGENT,
+          })),
+        });
+      }
+      case "POST /test/indexer-identity": {
+        const payload = (body ?? {}) as {
+          indexerId?: string;
+          rules?: Array<{
+            id?: string;
+            target: string;
+            indexerId?: string;
+            host?: string;
+            scope?: string;
+            mediaType?: string;
+            profile?: string;
+            headers?: Array<{ name: string; value?: string; remove?: boolean }> | null;
+          }>;
+        };
+        const ix = (state.config.indexers ?? []).find((x) => x.id === payload.indexerId);
+        if (!ix) return err(404, "not_found", "indexer not found");
+        const rules = payload.rules ?? state.config.clientIdentity?.rules ?? [];
+        let host = "";
+        try {
+          host = new URL(ix.url).hostname.toLowerCase();
+        } catch {
+          host = "";
+        }
+        let bestSpec = 0;
+        let matched: (typeof rules)[number] | null = null;
+        for (const r of rules) {
+          if ((r.mediaType ?? "").trim()) continue;
+          let spec = 0;
+          if (r.target === "indexer" && r.indexerId === ix.id && r.scope !== "download") spec = 4;
+          else if (r.target === "host" && r.scope !== "download") {
+            const p = (r.host ?? "").trim().toLowerCase();
+            if (p.startsWith("*.")) {
+              const suf = p.slice(1);
+              if (host.length > suf.length && host.endsWith(suf)) spec = 2;
+            } else if (p && host === p) spec = 3;
+          } else if (r.target === "all_searches") spec = 1;
+          if (spec > bestSpec) {
+            bestSpec = spec;
+            matched = r;
+          }
+        }
+        const profile = matched?.profile || "ether";
+        return json({
+          ok: true,
+          durationMs: 48 + (hash(ix.id) % 120),
+          profile,
+          ruleId: matched?.id || undefined,
+          userAgent:
+            matched?.headers?.find((h) => h.name.toLowerCase() === "user-agent" && !h.remove)
+              ?.value || DEFAULT_USER_AGENT,
+        });
+      }
       case "POST /test/usenet":
       case "POST /test/indexer":
       case "POST /test/debrid":
@@ -3834,18 +5541,90 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "POST /test/llm":
       case "POST /test/trakt":
       case "POST /test/opensubtitles":
+      case "POST /test/subdl":
+      case "POST /test/subsource":
         return json({ ok: true, durationMs: 40 + (hash(route) % 200) });
-      case "GET /playback/policy":
+      case "GET /playback/policy": {
+        const activeOverrides =
+          (
+            (state.config as unknown as Record<string, unknown>).clients as
+              { overrides?: Array<Record<string, unknown>> } | undefined
+          )?.overrides ??
+          opts.capabilityOverrides ??
+          [];
         return json({
-          overrides: opts.capabilityOverrides ?? [],
+          overrides: activeOverrides,
           apps: [
+            {
+              protocol: "plex",
+              name: "Plezy",
+              devices: ["Home theater PC", "Apple TV", "iOS", "Android TV", "Android"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1", "mpeg2video", "vc1", "mpeg4"],
+              audioCodecs: [
+                "aac",
+                "ac3",
+                "eac3",
+                "truehd",
+                "dts",
+                "dtshd",
+                "mp3",
+                "flac",
+                "opus",
+                "vorbis",
+                "pcm",
+              ],
+              containers: ["mp4", "mkv", "mov", "avi", "mpegts", "webm"],
+              subtitles: ["srt", "subrip", "webvtt", "vtt", "ass", "ssa", "pgs", "vobsub"],
+              dolbyVisionProfiles: [5, 7, 8],
+              hdr10: true,
+              dolbyVision: false,
+              directPlay: "builtin",
+              note: "",
+              certification: "builtin",
+            },
+            {
+              protocol: "plex",
+              name: "Plex for Apple TV",
+              devices: ["Apple TV"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "alac", "opus"],
+              containers: ["mp4", "mov", "mkv", "mpegts"],
+              subtitles: ["srt", "ass", "vtt"],
+              dolbyVisionProfiles: [5, 8],
+              hdr10: true,
+              dolbyVision: true,
+              directPlay: "reported",
+              note: "",
+              certification: "builtin",
+            },
+            {
+              protocol: "plex",
+              name: "Plex for iOS",
+              devices: ["iOS"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "alac", "opus"],
+              containers: ["mp4", "mov", "mkv", "mpegts"],
+              subtitles: ["srt", "ass", "vtt"],
+              dolbyVisionProfiles: [5, 8],
+              hdr10: true,
+              dolbyVision: true,
+              directPlay: "reported",
+              note: "",
+              certification: "builtin",
+            },
             {
               protocol: "plex",
               name: "Plex for Android phones",
               product: "Plex for Android (Mobile)",
               devices: ["Android"],
-              videoCodecs: [],
-              subtitles: [],
+              maxHeight: 1080,
+              videoCodecs: ["h264", "hevc", "vp9"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis"],
+              containers: ["mp4", "mkv", "mpegts", "webm"],
+              subtitles: ["srt", "ass", "vtt"],
               directPlay: "reported",
               note: "",
               certification: "builtin",
@@ -3854,9 +5633,42 @@ export function createFakeServer(opts: FakeOptions = {}) {
               protocol: "plex",
               name: "Plex for Android TV",
               product: "Plex for Android (TV)",
-              devices: ["Android TV"],
-              videoCodecs: [],
-              subtitles: [],
+              devices: ["Android TV", "Google TV", "NVIDIA Shield"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis"],
+              containers: ["mp4", "mkv", "mpegts", "webm"],
+              subtitles: ["srt", "ass", "vtt"],
+              hdr10: true,
+              directPlay: "reported",
+              note: "",
+              certification: "builtin",
+            },
+            {
+              protocol: "plex",
+              name: "Plex HTPC",
+              devices: ["Home theater PC"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1", "mpeg2video", "vc1", "mpeg4"],
+              audioCodecs: ["aac", "ac3", "eac3", "truehd", "dts", "dtshd", "mp3", "flac", "opus"],
+              containers: ["mp4", "mkv", "mov", "avi", "mpegts", "webm"],
+              subtitles: ["srt", "ass", "pgs", "vobsub"],
+              dolbyVisionProfiles: [5, 7, 8],
+              hdr10: true,
+              directPlay: "reported",
+              note: "",
+              certification: "builtin",
+            },
+            {
+              protocol: "plex",
+              name: "Plex for Roku",
+              devices: ["Roku"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac"],
+              containers: ["mp4", "mkv", "mpegts"],
+              subtitles: ["srt", "vtt"],
+              hdr10: true,
               directPlay: "reported",
               note: "",
               certification: "builtin",
@@ -3865,11 +5677,61 @@ export function createFakeServer(opts: FakeOptions = {}) {
               protocol: "plex",
               name: "Plex Web",
               devices: ["Browser"],
-              videoCodecs: [],
-              subtitles: ["srt"],
+              maxHeight: 2160,
+              videoCodecs: ["h264"],
+              subtitles: ["srt", "vtt", "ass"],
               directPlay: "browser",
               note: "",
               certification: "builtin",
+            },
+            {
+              protocol: "jellyfin",
+              name: "Swiftfin",
+              devices: ["Apple TV", "iOS"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc"],
+              audioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "alac", "opus"],
+              containers: ["mp4", "mov", "mkv", "mpegts"],
+              subtitles: ["srt", "ass", "vtt"],
+              dolbyVisionProfiles: [5, 8],
+              hdr10: true,
+              dolbyVision: true,
+              directPlay: "reported",
+              note: "",
+              certification: "pending",
+            },
+            {
+              protocol: "jellyfin",
+              name: "Infuse",
+              devices: ["Apple TV", "iOS"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "mpeg2video", "vc1", "mpeg4"],
+              subtitles: ["srt", "ass", "pgs", "vobsub"],
+              dolbyVisionProfiles: [5, 7, 8],
+              hdr10: true,
+              directPlay: "reported",
+              note: "capture",
+              certification: "pending",
+            },
+            {
+              protocol: "jellyfin",
+              name: "Streamyfin",
+              devices: ["Android"],
+              videoCodecs: ["h264", "hevc", "vp8", "vp9", "av1"],
+              subtitles: ["srt", "vtt", "ttml"],
+              directPlay: "listed",
+              note: "no-dv5",
+              certification: "pending",
+            },
+            {
+              protocol: "jellyfin",
+              name: "Findroid",
+              devices: ["Android"],
+              videoCodecs: [],
+              subtitles: ["srt", "ass"],
+              directPlay: "findroid",
+              note: "",
+              certification: "pending",
             },
             {
               protocol: "jellyfin",
@@ -3882,21 +5744,40 @@ export function createFakeServer(opts: FakeOptions = {}) {
               certification: "pending",
             },
             {
-              protocol: "jellyfin",
-              name: "Swiftfin",
-              devices: ["Apple TV"],
-              videoCodecs: [],
-              subtitles: [],
-              directPlay: "reported",
+              protocol: "webdav",
+              name: "Kodi",
+              devices: ["Kodi", "Home theater PC", "Android TV"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1", "mpeg2video", "vc1", "mpeg4"],
+              subtitles: ["srt", "ass", "pgs", "vobsub"],
+              dolbyVisionProfiles: [5, 7, 8],
+              hdr10: true,
+              directPlay: "player",
               note: "",
-              certification: "pending",
+              certification: "builtin",
+            },
+            {
+              protocol: "webdav",
+              name: "VLC",
+              devices: ["Home theater PC", "Mac", "Apple TV", "iOS", "Android"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1", "mpeg2video", "vc1", "mpeg4"],
+              subtitles: ["srt", "ass", "pgs", "vobsub"],
+              dolbyVisionProfiles: [5, 7, 8],
+              hdr10: true,
+              directPlay: "player",
+              note: "",
+              certification: "builtin",
             },
             {
               protocol: "stremio",
               name: "Stremio TV",
               devices: ["Android TV"],
-              videoCodecs: [],
-              subtitles: ["srt"],
+              maxHeight: 2160,
+              videoCodecs: ["h264", "hevc", "vp9", "av1"],
+              subtitles: ["srt", "ass", "pgs"],
+              dolbyVisionProfiles: [8],
+              hdr10: true,
               directPlay: "stream",
               note: "",
               certification: "builtin",
@@ -3912,6 +5793,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
               maxHeight: 2160,
               hdr10: true,
               dolbyVision: true,
+              builtinAudioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "alac", "opus"],
+              builtinContainers: ["mp4", "mov", "mkv", "mpegts"],
               builtinMaxHeight: 2160,
               builtinHdr10: true,
               builtinDolbyVision: true,
@@ -3919,22 +5802,190 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 "Dolby Vision profile 7 uses a compatible HDR base layer; TrueHD requires an audio transcode unless declared supported.",
             },
             {
+              name: "NVIDIA Shield",
+              id: "shield",
+              dolbyVisionProfiles: [5, 8],
+              subtitleCodecs: ["srt", "ass", "pgs", "vobsub"],
+              videoCodecs: ["h264", "hevc", "vp9"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinAudioCodecs: ["aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis"],
+              builtinContainers: ["mp4", "mkv", "mpegts", "webm"],
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
               name: "Android TV",
+              id: "android-tv",
               dolbyVisionProfiles: [],
               subtitleCodecs: ["srt"],
+              videoCodecs: ["h264", "hevc", "vp9", "av1"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
+              name: "iOS",
+              id: "ios",
+              dolbyVisionProfiles: [5, 8],
+              subtitleCodecs: ["srt", "ass", "vtt"],
+              videoCodecs: ["h264", "hevc"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: true,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: true,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
+              name: "Home theater PC",
+              id: "htpc",
+              dolbyVisionProfiles: [5, 7, 8],
+              subtitleCodecs: ["srt", "ass", "pgs", "vobsub"],
+              videoCodecs: ["h264", "hevc", "vp9", "av1", "mpeg2video", "vc1", "mpeg4"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
+              name: "Roku",
+              id: "roku",
+              dolbyVisionProfiles: [],
+              subtitleCodecs: ["srt", "vtt"],
+              videoCodecs: ["h264", "hevc"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
+              name: "LG webOS",
+              id: "webos",
+              dolbyVisionProfiles: [],
+              subtitleCodecs: ["srt"],
+              videoCodecs: ["h264", "hevc"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
+              notes: "Text is served separately; image subtitles require explicit client support.",
+            },
+            {
+              name: "Samsung Tizen",
+              id: "tizen",
+              dolbyVisionProfiles: [],
+              subtitleCodecs: ["srt"],
+              videoCodecs: ["h264", "hevc"],
+              maxHeight: 2160,
+              hdr10: true,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: true,
+              builtinDolbyVision: false,
               notes: "Text is served separately; image subtitles require explicit client support.",
             },
             {
               name: "Browser",
+              id: "browser",
               dolbyVisionProfiles: [],
               subtitleCodecs: ["srt"],
+              videoCodecs: ["h264"],
+              maxHeight: 2160,
+              hdr10: false,
+              dolbyVision: false,
+              builtinMaxHeight: 2160,
+              builtinHdr10: false,
+              builtinDolbyVision: false,
               notes: "Browser codec declarations govern playback; text subtitles remain sidecars.",
             },
+            {
+              name: "DLNA TV or receiver",
+              dolbyVisionProfiles: [],
+              subtitleCodecs: ["srt", "subrip"],
+              notes: "The TV or receiver advertises what it can play.",
+            },
           ],
+          seenDevices: [
+            {
+              clientIdentifier: "mock-tv",
+              name: "Living room TV",
+              platform: "Android",
+              device: "Xiaomi TV Box",
+              app: "Plex for Android (TV)",
+              viewer: "Alex",
+              lastSeen: new Date().toISOString(),
+            },
+            {
+              clientIdentifier: "mock-plezy",
+              name: "Desk Linux PC",
+              platform: "Linux",
+              device: "Arch Workstation",
+              app: "Plezy",
+              viewer: "You",
+              lastSeen: new Date(Date.now() - 1200000).toISOString(),
+            },
+            {
+              clientIdentifier: "mock-appletv",
+              name: "Bedroom Apple TV",
+              platform: "tvOS",
+              device: "Apple TV",
+              app: "Swiftfin",
+              viewer: "You",
+              lastSeen: new Date(Date.now() - 2400000).toISOString(),
+            },
+            {
+              clientIdentifier: "mock-phone",
+              name: "Alex’s phone",
+              platform: "iOS",
+              device: "iPhone",
+              app: "Plex for iOS",
+              viewer: "Alex",
+              lastSeen: new Date(Date.now() - 3600000).toISOString(),
+            },
+          ].map((row) => {
+            const index = activeOverrides.findLastIndex(
+              (o) =>
+                o.device &&
+                (row.device.toLowerCase().includes(String(o.device).toLowerCase()) ||
+                  row.name.toLowerCase().includes(String(o.device).toLowerCase())) &&
+                (!o.platform ||
+                  row.platform.toLowerCase().includes(String(o.platform).toLowerCase())) &&
+                (!o.product || row.app.toLowerCase().includes(String(o.product).toLowerCase())),
+            );
+            return { ...row, ...(index >= 0 ? { overrideIndex: index } : {}) };
+          }),
           observed: [
+            {
+              protocol: "plex",
+              name: "Plezy",
+              lastSeen: new Date(Date.now() - 1200000).toISOString(),
+            },
+            {
+              protocol: "jellyfin",
+              name: "Swiftfin",
+              lastSeen: new Date(Date.now() - 2400000).toISOString(),
+            },
             { protocol: "jellyfin", name: "Jellyfin TV", lastSeen: "2026-10-31T12:00:00Z" },
           ],
         });
+      }
       case "GET /playback/prowlarr":
         return json({ config: {}, status: "" });
       case "POST /playback/prowlarr/tags":
@@ -4166,6 +6217,314 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ templates: TEMPLATES });
       case "GET /collections/template-bundles":
         return json({ bundles: TEMPLATE_BUNDLES });
+      case "GET /collections/addon-imports": {
+        const availableAddons = [
+          {
+            addonId: "cinemeta",
+            name: "Cinemeta",
+            host: "catalogue.example",
+            enabled: true,
+            catalogCount: 4,
+            hasImport: state.addonImports.some((s) => s.addonId === "cinemeta"),
+          },
+        ];
+        return json({
+          imports: state.addonImports.map((sub) => {
+            const linked = state.collections.filter((c) => c.addonSync?.addonId === sub.addonId);
+            return {
+              ...sub,
+              managedCount: linked.length,
+              removedCount: linked.filter((c) => c.addonSync?.removed).length,
+            };
+          }),
+          availableAddons,
+        });
+      }
+      case "POST /collections/addon-imports/preview": {
+        const req = (body ?? {}) as { addonId?: string; url?: string };
+        const addonId = req.addonId?.trim() || "addon.aiometadata";
+        const isCinemeta = addonId === "cinemeta" || (req.url ?? "").includes("cinemeta");
+        const resolvedId = isCinemeta ? "cinemeta" : addonId;
+        const addonName = isCinemeta ? "Cinemeta" : "AIOMetadata";
+        let host = isCinemeta ? "catalogue.example" : "aiometadata.example";
+        if (req.url) {
+          try {
+            host = new URL(req.url.replace(/^stremio:\/\//i, "https://")).host || host;
+          } catch {
+            // keep default host
+          }
+        }
+        const rawCatalogs: Omit<
+          AddonCatalogPreviewItem,
+          | "order"
+          | "hasDuplicateName"
+          | "imported"
+          | "existingCollectionId"
+          | "existingCollectionName"
+          | "existingParams"
+        >[] = isCinemeta
+          ? [
+              {
+                key: "movie/popular",
+                type: "movie",
+                id: "popular",
+                name: "Popular",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/popular",
+                type: "series",
+                id: "popular",
+                name: "Popular",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/classics",
+                type: "movie",
+                id: "classics",
+                name: "Classics",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/search",
+                type: "movie",
+                id: "search",
+                name: "Search",
+                mediaType: "movie",
+                standalone: false,
+                requiredExtras: ["search"],
+                extras: [{ name: "search", label: "Search", required: true }],
+              },
+            ]
+          : [
+              {
+                key: "movie/popular",
+                type: "movie",
+                id: "popular",
+                name: "Popular",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/popular",
+                type: "series",
+                id: "popular",
+                name: "Popular",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/trakt-trending",
+                type: "movie",
+                id: "trakt-trending",
+                name: "Trending Now",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "series/mdblist-acclaimed",
+                type: "series",
+                id: "mdblist-acclaimed",
+                name: "Critically Acclaimed",
+                mediaType: "show",
+                supportsSkip: true,
+                standalone: true,
+              },
+              {
+                key: "movie/by-genre",
+                type: "movie",
+                id: "by-genre",
+                name: "By Genre",
+                mediaType: "movie",
+                supportsSkip: true,
+                standalone: false,
+                requiredExtras: ["genre"],
+                extras: [
+                  {
+                    name: "genre",
+                    label: "Genre",
+                    required: true,
+                    options: ["Sci-Fi", "Horror", "Documentary", "Animation"],
+                  },
+                ],
+              },
+              {
+                key: "movie/search",
+                type: "movie",
+                id: "search",
+                name: "Search",
+                mediaType: "movie",
+                standalone: false,
+                requiredExtras: ["search"],
+                extras: [{ name: "search", label: "Search", required: true }],
+              },
+            ];
+        const nameCounts = new Map<string, number>();
+        for (const c of rawCatalogs) {
+          const k = c.name.toLowerCase();
+          nameCounts.set(k, (nameCounts.get(k) ?? 0) + 1);
+        }
+        const catalogs: AddonCatalogPreviewItem[] = rawCatalogs.map((c, idx) => {
+          const existing = state.collections.find(
+            (col) => col.addonSync?.addonId === resolvedId && col.addonSync?.catalogKey === c.key,
+          );
+          const dup = (nameCounts.get(c.name.toLowerCase()) ?? 0) > 1;
+          return {
+            ...c,
+            order: idx + 1,
+            hasDuplicateName: dup,
+            imported: Boolean(existing?.id),
+            ...(existing?.id
+              ? { existingCollectionId: existing.id, existingCollectionName: existing.name }
+              : {}),
+          };
+        });
+        const preview: AddonCatalogPreview = {
+          addonId: resolvedId,
+          installed:
+            resolvedId === "cinemeta" || state.addonImports.some((s) => s.addonId === resolvedId),
+          addonName,
+          addonVersion: "2.4.0",
+          host,
+          addonDescription: isCinemeta
+            ? "Official Stremio movie and series catalogues"
+            : "Unified Trakt, MDBList, and TMDB catalogue add-on",
+          catalogs,
+          subscription: state.addonImports.find((s) => s.addonId === resolvedId),
+        };
+        return json(preview);
+      }
+      case "POST /collections/addon-imports": {
+        const req = (body ?? {}) as AddonCatalogImportRequest;
+        const addonId = req.addonId?.trim() || "addon.aiometadata";
+        const addonName = addonId === "cinemeta" ? "Cinemeta" : "AIOMetadata";
+        const folder = (req.folder ?? addonName).trim() || addonName;
+        const nameMode: AddonImportNameMode = req.nameMode ?? "autoType";
+        const nameAffix = (req.nameAffix ?? "").trim();
+        const now = new Date().toISOString();
+        const createdIds: string[] = [];
+        let createdCount = 0;
+        let updatedCount = 0;
+        const selections = req.items ?? [];
+        const baseNameOf = (sel: (typeof selections)[number]) => {
+          const keyParts = sel.key.split("/");
+          const raw = (keyParts[1] ?? sel.key).replace(/[-_]+/g, " ");
+          return raw.replace(/\b\w/g, (ch: string) => ch.toUpperCase());
+        };
+        const dupCounts = new Map<string, number>();
+        for (const s of selections) {
+          const n = (s.name?.trim() || baseNameOf(s)).toLowerCase();
+          dupCounts.set(n, (dupCounts.get(n) ?? 0) + 1);
+        }
+        selections.forEach((sel, idx) => {
+          const mediaType = sel.key.startsWith("series/") ? "show" : "movie";
+          const base = sel.name?.trim() || baseNameOf(sel);
+          const dup = (dupCounts.get(base.toLowerCase()) ?? 0) > 1;
+          let resolvedName = base;
+          if (!sel.name?.trim()) {
+            const typeLabel = mediaType === "show" ? "Series" : "Movies";
+            if (nameMode === "appendType" || (nameMode === "autoType" && dup)) {
+              resolvedName = `${base} (${typeLabel})`;
+            } else if (nameMode === "prefix" && nameAffix) {
+              resolvedName = `${nameAffix} ${base}`;
+            } else if (nameMode === "suffix" && nameAffix) {
+              resolvedName = `${base} ${nameAffix}`;
+            }
+          }
+          const existingIdx = state.collections.findIndex(
+            (c) => c.addonSync?.addonId === addonId && c.addonSync?.catalogKey === sel.key,
+          );
+          const pluginSource = {
+            kind: `plugin:${addonId}/${sel.key}`,
+            ...(sel.params ? { params: sel.params } : {}),
+          } as unknown as Source;
+          const spec = normalizeSpec({
+            name: resolvedName,
+            mediaType,
+            sources: [pluginSource],
+            rules: [],
+            limit: sel.maxItems ?? req.maxItems ?? 100,
+            refresh: req.refresh ?? "daily",
+            targets: req.targets ?? { collectionsTab: true, users: "all" },
+            folder,
+            sortOrder: idx + 1,
+            enabled: req.enabled ?? true,
+            addonSync: {
+              addonId,
+              addonName,
+              catalogType: sel.key.split("/")[0] ?? "movie",
+              catalogId: sel.key.split("/")[1] ?? sel.key,
+              catalogKey: sel.key,
+              managedName: resolvedName,
+            },
+          });
+          if (existingIdx >= 0) {
+            const existing = state.collections[existingIdx]!;
+            const saved: CollectionSpec = {
+              ...existing,
+              ...spec,
+              id: existing.id,
+              updatedAt: now,
+            };
+            state.collections[existingIdx] = saved;
+            updatedCount++;
+            if (saved.id) createdIds.push(saved.id);
+          } else {
+            const id = `c${seq++}`;
+            const saved: CollectionSpec = {
+              ...spec,
+              id,
+              updatedAt: now,
+              lastBuiltAt: now,
+              itemCount: Math.min(req.maxItems || 100, evaluate(spec).total || 18),
+            };
+            state.collections.push(saved);
+            createdCount++;
+            createdIds.push(id);
+          }
+        });
+        const sub: AddonCatalogSubscription = {
+          addonId,
+          addonName,
+          host: addonId === "cinemeta" ? "catalogue.example" : "aiometadata.example",
+          addonEnabled: true,
+          folder,
+          nameMode,
+          nameAffix,
+          followManifest: Boolean(req.followManifest),
+          refresh: req.refresh ?? "daily",
+          maxItems: req.maxItems ?? 100,
+          enabled: req.enabled ?? true,
+          targets: req.targets ?? { collectionsTab: true, users: "all" },
+          catalogCount: addonId === "cinemeta" ? 4 : 6,
+          managedCount: state.collections.filter((c) => c.addonSync?.addonId === addonId).length,
+          removedCount: 0,
+          lastSyncedAt: now,
+          lastSummary: { created: createdCount, updated: updatedCount, removed: 0, restored: 0 },
+        };
+        const subIdx = state.addonImports.findIndex((s) => s.addonId === addonId);
+        if (subIdx >= 0) state.addonImports[subIdx] = sub;
+        else state.addonImports.push(sub);
+        return json({
+          addonId,
+          addonName,
+          created: createdCount,
+          updated: updatedCount,
+          removed: 0,
+          restored: 0,
+          collectionIds: createdIds,
+          subscription: sub,
+        });
+      }
       case "POST /libraries/preview":
       case "POST /catalog/visibility/preview": {
         const reqLibId = Number((body as { libraryId?: number }).libraryId ?? 0);
@@ -4186,11 +6545,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
               (g.match === "any"
                 ? g.rules.some(
                     (r) =>
-                      (r.field === "group" || fieldValues(t, r.field).length > 0) && matches(t, r),
+                      (r.field === "group" ||
+                        r.field === "viewer" ||
+                        r.field.startsWith("browse:") ||
+                        fieldValues(t, r.field).length > 0) &&
+                      matches(t, r),
                   )
                 : g.rules.every(
                     (r) =>
-                      (r.field === "group" || fieldValues(t, r.field).length > 0) && matches(t, r),
+                      (r.field === "group" ||
+                        r.field === "viewer" ||
+                        r.field.startsWith("browse:") ||
+                        fieldValues(t, r.field).length > 0) &&
+                      matches(t, r),
                   )),
           );
         const items = scopedCatalog.filter((t) =>
@@ -4390,12 +6757,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
           viewers: [...VIEWERS, ...state.dlnaGuests, ...state.addedViewers]
             .filter((v) => !state.removedViewers.has(v.id))
             .map((v, i) => {
-              const lifecycle = v.lifecycle ?? mockLifecycle(v);
+              const lifecycle = {
+                ...(v.lifecycle ?? mockLifecycle(v)),
+                paused: state.pausedViewers.has(v.id),
+              };
+              const accessStatus = v.isOwner
+                ? "owner"
+                : lifecycle.paused ||
+                    (lifecycle.managedBy === "plex" && lifecycle.plexShared === false)
+                  ? "inactive"
+                  : (v.accessStatus ?? "active");
               return {
                 ...v,
+                accessStatus,
                 thumb: avatarFor(v.title),
                 lastActive: new Date(Date.now() - (i * 7 + 1) * 3600_000).toISOString(),
-                lifecycle: { ...lifecycle, paused: state.pausedViewers.has(v.id) },
+                lifecycle,
               };
             }),
         });
@@ -4518,6 +6895,30 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       case "GET /insights/activity":
         return json({ days: activity() });
+    }
+
+    if (seg[0] === "collections" && seg[1] === "addon-imports" && seg[2]) {
+      const addonId = decodeURIComponent(seg[2]);
+      if (seg[3] === "sync" && method === "POST") {
+        const sub = state.addonImports.find((s) => s.addonId === addonId);
+        if (!sub) return err(404, "not_found", "no such add-on import");
+        sub.lastSyncedAt = new Date().toISOString();
+        return json({
+          addonId,
+          addonName: sub.addonName ?? addonId,
+          manifestChanged: false,
+          created: 0,
+          updated: 0,
+          removed: 0,
+          restored: 0,
+          subscription: sub,
+        });
+      }
+      if (!seg[3] && method === "DELETE") {
+        const idx = state.addonImports.findIndex((s) => s.addonId === addonId);
+        if (idx >= 0) state.addonImports.splice(idx, 1);
+        return json({ ok: true });
+      }
     }
 
     if (
@@ -4684,6 +7085,82 @@ export function createFakeServer(opts: FakeOptions = {}) {
         collection: null,
       });
     }
+    if (seg[0] === "viewers" && seg[1] === "plex-candidates" && method === "GET") {
+      return json(mockPlexCandidateServers);
+    }
+    if (seg[0] === "viewers" && seg[1] === "import-plex" && !seg[2] && method === "POST") {
+      const req = (body as { serverId?: number; accountId?: number; name?: string } | null) ?? {};
+      const srv = mockPlexCandidateServers.find((s) => s.serverId === req.serverId);
+      const acct = srv?.accounts.find((a) => a.accountId === req.accountId);
+      if (!acct) return err(404, "not_found", "account not found on server");
+      const newId = ++nextMockPlexViewerId;
+      const name = req.name?.trim() || acct.accountName;
+      acct.matchedViewerId = newId;
+      acct.matchedViewerName = name;
+      acct.matchedViewerUsername = acct.plexUsername;
+      return json(
+        {
+          id: newId,
+          name,
+          inviteUrl: "",
+          serverId: acct.serverId,
+          accountId: acct.accountId,
+          status: "imported",
+          sharedPlex: true,
+        },
+        201,
+      );
+    }
+    if (seg[0] === "viewers" && seg[1] === "match-plex" && method === "POST") {
+      const req =
+        (body as { serverId?: number; accountId?: number; viewerId?: number } | null) ?? {};
+      const srv = mockPlexCandidateServers.find((s) => s.serverId === req.serverId);
+      const acct = srv?.accounts.find((a) => a.accountId === req.accountId);
+      const v = [...VIEWERS, ...state.dlnaGuests, ...state.addedViewers].find(
+        (x) => x.id === req.viewerId,
+      );
+      if (!acct || !v) return err(404, "not_found", "account or viewer not found");
+      acct.matchedViewerId = v.id;
+      acct.matchedViewerName = v.title || v.username;
+      acct.matchedViewerUsername = v.username;
+      return json({
+        ok: true,
+        viewerId: v.id,
+        serverId: acct.serverId,
+        accountId: acct.accountId,
+        sharedPlex: true,
+      });
+    }
+    if (seg[0] === "viewers" && seg[1] === "import-plex" && seg[2] === "all" && method === "POST") {
+      const results = mockPlexCandidateServers.flatMap((srv) =>
+        srv.accounts.map((acct) => {
+          if (acct.matchedViewerId) {
+            return {
+              id: acct.matchedViewerId,
+              name: acct.accountName,
+              serverId: acct.serverId,
+              accountId: acct.accountId,
+              status: "skipped",
+              reason: "already_mapped",
+              sharedPlex: false,
+            };
+          }
+          const newId = ++nextMockPlexViewerId;
+          acct.matchedViewerId = newId;
+          acct.matchedViewerName = acct.accountName;
+          acct.matchedViewerUsername = acct.plexUsername;
+          return {
+            id: newId,
+            name: acct.accountName,
+            serverId: acct.serverId,
+            accountId: acct.accountId,
+            status: "imported",
+            sharedPlex: true,
+          };
+        }),
+      );
+      return json(results);
+    }
     if (seg[0] === "viewers" && seg[1]) {
       const id = Number(seg[1]);
       const v = [...VIEWERS, ...state.dlnaGuests, ...state.addedViewers].find((x) => x.id === id);
@@ -4731,11 +7208,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
           completed: i % 3 !== 1,
           progress: i % 3 === 1 ? 0.35 + (i % 4) * 0.1 : 1,
         }));
+        const lifecycle = {
+          ...(v.lifecycle ?? mockLifecycle(v)),
+          paused: state.pausedViewers.has(id),
+        };
+        const accessStatus = v.isOwner
+          ? "owner"
+          : lifecycle.paused || (lifecycle.managedBy === "plex" && lifecycle.plexShared === false)
+            ? "inactive"
+            : (v.accessStatus ?? "active");
         return json({
           ...v,
+          accessStatus,
           thumb: avatarFor(v.title),
           lastActive: new Date(Date.now() - 3600_000).toISOString(),
-          lifecycle: { ...(v.lifecycle ?? mockLifecycle(v)), paused: state.pausedViewers.has(id) },
+          lifecycle,
           recent,
         });
       }
@@ -4935,14 +7422,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (seg[2] === "pause" && method === "POST") {
         if (!target || state.removedViewers.has(id)) return err(404, "not_found", "no such viewer");
         if (target.isOwner) return err(403, "forbidden", "The owner cannot be paused.");
-        if (managed) return plexManaged();
         state.pausedViewers.add(id);
         return json({ paused: true });
       }
       if (seg[2] === "resume" && method === "POST") {
         if (!target || state.removedViewers.has(id)) return err(404, "not_found", "no such viewer");
         if (target.isOwner) return err(403, "forbidden", "The owner cannot be paused.");
-        if (managed) return plexManaged();
         state.pausedViewers.delete(id);
         return json({ paused: false });
       }
@@ -5089,7 +7574,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return json({
         section: key,
         value: (state.config as unknown as Record<string, unknown>)[key],
-        ...(key === "clientIdentity" ? { presets: IDENTITY_PRESETS } : {}),
+        ...(key === "clientIdentity" ? { defaultUserAgent: DEFAULT_USER_AGENT } : {}),
       });
     }
     if (seg[0] === "config" && seg[1] && method === "PUT") {
@@ -5213,6 +7698,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
       method === "GET"
     )
       return json({ devices: xtreamGrants.get(seg[1]!) ?? [] });
+    if (seg[0] === "auth" && seg[1] === "lockouts" && seg[2] && method === "DELETE") {
+      const key = decodeURIComponent(seg[2]);
+      const before = state.lockouts.length;
+      state.lockouts = state.lockouts.filter((item) => item.key !== key);
+      return json({ ok: true, cleared: state.lockouts.length < before });
+    }
+    if (seg[0] === "users" && seg[2] === "devices" && seg[3] === "xtream" && method === "POST") {
+      if (seg[4] === "reveal")
+        return json({ available: true, username: "alice42", password: "k7m2-9qxr-4t" });
+      return json({ ok: true });
+    }
     if (seg[0] === "users" && seg[1] && seg[2] === "password" && method === "POST")
       return json({ ok: true });
     if (seg[0] === "users" && seg[1] && seg[2] === "devices" && seg[3] === "revoke") {
@@ -5240,6 +7736,68 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       restoredHidden.add(`${viewerHidden[1]}:${(body as { handle: string }).handle}`);
       return json({ restored: true });
+    }
+    if (seg[0] === "layout" && seg[1] === "libraries" && seg[2] && seg.length === 3) {
+      const libId = Number(seg[2]);
+      const section = `library:${libId}` as const;
+      if (!Number.isSafeInteger(libId) || libId <= 0 || !lookupMockLib(libId)) {
+        return err(404, "not_found", "no such library");
+      }
+      if (method === "GET") {
+        return json(libraryLayoutDoc(libId));
+      }
+      if (method === "DELETE") {
+        state.layout = {
+          ...clearLibraryLayout(state.layout, section),
+          updatedAt: new Date().toISOString(),
+        };
+        return json(libraryLayoutDoc(libId));
+      }
+      if (method === "PUT") {
+        const b = (body ?? {}) as {
+          page?: LayoutPage;
+          viewerPages?: ViewerLibraryPage[];
+          collectionSchedules?: Record<string, Record<string, unknown> | null>;
+        };
+        let global = state.layout.global.filter((p) => p.section !== section);
+        if (b.page) {
+          global = [...global, { ...b.page, section, rows: b.page.rows ?? [] }];
+        }
+        let viewers = state.layout.viewers;
+        if (b.viewerPages) {
+          const byUser = new Map(b.viewerPages.map((vp) => [vp.userId, { ...vp.page, section }]));
+          const seen = new Set<number>();
+          viewers = viewers.map((v) => {
+            seen.add(v.userId);
+            const rest = v.pages.filter((p) => p.section !== section);
+            const next = byUser.get(v.userId);
+            return { ...v, pages: next ? [...rest, next] : rest };
+          });
+          for (const [uid, page] of byUser.entries()) {
+            if (!seen.has(uid)) viewers = [...viewers, { userId: uid, pages: [page] }];
+          }
+        }
+        const nextDoc = prune({ ...state.layout, global, viewers });
+        const problems = validateLayout(nextDoc);
+        if (problems.length) {
+          return json(
+            {
+              error: {
+                code: "validation",
+                message: `${problems[0]!.field}: ${problems[0]!.message}`,
+                fields: problems,
+              },
+            },
+            400,
+          );
+        }
+        state.layout = { ...nextDoc, updatedAt: new Date().toISOString() };
+        for (const [id, schedule] of Object.entries(b.collectionSchedules ?? {})) {
+          const c = state.collections.find((x) => String(x.id) === id);
+          if (c) c.targets = { ...c.targets, schedule: tidySchedule(schedule as never) ?? null };
+        }
+        return json(libraryLayoutDoc(libId));
+      }
     }
     return err(404, "not_found", "no such API endpoint");
   }
@@ -5277,7 +7835,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return handle(method, url, body);
   }
 
-  return { fetch: fetchImpl, state, catalog, evaluate, homeFor, releaseConsole, sites };
+  return {
+    fetch: fetchImpl,
+    state,
+    catalog,
+    evaluate,
+    homeFor,
+    releaseConsole,
+    sites,
+    velaBranding,
+  };
 }
 
 export type FakeServer = ReturnType<typeof createFakeServer>;

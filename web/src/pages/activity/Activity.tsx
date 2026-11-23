@@ -72,17 +72,28 @@ export default function Activity() {
     return body.value ?? {};
   }, []);
   const viewers = useAsync(() => api.users(), []);
-  const viewing = useAsync(async () => {
-    if (!viewingTab) return null;
-    const [summary, history] = await Promise.all([
-      apiFetch<Summary>(`/stats/summary${query}`),
-      apiFetch<Play[] | null>(`/stats/history${query}`),
-    ]);
-    return { summary, history: history ?? [] };
-  }, [query, viewingTab]);
+  const summary = useAsync(
+    async (signal) => {
+      if (!viewingTab) return undefined;
+      return apiFetch<Summary>(`/stats/summary${query}`, { signal });
+    },
+    [query, viewingTab],
+  );
+  const historyTab = tab === "history";
+  const history = useAsync(
+    async (signal) => {
+      if (!historyTab) return undefined;
+      return (await apiFetch<Play[] | null>(`/stats/history${query}`, { signal })) ?? [];
+    },
+    [query, historyTab],
+  );
+  const reloadViewing = () => {
+    void summary.reload();
+    void history.reload();
+  };
 
   useLiveSessionsRefresh(sessions.reload, tab === "now" ? LIVE_SESSIONS_MS : 30_000);
-  useInterval(() => void viewing.reload(), viewingTab ? 30_000 : null);
+  useInterval(reloadViewing, viewingTab ? 30_000 : null);
 
   const live = sessions.data?.length;
   return (
@@ -132,27 +143,23 @@ export default function Activity() {
                 key={query}
                 query={query}
                 viewers={viewers.data ?? []}
-                history={viewing.data?.history}
-                summary={viewing.data?.summary}
-                error={viewing.error}
-                onRetry={() => void viewing.reload()}
+                history={history.data}
+                summary={summary.data}
+                error={history.error}
+                onRetry={reloadViewing}
               />
             </>
           ) : tab === "listening" ? (
             <Listening key={query} query={query} viewers={viewers.data ?? []} />
           ) : tab === "viewing" ? (
             <Viewing
-              summary={viewing.data?.summary}
+              summary={summary.data}
               viewers={viewers.data ?? []}
-              error={viewing.error}
-              onRetry={() => void viewing.reload()}
+              error={summary.error}
+              onRetry={reloadViewing}
             />
           ) : (
-            <Delivery
-              summary={viewing.data?.summary}
-              error={viewing.error}
-              onRetry={() => void viewing.reload()}
-            />
+            <Delivery summary={summary.data} error={summary.error} onRetry={reloadViewing} />
           )}
         </>
       )}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 var hlsURI = regexp.MustCompile(`URI="([^"]+)"`)
@@ -142,8 +143,17 @@ func (s *Service) ServeResource(w http.ResponseWriter, r *http.Request, id, key 
 		return
 	}
 	ss.mu.Lock()
+	shared := ss.broadcast != nil
 	lease := ss.owned
 	ss.mu.Unlock()
+	if shared {
+		if key == transcode.InitSegmentName {
+			s.serveBroadcastInit(w, r, ss)
+			return
+		}
+		writeStreamError(w, core.ErrNotFound)
+		return
+	}
 	if lease == nil {
 		writeStreamError(w, core.ErrNotFound)
 		return

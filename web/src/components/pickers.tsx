@@ -21,6 +21,8 @@ import type {
 } from "../lib/contract";
 import { NOT_RATED, RATING_LEVELS, ratingExamples } from "../lib/contentRatings";
 import { useDebouncedValue } from "../lib/hooks";
+import type { PickedTitle } from "../lib/rules";
+import { useTitle } from "../lib/titles";
 import { Artwork } from "./Artwork";
 import { titleSubtitle } from "./Poster";
 import { useLocale } from "../i18n/react";
@@ -572,6 +574,71 @@ export function TitleSearch({
             );
           })}
         </ul>
+      ) : null}
+    </div>
+  );
+}
+
+const MAX_RULE_TITLES = 500;
+
+function TitleChip({ item, onRemove }: { item: PickedTitle; onRemove: () => void }) {
+  const loaded = useTitle(item.title ? undefined : item.key);
+  const name = item.title || loaded?.title || t("Title {id}", { id: item.key });
+  return (
+    <Badge variant="secondary" className="gap-1 py-1 pl-2 pr-1 text-xs font-medium text-fg">
+      <span className="max-w-56 truncate">{name}</span>
+      <button
+        type="button"
+        aria-label={t("Remove {name}", { name })}
+        onClick={onRemove}
+        className="ml-0.5 rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+      >
+        <X size={12} />
+      </button>
+    </Badge>
+  );
+}
+
+/** Multi-title picker for visibility rules: removable chips plus catalogue search. */
+export function TitleListPicker({
+  value,
+  onChange,
+  type,
+  ariaLabel,
+}: {
+  value: PickedTitle[];
+  onChange: (next: { key: string; title: string }[]) => void;
+  type?: string;
+  ariaLabel: string;
+}) {
+  const excludeKeys = useMemo(() => new Set(value.map((v) => v.key)), [value]);
+  const toNamed = (items: PickedTitle[]) =>
+    items.map((v) => ({ key: v.key, title: v.title || `#${v.key}` }));
+  return (
+    <div className="space-y-2">
+      {value.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map((v) => (
+            <TitleChip
+              key={v.key}
+              item={v}
+              onRemove={() => onChange(toNamed(value.filter((x) => x.key !== v.key)))}
+            />
+          ))}
+        </div>
+      ) : null}
+      {value.length < MAX_RULE_TITLES ? (
+        <TitleSearch
+          type={type || undefined}
+          excludeKeys={excludeKeys}
+          action="add"
+          includeUnbrowsable
+          label={ariaLabel}
+          onPick={(picked) => {
+            if (excludeKeys.has(picked.key) || value.length >= MAX_RULE_TITLES) return;
+            onChange([...toNamed(value), { key: picked.key, title: picked.title }]);
+          }}
+        />
       ) : null}
     </div>
   );

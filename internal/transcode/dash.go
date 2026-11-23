@@ -6,6 +6,7 @@ import (
 	"html"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -81,17 +82,95 @@ func mpdSeconds(d time.Duration) string {
 	return "PT" + strconv.FormatFloat(d.Seconds(), 'f', -1, 64) + "S"
 }
 
+type dashTimelineEntry struct {
+	startMS int64
+	durMS   int64
+	repeat  int
+}
+
+// dashTimelineEntries converts a keyframe-snapped Timeline into contiguous
+// run-length encoded millisecond SegmentTimeline <S> entries. Taking
+// differences between adjacent boundary timestamps avoids cumulative
+// sub-millisecond drift across long titles.
+func dashTimelineEntries(plan *Timeline) []dashTimelineEntry {
+	if plan == nil || !plan.Keyframed() || plan.Total() <= 0 {
+		return nil
+	}
+	n := plan.Total()
+	var out []dashTimelineEntry
+	prev := plan.Start(0).Milliseconds()
+	for i := 0; i < n; i++ {
+		next := plan.Start(i + 1).Milliseconds()
+		d := next - prev
+		if d <= 0 {
+			d = 1
+			next = prev + d
+		}
+		if len(out) > 0 && out[len(out)-1].durMS == d {
+			out[len(out)-1].repeat++
+		} else {
+			out = append(out, dashTimelineEntry{startMS: prev, durMS: d})
+		}
+		prev = next
+	}
+	return out
+}
+
+func writeDASHSegmentTemplate(b *bytes.Buffer, timescale, segTicks int64, entries []dashTimelineEntry, initURL, mediaURL string) {
+	if len(entries) == 0 {
+		fmt.Fprintf(b, "\t\t\t<SegmentTemplate timescale=\"%d\" duration=\"%d\" initialization=\"%s\" media=\"%s\" startNumber=\"0\">\n",
+			timescale, segTicks, html.EscapeString(initURL), html.EscapeString(mediaURL))
+		b.WriteString("\t\t\t</SegmentTemplate>\n")
+		return
+	}
+	fmt.Fprintf(b, "\t\t\t<SegmentTemplate timescale=\"1000\" initialization=\"%s\" media=\"%s\" startNumber=\"0\">\n",
+		html.EscapeString(initURL), html.EscapeString(mediaURL))
+	b.WriteString("\t\t\t\t<SegmentTimeline>\n")
+	for i, e := range entries {
+		switch {
+		case i == 0 && e.repeat > 0:
+			fmt.Fprintf(b, "\t\t\t\t\t<S t=\"%d\" d=\"%d\" r=\"%d\"/>\n", e.startMS, e.durMS, e.repeat)
+		case i == 0:
+			fmt.Fprintf(b, "\t\t\t\t\t<S t=\"%d\" d=\"%d\"/>\n", e.startMS, e.durMS)
+		case e.repeat > 0:
+			fmt.Fprintf(b, "\t\t\t\t\t<S d=\"%d\" r=\"%d\"/>\n", e.durMS, e.repeat)
+		default:
+			fmt.Fprintf(b, "\t\t\t\t\t<S d=\"%d\"/>\n", e.durMS)
+		}
+	}
+	b.WriteString("\t\t\t\t</SegmentTimeline>\n")
+	b.WriteString("\t\t\t</SegmentTemplate>\n")
+}
+
 // renderMPD writes the static, full-length MPD of a session: one
 // AdaptationSet per representation, segments numbered from 0 with a fixed
 // duration, so players can seek anywhere before anything is transcoded.
 // The layout follows real PMS output byte for byte where it can.
 func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []dashRep) []byte {
+	return renderMPDWithPlan(duration, segDur, segDur, nil, initURL, mediaURL, reps)
+}
+
+func renderMPDWithBuffer(duration, segDur, minBuffer time.Duration, initURL, mediaURL string, reps []dashRep) []byte {
+	return renderMPDWithPlan(duration, segDur, minBuffer, nil, initURL, mediaURL, reps)
+}
+
+func renderMPDWithPlan(duration, segDur, minBuffer time.Duration, plan *Timeline, initURL, mediaURL string, reps []dashRep) []byte {
 	if segDur <= 0 {
 		segDur = DefaultDASHSegmentDuration
+	}
+	if minBuffer <= 0 {
+		minBuffer = segDur
 	}
 	timescale, segTicks := int64(1), int64(segDur/time.Second)
 	if segDur%time.Second != 0 {
 		timescale, segTicks = 1000, segDur.Milliseconds()
+	}
+	entries := dashTimelineEntries(plan)
+	maxSeg := 2 * segDur
+	for _, e := range entries {
+		if d := time.Duration(e.durMS) * time.Millisecond; d > maxSeg {
+			maxSeg = d
+		}
 	}
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?>` + "\n")
@@ -102,10 +181,10 @@ func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []
 	b.WriteString("\t" + `profiles="urn:mpeg:dash:profile:isoff-live:2011"` + "\n")
 	b.WriteString("\t" + `type="static"` + "\n")
 	fmt.Fprintf(&b, "\tmediaPresentationDuration=%q\n", mpdDuration(duration))
-	fmt.Fprintf(&b, "\tmaxSegmentDuration=%q\n", mpdSeconds(2*segDur))
+	fmt.Fprintf(&b, "\tmaxSegmentDuration=%q\n", mpdSeconds(maxSeg))
 	// One segment: Shaka (Plex Web) waits for max(minBufferTime, 2s)
 	// before starting. Two segments held every start for a second GOP.
-	fmt.Fprintf(&b, "\tminBufferTime=%q>\n", mpdSeconds(segDur))
+	fmt.Fprintf(&b, "\tminBufferTime=%q>\n", mpdSeconds(minBuffer))
 	fmt.Fprintf(&b, "\t<Period start=\"PT0S\" id=\"0\" duration=%q>\n", mpdDuration(duration))
 	// Several video representations form one AdaptationSet (an ABR
 	// ladder the player may switch within); a single video keeps the
@@ -116,12 +195,21 @@ func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []
 			videoReps++
 		}
 	}
-	if videoReps > 1 {
+	// Init-derived codecs can replace estimates. Keep the invariant at the
+	// renderer too: never group different codec families in one set.
+	family, mixed := "", false
+	for _, r := range reps {
+		if r.Kind == "video" {
+			if family != "" && family != dashCodecFamily(r.Codecs) {
+				mixed = true
+			}
+			family = dashCodecFamily(r.Codecs)
+		}
+	}
+	if videoReps > 1 && !mixed {
 		var rest []dashRep
 		b.WriteString("\t\t<AdaptationSet segmentAlignment=\"true\" contentType=\"video\">\n")
-		fmt.Fprintf(&b, "\t\t\t<SegmentTemplate timescale=\"%d\" duration=\"%d\" initialization=\"%s\" media=\"%s\" startNumber=\"0\">\n",
-			timescale, segTicks, html.EscapeString(initURL), html.EscapeString(mediaURL))
-		b.WriteString("\t\t\t</SegmentTemplate>\n")
+		writeDASHSegmentTemplate(&b, timescale, segTicks, entries, initURL, mediaURL)
 		for _, r := range reps {
 			if r.Kind == "audio" {
 				rest = append(rest, r)
@@ -139,9 +227,7 @@ func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []
 	}
 	for _, r := range reps {
 		b.WriteString("\t\t<AdaptationSet segmentAlignment=\"true\">\n")
-		fmt.Fprintf(&b, "\t\t\t<SegmentTemplate timescale=\"%d\" duration=\"%d\" initialization=\"%s\" media=\"%s\" startNumber=\"0\">\n",
-			timescale, segTicks, html.EscapeString(initURL), html.EscapeString(mediaURL))
-		b.WriteString("\t\t\t</SegmentTemplate>\n")
+		writeDASHSegmentTemplate(&b, timescale, segTicks, entries, initURL, mediaURL)
 		fmt.Fprintf(&b, "\t\t\t<Representation id=\"%d\" mimeType=\"%s\" codecs=\"%s\" bandwidth=\"%d\"",
 			r.ID, r.mimeType(), html.EscapeString(r.Codecs), r.Bandwidth)
 		if r.Kind == "audio" {
@@ -508,4 +594,17 @@ func writeDASHChannelConfiguration(b *bytes.Buffer, r dashRep) {
 		}
 	}
 	fmt.Fprintf(b, "\t\t\t\t<AudioChannelConfiguration schemeIdUri=\"%s\" value=\"%s\"/>\n", scheme, value)
+}
+
+// dashCodecFamily ignores profile/level while treating alternate sample entry
+// names for the same codec as one family.
+func dashCodecFamily(codecs string) string {
+	family, _, _ := strings.Cut(codecs, ".")
+	switch family {
+	case "avc1", "avc3":
+		return "h264"
+	case "hev1", "hvc1":
+		return "hevc"
+	}
+	return family
 }

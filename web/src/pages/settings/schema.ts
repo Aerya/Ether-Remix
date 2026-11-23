@@ -15,6 +15,30 @@ export const SERVER: FieldGroup[] = localized(() => [
         kind: "text",
         help: t("How the server appears in apps."),
       },
+      {
+        key: "resumeAfterSeconds",
+        label: t("Keep a resume point after"),
+        kind: "number",
+        min: 0,
+        max: 3600,
+        step: 1,
+        unit: "s",
+        help: t(
+          "How many seconds into a title a viewer must be before Ether keeps a resume point, in every app. 0 keeps the default: 5% of the title.",
+        ),
+      },
+      {
+        key: "pausedStreamMinutes",
+        label: t("Close a paused stream after"),
+        kind: "number",
+        min: 0,
+        max: 1440,
+        step: 1,
+        unit: "min",
+        help: t(
+          "How long a stream can stay paused before Ether closes it and frees its place (2–1440 minutes; streams are closed no sooner than about 2 minutes). The viewer can press play again to start a new one from where they were. 0 keeps the default: 30 minutes.",
+        ),
+      },
     ],
   },
   {
@@ -61,13 +85,6 @@ export const SERVER: FieldGroup[] = localized(() => [
         kind: "list",
         placeholder: "https://home.example.com",
         help: t("Exact addresses allowed to frame the owner page. Empty means nowhere."),
-      },
-      {
-        key: "trustedProxyCIDRs",
-        label: t("Trusted proxy networks"),
-        kind: "list",
-        placeholder: "10.0.0.0/8",
-        help: t("Networks whose forwarding headers Ether trusts. Empty trusts none."),
       },
     ],
   },
@@ -239,7 +256,7 @@ export const PLEX: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** plex.* addresses and certificate every app uses (Apps › Overview › Away from home). */
+/** plex.* addresses, certificate, and server.trustedProxyCIDRs (Apps › Overview › Away from home). */
 export const AWAY: FieldGroup[] = localized(() => [
   {
     id: "address",
@@ -270,6 +287,21 @@ export const AWAY: FieldGroup[] = localized(() => [
         kind: "list",
         placeholder: "https://ether.example.com:443",
         help: t("Extra addresses apps should try, comma-separated."),
+      },
+    ],
+  },
+  {
+    id: "proxy",
+    fields: [],
+    more: [
+      {
+        key: "trustedProxyCIDRs",
+        label: t("Trusted reverse proxies"),
+        kind: "list",
+        placeholder: "192.168.1.5, 10.0.0.0/8",
+        help: t(
+          "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
+        ),
       },
     ],
   },
@@ -440,6 +472,20 @@ export const RELEASE_BLOCKS: FieldGroup[] = localized(() => [
 ]);
 
 export const TRANSCODE: FieldGroup[] = localized(() => {
+  const VIDEO_TRANSCODING = {
+    key: "videoTranscoding",
+    label: t("Video transcoding"),
+    kind: "select" as const,
+    defaultValue: "on",
+    help: t(
+      "Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected.",
+    ),
+    options: [
+      { value: "on", label: t("On") },
+      { value: "off", label: t("Off") },
+    ],
+  };
+
   const HW_ACCEL = {
     key: "hwAccel",
     label: t("Hardware acceleration"),
@@ -534,6 +580,7 @@ export const TRANSCODE: FieldGroup[] = localized(() => {
         "Ether plays the file directly when the app can. It converts the video on this computer only when it has to.",
       ),
       fields: [
+        VIDEO_TRANSCODING,
         HW_ACCEL,
         {
           key: "abrLadderUnderCopy",
@@ -571,6 +618,17 @@ export const TRANSCODE: FieldGroup[] = localized(() => {
           step: 1,
           help: t(
             "How many videos can be converted at once. Leave the default unless several people watch together and the computer struggles.",
+          ),
+        },
+        {
+          key: "throttleSeconds",
+          label: t("Throttle buffer (seconds)"),
+          kind: "number",
+          min: 0,
+          max: 600,
+          step: 1,
+          help: t(
+            "How far ahead of the viewer Ether prepares video before it pauses the work, in every app (16–600 seconds; Live TV is unaffected). 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched.",
           ),
         },
       ],
@@ -674,6 +732,14 @@ export const SUBDL: FieldGroup[] = localized(() => [
   {
     title: "SubDL",
     description: t("Fetch subtitles from SubDL when a release doesn't include them."),
+    fields: [{ key: "apiKey", label: t("API key"), kind: "secret" }],
+  },
+]);
+
+export const SUBSOURCE: FieldGroup[] = localized(() => [
+  {
+    title: "SubSource",
+    description: t("Fetch subtitles from SubSource when a release doesn't include them."),
     fields: [{ key: "apiKey", label: t("API key"), kind: "secret" }],
   },
 ]);
@@ -863,6 +929,46 @@ export const DOWNLOADS: FieldGroup[] = localized(() => [
         kind: "bool",
         help: t("Off lets only you download. A viewer's access policy can still allow or deny it."),
       },
+      {
+        key: "limitUnit",
+        label: t("Download limit counts"),
+        kind: "select",
+        options: [
+          { value: "", label: t("No limit") },
+          { value: "titles", label: t("Titles") },
+          { value: "gb", label: t("GB") },
+        ],
+        help: t(
+          "The default limit for every viewer except you. A viewer's own limit, set on their Limits page, replaces it.",
+        ),
+      },
+      {
+        key: "limitAmount",
+        label: t("Download limit amount"),
+        kind: "number",
+        min: 0,
+        max: 100000,
+        step: 1,
+        help: t("How many titles or GB. 0 is no limit."),
+      },
+      {
+        key: "limitPeriod",
+        label: t("Download limit period"),
+        kind: "select",
+        defaultValue: "day",
+        options: [
+          { value: "day", label: t("Per day") },
+          { value: "month", label: t("Per month") },
+        ],
+      },
+      {
+        key: "noTranscode",
+        label: t("No converting for downloads"),
+        kind: "bool",
+        help: t(
+          "Downloads use only a version that needs no video conversion at the chosen quality, for every viewer. A viewer's own switch can also turn this on.",
+        ),
+      },
     ],
     more: [
       {
@@ -1016,31 +1122,6 @@ export const EXTRAS: FieldGroup[] = localized(() => [
     ],
   },
 ]);
-
-/** Preset keys as the server names them; proper nouns are not translated. */
-export function identityOptions(includeCustom: boolean, includeEther = true) {
-  const options = [
-    ...(includeEther ? [{ value: "ether", label: "Ether" }] : []),
-    { value: "sonarr", label: "Sonarr" },
-    { value: "radarr", label: "Radarr" },
-    { value: "prowlarr", label: "Prowlarr" },
-    { value: "nzbhydra2", label: "NZBHydra2" },
-    { value: "sabnzbd", label: "SABnzbd" },
-    { value: "nzbget", label: "NZBGet" },
-  ];
-  return includeCustom ? [...options, { value: "custom", label: t("Custom") }] : options;
-}
-
-/**
- * Search-side presets: SABnzbd and NZBGet never send a Newznab query, so a
- * search presented as one is a client that cannot exist. They stay available
- * for grabs only; the per-indexer override excludes them as well.
- */
-export function searchIdentityOptions(includeCustom: boolean, includeEther = true) {
-  return identityOptions(includeCustom, includeEther).filter(
-    (o) => o.value !== "sabnzbd" && o.value !== "nzbget",
-  );
-}
 
 export const LIVE_LATENCY: FieldGroup[] = localized(() => [
   {

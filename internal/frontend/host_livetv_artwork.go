@@ -85,6 +85,7 @@ type ArtworkSourceConfig struct {
 	Now              func() time.Time
 	Variants         func(*Title, string) (*ArtworkImages, bool)
 	Metadata         func(context.Context, ArtworkRequest, Image) Image
+	PluginItem       func(context.Context, *Viewer, Device, RatingKey) (*Title, []Image, error)
 	VirtualSeason    func(context.Context, *User, RatingKey) (*Title, error)
 	URLImages        UntrustedImageFetcher
 	Raster           SVGRasterizer

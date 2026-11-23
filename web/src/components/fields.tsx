@@ -199,7 +199,7 @@ export function TestButton({
   disabled?: boolean;
 }) {
   return (
-    <span className="inline-flex flex-wrap items-center gap-2">
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
       <Button
         type="button"
         variant="outline"
@@ -210,7 +210,7 @@ export function TestButton({
         <PlugZap size={14} /> {state.status === "running" ? t("Testing…") : label}
       </Button>
       {state.status === "ok" ? (
-        <Badge variant="success">
+        <Badge variant="success" title={state.message}>
           <CheckCircle2 size={12} />{" "}
           {state.durationMs != null ? t("OK · {ms} ms", { ms: state.durationMs }) : t("OK")}
         </Badge>
@@ -220,6 +220,11 @@ export function TestButton({
           <XCircle size={12} />{" "}
           {state.message ? t("Failed: {message}", { message: state.message }) : t("Failed")}
         </Badge>
+      ) : null}
+      {state.status === "ok" && state.message ? (
+        <span className="basis-full text-xs text-fg-muted" role="status">
+          {state.message}
+        </span>
       ) : null}
     </span>
   );

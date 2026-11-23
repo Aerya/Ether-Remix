@@ -7,7 +7,14 @@ import { invalidateRegistry } from "../lib/extend";
 import LiveTV from "../pages/livetv/LiveTV";
 import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProgrammingEditor } from "../pages/livetv/ProgrammingEditor";
-import type { Channel } from "../pages/livetv/model";
+import {
+  compileOwnerGroupMatcher,
+  compileOwnerGroupRegExp,
+  streamQualityTier,
+  type Channel,
+  type OwnerGroup,
+  type OwnerGroupRule,
+} from "../pages/livetv/model";
 import { ScheduleTimeline } from "../pages/livetv/ScheduleTimeline";
 import { calls as fakeCalls } from "./harness";
 import { renderAppWith } from "./routes";
@@ -200,7 +207,7 @@ describe("Live TV studio", () => {
       })),
     );
     renderLiveTV();
-    const lineup = await screen.findByRole("grid", { name: "Programme guide" });
+    const lineup = await screen.findByRole("region", { name: "Channels" });
     await within(lineup).findByRole("button", { name: "1 Station 1" }, WAIT);
     fireEvent.change(screen.getByRole("searchbox", { name: "Search channels" }), {
       target: { value: "Weather" },
@@ -545,8 +552,7 @@ describe("Live TV studio", () => {
       return undefined;
     });
     renderLiveTV("/livetv/guide-data");
-    expect(await screen.findByText(/1 of 1 need a guide/, {}, WAIT)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Map guide for News 24/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Map guide for News 24/ }, WAIT));
     fireEvent.click(await screen.findByRole("button", { name: /News 24 HD/ }, WAIT));
     fireEvent.click(await screen.findByRole("button", { name: /Use this guide/ }, WAIT));
     await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/channels\/c1$/)).toHaveLength(1));
@@ -673,7 +679,7 @@ describe("Live TV studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /Create channel/ }));
     await waitFor(() => expect(sent(calls, "POST", /\/livetv\/channels$/)).toHaveLength(1));
     expect(await screen.findByLabelText("Name")).toHaveValue("Movie night");
-    const lineup = screen.getByRole("grid", { name: "Programme guide" });
+    const lineup = screen.getByRole("region", { name: "Channels" });
     fireEvent.click(await within(lineup).findByRole("button", { name: "2 News 24" }));
     expect(await screen.findByLabelText("Name")).toHaveValue("News 24");
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
@@ -1088,7 +1094,7 @@ describe("Live TV access on the viewer profile", () => {
   );
 });
 
-it("bulk selects matching channels beyond the loaded page without fetching full rows", async () => {
+it("bulk selects matching channels beyond the virtualised viewport without fetching full rows", async () => {
   const channels = Array.from({ length: 450 }, (_, i) =>
     iptv(`paged-${i}`, {
       number: String(i + 1),
@@ -1099,6 +1105,9 @@ it("bulk selects matching channels beyond the loaded page without fetching full 
   const calls = backend(channels);
   renderLiveTV();
   await screen.findByRole("button", { name: "1 Paged 1" }, WAIT);
+  expect(screen.getByText(/1 disabled/)).toBeInTheDocument();
+  const statusBar = screen.getByRole("radiogroup", { name: "Status" });
+  fireEvent.click(within(statusBar).getByRole("radio", { name: /^Enabled/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Select all matches" }));
   fireEvent.click(await screen.findByRole("button", { name: /^Favourite$/ }));
   await waitFor(() => expect(sent(calls, "PATCH", /\/livetv\/channels\/bulk$/)).toHaveLength(1));
@@ -1108,41 +1117,90 @@ it("bulk selects matching channels beyond the loaded page without fetching full 
   expect(edit.ids).not.toContain("paged-449");
   expect(edit.favorite).toBe(true);
   expect(sent(calls, "GET", /\/livetv\/channels$/)).toHaveLength(0);
-  expect(
-    calls
-      .filter((c) => c.url.includes("/livetv/channels/page"))
-      .every((c) => new URL(c.url, "http://local").searchParams.get("offset") === "0"),
-  ).toBe(true);
 });
 
-it("keeps placeholder rows aligned while a deep page is loading", async () => {
-  const channels = Array.from({ length: 450 }, (_, i) =>
-    iptv(`sparse-${i}`, { number: String(i + 1), name: `Sparse ${i + 1}` }),
-  );
-  let release: (() => void) | undefined;
-  backend(channels, (url) => {
-    if (
-      url.includes("/livetv/channels/page") &&
-      new URL(url, "http://local").searchParams.get("offset") === "200"
-    )
-      return new Promise((resolve) => {
-        release = () => resolve(channelPage(channels, url));
-      });
+it("organises per-app visibility, status filters and header guide-mapping link without a Guides tab", async () => {
+  const channels = [
+    iptv("uk1", { number: "101", name: "BBC One", group: "UK", guideId: "bbc1", hiddenApps: [] }),
+    iptv("uk2", { number: "102", name: "ITV1", group: "UK", guideId: "", hiddenApps: ["plex"] }),
+    iptv("sp1", {
+      number: "201",
+      name: "Sky Sports",
+      group: "Sports",
+      enabled: false,
+      hiddenApps: [],
+    }),
+  ];
+  const calls = backend(channels, (url, init) => {
+    if (url.endsWith("/livetv/sources") && (init?.method ?? "GET") === "GET") {
+      return [
+        { id: "src1", name: "Strong IPTV", hasPlaylist: true, updatedAt: "2026-10-19T00:00:00Z" },
+      ];
+    }
+    if (url.endsWith("/livetv/guide/coverage")) {
+      return [
+        { channelId: "uk1", programmes: 24 },
+        { channelId: "uk2", programmes: 0 },
+        { channelId: "sp1", programmes: 0 },
+      ];
+    }
+    if (url.includes("/livetv/guide?")) {
+      const now = Date.now();
+      return [
+        {
+          id: "prog-uk1",
+          channelId: "uk1",
+          start: new Date(now - 600_000).toISOString(),
+          end: new Date(now + 1_800_000).toISOString(),
+          item: { key: 1, durationMs: 2_400_000, title: "Six O'Clock News" },
+        },
+      ];
+    }
+    if (url.endsWith("/livetv/channels/apps") && init?.method === "POST") {
+      return { updated: 1 };
+    }
     return undefined;
   });
   renderLiveTV();
-  await screen.findByRole("button", { name: "1 Sparse 1" }, WAIT);
-  const grid = screen.getByRole("grid", { name: "Programme guide" });
-  fireEvent.scroll(grid, { target: { scrollTop: 21000 } });
-  await waitFor(() =>
-    expect(grid.querySelectorAll('[role="row"][aria-busy="true"]').length).toBeGreaterThan(0),
+  const list = await screen.findByRole("region", { name: "Channels" }, WAIT);
+  await within(list).findByRole("button", { name: "101 BBC One" }, WAIT);
+
+  const topTabs = screen.getByRole("tablist", { name: "Live TV" });
+  expect(within(topTabs).queryByRole("tab", { name: "Guides" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "On now" })).toBeNull();
+  expect(within(topTabs).getByRole("tab", { name: "Channels" })).toHaveAttribute(
+    "aria-selected",
+    "true",
   );
-  await waitFor(() => expect(release).toBeDefined());
-  release!();
-  await within(grid).findByRole("button", { name: "351 Sparse 351" }, WAIT);
-  await waitFor(() =>
-    expect(grid.querySelectorAll('[role="row"][aria-busy="true"]').length).toBe(0),
-  );
+  expect(within(topTabs).getByRole("tab", { name: "Guide" })).toBeInTheDocument();
+
+  const showingFor = screen.getByRole("toolbar", { name: "Showing for" });
+  expect(within(showingFor).getByRole("button", { name: /Vela/ })).toBeInTheDocument();
+  fireEvent.click(within(showingFor).getByRole("button", { name: /^Plex/ }));
+
+  const statusBar = screen.getByRole("radiogroup", { name: "Status" });
+  fireEvent.click(within(statusBar).getByRole("radio", { name: /^Hidden from Plex/ }));
+  expect(within(list).getByRole("button", { name: "102 ITV1" })).toBeInTheDocument();
+  expect(within(list).queryByRole("button", { name: "101 BBC One" })).toBeNull();
+
+  const tree = screen.getByRole("navigation", { name: "Channel groups" });
+  fireEvent.click(within(tree).getByRole("checkbox", { name: "Show UK in Plex" }));
+  await waitFor(() => expect(sent(calls, "POST", /\/livetv\/channels\/apps$/)).toHaveLength(1));
+  expect(body(sent(calls, "POST", /\/livetv\/channels\/apps$/)[0])).toEqual({
+    app: "plex",
+    show: true,
+    source: "src1",
+    group: "UK",
+  });
+
+  fireEvent.click(within(topTabs).getByRole("tab", { name: "Guide" }));
+  const onNow = await screen.findByRole("region", { name: "On now" }, WAIT);
+  expect(within(onNow).getByRole("button", { name: /BBC One on now:/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("link", { name: "1 needs a guide" }));
+  expect(
+    await screen.findByRole("button", { name: /Map guide for ITV1/ }, WAIT),
+  ).toBeInTheDocument();
 });
 
 it("uses saved source state when a different cluster node has no import progress", async () => {
@@ -1294,5 +1352,586 @@ describe("timeline snapshot boundary", () => {
     render(<ScheduleTimeline channelId="test" range={range} />);
     await waitFor(() => expect(attempts).toBe(2), { timeout: 3500 });
     expect(screen.queryByText("Unable to load schedule")).not.toBeInTheDocument();
+  });
+});
+
+it("creates a rule-based owner group in a drawer with live preview and inline regex validation", async () => {
+  const chans = [
+    iptv("cbs", { number: "2", name: "CBS WCBS HD", group: "US Locals", guideId: "cbs.wcbs" }),
+    iptv("espn", { number: "206", name: "ESPN HD", group: "Sports", guideId: "espn.us" }),
+    iptv("espn-bak", { number: "207", name: "ESPN Backup", group: "Sports", guideId: "espn.us" }),
+    iptv("bbc", { number: "501", name: "BBC News", group: "News", guideId: "bbc.news" }),
+  ];
+  let savedGroups: OwnerGroup[] = [];
+  const calls = backend(chans, (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.endsWith("/livetv/sources")) {
+      return [
+        { id: "src1", name: "Tuliprox US", hasPlaylist: true, updatedAt: new Date().toISOString() },
+      ];
+    }
+    if (url.endsWith("/livetv/groups") && method === "GET") return savedGroups;
+    if (url.endsWith("/livetv/groups") && method === "PUT") {
+      savedGroups = JSON.parse(String(init?.body ?? "[]")) as OwnerGroup[];
+      return savedGroups;
+    }
+    if (url.endsWith("/livetv/groups/preview") && method === "POST") {
+      const draft = JSON.parse(String(init?.body ?? "{}")) as OwnerGroup;
+      for (const [i, r] of (draft.rules ?? []).entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [
+                    {
+                      field: `rules.${i}.value`,
+                      message: `error parsing regexp: missing closing ): \`${r.value}\``,
+                    },
+                  ],
+                },
+              }),
+              { status: 400 },
+            );
+          }
+        }
+      }
+      const match = compileOwnerGroupMatcher(draft, new Map([["src1", "Tuliprox US"]]));
+      const matched = chans.filter((c) => match(c as any));
+      return { count: matched.length, channels: matched };
+    }
+    return undefined;
+  });
+
+  renderLiveTV("/livetv");
+  const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+  fireEvent.click(within(nav).getByRole("button", { name: "New" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "New group" }, WAIT);
+  fireEvent.change(within(dialog).getByLabelText("Group name"), {
+    target: { value: "US Sports" },
+  });
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add rule" }));
+  const fieldBtn = within(dialog).getByRole("button", { name: "Rule field" });
+  const opBtn = within(dialog).getByRole("button", { name: "Rule condition" });
+  expect(fieldBtn).toHaveTextContent("Channel name");
+  expect(opBtn).toHaveTextContent("contains");
+
+  fireEvent.click(fieldBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "Guide ID" }));
+  fireEvent.click(opBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "matches pattern" }));
+  fireEvent.change(within(dialog).getByLabelText("Rule value"), {
+    target: { value: "(?i)^(cbs\\.wcbs|espn\\.us" },
+  });
+
+  const alert = await within(dialog).findByRole("alert", undefined, WAIT);
+  expect(alert).toHaveTextContent("missing closing )");
+  expect(within(dialog).getByRole("button", { name: "Create group" })).toBeDisabled();
+
+  fireEvent.change(within(dialog).getByLabelText("Rule value"), {
+    target: { value: "(?i)^(cbs\\.wcbs|espn\\.us)$" },
+  });
+  await waitFor(() => expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument(), WAIT);
+  expect(await within(dialog).findByText("3 channels", undefined, WAIT)).toBeVisible();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add rule" }));
+  const opBtns = within(dialog).getAllByRole("button", { name: "Rule condition" });
+  const valInputs = within(dialog).getAllByLabelText("Rule value");
+  fireEvent.click(opBtns[1]!);
+  fireEvent.click(await screen.findByRole("option", { name: "doesn't contain" }));
+  fireEvent.change(valInputs[1]!, { target: { value: "Backup" } });
+
+  expect(await within(dialog).findByText("2 channels", undefined, WAIT)).toBeVisible();
+  expect(within(dialog).getByText("CBS WCBS HD")).toBeVisible();
+  expect(within(dialog).getByText("ESPN HD")).toBeVisible();
+  expect(within(dialog).queryByText("ESPN Backup")).not.toBeInTheDocument();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create group" }));
+  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/groups$/)).toHaveLength(1), WAIT);
+
+  const putPayload = body(sent(calls, "PUT", /\/livetv\/groups$/)[0]);
+  expect(putPayload).toMatchObject([
+    {
+      name: "US Sports",
+      match: "any",
+      rules: [
+        { field: "guideId", op: "matches", value: "(?i)^(cbs\\.wcbs|espn\\.us)$" },
+        { field: "name", op: "notContains", value: "Backup" },
+      ],
+    },
+  ]);
+
+  expect(await within(nav).findByRole("button", { name: "US Sports" }, WAIT)).toBeVisible();
+  expect(
+    await screen.findByRole("heading", { name: "US Sports · your group" }, WAIT),
+  ).toBeVisible();
+});
+
+it("merges matching channel feeds with live preview, health, and provider priority reorder", async () => {
+  let sourcesList = [
+    {
+      id: "src-a",
+      name: "Alpha TV",
+      hasPlaylist: true,
+      priority: 1,
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: "src-b",
+      name: "Bravo TV",
+      hasPlaylist: true,
+      priority: 2,
+      updatedAt: new Date().toISOString(),
+    },
+  ];
+  const chans: any[] = [
+    iptv("espn-a", {
+      number: "206",
+      name: "ESPN HD",
+      group: "Sports",
+      guideId: "espn.us",
+      sourceId: "src-a",
+      streamUrl: "https://alpha.example/espn-hd.m3u8",
+    }),
+    iptv("espn-b", {
+      number: "207",
+      name: "US: ESPN FHD",
+      group: "Sports",
+      guideId: "espn.us",
+      sourceId: "src-b",
+      streamUrl: "https://bravo.example/espn-fhd.m3u8",
+    }),
+    iptv("bbc", {
+      number: "501",
+      name: "BBC News",
+      group: "News",
+      guideId: "bbc.news",
+      sourceId: "src-a",
+      streamUrl: "https://alpha.example/bbc.m3u8",
+    }),
+  ];
+
+  const calls = backend(chans, (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.endsWith("/livetv/sources") && method === "GET") return sourcesList;
+    if (url.endsWith("/livetv/sources/order") && method === "PUT") {
+      const { ids = [] } = JSON.parse(String(init?.body ?? "{}")) as { ids?: string[] };
+      const byId = new Map(sourcesList.map((s) => [s.id, s]));
+      sourcesList = ids
+        .map((id, i) => {
+          const found = byId.get(id);
+          return found ? { ...found, priority: i + 1 } : null;
+        })
+        .filter((x): x is (typeof sourcesList)[number] => x !== null);
+      return sourcesList;
+    }
+    if (url.endsWith("/livetv/channels/summary") && method === "GET") {
+      return chans.filter((c) => !c.mergedInto);
+    }
+    if (url.endsWith("/livetv/channels/merge-preview") && method === "POST") {
+      const req = JSON.parse(String(init?.body ?? "{}")) as {
+        channelId?: string;
+        rules?: OwnerGroupRule[];
+        match?: "any" | "all";
+      };
+      const rules = req.rules ?? [];
+      for (const [i, r] of rules.entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [
+                    {
+                      field: `rules.${i}.value`,
+                      message: `error parsing regexp: missing closing ): \`${r.value}\``,
+                    },
+                  ],
+                },
+              }),
+              { status: 400 },
+            );
+          }
+        }
+      }
+      const srcNames = new Map(sourcesList.map((s) => [s.id, s.name]));
+      const srcRanks = new Map(sourcesList.map((s, idx) => [s.id, idx + 1]));
+      const matcher = compileOwnerGroupMatcher(
+        { groups: [], rules, match: req.match ?? "any" },
+        srcNames,
+      );
+      const target = chans.find((c) => c.id === req.channelId);
+      const donors = chans.filter((c) => c.id !== req.channelId && matcher(c));
+      const ordered = [...(target ? [target] : []), ...donors].sort(
+        (a, b) =>
+          (srcRanks.get(a.sourceId) ?? 99) - (srcRanks.get(b.sourceId) ?? 99) ||
+          streamQualityTier(a.name).rank - streamQualityTier(b.name).rank,
+      );
+      return {
+        matchCount: donors.length,
+        totalFeeds: ordered.length,
+        maxInputs: 16,
+        inputs: ordered.map((c, idx) => ({
+          id: c.id,
+          channelId: c.id,
+          name: c.name,
+          sourceId: c.sourceId,
+          sourceName: srcNames.get(c.sourceId),
+          sourcePriority: srcRanks.get(c.sourceId),
+          quality: streamQualityTier(c.name).label || undefined,
+          primary: c.id === req.channelId,
+          included: idx < 16,
+          state: c.id === "espn-b" ? "available" : "cooling_down",
+        })),
+      };
+    }
+    if (url.endsWith("/livetv/channels/espn-a") && method === "PUT") {
+      const saved = JSON.parse(String(init?.body ?? "{}")) as Channel;
+      const idx = chans.findIndex((c) => c.id === "espn-a");
+      if (idx >= 0) chans[idx] = saved;
+      for (const c of chans) {
+        if (c.id === "espn-b" && saved.inputMerge?.rules?.length) {
+          c.mergedInto = saved.inputMerge.hideDuplicates === false ? undefined : "espn-a";
+        }
+      }
+      return saved;
+    }
+    return undefined;
+  });
+
+  renderLiveTV("/livetv");
+
+  // 1. Reorder provider priority via sidebar drag-and-drop (Bravo TV above Alpha TV).
+  const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+  const bravoHeader = await within(nav).findByLabelText("Provider Bravo TV", undefined, WAIT);
+  const alphaHeader = within(nav).getByLabelText("Provider Alpha TV");
+  fireEvent.dragStart(bravoHeader);
+  fireEvent.dragOver(alphaHeader);
+  fireEvent.drop(alphaHeader);
+
+  await waitFor(
+    () => expect(sent(calls, "PUT", /\/livetv\/sources\/order$/)).toHaveLength(1),
+    WAIT,
+  );
+  expect(body(sent(calls, "PUT", /\/livetv\/sources\/order$/)[0])).toEqual({
+    ids: ["src-b", "src-a"],
+  });
+
+  const lineup = screen.getByRole("region", { name: "Channels" });
+  expect(
+    await within(lineup).findByRole("button", { name: "207 US: ESPN FHD" }, WAIT),
+  ).toBeVisible();
+  fireEvent.click(within(lineup).getByRole("button", { name: "206 ESPN HD" }));
+
+  // 2. Configure regex merge rule in the channel drawer with inline validation + live preview.
+  const mergeSection = await screen.findByRole("region", { name: "Merge matching feeds" }, WAIT);
+  fireEvent.click(within(mergeSection).getByRole("button", { name: "Add rule" }));
+
+  const opBtn = within(mergeSection).getByRole("button", { name: "Rule condition" });
+  fireEvent.click(opBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "matches pattern" }));
+
+  const valInput = within(mergeSection).getByLabelText("Rule value");
+  fireEvent.change(valInput, { target: { value: "(?i)^(?:us:\\s*)?espn\\b(" } });
+
+  const alert = await within(mergeSection).findByRole("alert", undefined, WAIT);
+  expect(alert).toHaveTextContent("missing closing )");
+  expect(screen.getByRole("button", { name: /Save channel/ })).toBeDisabled();
+
+  fireEvent.change(valInput, { target: { value: "(?i)^(?:us:\\s*)?espn\\b" } });
+  await waitFor(
+    () => expect(within(mergeSection).queryByRole("alert")).not.toBeInTheDocument(),
+    WAIT,
+  );
+
+  expect(await within(mergeSection).findByText("1 matching feed", undefined, WAIT)).toBeVisible();
+  const previewRows = within(mergeSection).getAllByRole("listitem");
+  expect(previewRows).toHaveLength(2);
+  expect(previewRows[0]).toHaveTextContent("Primary");
+  expect(previewRows[0]).toHaveTextContent("US: ESPN FHD");
+  expect(previewRows[0]).toHaveTextContent("FHD");
+  expect(previewRows[0]).toHaveTextContent("Bravo TV");
+  expect(previewRows[0]).toHaveTextContent("Healthy");
+  expect(previewRows[1]).toHaveTextContent("Backup 1");
+  expect(previewRows[1]).toHaveTextContent("ESPN HD");
+  expect(previewRows[1]).toHaveTextContent("Alpha TV");
+  expect(previewRows[1]).toHaveTextContent("Cooling down");
+
+  // 3. Save channel and verify inputMerge payload + duplicate channel hidden from standalone lineup.
+  expect(
+    within(mergeSection).getByRole("switch", { name: "Hide matched duplicate channels" }),
+  ).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: /Save channel/ }));
+  await waitFor(
+    () => expect(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)).toHaveLength(1),
+    WAIT,
+  );
+
+  const savedBody = body(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)[0]);
+  expect(savedBody.inputMerge).toEqual({
+    match: "any",
+    rules: [{ field: "name", op: "matches", value: "(?i)^(?:us:\\s*)?espn\\b" }],
+  });
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(
+    () => expect(within(lineup).queryByRole("button", { name: "207 US: ESPN FHD" })).toBeNull(),
+    WAIT,
+  );
+  expect(within(lineup).getByRole("button", { name: "501 BBC News" })).toBeInTheDocument();
+});
+
+describe("Live TV channel drawers and responsive workspace polish", () => {
+  it("hides virtual timeline chrome on IPTV drawers and distinguishes mapped channels without listings", async () => {
+    const mappedNoListings = iptv("c-mapped", {
+      number: "101",
+      name: "ESPN 1",
+      group: "Sports",
+      guideId: "strong-1",
+      sourceId: "src1",
+    });
+    const unmapped = iptv("c-unmapped", {
+      number: "102",
+      name: "ESPN 2",
+      group: "Sports",
+      guideId: "",
+      sourceId: "src1",
+    });
+    const calls = backend([mappedNoListings, unmapped], (url) => {
+      if (url.endsWith("/livetv/sources")) {
+        return [
+          { id: "src1", name: "Strong IPTV", hasPlaylist: true, updatedAt: "2026-10-19T00:00:00Z" },
+        ];
+      }
+      if (url.endsWith("/livetv/guide/coverage")) {
+        return [
+          { channelId: "c-mapped", programmes: 0 },
+          { channelId: "c-unmapped", programmes: 0 },
+        ];
+      }
+      return undefined;
+    });
+
+    const view = renderLiveTV("/livetv?channel=c-mapped");
+    const dialog = await screen.findByRole("dialog", { name: "Edit channel" }, WAIT);
+    expect(
+      await within(dialog).findByText(
+        "Mapped to a guide channel, but its guide has no upcoming listings.",
+        undefined,
+        WAIT,
+      ),
+    ).toBeVisible();
+    expect(
+      within(dialog).queryByText(
+        "No listings for this channel yet. Map a guide channel on the Guide tab.",
+      ),
+    ).toBeNull();
+    expect(within(dialog).queryByRole("region", { name: "Schedule timeline" })).toBeNull();
+    expect(within(dialog).queryByText("Break pod")).toBeNull();
+    expect(calls.filter((c) => c.url.includes("/timeline?"))).toHaveLength(0);
+
+    view.unmount();
+    renderLiveTV("/livetv?channel=c-unmapped");
+    const dialog2 = await screen.findByRole("dialog", { name: "Edit channel" }, WAIT);
+    expect(
+      await within(dialog2).findByText(
+        "No listings for this channel yet. Map a guide channel on the Guide tab.",
+        undefined,
+        WAIT,
+      ),
+    ).toBeVisible();
+  });
+
+  it("opens a new personal channel cleanly without draft 404s, dirty warning, duplicate subcaptions or raw {viewer} tokens", async () => {
+    const calls = backend([iptv("seed")], (url) => {
+      if (url.includes("/rundown") || url.includes("/timeline")) {
+        return new Response(
+          JSON.stringify({ error: { code: "not_found", message: "not found" } }),
+          {
+            status: 404,
+          },
+        );
+      }
+      return undefined;
+    });
+
+    renderLiveTV("/livetv");
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }, WAIT));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Personal channel/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New virtual channel" }, WAIT);
+    expect(await within(dialog).findByText("Not saved yet", undefined, WAIT)).toBeVisible();
+    expect(
+      within(dialog).getByText("Create this channel to build each viewer's schedule."),
+    ).toBeVisible();
+    expect(within(dialog).queryByText("Unsaved changes")).toBeNull();
+    expect(within(dialog).queryByText("not found")).toBeNull();
+    expect(within(dialog).queryByText("Unable to load schedule")).toBeNull();
+    expect(within(dialog).queryByRole("region", { name: "Schedule timeline" })).toBeNull();
+    expect(
+      calls.filter((c) => c.url.includes("/rundown") || c.url.includes("/timeline")),
+    ).toHaveLength(0);
+
+    // Ingredient labels appear once per row (never duplicated inside Artwork placeholders).
+    expect(within(dialog).getAllByText("Picked for them")).toHaveLength(1);
+    expect(within(dialog).getAllByText("Your picks (collections)")).toHaveLength(1);
+
+    // Channel name picker uses AppKit SearchSelect with plain-English copy rather than raw {viewer} tokens or native <select>.
+    expect(within(dialog).queryByText("{viewer} TV")).toBeNull();
+    expect(within(dialog).getByText("Viewer's name + TV")).toBeVisible();
+    expect(dialog.querySelector("select")).toBeNull();
+
+    // Editing marks the draft as having unsaved changes.
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "For Everyone" } });
+    expect(within(dialog).getByText("Unsaved changes")).toBeVisible();
+  });
+
+  it("renders a single selectable provider row per IPTV source under Providers", async () => {
+    backend(
+      [iptv("c1", { number: "101", name: "Sports 1", group: "Sports", sourceId: "src1" })],
+      (url) => {
+        if (url.endsWith("/livetv/sources")) {
+          return [
+            {
+              id: "src1",
+              name: "Strong IPTV",
+              hasPlaylist: true,
+              updatedAt: "2026-10-19T00:00:00Z",
+            },
+          ];
+        }
+        return undefined;
+      },
+    );
+
+    renderLiveTV("/livetv");
+    const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+    expect(await within(nav).findByText("Providers", undefined, WAIT)).toBeVisible();
+    expect(within(nav).getAllByText("Strong IPTV")).toHaveLength(1);
+    fireEvent.click(within(nav).getByRole("button", { name: "Strong IPTV" }));
+    expect(screen.getByRole("heading", { name: "Strong IPTV" })).toBeVisible();
+  });
+
+  it("collapses Channel groups into a sheet on compact viewports so channel rows start above the fold", async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 1023px)" || query === "(max-width: 639px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      backend(
+        [
+          iptv("c1", { number: "101", name: "Sports 1", group: "Sports", sourceId: "src1" }),
+          {
+            id: "v1",
+            number: "1",
+            name: "80s Movies",
+            kind: "virtual",
+            enabled: true,
+            favorite: false,
+            epoch: "2026-01-01T00:00:00Z",
+            seed: 1,
+            shuffle: false,
+            items: [],
+          },
+        ],
+        (url) => {
+          if (url.endsWith("/livetv/sources")) {
+            return [
+              {
+                id: "src1",
+                name: "Strong IPTV",
+                hasPlaylist: true,
+                updatedAt: "2026-10-19T00:00:00Z",
+              },
+            ];
+          }
+          return undefined;
+        },
+      );
+
+      renderLiveTV("/livetv");
+      const list = await screen.findByRole("region", { name: "Channels" }, WAIT);
+      expect(await within(list).findByRole("button", { name: "101 Sports 1" }, WAIT)).toBeVisible();
+      // Inline groups rail is collapsed until requested.
+      expect(screen.queryByRole("navigation", { name: "Channel groups" })).toBeNull();
+
+      fireEvent.click(within(list).getByRole("button", { name: "Channel groups" }));
+      const sheet = await screen.findByRole("dialog", { name: "Channel groups" }, WAIT);
+      fireEvent.click(within(sheet).getByRole("button", { name: "Strong IPTV" }));
+
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: "Channel groups" })).toBeNull(),
+        WAIT,
+      );
+      expect(within(list).getByRole("button", { name: "101 Sports 1" })).toBeVisible();
+      expect(within(list).queryByRole("button", { name: "1 80s Movies" })).toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it("marks automatic duplicate backups in Channel Studio and suppresses removed donors", async () => {
+    const calls = backend([
+      iptv("xtream-2113", {
+        number: "2113",
+        name: "FOX News",
+        group: "US | News",
+        sourceId: "src-a",
+        streamUrl: "https://a.example/2113.ts",
+        streamSources: [
+          {
+            id: "playlist-xtream-2113",
+            name: "Imported stream",
+            url: "https://a.example/2113.ts",
+            enabled: true,
+            priority: 0,
+            authSourceId: "src-a",
+          },
+          {
+            id: "auto-xtream-1873",
+            name: "FOX News",
+            url: "https://a.example/1873.ts",
+            enabled: true,
+            priority: 1,
+            authSourceId: "src-a",
+            autoFrom: "xtream-1873",
+            autoNumber: "1873",
+          },
+        ],
+      }),
+    ]);
+
+    renderLiveTV("/livetv?channel=xtream-2113");
+    const section = await screen.findByRole("region", { name: "Stream sources" }, WAIT);
+    expect(await within(section).findByText("Automatic · #1873", {}, WAIT)).toBeVisible();
+
+    const removeBtn = within(section).getByRole("button", { name: "Remove source 2" });
+    expect(removeBtn).toHaveTextContent("Remove");
+    fireEvent.click(removeBtn);
+
+    expect(within(section).queryByText("Automatic · #1873")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Save channel/ }));
+
+    await waitFor(() =>
+      expect(sent(calls, "PUT", /\/livetv\/channels\/xtream-2113$/).length).toBeGreaterThan(0),
+    );
+    const saved = body(sent(calls, "PUT", /\/livetv\/channels\/xtream-2113$/)[0]);
+    expect(saved.suppressedAutoBackups).toContain("xtream-1873");
+    expect(saved.streamSources).toMatchObject([
+      { id: "playlist-xtream-2113", url: "https://a.example/2113.ts", priority: 0 },
+    ]);
   });
 });

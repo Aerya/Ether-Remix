@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,12 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 		s.notifyRequestLog(r, sr.status)
 		if sr.status == http.StatusUnauthorized {
 			failures.Fail(errors.New("unauthorized"))
+			if traceTranscodePath(r.URL.Path) {
+				// Native players drop credentials on refetches; the path,
+				// parameter names and agent identify which one refused.
+				log.Debug("request unauthorized", "method", r.Method, "path", r.URL.Path, "params", queryParamNames(r.URL.Query()),
+					"agent", r.UserAgent(), "peer", FromContext(r.Context()).RemoteIP.String())
+			}
 			return
 		}
 		pr := FromContext(r.Context())
@@ -206,7 +213,10 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 
 // traceTranscodePath reports Plex HLS and session playlist/segment routes.
 func traceTranscodePath(path string) bool {
-	return strings.HasPrefix(path, "/video/:/transcode/") || strings.Contains(path, "/:/transcode/universal/session/")
+	return strings.HasPrefix(path, "/video/:/transcode/") ||
+		strings.HasPrefix(path, "/music/:/transcode/") ||
+		strings.HasPrefix(path, "/audio/:/transcode/") ||
+		strings.Contains(path, "/:/transcode/universal/session/")
 }
 
 // redactTraceQuery keeps the request query except credential parameters.
@@ -228,7 +238,7 @@ func redactTraceQuery(q url.Values) string {
 func traceSecretQuery(k string) bool {
 	switch strings.ToLower(k) {
 	case "x-plex-token", "token", "accesstoken", "access_token",
-		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam):
+		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam), strings.ToLower(deliveryGrantParam):
 		return true
 	default:
 		return false
@@ -264,6 +274,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		// The bare read has no representation, even before authentication.
 		if r.URL.Path == "/downloadQueue" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
+		if !s.routeExists(r) {
+			s.handleUnknown(w, r)
 			return
 		}
 		if publicPaths[trimSlash(r.URL.Path)] || strings.HasPrefix(r.URL.Path, signedLogoPrefix) {
@@ -327,6 +341,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 					s.svc().remoteClientSeen(pr.RemoteIP.String())
 				}
 				s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform)
+				s.recentClients.recordRequest(r, pr, s.now())
 				s.observePlaybackRequestStart(r, pr)
 				next.ServeHTTP(w, r)
 				return
@@ -341,7 +356,15 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) {
+		authorized := s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) || s.authenticateDeliveryGrant(r, pr)
+		if !authorized {
+			if refetch, ok := s.authenticateManifestRefetch(r, pr); ok {
+				r, authorized = refetch, true
+			} else if refetch, ok := s.authenticateLiveManifestRefetch(r, pr); ok {
+				r, authorized = refetch, true
+			}
+		}
+		if authorized {
 			if !s.acceptanceCurrent(r) {
 				writeHTTPError(w, http.StatusUnauthorized)
 				return
@@ -673,6 +696,26 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, frontend.ErrStreamLimit), errors.Is(err, frontend.ErrTooManyTranscodes):
 		w.Header().Set("Retry-After", "5")
 		writeHTTPError(w, http.StatusServiceUnavailable)
+	case errors.Is(err, frontend.ErrArchiveUnstreamable):
+		s.log.Warn("archive format or compression method cannot be streamed", "path", r.URL.Path, "err", err)
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+	case errors.Is(err, frontend.ErrReleaseRejected), errors.Is(err, frontend.ErrArticleMissing), errors.Is(err, frontend.ErrArticleCorrupt):
+		s.log.Warn("source incomplete or cannot be played", "path", r.URL.Path, "err", err)
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
+	case errors.Is(err, frontend.ErrPreparing):
+		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "preparing")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(frontend.PreparingErrorBody(err))
+	case errors.Is(err, frontend.ErrJobsBusy):
+		w.Header().Set("Retry-After", strconv.Itoa(frontend.JobsBusyRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "jobs_busy")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(frontend.JobsBusyErrorBody(err))
 	case errors.Is(err, frontend.ErrNotAvailable), errors.Is(err, frontend.ErrUnreleased), errors.Is(err, frontend.ErrDebridAuth), errors.Is(err, frontend.ErrDebridQuota), errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, context.DeadlineExceeded), errors.Is(err, frontend.ErrPrepareSlow):
 		// The title exists; nothing can play it right now (no release yet,
 		// nothing cached, no sources, a rejected debrid key). A 404 here
@@ -687,4 +730,14 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.log.Warn("request failed", "path", r.URL.Path, "err", err)
 		writeHTTPError(w, http.StatusInternalServerError)
 	}
+}
+
+// queryParamNames lists a query's parameter names, never their values.
+func queryParamNames(q url.Values) string {
+	names := make([]string, 0, len(q))
+	for k := range q {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }

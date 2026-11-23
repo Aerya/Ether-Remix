@@ -17,6 +17,17 @@ import (
 // because their visibility can inherit parent facts. The caller owns the policy
 // lease and must repeat this read and fence changes before publishing results.
 func (c *Catalog) CachedPortraitTitles(ctx context.Context, subjects map[core.RatingKey][]int64, cfg config.Catalog, now time.Time) (map[core.RatingKey]core.Title, error) {
+	return c.cachedPortraitTitles(ctx, subjects, cfg, now, false)
+}
+
+// RecheckPortraitTitles repeats current visibility and named-credit membership.
+// Only the initial read needs portrait/IMDb metadata; this result never escapes
+// the final membership proof.
+func (c *Catalog) RecheckPortraitTitles(ctx context.Context, subjects map[core.RatingKey][]int64, cfg config.Catalog, now time.Time) (map[core.RatingKey]core.Title, error) {
+	return c.cachedPortraitTitles(ctx, subjects, cfg, now, true)
+}
+
+func (c *Catalog) cachedPortraitTitles(ctx context.Context, subjects map[core.RatingKey][]int64, cfg config.Catalog, now time.Time, membershipOnly bool) (map[core.RatingKey]core.Title, error) {
 	filter := c.visibilityFilter()
 	var keys, children []core.RatingKey
 	for key := range subjects {
@@ -90,6 +101,9 @@ func (c *Catalog) CachedPortraitTitles(ctx context.Context, subjects map[core.Ra
 		var args []any
 		for _, pair := range part {
 			queries = append(queries, `SELECT cr.key, cr.person_tmdb, cr.kind, cr.name, cr.role, cr.thumb, cr.provider_id, COALESCE(p.imdb,'') AS imdb, cr.ord FROM catalog_credits cr LEFT JOIN catalog_people p ON p.person_tmdb=cr.person_tmdb WHERE cr.key=? AND cr.person_tmdb=?`)
+			if membershipOnly {
+				queries[len(queries)-1] = `SELECT cr.key, cr.person_tmdb, 'cast' AS kind, MAX(cr.name) AS name, '' AS role, '' AS thumb, '' AS provider_id, '' AS imdb, 0 AS ord FROM catalog_credits cr WHERE cr.key=? AND cr.person_tmdb=? AND cr.name<>'' GROUP BY cr.key,cr.person_tmdb`
+			}
 			args = append(args, int64(pair.key), pair.person)
 		}
 		rows, err := c.db.QueryContext(ctx, `SELECT * FROM (`+strings.Join(queries, ` UNION ALL `)+`) AS credits ORDER BY key,kind,ord`, args...)

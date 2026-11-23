@@ -267,16 +267,7 @@ func (a *Aligner) compute(ctx context.Context, req core.AlignRequest) *Piecewise
 }
 
 func (a *Aligner) cuesByID(id string) ([]Cue, error) {
-	r, _, err := a.s.Open(id)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	raw, err := io.ReadAll(io.LimitReader(r, 16<<20))
-	if err != nil {
-		return nil, err
-	}
-	return ParseCues(string(raw))
+	return a.s.cuesByCachedID(id)
 }
 
 // durationFit rejects subtitle files that cannot belong to a release of
@@ -315,21 +306,22 @@ func (a *Aligner) timelines(ctx context.Context, bs *buildState, title *core.Tit
 	}
 	// Sidecars already on disk for this title+language, any release.
 	if a.s.dir != "" {
-		pat := filepath.Join(a.s.dir, "index", fmt.Sprintf("%d.%s.*.json", int64(title.Key), lang))
-		if paths, _ := filepath.Glob(pat); len(paths) > 0 {
-			sort.Strings(paths)
-			for _, p := range paths {
-				if len(out) >= 3 {
-					break
-				}
-				raw, err := os.ReadFile(p)
-				if err != nil {
-					continue
-				}
-				var sel selection
-				if json.Unmarshal(raw, &sel) == nil && sel.ID != "" {
-					add(sel.ID, sel.FileID, sel.Release)
-				}
+		dir := filepath.Join(a.s.dir, "index")
+		prefix := fmt.Sprintf("%d.%s.", int64(title.Key), lang)
+		for _, name := range a.s.indexNamesFor(title.Key) {
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			if len(out) >= 3 {
+				break
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				continue
+			}
+			var sel selection
+			if json.Unmarshal(raw, &sel) == nil && sel.ID != "" {
+				add(sel.ID, sel.FileID, sel.Release)
 			}
 		}
 	}
@@ -401,7 +393,16 @@ func (s *Service) CuesForInfo(info core.MediaInfo) ([]Cue, bool) {
 		if st.Type != "subtitle" || !strings.HasPrefix(st.ExternalURL, URLPrefix) {
 			continue
 		}
-		if cues, err := s.TimelineAligner().cuesByID(st.ExternalURL); err == nil && len(cues) > 0 {
+		r, _, err := s.Open(st.ExternalURL)
+		if err != nil {
+			continue
+		}
+		raw, rerr := io.ReadAll(io.LimitReader(r, 16<<20))
+		r.Close()
+		if rerr != nil {
+			continue
+		}
+		if cues, perr := ParseCues(string(raw)); perr == nil && len(cues) > 0 {
 			return cues, true
 		}
 	}

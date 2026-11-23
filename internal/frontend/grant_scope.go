@@ -12,5 +12,11 @@ type GrantScopes interface {
 
 // AuthenticationFeatures exposes configured identity entry points without
 // attempting authentication or issuing a pairing grant.
-type AuthenticationFeatures struct{ Password, QuickConnect bool }
+type AuthenticationFeatures struct {
+	Password, QuickConnect, PlexAccountSignIn bool
+	// HouseholdProfiles is true only when Plex Home profile selection is
+	// fully supported: listing, PIN verification and profile switching.
+	HouseholdProfiles bool
+}
+
 type AuthenticationFeatureSource interface{ AuthenticationFeatures() AuthenticationFeatures }

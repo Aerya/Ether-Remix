@@ -132,26 +132,55 @@ func probeLAN(ctx context.Context, targets []lanTarget, machine string) lanCheck
 			ch <- outcome{res.Reachable, reason}
 		}(target)
 	}
-	result.state = "reachable"
-	result.reason = "verified"
+	verified := 0
 	unverified := false
+	failReason := ""
 	for range targets {
 		o := <-ch
 		switch {
 		case o.ok:
+			verified++
+		case o.reason == "wrong_identity":
+			failReason = "wrong_identity"
 		case o.reason == "container":
 			unverified = true
 		default:
-			result.state = "unreachable"
-			if result.reason != "wrong_identity" {
-				result.reason = o.reason
+			if failReason == "" {
+				failReason = o.reason
 			}
 		}
 	}
-	if unverified && result.state == "reachable" {
+	switch {
+	case failReason == "wrong_identity":
+		result.state, result.reason = "unreachable", "wrong_identity"
+	case verified > 0:
+		result.state, result.reason = "reachable", "verified"
+	case unverified && failReason == "":
 		result.state, result.reason = "unknown", "container"
+	default:
+		if failReason == "" {
+			failReason = "probe_failed"
+		}
+		result.state, result.reason = "unreachable", failReason
 	}
 	return result
+}
+
+// lanInterfaceAddrs returns real LAN interface CIDRs, excluding virtual bridges,
+// point-to-point VPN tunnels, loopback, link-local, and CGNAT interfaces.
+func lanInterfaceAddrs() []net.Addr {
+	addrs, err := remote.LANAddresses(remote.LANOptions{IncludeIPv6: true})
+	if err != nil {
+		raw, _ := net.InterfaceAddrs()
+		return raw
+	}
+	out := make([]net.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		if a.Net != nil {
+			out = append(out, a.Net)
+		}
+	}
+	return out
 }
 
 func (r *frontendRuntime) lanInputs() ([]lanTarget, string) {
@@ -159,14 +188,24 @@ func (r *frontendRuntime) lanInputs() ([]lanTarget, string) {
 	addr := r.mainAddr
 	r.mu.Unlock()
 	var urls []string
-	addresses, _ := net.InterfaceAddrs()
+	addresses := lanInterfaceAddrs()
+	v4Only := false
 	if addr != nil {
+		if host, _, err := net.SplitHostPort(addr.String()); err == nil && strings.TrimSpace(host) == "0.0.0.0" {
+			v4Only = true
+		}
 		urls = append(urls, connectionURLs(addr.String(), "", addresses)...)
 	}
 	var advertised []string
 	if r.app.registrar != nil {
 		for _, c := range r.app.registrar.Status().Connections {
 			if c.Local && !c.Custom {
+				if ip := net.ParseIP(c.Address); ip != nil && remote.IsCGNAT(ip) {
+					continue
+				}
+				if v4Only && c.IPv6 {
+					continue
+				}
 				advertised = append(advertised, c.URI)
 				urls = append(urls, c.URI)
 			}

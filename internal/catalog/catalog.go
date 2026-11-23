@@ -177,6 +177,19 @@ CREATE INDEX catalog_titles_type_browse_lang ON catalog_titles(type, browsable, 
 CREATE INDEX catalog_titles_type_browse_runtime ON catalog_titles(type, browsable, adult, runtime_sec, popularity DESC);
 CREATE INDEX catalog_credits_person_kind ON catalog_credits(person_tmdb, kind, key);
 `)
+	// english_title holds TMDB's primary en-US title when the catalogue
+	// language is non-English, so release matching keeps accepting English
+	// releases of foreign titles across catalogue refreshes (#609).
+	store.Register("catalog", 63, `ALTER TABLE catalog_titles ADD COLUMN english_title TEXT NOT NULL DEFAULT '';`)
+	// enforcement_rating holds the canonical US-scale enforcement rating
+	// ("G", "PG", "PG-13", "R", "NC-17") or UncertifiedAdult ("XXX"),
+	// backfilled lazily on refresh while leaving displayed content_rating
+	// untouched.
+	store.Register("catalog", 64, `ALTER TABLE catalog_titles ADD COLUMN enforcement_rating TEXT NOT NULL DEFAULT '';`)
+	// certifications holds the JSON map of uppercase ISO 3166-1 country codes
+	// to bare certificates (for example {"GB":"12A","US":"PG-13"}) so
+	// viewer-localized surfaces can pick the viewer's preferred region.
+	store.Register("catalog", 65, `ALTER TABLE catalog_titles ADD COLUMN certifications TEXT NOT NULL DEFAULT '';`)
 }
 
 // dropUnkeyableEpisodes removes mirrored seasons and episodes whose numbers
@@ -273,9 +286,11 @@ type Catalog struct {
 	refreshMiss   map[string]time.Time
 
 	// hydrating holds the TMDB refreshes running behind reads (hydrate.go).
-	hydrateMu    sync.Mutex
-	hydrating    map[string]*hydration
-	hydrateSlots chan struct{}
+	hydrateMu     sync.Mutex
+	hydrating     map[string]*hydration
+	hydrateSlots  chan struct{}
+	seasonLoaded  map[int64]time.Time     // hydrateMu; short discovery cooldown
+	seasonLoading map[int64]chan struct{} // hydrateMu; orchestration never holds a provider slot
 
 	trendFlights flight.Group[string, trendSnapshot]
 	listMu       sync.Mutex
@@ -334,6 +349,7 @@ type Catalog struct {
 
 	personMu       sync.Mutex
 	personHydrated map[int64]time.Time
+	personMeta     map[int64]personMetaEntry
 	// listMirrored is when each related list's summaries were last saved
 	// (mirror_lists.go), guarded by personMu.
 	listMirrored map[string]time.Time
@@ -355,6 +371,45 @@ type Catalog struct {
 	// (titleidx.go).
 	titleIndexesSwapped atomic.Bool
 	onStatusChange      func(progressOnly bool)
+	onSyncEvent         func(SyncEvent)
+	onTitlesAdded       func([]core.Title)
+	onMetadataError     func(MetadataErrorEvent)
+}
+
+// SyncEvent describes a catalogue sync lifecycle transition.
+type SyncEvent struct {
+	Phase      string // "started", "completed", "failed"
+	Trigger    string // "scheduled", "manual", "startup"
+	Added      int
+	Updated    int
+	Removed    int
+	DurationMS int64
+	Error      string
+}
+
+// MetadataErrorEvent describes a failed upstream metadata fetch for a title.
+type MetadataErrorEvent struct {
+	Provider  string
+	TitleKey  core.RatingKey
+	MediaType core.MediaType
+	Error     string
+}
+
+// WithOnSyncEvent registers an optional non-blocking observer for sync lifecycle events.
+func WithOnSyncEvent(fn func(SyncEvent)) Option {
+	return func(c *Catalog) { c.onSyncEvent = fn }
+}
+
+// WithOnTitlesAdded registers an optional non-blocking observer invoked when
+// newly added browsable titles are stored.
+func WithOnTitlesAdded(fn func([]core.Title)) Option {
+	return func(c *Catalog) { c.onTitlesAdded = fn }
+}
+
+// WithOnMetadataError registers an optional non-blocking observer invoked when
+// a metadata fetch fails with an upstream error.
+func WithOnMetadataError(fn func(MetadataErrorEvent)) Option {
+	return func(c *Catalog) { c.onMetadataError = fn }
 }
 
 // SaferRatingSQL is the optional Plex overlay predicate for viewer limits.
@@ -384,6 +439,8 @@ type cachedBrowse struct {
 	page   core.Page
 	gen    uint64
 	minute int64
+	// at is when a key-order page cursor was stored; zero for pages.
+	at time.Time
 	// partial lists a ranking page's partial titles (rankProjection).
 	partial []core.RatingKey
 }
@@ -496,7 +553,7 @@ func (c *Catalog) now() time.Time {
 
 // WithResumeSchedule makes Run continue the refresh schedule recorded in
 // the database instead of syncing as soon as it starts: the first sync
-// waits until RefreshInterval has passed since the last successful sync
+// waits until RefreshInterval has passed since the recorded last sync
 // (by any node). A cluster uses it because Run restarts on every leader
 // handoff; with no recorded sync Run still syncs at once.
 func WithResumeSchedule() Option { return func(c *Catalog) { c.resumeSchedule = true } }
@@ -539,10 +596,7 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 	for _, fn := range opts {
 		fn(c)
 	}
-	visibility, err := c.compileLibraryPolicies(c.libPolicies)
-	if err != nil {
-		return nil, err
-	}
+	visibility := c.compileStoredLibraryPolicies(c.libPolicies)
 	c.visibility = visibility
 	c.searchVis = visibility.ForSearch()
 	if err := c.reloadViewerRules(context.Background()); err != nil {

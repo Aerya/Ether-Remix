@@ -38,6 +38,23 @@ func TestExplicitDubAndMislabelledCamPolicy(t *testing.T) {
 	}
 }
 
+func TestViewerWantedExplicitDubAccepted(t *testing.T) {
+	title := &core.Title{Language: "en"}
+	dub := core.Release{Name: "Moana.2.2024.1080p.WEB-DL.PT-BR.DUBBED-GRP", Info: core.ReleaseInfo{Source: core.SourceWEBDL}}
+	// Default profile without viewer preference rejects a foreign explicit dub.
+	if reason := sourceSuitabilityWithLanguages(dub, title, core.QualityProfile{}, false, nil, nil); reason == "" {
+		t.Fatal("expected foreign explicit dub rejected without viewer preference")
+	}
+	// A Portuguese viewer on the default profile accepts the Portuguese dub.
+	if reason := sourceSuitabilityWithLanguages(dub, title, core.QualityProfile{}, false, nil, []string{"pt"}); reason != "" {
+		t.Fatalf("Portuguese viewer rejected Portuguese dub: %q", reason)
+	}
+	// A profile with a hard language gate still rejects another language.
+	if reason := sourceSuitabilityWithLanguages(dub, title, core.QualityProfile{Language: "en"}, false, nil, []string{"pt"}); reason == "" {
+		t.Fatal("profile Language=en accepted Portuguese dub")
+	}
+}
+
 func TestProfileAllowCamIsTheOnlyCamSwitch(t *testing.T) {
 	r := core.Release{Name: "Primetime.2026.1080p.WEB-DL.HDCAM", Info: core.ReleaseInfo{Source: core.SourceWEBDL}}
 	title := &core.Title{Language: "en"}

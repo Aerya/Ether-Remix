@@ -278,7 +278,11 @@ type testResult struct {
 }
 
 func (h *Handler) runTest(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context) error) {
-	ctx, cancel := context.WithTimeout(r.Context(), h.deps.TestTimeout)
+	h.runTestWithin(w, r, h.deps.TestTimeout, fn)
+}
+
+func (h *Handler) runTestWithin(w http.ResponseWriter, r *http.Request, timeout time.Duration, fn func(ctx context.Context) error) {
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	start := time.Now()
 	err := func() (err error) {
@@ -372,6 +376,131 @@ func (h *Handler) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestIndexer(ctx, ix) })
+}
+
+// IndexerPreviewRequest is the payload accepted by POST /api/indexer/preview.
+type IndexerPreviewRequest struct {
+	Rule     *config.IdentityRule  `json:"rule,omitempty"`
+	Rules    []config.IdentityRule `json:"rules,omitempty"`
+	HasRules bool                  `json:"-"`
+	Indexer  *config.Indexer       `json:"indexer,omitempty"`
+}
+
+func (h *Handler) handleIndexerPreview(w http.ResponseWriter, r *http.Request) {
+	if h.deps.IndexerPreview == nil {
+		writeError(w, http.StatusNotImplemented, "unavailable", "request preview is unavailable")
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(raw) > maxBodyBytes {
+		writeError(w, http.StatusBadRequest, "bad_json", "could not read request body")
+		return
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	var req IndexerPreviewRequest
+	_, hasRule := probe["rule"]
+	_, hasRules := probe["rules"]
+	_, hasIndexer := probe["indexer"]
+	if hasRule || hasRules || hasIndexer {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		req.HasRules = hasRules
+	} else {
+		var ix config.Indexer
+		if err := json.Unmarshal(raw, &ix); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		req.Indexer = &ix
+	}
+	// The preview masks API keys and sensitive overrides itself; redacted
+	// placeholders in the draft are passed through untouched.
+	out, err := h.deps.IndexerPreview(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "preview_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) handleTestIndexerIdentity(w http.ResponseWriter, r *http.Request) {
+	if h.deps.TestIndexerIdentity == nil {
+		writeError(w, http.StatusNotImplemented, "not_available", "identity test is not available")
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(raw) > maxBodyBytes {
+		writeError(w, http.StatusBadRequest, "bad_json", "could not read request body")
+		return
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	var body struct {
+		IndexerID string                `json:"indexerId"`
+		Rules     []config.IdentityRule `json:"rules,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	prev := h.deps.Config.Get()
+	var target config.Indexer
+	found := false
+	for _, ix := range prev.Indexers {
+		if ix.ID == strings.TrimSpace(body.IndexerID) {
+			target, found = ix, true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusBadRequest, "unknown_indexer", "choose a configured indexer to test")
+		return
+	}
+	if target.IsBuiltin() || target.IsStremio() {
+		writeError(w, http.StatusBadRequest, "unsupported_indexer", "caps testing is available for Newznab and Torznab indexers")
+		return
+	}
+	policy := prev.ClientIdentity
+	if _, hasRules := probe["rules"]; hasRules {
+		var perrs placeholderErrors
+		policy = config.ClientIdentity{Rules: perrs.unredactIdentityRules(body.Rules, prev.ClientIdentity.Rules)}
+		if len(perrs) > 0 {
+			writeSecretRequired(w, perrs)
+			return
+		}
+		if verrs := policy.Validate(); len(verrs) > 0 {
+			out := make([]FieldError, 0, len(verrs))
+			for _, e := range verrs {
+				out = append(out, FieldError{Field: "clientIdentity." + e.Field, Message: e.Message})
+			}
+			writeValidationError(w, out)
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), h.deps.TestTimeout)
+	defer cancel()
+	start := time.Now()
+	id, testErr := h.deps.TestIndexerIdentity(ctx, target, policy)
+	res := map[string]any{
+		"ok":         testErr == nil,
+		"durationMs": time.Since(start).Milliseconds(),
+		"profile":    id.Profile,
+		"ruleId":     id.RuleID,
+		"userAgent":  id.UserAgent,
+	}
+	if testErr != nil {
+		res["error"] = testErr.Error()
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (h *Handler) handleTestDebrid(w http.ResponseWriter, r *http.Request) {
@@ -478,6 +607,22 @@ func (h *Handler) handleTestSubDL(w http.ResponseWriter, r *http.Request) {
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestSubDL(ctx, cfg) })
 }
 
+func (h *Handler) handleTestSubSource(w http.ResponseWriter, r *http.Request) {
+	prev := h.deps.Config.Get().SubSource
+	cfg := prev
+	cfg.APIKey = redact(prev.APIKey)
+	if !decodeTestBody(w, r, &cfg) {
+		return
+	}
+	var perrs placeholderErrors
+	cfg.APIKey = perrs.restore("subsource.apiKey", cfg.APIKey, prev.APIKey, true)
+	if len(perrs) > 0 {
+		writeSecretRequired(w, perrs)
+		return
+	}
+	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestSubSource(ctx, cfg) })
+}
+
 // llmSettings decodes posted (unsaved) language-model settings onto the
 // stored ones and restores a bound API key.
 func (h *Handler) llmSettings(w http.ResponseWriter, r *http.Request) (config.LLM, bool) {
@@ -500,8 +645,15 @@ func (h *Handler) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestLLM(ctx, cfg) })
+	h.runTestWithin(w, r, llmTestTimeout, func(ctx context.Context) error { return h.deps.TestLLM(ctx, cfg) })
 }
+
+// llmTestTimeout bounds the language-model test. Thinking models (Gemini,
+// o-series, DeepSeek R1) reason before answering even "reply ok", and the
+// OpenAI-compatible endpoint returns nothing until they finish, so the
+// 20-second budget other testers use failed them with "context deadline
+// exceeded". It matches the model client's own request limit.
+const llmTestTimeout = 2 * time.Minute
 
 // LLMModel is one model a language-model provider offers.
 type LLMModel struct {

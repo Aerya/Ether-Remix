@@ -201,10 +201,15 @@ func (rule devicePlaybackRule) directReason(media model.Media, audio, subtitle i
 		return "App cannot direct play this item. Selected embedded subtitle stream is not the first embedded subtitle stream."
 	}
 	// Container constraints precede named-codec constraints, then wildcards.
+	// A named-codec limitation overrides a wildcard default for the same field.
 	for _, scope := range []string{"part", "video", "audio"} {
+		namedFields := map[string]bool{}
 		for _, wildcard := range []bool{false, true} {
 			for _, l := range rule.limits {
 				if l.encodeOnly || l.scope != scope || (l.codec == "*") != wildcard {
+					continue
+				}
+				if wildcard && namedFields[l.field] {
 					continue
 				}
 				codec := media.Container
@@ -219,6 +224,9 @@ func (rule devicePlaybackRule) directReason(media model.Media, audio, subtitle i
 				}
 				if !profileContains(l.codec, codec) {
 					continue
+				}
+				if !wildcard {
+					namedFields[l.field] = true
 				}
 				value := deviceLimitValue(l.field, part, *video, selectedAudio)
 				if value == "" {
@@ -324,20 +332,78 @@ func deviceProfile(pr *Request) (devicePlaybackRule, bool) {
 // targets cannot authorize a streaming conversion.
 func profileTarget(rule devicePlaybackRule, pr *Request, protocol string) *deviceMediaRule {
 	targets := append([]deviceMediaRule(nil), rule.output...)
+	targetMatches := func(r deviceMediaRule, a map[string]string) bool {
+		if ctx := a["context"]; ctx != "" && ctx != "all" && r.context != "" && r.context != "all" && r.context != ctx {
+			return false
+		}
+		if proto := a["protocol"]; proto != "" && r.protocol != proto {
+			return false
+		}
+		if ct := a["container"]; ct != "" && r.container != "" && !profileContains(r.container, ct) {
+			return false
+		}
+		return true
+	}
+	mergeCSV := func(existing, add string) string {
+		if add == "" {
+			return existing
+		}
+		var parts []string
+		if existing != "" {
+			parts = strings.Split(existing, ",")
+		}
+		for _, item := range strings.Split(add, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" && !profileContains(strings.Join(parts, ","), item) {
+				parts = append(parts, item)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
 	for _, d := range ParseProfileExtra(pr.ProfileExtra) {
-		if d.Verb != "add-transcode-target" || d.Args["type"] != "videoProfile" {
+		a := d.Args
+		if typ := a["type"]; typ != "" && typ != "videoProfile" {
 			continue
 		}
-		a := d.Args
-		targets = append(targets, deviceMediaRule{container: a["container"], video: a["videoCodec"], audio: a["audioCodec"], subtitle: a["subtitleCodec"], protocol: a["protocol"], context: a["context"]})
-	}
-	for _, r := range targets {
-		if (r.context == "" || r.context == "streaming" || r.context == "all") && r.protocol == protocol {
-			t := r
-			return &t
+		switch d.Verb {
+		case "add-transcode-target":
+			next := deviceMediaRule{container: a["container"], video: a["videoCodec"], audio: a["audioCodec"], subtitle: a["subtitleCodec"], protocol: a["protocol"], context: a["context"]}
+			if strings.EqualFold(a["replace"], "true") {
+				targets = slices.DeleteFunc(targets, func(r deviceMediaRule) bool {
+					return targetMatches(r, map[string]string{"context": a["context"], "protocol": a["protocol"]})
+				})
+			}
+			targets = append(targets, next)
+		case "add-transcode-target-codec", "append-transcode-target-codec":
+			matched := false
+			for i := range targets {
+				if targetMatches(targets[i], a) {
+					targets[i].video = mergeCSV(targets[i].video, a["videoCodec"])
+					targets[i].audio = mergeCSV(targets[i].audio, a["audioCodec"])
+					targets[i].subtitle = mergeCSV(targets[i].subtitle, a["subtitleCodec"])
+					matched = true
+				}
+			}
+			if !matched && a["protocol"] != "" {
+				targets = append(targets, deviceMediaRule{container: a["container"], video: a["videoCodec"], audio: a["audioCodec"], subtitle: a["subtitleCodec"], protocol: a["protocol"], context: a["context"]})
+			}
 		}
 	}
-	return nil
+	var picked *deviceMediaRule
+	for _, r := range targets {
+		if (r.context == "" || r.context == "streaming" || r.context == "all") && r.protocol == protocol {
+			if picked == nil {
+				t := r
+				picked = &t
+				continue
+			}
+			picked.container = mergeCSV(picked.container, r.container)
+			picked.video = mergeCSV(picked.video, r.video)
+			picked.audio = mergeCSV(picked.audio, r.audio)
+			picked.subtitle = mergeCSV(picked.subtitle, r.subtitle)
+		}
+	}
+	return picked
 }
 
 // dv5ToneMapper is implemented by an encoder that reports whether it can
@@ -370,6 +436,9 @@ type profileDecisionError struct {
 func (e *profileDecisionError) Error() string { return e.message }
 
 func (s *Server) applyDeviceProfile(pr *Request, t *frontend.Title, ps *frontend.PlaySession, p *playRequest) error {
+	if ps != nil && ps.Info.Video() == nil {
+		return nil
+	}
 	rule, ok := deviceProfile(pr)
 	if !ok {
 		if !p.opts.DirectPlay && pr.ProfileExtra != "" {
@@ -590,6 +659,7 @@ func applyDeviceTargetLimits(rule devicePlaybackRule, target *deviceMediaRule, i
 		if height > 0 && (p.caps.MaxHeight == 0 || height < p.caps.MaxHeight) {
 			p.caps.MaxHeight = height
 			p.caps.ExplicitMaxHeight = true
+			p.caps.MaxHeightSource = fmt.Sprintf("device profile target limit (%s=%s)", l.field, l.value)
 		}
 	}
 }
@@ -608,7 +678,8 @@ func applyExtraTranscodeTargetLimits(extra, protocol string, target *deviceMedia
 			continue
 		}
 		a := d.Args
-		if a["scope"] != "videoTranscodeTarget" || !strings.EqualFold(a["type"], "upperBound") {
+		scope := a["scope"]
+		if (scope != "videoTranscodeTarget" && !(scope == "videoCodec" && strings.EqualFold(strings.TrimSpace(a["protocol"]), protocol))) || !strings.EqualFold(a["type"], "upperBound") {
 			continue
 		}
 		if ctx := a["context"]; ctx != "" && ctx != "all" && ctx != "streaming" {
@@ -682,6 +753,7 @@ func applyExtraTranscodeTargetLimits(extra, protocol string, target *deviceMedia
 		if height > 0 && (p.caps.MaxHeight == 0 || height < p.caps.MaxHeight) {
 			p.caps.MaxHeight = height
 			p.caps.ExplicitMaxHeight = true
+			p.caps.MaxHeightSource = formatLimitationSource(a["scope"], a["scopeName"], a["name"], limitationValue(a))
 		}
 	}
 }
@@ -705,7 +777,13 @@ func extendDeviceProfile(rule devicePlaybackRule, extra string) devicePlaybackRu
 			}
 			comparison := map[string]string{"upperbound": "UpperBound", "lowerbound": "LowerBound", "match": "Match", "notmatch": "NotMatch"}[strings.ToLower(a["type"])]
 			_, list := a["list"]
-			rule.limits = append(rule.limits, deviceLimit{scope: scope, codec: a["scopeName"], field: a["name"], comparison: comparison, value: limitationValue(a), list: list})
+			sn := a["scopeName"]
+			if strings.EqualFold(a["replace"], "true") {
+				rule.limits = slices.DeleteFunc(rule.limits, func(l deviceLimit) bool {
+					return l.scope == scope && strings.EqualFold(normalizeCodec(l.codec), normalizeCodec(sn)) && l.field == a["name"]
+				})
+			}
+			rule.limits = append(rule.limits, deviceLimit{scope: scope, codec: sn, field: a["name"], comparison: comparison, value: limitationValue(a), list: list})
 		}
 	}
 	return rule

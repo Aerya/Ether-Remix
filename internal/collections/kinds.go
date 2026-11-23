@@ -268,7 +268,13 @@ func (s *Service) kindRegistry() *KindRegistry {
 	return defaultKinds
 }
 
-func (s *Service) validate(sp *core.CollectionSpec) error { return validateWith(s.kindRegistry(), sp) }
+func (s *Service) validate(sp *core.CollectionSpec) error {
+	return validateWith(s.kindRegistry(), sp, nil)
+}
+
+func (s *Service) validateWithExisting(sp *core.CollectionSpec, allowMissing map[string]bool) error {
+	return validateWith(s.kindRegistry(), sp, allowMissing)
+}
 
 // RegisterSourceKind adds a source kind to this service (plugin list
 // sources, Stremio catalogs). The kind is then valid in specs, gathers on

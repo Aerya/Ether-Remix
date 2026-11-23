@@ -172,6 +172,9 @@ func (q *MetadataQueue) stored(ctx context.Context, req frontend.ArtworkRequest,
 		return held, true
 	}
 	q.mu.Unlock()
+	if req.Item.IsPluginKey() && !q.persistable(ctx, req) {
+		return artworkMetadata{}, false
+	}
 	// A free lookup is a cheap join. A locked database must not hold the page.
 	loadCtx, cancel := context.WithTimeout(context.Background(), 8*time.Millisecond)
 	metadata, err := q.load(loadCtx, key)

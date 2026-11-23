@@ -375,7 +375,8 @@ func ImportLogical(ctx context.Context, db *sql.DB, r io.Reader) (err error) {
 	for _, t := range targetTables {
 		known[t] = true
 	}
-	finish, err := beginRestoreHooks(ctx, tx)
+	rctx := withRestoreDialect(ctx, d)
+	finish, err := beginRestoreHooks(rctx, tx)
 	if err != nil {
 		return err
 	}
@@ -474,7 +475,7 @@ func ImportLogical(ctx context.Context, db *sql.DB, r io.Reader) (err error) {
 			return err
 		}
 	}
-	if err := finish(ctx, tx); err != nil {
+	if err := finish(rctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()

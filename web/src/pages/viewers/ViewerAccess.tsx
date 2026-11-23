@@ -1,8 +1,17 @@
 import { ViewerCatalogRules } from "./ViewerCatalogRules";
-import { Button, SearchSelect, SettingsSection, Switch, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Alert,
+  AlertDescription,
+  Badge,
+  Button,
+  SearchSelect,
+  SettingsSection,
+  Switch,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ChipGroup, NumberInput } from "../../components/fields";
+import { ChipGroup, NumberInput, Segmented } from "../../components/fields";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -175,10 +184,48 @@ export function ViewerLibraries({
 }
 
 /**
+ * Connected watch-history accounts for one viewer (Sign-in & devices › Connected accounts):
+ * Plex account sync, Plex Media Server mappings, Trakt, Simkl and MDBList.
+ */
+export function ViewerAccountSync({ viewer }: { viewer: Viewer }) {
+  const id = viewer.id;
+  const config = useAsync(() => api.getConfig(), []);
+  const trakt = config.data?.trakt;
+  const simkl = config.data?.simkl;
+  const mdblist = config.data?.mdblist;
+  return (
+    <div className="space-y-6">
+      <PlexWatchSync viewerId={id} plexId={viewer.plexId} />
+      {config.data ? (
+        <>
+          <ViewerTrakt viewerId={id} ready={Boolean(trakt?.enabled && trakt.clientId.trim())} />
+          <ViewerSimkl viewerId={id} ready={Boolean(simkl?.enabled && simkl.clientId.trim())} />
+          <ViewerMDBList viewerId={id} ready={Boolean(mdblist?.enabled)} />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+type PlexDownloadDefaults = {
+  allowSync?: boolean | null;
+};
+
+function overrideLabel(o: {
+  id?: string;
+  product?: string;
+  productMatch?: string;
+  device?: string;
+  platform?: string;
+}): string {
+  const parts = [o.product || o.productMatch, o.device, o.platform].filter(Boolean);
+  return parts.join(" · ") || o.id || t("App override");
+}
+
+/**
  * Everything that decides what one viewer may watch and when: streams at
- * once, the content rating limit, parental controls, allowed times, Live TV
- * and their connected accounts. One in-place form; the save bar writes
- * whichever parts changed. Account actions run immediately.
+ * once, the content rating limit, parental controls, allowed times and Live TV.
+ * One in-place form; the save bar writes whichever parts changed.
  */
 export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const id = viewer.id;
@@ -190,6 +237,15 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
       normalizePolicy(await apiFetch<SafetyPolicy>(`/safety/policies/${id}`, { signal })),
     [id],
   );
+  const plexDefaults = useAsync(
+    async (signal) =>
+      viewer.isOwner
+        ? null
+        : await apiFetch<PlexDownloadDefaults>(`/viewer-plex-defaults/${id}`, { signal }).catch(
+            () => null,
+          ),
+    [id, viewer.isOwner],
+  );
   const user = users.data?.find((u) => u.id === id);
   const limits = useDraft<UserLimits>(user ? userLimits(user) : null);
   const rules = useDraft<SafetyPolicy>(policy.data);
@@ -198,7 +254,15 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const [error, setError] = useState<unknown>(null);
 
   const patchLimits = (p: Partial<UserLimits>) => limits.setDraft((d) => (d ? { ...d, ...p } : d));
-  const patchPolicy = (p: Partial<SafetyPolicy>) => rules.setDraft((d) => (d ? { ...d, ...p } : d));
+  const patchPolicy = (p: Partial<SafetyPolicy>) =>
+    rules.setDraft((d) => {
+      if (!d) return d;
+      const next: SafetyPolicy = { ...d, ...p };
+      if ("allowDownloads" in p && p.allowDownloads == null) {
+        delete next.allowDownloads;
+      }
+      return next;
+    });
 
   const applyPreset = async (age: string) => {
     setPresetBusy(true);
@@ -244,9 +308,27 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const l = limits.draft;
   const p = rules.draft;
   const noUser = users.data && (!user || !l);
-  const trakt = config.data?.trakt;
-  const simkl = config.data?.simkl;
-  const mdblist = config.data?.mdblist;
+  const isOwner = Boolean(user?.isOwner || viewer.isOwner);
+  const serverVideoOff = config.data?.transcode?.videoTranscoding === "off";
+  const alwaysEncodeOverrides = (config.data?.clients?.overrides ?? []).filter(
+    (o) => o.alwaysEncodeVideo,
+  );
+  const alwaysEncodeNames = alwaysEncodeOverrides.map(overrideLabel).join(", ");
+  const hasAlwaysEncodeConflict =
+    alwaysEncodeOverrides.length > 0 && (Boolean(p?.videoTranscodingDisabled) || serverVideoOff);
+
+  const serverDownloadsOn = Boolean(config.data?.downloads?.enabled);
+  const serverFriendsDownloads = Boolean(config.data?.downloads?.allowFriends);
+  const plexAllowSync = plexDefaults.data?.allowSync;
+  const downloadMode: "default" | "allow" | "block" =
+    p?.allowDownloads === true ? "allow" : p?.allowDownloads === false ? "block" : "default";
+  const effectiveDownloads = !serverDownloadsOn
+    ? false
+    : p?.allowDownloads !== undefined && p?.allowDownloads !== null
+      ? p.allowDownloads
+      : plexAllowSync === false
+        ? false
+        : serverFriendsDownloads;
   return (
     <div className="space-y-6">
       <ViewerCatalogRules key={id} id={id} region={String(config.data?.catalog?.region || "US")} />
@@ -266,72 +348,74 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               )}
             </p>
           ) : null}
-          <SettingsSection
-            title={t("Parental controls")}
-            description={t(
-              "Adult titles are always excluded. Unrated titles are blocked when a rating limit applies.",
-            )}
-          >
-            <SettingsRow
-              title={t("Start from a preset")}
+          {!isOwner ? (
+            <SettingsSection
+              title={t("Parental controls")}
               description={t(
-                "Replaces the parental controls, playback restrictions and allowed times below.",
+                "Adult titles are always excluded. Unrated titles are blocked when a rating limit applies.",
               )}
-              control={
-                <div className="flex flex-wrap gap-2">
-                  {KID_PRESETS.map((preset) => (
-                    <Button
-                      key={preset.value}
-                      variant="outline"
-                      size="sm"
-                      disabled={presetBusy}
-                      onClick={() => void applyPreset(preset.value)}
-                    >
-                      {preset.label}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
-            {user && l ? (
-              <RatingLimitRow
-                value={l.maxContentRating}
-                onChange={(maxContentRating) => patchLimits({ maxContentRating })}
-                isOwner={user.isOwner}
+            >
+              <SettingsRow
+                title={t("Start from a preset")}
+                description={t(
+                  "Replaces the parental controls, playback restrictions and allowed times below.",
+                )}
+                control={
+                  <div className="flex flex-wrap gap-2">
+                    {KID_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.value}
+                        variant="outline"
+                        size="sm"
+                        disabled={presetBusy}
+                        onClick={() => void applyPreset(preset.value)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                }
               />
-            ) : null}
-            <SettingsRow
-              title={t("Blocked genres")}
-              description={t("Comma-separated, e.g. Horror, Thriller.")}
-              control={
-                <div className="w-64">
-                  <ListText
-                    ariaLabel={t("Blocked genres")}
-                    value={p.blockedGenres}
-                    onChange={(v) => patchPolicy({ blockedGenres: v })}
-                  />
-                </div>
-              }
-            />
-            <SettingsRow
-              title={t("Blocked keywords")}
-              description={t("Comma-separated TMDB keywords.")}
-              control={
-                <div className="w-64">
-                  <ListText
-                    ariaLabel={t("Blocked keywords")}
-                    value={p.blockedKeywords}
-                    onChange={(v) => patchPolicy({ blockedKeywords: v })}
-                  />
-                </div>
-              }
-            />
-          </SettingsSection>
+              {user && l ? (
+                <RatingLimitRow
+                  value={l.maxContentRating}
+                  onChange={(maxContentRating) => patchLimits({ maxContentRating })}
+                  isOwner={user.isOwner}
+                />
+              ) : null}
+              <SettingsRow
+                title={t("Blocked genres")}
+                description={t("Comma-separated, e.g. Horror, Thriller.")}
+                control={
+                  <div className="w-64">
+                    <ListText
+                      ariaLabel={t("Blocked genres")}
+                      value={p.blockedGenres}
+                      onChange={(v) => patchPolicy({ blockedGenres: v })}
+                    />
+                  </div>
+                }
+              />
+              <SettingsRow
+                title={t("Blocked keywords")}
+                description={t("Comma-separated TMDB keywords.")}
+                control={
+                  <div className="w-64">
+                    <ListText
+                      ariaLabel={t("Blocked keywords")}
+                      value={p.blockedKeywords}
+                      onChange={(v) => patchPolicy({ blockedKeywords: v })}
+                    />
+                  </div>
+                }
+              />
+            </SettingsSection>
+          ) : null}
 
           <ViewerLibraries
             userId={id}
             allowed={user?.allowedLibraries}
-            isOwner={user?.isOwner}
+            isOwner={isOwner}
             onSaved={() => void users.reload()}
           />
 
@@ -363,6 +447,230 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
               }
             />
             <SettingsRow
+              setting="no-video-transcoding"
+              title={t("No video transcoding")}
+              description={
+                <span className="space-y-1">
+                  <span className="block">
+                    {t(
+                      "Play this viewer's video only as it is. Ether picks a version their device can play and never converts the picture for them. Audio can still be converted. Live TV is unaffected.",
+                    )}
+                  </span>
+                  {serverVideoOff ? (
+                    <span className="block">
+                      {t("Video transcoding is already turned off for the whole server.")}{" "}
+                      <Link
+                        to="/playback/transcoding"
+                        className="font-medium text-primary hover:underline"
+                      >
+                        {t("Review Transcoding")}
+                      </Link>
+                    </span>
+                  ) : null}
+                </span>
+              }
+              control={
+                <Switch
+                  aria-label={t("No video transcoding")}
+                  checked={Boolean(p.videoTranscodingDisabled)}
+                  onChange={(e) => patchPolicy({ videoTranscodingDisabled: e.target.checked })}
+                />
+              }
+            />
+            {hasAlwaysEncodeConflict ? (
+              <div className="px-5 py-3">
+                <Alert variant="warning" role="status">
+                  <AlertDescription>
+                    {t(
+                      "“Always convert video” is turned on in App compatibility ({apps}). “No video transcoding” wins for this viewer on movies and shows, so Ether still copies video instead of re-encoding it (Live TV is unaffected).",
+                      { apps: alwaysEncodeNames },
+                    )}{" "}
+                    <Link to="/playback/devices" className="font-medium underline">
+                      {t("Review App compatibility")}
+                    </Link>
+                  </AlertDescription>
+                </Alert>
+              </div>
+            ) : null}
+            {!isOwner ? (
+              <>
+                <SettingsRow
+                  setting="downloads"
+                  title={t("Downloads")}
+                  description={
+                    <span className="space-y-1">
+                      <span className="block">
+                        {t(
+                          "Allow or block offline downloads for this viewer, or follow the server setting.",
+                        )}
+                      </span>
+                      {config.data ? (
+                        !serverDownloadsOn ? (
+                          <span className="block">
+                            {t(
+                              "Offline downloads are turned off for the whole server, so this setting has no effect right now.",
+                            )}{" "}
+                            <Link
+                              to="/apps/plex/downloads"
+                              className="font-medium text-primary hover:underline"
+                            >
+                              {t("Open Plex downloads")}
+                            </Link>
+                          </span>
+                        ) : downloadMode === "default" ? (
+                          <span className="block">
+                            {plexAllowSync === false
+                              ? t(
+                                  "Following the server setting, but this viewer's plex.tv share disables downloads. Pick Allow to override it.",
+                                )
+                              : serverFriendsDownloads
+                                ? t("Following the server setting: friends can download.")
+                                : t("Following the server setting: friends cannot download.")}
+                          </span>
+                        ) : downloadMode === "allow" ? (
+                          <span className="block">
+                            {t(
+                              "Overrides the server and plex.tv share settings while server-wide downloads are on.",
+                            )}
+                          </span>
+                        ) : (
+                          <span className="block">
+                            {t(
+                              "Blocks offline downloads for this viewer even if friends are allowed.",
+                            )}
+                          </span>
+                        )
+                      ) : null}
+                    </span>
+                  }
+                  control={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Segmented
+                        size="sm"
+                        ariaLabel={t("Downloads")}
+                        value={downloadMode}
+                        onChange={(next) =>
+                          patchPolicy({
+                            allowDownloads: next === "default" ? undefined : next === "allow",
+                          })
+                        }
+                        options={[
+                          { value: "default", label: t("Server default") },
+                          { value: "allow", label: t("Allow") },
+                          { value: "block", label: t("Block") },
+                        ]}
+                      />
+                      {config.data ? (
+                        <Badge
+                          variant={effectiveDownloads ? "success" : "secondary"}
+                          className="whitespace-nowrap"
+                        >
+                          {effectiveDownloads ? t("Effective: Allowed") : t("Effective: Blocked")}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  }
+                />
+                <SettingsRow
+                  setting="no-download-transcoding"
+                  title={t("No converting for downloads")}
+                  description={t(
+                    "Downloads for this viewer use only a version that needs no video conversion at the chosen quality. Separate from playback: either switch can be on without the other.",
+                  )}
+                  control={
+                    <Switch
+                      aria-label={t("No converting for downloads")}
+                      checked={Boolean(p.downloadTranscodingDisabled)}
+                      onChange={(e) =>
+                        patchPolicy({ downloadTranscodingDisabled: e.target.checked })
+                      }
+                    />
+                  }
+                />
+                <SettingsRow
+                  setting="download-limit"
+                  title={t("Download limit")}
+                  description={t(
+                    "How much this viewer can download: a number of titles or an amount of data, per day or per month. Server default follows the Downloads settings under Apps.",
+                  )}
+                  control={
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <SearchSelect
+                        ariaLabel={t("Download limit counts")}
+                        value={p.downloadLimitUnit || "default"}
+                        options={[
+                          { value: "default", label: t("Server default") },
+                          { value: "none", label: t("No limit") },
+                          { value: "titles", label: t("Titles") },
+                          { value: "gb", label: t("GB") },
+                        ]}
+                        onChange={(choice) =>
+                          patchPolicy({
+                            downloadLimitUnit:
+                              choice === "none" || choice === "titles" || choice === "gb"
+                                ? choice
+                                : "",
+                          })
+                        }
+                        {...searchSelectLabels()}
+                      />
+                      {p.downloadLimitUnit === "titles" || p.downloadLimitUnit === "gb" ? (
+                        <>
+                          <NumberInput
+                            aria-label={t("Download limit amount")}
+                            className="w-24"
+                            min={0}
+                            value={p.downloadLimitAmount ?? 0}
+                            onChange={(n) =>
+                              patchPolicy({
+                                downloadLimitAmount: Math.max(0, Math.min(100000, Math.round(n))),
+                              })
+                            }
+                          />
+                          <SearchSelect
+                            ariaLabel={t("Download limit period")}
+                            value={p.downloadLimitPeriod === "month" ? "month" : "day"}
+                            options={[
+                              { value: "day", label: t("per day") },
+                              { value: "month", label: t("per month") },
+                            ]}
+                            onChange={(choice) =>
+                              patchPolicy({
+                                downloadLimitPeriod: choice === "month" ? "month" : "day",
+                              })
+                            }
+                            {...searchSelectLabels()}
+                          />
+                        </>
+                      ) : null}
+                    </div>
+                  }
+                />
+                <SettingsRow
+                  setting="download-max-height"
+                  title={t("Highest download quality")}
+                  description={t(
+                    "Downloads for this viewer are capped at this resolution. It cannot go above the server's download cap.",
+                  )}
+                  control={
+                    <SearchSelect
+                      ariaLabel={t("Highest download quality")}
+                      value={String(p.downloadMaxHeight ?? 0)}
+                      options={[
+                        { value: "0", label: t("Server default") },
+                        { value: "480", label: "480p" },
+                        { value: "720", label: "720p" },
+                        { value: "1080", label: "1080p" },
+                        { value: "2160", label: "4K" },
+                      ]}
+                      onChange={(choice) => patchPolicy({ downloadMaxHeight: Number(choice) || 0 })}
+                      {...searchSelectLabels()}
+                    />
+                  }
+                />
+              </>
+            ) : null}
+            <SettingsRow
               title={t("Maximum bitrate")}
               description={t("In kbps. 0 uses the server default.")}
               control={
@@ -377,118 +685,114 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
             />
           </SettingsSection>
 
-          {user && !user.isOwner ? (
+          {user && !isOwner ? (
             <SettingsSection
               title={t("Allowed times")}
               description={t("Let the current item finish, then pause playback until wake time.")}
             >
-              {user && !user.isOwner ? (
+              <SettingsRow
+                title={t("Bedtime")}
+                control={
+                  <Switch
+                    checked={!!p.bedtime}
+                    onChange={(e) =>
+                      patchPolicy({
+                        allowedHours: [],
+                        bedtime: e.target.checked
+                          ? { time: "20:00", wakeTime: "06:00", timezone: p.timezone }
+                          : null,
+                      })
+                    }
+                    aria-label={t("Bedtime")}
+                  />
+                }
+              />
+              {!p.bedtime && p.allowedHours.length > 0 ? (
+                <SettingsRow
+                  title={t("Allowed times")}
+                  control={
+                    <span>
+                      {p.allowedHours
+                        .map((hour) => `${String(hour).padStart(2, "0")}:00`)
+                        .join(", ")}
+                    </span>
+                  }
+                />
+              ) : null}
+              {p.bedtime ? (
                 <>
                   <SettingsRow
-                    title={t("Bedtime")}
+                    title={t("Bedtime starts")}
                     control={
-                      <Switch
-                        checked={!!p.bedtime}
+                      <input
+                        type="time"
+                        className="rounded border border-border bg-background px-3 py-2"
+                        aria-label={t("Bedtime starts")}
+                        required
+                        value={p.bedtime.time}
                         onChange={(e) =>
-                          patchPolicy({
-                            allowedHours: [],
-                            bedtime: e.target.checked
-                              ? { time: "20:00", wakeTime: "06:00", timezone: p.timezone }
-                              : null,
-                          })
+                          patchPolicy({ bedtime: { ...p.bedtime!, time: e.target.value } })
                         }
-                        aria-label={t("Bedtime")}
                       />
                     }
                   />
-                  {!p.bedtime && p.allowedHours.length > 0 ? (
-                    <SettingsRow
-                      title={t("Allowed times")}
-                      control={
-                        <span>
-                          {p.allowedHours
-                            .map((hour) => `${String(hour).padStart(2, "0")}:00`)
-                            .join(", ")}
-                        </span>
-                      }
-                    />
-                  ) : null}
-                  {p.bedtime ? (
-                    <>
-                      <SettingsRow
-                        title={t("Bedtime starts")}
-                        control={
-                          <input
-                            type="time"
-                            className="rounded border border-border bg-background px-3 py-2"
-                            aria-label={t("Bedtime starts")}
-                            required
-                            value={p.bedtime.time}
-                            onChange={(e) =>
-                              patchPolicy({ bedtime: { ...p.bedtime!, time: e.target.value } })
-                            }
-                          />
-                        }
-                      />
-                      <SettingsRow
-                        title={t("Wake time")}
-                        control={
-                          <input
-                            type="time"
-                            className="rounded border border-border bg-background px-3 py-2"
-                            aria-label={t("Wake time")}
-                            required
-                            value={p.bedtime.wakeTime || "06:00"}
-                            onChange={(e) =>
-                              patchPolicy({ bedtime: { ...p.bedtime!, wakeTime: e.target.value } })
-                            }
-                          />
-                        }
-                      />
-                      <SettingsRow
-                        title={t("Days")}
-                        description={t(
-                          "Choose the days bedtime starts. With no days selected, it applies every day.",
-                        )}
-                        control={
-                          <ChipGroup
-                            ariaLabel={t("Days")}
-                            options={[
-                              { value: 0, label: t("Sunday") },
-                              { value: 1, label: t("Monday") },
-                              { value: 2, label: t("Tuesday") },
-                              { value: 3, label: t("Wednesday") },
-                              { value: 4, label: t("Thursday") },
-                              { value: 5, label: t("Friday") },
-                              { value: 6, label: t("Saturday") },
-                            ]}
-                            value={p.bedtime.days ?? []}
-                            onChange={(days) => patchPolicy({ bedtime: { ...p.bedtime!, days } })}
-                          />
-                        }
-                      />
-                    </>
-                  ) : null}
                   <SettingsRow
-                    title={t("Time zone")}
-                    description={t("Leave empty to use the server’s time zone.")}
+                    title={t("Wake time")}
                     control={
-                      <div className="w-64">
-                        <TimeZoneSelect
-                          serverDefault={!!p.bedtime || p.allowedHours.length === 0}
-                          value={p.timezone}
-                          onChange={(timezone) =>
-                            patchPolicy({
-                              timezone,
-                              ...(p.bedtime ? { bedtime: { ...p.bedtime, timezone } } : {}),
-                            })
-                          }
-                        />
-                      </div>
+                      <input
+                        type="time"
+                        className="rounded border border-border bg-background px-3 py-2"
+                        aria-label={t("Wake time")}
+                        required
+                        value={p.bedtime.wakeTime || "06:00"}
+                        onChange={(e) =>
+                          patchPolicy({ bedtime: { ...p.bedtime!, wakeTime: e.target.value } })
+                        }
+                      />
+                    }
+                  />
+                  <SettingsRow
+                    title={t("Days")}
+                    description={t(
+                      "Choose the days bedtime starts. With no days selected, it applies every day.",
+                    )}
+                    control={
+                      <ChipGroup
+                        ariaLabel={t("Days")}
+                        options={[
+                          { value: 0, label: t("Sunday") },
+                          { value: 1, label: t("Monday") },
+                          { value: 2, label: t("Tuesday") },
+                          { value: 3, label: t("Wednesday") },
+                          { value: 4, label: t("Thursday") },
+                          { value: 5, label: t("Friday") },
+                          { value: 6, label: t("Saturday") },
+                        ]}
+                        value={p.bedtime.days ?? []}
+                        onChange={(days) => patchPolicy({ bedtime: { ...p.bedtime!, days } })}
+                      />
                     }
                   />
                 </>
               ) : null}
+              <SettingsRow
+                title={t("Time zone")}
+                description={t("Leave empty to use the server’s time zone.")}
+                control={
+                  <div className="w-64">
+                    <TimeZoneSelect
+                      serverDefault={!!p.bedtime || p.allowedHours.length === 0}
+                      value={p.timezone}
+                      onChange={(timezone) =>
+                        patchPolicy({
+                          timezone,
+                          ...(p.bedtime ? { bedtime: { ...p.bedtime, timezone } } : {}),
+                        })
+                      }
+                    />
+                  </div>
+                }
+              />
             </SettingsSection>
           ) : null}
         </>
@@ -497,16 +801,6 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
       <FromPlexDefaults viewerId={id} show="share" />
 
       <ViewerLiveTVAccess viewerId={id} />
-
-      <PlexWatchSync viewerId={id} plexId={viewer.plexId} />
-
-      {config.data ? (
-        <>
-          <ViewerTrakt viewerId={id} ready={Boolean(trakt?.enabled && trakt.clientId.trim())} />
-          <ViewerSimkl viewerId={id} ready={Boolean(simkl?.enabled && simkl.clientId.trim())} />
-          <ViewerMDBList viewerId={id} ready={Boolean(mdblist?.enabled)} />
-        </>
-      ) : null}
 
       <SaveBar
         dirty={limits.dirty || rules.dirty}

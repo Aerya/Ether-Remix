@@ -58,7 +58,7 @@ function UnconfiguredTrakt() {
   return (
     <SettingsSection title="Trakt">
       <SettingsRow
-        title="Trakt"
+        title={t("Connection")}
         description={tx("Set up Trakt in {link} before connecting an account.", {
           link: (
             <Link to="/services/trakt" className="font-medium text-primary hover:underline">
@@ -77,9 +77,9 @@ function UnconfiguredTrakt() {
 }
 
 /**
- * One viewer's Trakt account on their Limits tab. Connect opens a drawer that
- * runs the OAuth device-code flow with server-paced live polling; app
- * credentials live on Integrations › Trakt.
+ * One viewer's Trakt account on their Sign-in & devices tab. Connect opens a
+ * drawer that runs the OAuth device-code flow with server-paced live polling;
+ * app credentials live on Integrations › Trakt.
  */
 export function ViewerTrakt({ viewerId, ready }: { viewerId: number; ready: boolean }) {
   if (!ready) return <UnconfiguredTrakt />;
@@ -214,7 +214,7 @@ function TraktAccount({ viewerId }: { viewerId: number }) {
         description={t("Syncs this viewer's watch history, ratings and watchlist with Trakt.")}
       >
         <SettingsRow
-          title="Trakt"
+          title={t("Connection")}
           description={
             st.connected
               ? st.username

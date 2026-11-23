@@ -100,12 +100,29 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 	if err != nil {
 		return nil, err
 	}
-	release, err := s.reserveBroadcastProvider(account, c.ID, "broadcast-"+c.ID, entry.limit)
+	release, err := s.reserveBroadcastProvider(account, c.ID, "broadcast-"+c.ID+"-handoff-"+randomID(), entry.limit)
 	if err != nil {
 		return nil, err
 	}
 	inputCtx, cancel := context.WithCancel(s.serviceContext())
-	link := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: "broadcast-" + c.ID, Channel: c}, inputSource: src, inputURL: input, inputHeaders: headers}
+	ss.mu.Lock()
+	ephemeral := ss.ephemeral
+	direct := ss.direct
+	ss.mu.Unlock()
+	var directGen uint64
+	cm := ss.cachedMasterFor(input)
+	if direct != nil {
+		dURL, dRawHdrs, dHdrs, dCM, dGen, _, _ := direct.current()
+		if dURL != "" && (dURL == input || ephemeral) {
+			input = dURL
+			src.URL = dURL
+			src.Headers = dRawHdrs
+			headers = dHdrs
+			cm = dCM
+			directGen = dGen
+		}
+	}
+	link := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: "broadcast-" + c.ID, Channel: c}, ephemeral: ephemeral, direct: direct, sniffedManifest: cm, inputSource: src, inputURL: input, inputHeaders: headers}
 	grant := src
 	grant.URL = input
 	if err := s.grantSteadyInput(link, grant, headers); err != nil {
@@ -113,7 +130,10 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 		release()
 		return nil, err
 	}
-	return &steadyLink{src: src, ss: link, release: release, format: s.cachedInputFormat(link)}, nil
+	s.retainProbedTap(ss, link)
+	sl := newSteadyLink(src, link, release, s.cachedInputFormat(link))
+	sl.directGen = directGen
+	return sl, nil
 }
 
 // cachedProbe is a granted input's cached probe, without probing.

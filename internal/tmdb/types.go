@@ -144,6 +144,20 @@ type AltTitle struct {
 	Type    string `json:"type"`
 }
 
+// Translations is the translations appendix shared by movie and TV details.
+type Translations struct {
+	Translations []Translation `json:"translations"`
+}
+
+type Translation struct {
+	Language string `json:"iso_639_1"`
+	Country  string `json:"iso_3166_1"`
+	Data     struct {
+		Title string `json:"title"`
+		Name  string `json:"name"`
+	} `json:"data"`
+}
+
 // MovieDetails is /movie/{id} with append_to_response.
 type MovieDetails struct {
 	Movie
@@ -163,6 +177,7 @@ type MovieDetails struct {
 	ExternalIDs       *ExternalIDs   `json:"external_ids"`
 	Images            *Images        `json:"images"`
 	Keywords          *Keywords      `json:"keywords"`
+	Translations      *Translations  `json:"translations"`
 	AlternativeTitles *AltTitles     `json:"alternative_titles"`
 	Similar           *Paged[Movie]  `json:"similar"`
 	Recommendations   *Paged[Movie]  `json:"recommendations"`
@@ -237,6 +252,7 @@ type TVDetails struct {
 	ExternalIDs       *ExternalIDs    `json:"external_ids"`
 	Images            *Images         `json:"images"`
 	Keywords          *Keywords       `json:"keywords"`
+	Translations      *Translations   `json:"translations"`
 	AlternativeTitles *AltTitles      `json:"alternative_titles"`
 	Similar           *Paged[TVShow]  `json:"similar"`
 	Recommendations   *Paged[TVShow]  `json:"recommendations"`

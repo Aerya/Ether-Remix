@@ -34,15 +34,20 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Call(ctx context.Context, req Request) (Response, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, req)
-	fail, routes := f.fail, f.routes
+	fail := f.fail
+	var route func(Request) (Response, error)
+	for prefix, fn := range f.routes {
+		if strings.HasPrefix(req.Path, prefix) {
+			route = fn
+			break
+		}
+	}
 	f.mu.Unlock()
 	if fail != nil {
 		return Response{}, fail
 	}
-	for prefix, fn := range routes {
-		if strings.HasPrefix(req.Path, prefix) {
-			return fn(req)
-		}
+	if route != nil {
+		return route(req)
 	}
 	switch {
 	case strings.HasPrefix(req.Path, "/ether/health"):
@@ -111,6 +116,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		return env.fake, nil
 	})
 	env.m = m
+	t.Cleanup(func() {
+		env.m.cancelActionJobs("")
+		env.m.waitSchedule()
+	})
 	return env
 }
 
@@ -711,5 +720,228 @@ func TestSuccessfulCallClearsRecordedFailure(t *testing.T) {
 	h, _ := env.m.HealthOf(ctx, rec.ID)
 	if h.Status != "ok" || h.LastOK.IsZero() || h.LastError == "" {
 		t.Fatalf("health after a good call: %+v", h)
+	}
+}
+
+func mustParseTestManifest(t *testing.T, raw []byte) Manifest {
+	t.Helper()
+	m, err := ParseManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestOnInstallAndFolderGrantPrefill(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	var installedIDs []string
+	env.m.OnInstall(func(_ context.Context, r Record) {
+		installedIDs = append(installedIDs, r.ID+"@"+r.Version)
+	})
+	makeManifest := func(ver string) []byte {
+		return []byte(`{"id":"com.example.folders","version":"` + ver + `","name":"Folders","ether":{"protocol":1,"kind":"source","capabilities":["stream_source"],"runtime":{"kind":"hosted","entry":"plugin.js"},"permissions":{"folders":"read"},"settings":{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]},"contributes":{"source":{"class":"direct","abilities":["file"]}}}}`)
+	}
+	p1 := &Preview{
+		Manifest:         mustParseTestManifest(t, makeManifest("1.0.0")),
+		manifestRaw:      makeManifest("1.0.0"),
+		files:            map[string][]byte{"manifest.json": makeManifest("1.0.0"), "plugin.js": []byte("export function handle(){return {status:200,body:{}};}")},
+		resolvedSettings: json.RawMessage(`{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]}`),
+		source:           Source{Kind: "package", ID: "com.example.folders"},
+	}
+	dir := t.TempDir()
+	rec, err := env.m.Install(ctx, p1, InstallOptions{Grants: Grants{Folders: []string{dir}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installedIDs) != 1 || installedIDs[0] != "com.example.folders@1.0.0" {
+		t.Fatalf("OnInstall hooks: %v", installedIDs)
+	}
+	settings, _, err := env.m.GetSettings(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["folder"] != dir {
+		t.Fatalf("expected folder setting prefilled to %q, got %v", dir, settings)
+	}
+	// Updating an existing plugin does not re-fire OnInstall.
+	p2 := &Preview{
+		Manifest:         mustParseTestManifest(t, makeManifest("1.1.0")),
+		manifestRaw:      makeManifest("1.1.0"),
+		files:            map[string][]byte{"manifest.json": makeManifest("1.1.0"), "plugin.js": []byte("export function handle(){return {status:200,body:{}};}")},
+		resolvedSettings: json.RawMessage(`{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]}`),
+		source:           Source{Kind: "package", ID: "com.example.folders"},
+	}
+	if _, err := env.m.Install(ctx, p2, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(installedIDs) != 1 {
+		t.Fatalf("OnInstall fired on update: %v", installedIDs)
+	}
+}
+
+func TestWaitingSidecarDoesNotAutoDisableOnHealthTicks(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.fake.fail = errors.New("remote: tunnel disconnected")
+	env.m.RegisterRuntime("remote", func(inst Installed) (Runtime, error) {
+		return env.fake, nil
+	})
+	env.m.SetSidecarState(func(r Record) (bool, bool) {
+		if r.Manifest.RuntimeKind() == "remote" {
+			return true, false
+		}
+		return false, false
+	})
+	man := []byte(`{"id":"com.example.sidecar","version":"1.0.0","name":"Sidecar","ether":{"protocol":1,"kind":"extension","runtime":{"kind":"remote"}}}`)
+	p := &Preview{
+		Manifest:    mustParseTestManifest(t, man),
+		manifestRaw: man,
+		files:       map[string][]byte{"manifest.json": man},
+		source:      Source{Kind: "package", ID: "com.example.sidecar"},
+	}
+	rec, err := env.m.Install(ctx, p, InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastHealth := map[string]time.Time{}
+	for i := 0; i < 6; i++ {
+		env.m.runOnce(ctx, lastHealth)
+		delete(lastHealth, rec.ID)
+	}
+	after, err := env.m.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Enabled {
+		t.Fatal("waiting sidecar plugin was auto-disabled before sidecar connected")
+	}
+	h, err := env.m.CheckHealth(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Status != "attention" || h.Sidecar != "waiting" {
+		t.Fatalf("unexpected waiting sidecar health: %+v", h)
+	}
+}
+
+type stubCatalogueIcon struct {
+	icons map[string]string
+}
+
+func (stubCatalogueIcon) ServeHTTP(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+func (stubCatalogueIcon) Resolve(context.Context, string, string) (CatalogueArtifact, error) {
+	return CatalogueArtifact{}, ErrNotFound
+}
+func (s stubCatalogueIcon) EntryIcon(id string) string { return s.icons[id] }
+
+func TestPackagedIconServedAndResolvedAfterInstall(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="15" fill="#412095"/><path d="m27 21 14 9.5L27 40z" fill="#fff"/></svg>`)
+	man := map[string]any{
+		"id": "community.example.iconpkg", "version": "1.0.0", "name": "Icon Plugin",
+		"ether": map[string]any{
+			"protocol": 1, "kind": "extension", "summary": "Plugin with packaged icon.",
+			"icon":         "assets/icon.svg",
+			"capabilities": []string{"ui"},
+			"runtime":      map[string]any{"kind": "hosted", "entry": "plugin.js"},
+			"contributes": map[string]any{
+				"pages": []any{map[string]any{"key": "home", "label": "Home", "route": "/ether/view/home"}},
+			},
+		},
+	}
+	manRaw, err := json.Marshal(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"manifest.json":   manRaw,
+		"plugin.js":       []byte("export default {};\n"),
+		"assets/icon.svg": svg,
+	}
+	files["digest"] = []byte(PkgDigest(files) + "\n")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for k, v := range files {
+		w, err := zw.Create(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "pkg", Pkg: buf.Bytes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prev.Icon, "data:image/png;base64,") {
+		t.Fatalf("expected rasterized preview icon data URI, got %q", prev.Icon)
+	}
+	if _, err := env.m.Install(ctx, prev, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := env.m.Handler()
+	listReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	listRec := httptest.NewRecorder()
+	srv.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listRec.Code)
+	}
+	var listBody struct {
+		Plugins []Summary `json:"plugins"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(listBody.Plugins) != 1 {
+		t.Fatalf("plugins len = %d", len(listBody.Plugins))
+	}
+	gotIcon := listBody.Plugins[0].Icon
+	if !strings.HasPrefix(gotIcon, "/ether/api/plugins/community.example.iconpkg/icon?v=1.0.0") {
+		t.Fatalf("expected served icon URL, got %q", gotIcon)
+	}
+
+	iconReq := httptest.NewRequest(http.MethodGet, "/community.example.iconpkg/icon", nil)
+	iconRec := httptest.NewRecorder()
+	srv.ServeHTTP(iconRec, iconReq)
+	if iconRec.Code != http.StatusOK {
+		t.Fatalf("icon status = %d", iconRec.Code)
+	}
+	if ct := iconRec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("icon Content-Type = %q, want image/png", ct)
+	}
+	if !bytes.HasPrefix(iconRec.Body.Bytes(), []byte("\x89PNG")) {
+		t.Fatal("expected PNG payload from /icon")
+	}
+
+	// Missing packaged icon falls back to catalogue EntryIcon when available, never raw relative path.
+	env.m.SetCatalogue(stubCatalogueIcon{icons: map[string]string{
+		"community.example.nofile": "https://catalogue.example/icons/nofile.svg",
+	}})
+	noFileMan := []byte(`{"id":"community.example.nofile","version":"1.0.0","name":"No File","ether":{"protocol":1,"kind":"extension","summary":"Missing local icon.","icon":"assets/icon.svg","capabilities":["ui"],"runtime":{"kind":"hosted","entry":"plugin.js"},"contributes":{"pages":[{"key":"home","label":"Home","route":"/ether/view/home"}]}}}`)
+	_, err = env.m.Install(ctx, &Preview{
+		Manifest:    mustParseTestManifest(t, noFileMan),
+		manifestRaw: noFileMan,
+		files:       map[string][]byte{"manifest.json": noFileMan, "plugin.js": []byte("export default {};")},
+		source:      Source{Kind: "pkg", ID: "community.example.nofile"},
+	}, InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listRec2 := httptest.NewRecorder()
+	srv.ServeHTTP(listRec2, httptest.NewRequest(http.MethodGet, "/community.example.nofile", nil))
+	var detail Detail
+	if err := json.Unmarshal(listRec2.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Icon != "https://catalogue.example/icons/nofile.svg" {
+		t.Fatalf("expected catalogue icon fallback, got %q", detail.Icon)
 	}
 }

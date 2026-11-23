@@ -1,7 +1,7 @@
 import { ConfigSection } from "../../components/ConfigSection";
 import { PERSONAL_TOUCHES } from "../settings/schema";
 import { Badge, Button, Switch, cn } from "@braedonsaunders/appkit-ui";
-import { Brain, Compass, Copy, Layers3, RotateCcw, Sparkles } from "lucide-react";
+import { Brain, Compass, Layers3, RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DivergingBars } from "../../components/charts";
 import { api } from "../../lib/api";
@@ -16,7 +16,7 @@ import { getLocale, localized, t } from "../../i18n";
 import { formatNumber, relativeTime } from "../../lib/format";
 import {
   DIAL_DEFAULT,
-  SECTIONS,
+  sectionLabelOf,
   effectiveDedupe,
   effectiveTuning,
   setDedupe,
@@ -99,7 +99,7 @@ export function TuningPanel({
   section: LayoutSection;
   viewers: Viewer[];
 }) {
-  const page = SECTIONS.find((s) => s.value === section)?.label ?? section;
+  const page = sectionLabelOf(section);
   const who =
     layer === "global"
       ? t("everyone")
@@ -107,7 +107,6 @@ export function TuningPanel({
         viewers.find((v) => v.id === layer)?.username ??
         t("this viewer"));
   const dedupe = effectiveDedupe(draft, layer, section);
-  const otherSections = SECTIONS.filter((s) => s.value !== section);
   return (
     <div className="space-y-5">
       <section aria-label={t("How {page} picks", { page })} className="space-y-3">
@@ -149,32 +148,6 @@ export function TuningPanel({
             onChange={(v) => onChange(setTuning(draft, layer, section, d.dial, v))}
           />
         ))}
-        {otherSections.length ? (
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-muted">
-            <Copy size={12} /> {t("Copy these dials to")}
-            {otherSections.map((s) => (
-              <button
-                key={s.value}
-                type="button"
-                className="rounded-full border border-border px-2 py-0.5 font-medium text-fg hover:bg-surface-hover"
-                onClick={() => {
-                  let next = draft;
-                  for (const d of DIALS)
-                    next = setTuning(
-                      next,
-                      layer,
-                      s.value,
-                      d.dial,
-                      tuningIn(draft, layer, section, d.dial),
-                    );
-                  onChange(next);
-                }}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </section>
 
       {section !== "home" ? (

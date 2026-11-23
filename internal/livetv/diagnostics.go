@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 // TuneInputFailure retains a safe per-input startup diagnosis.
@@ -69,6 +70,8 @@ func (e *TuneError) Error() string {
 		return "The connection to the Live TV provider failed."
 	case "stream_limit":
 		return "The viewer has reached their simultaneous stream limit."
+	case "playback_capacity":
+		return "The server has reached its concurrent transcode capacity."
 	case "forbidden":
 		return "The viewer is not allowed to play this live channel."
 	case "not_found":
@@ -105,6 +108,8 @@ func Diagnose(stage string, err error) *TuneError {
 		e.Code = "provider_paced"
 	case errors.Is(err, core.ErrStreamLimit):
 		e.Code, e.RetryAfter = "stream_limit", 5*time.Second
+	case errors.Is(err, transcode.ErrTooManyTranscodes):
+		e.Code, e.RetryAfter = "playback_capacity", 5*time.Second
 	case errors.Is(err, core.ErrUnauthorized):
 		e.Code = "forbidden"
 	case errors.Is(err, core.ErrNotFound):
@@ -178,7 +183,9 @@ type mediaObservation struct {
 	started     time.Time
 	status      int
 	bytes       int
+	credited    int
 	writeFailed bool
+	continuous  bool
 }
 
 func (w *mediaObservation) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -205,6 +212,29 @@ func (w *mediaObservation) Write(p []byte) (int, error) {
 	}
 	w.bytes += n
 	w.writeFailed = w.writeFailed || err != nil
+	if n > 0 && err == nil && w.status >= 200 && w.status < 300 {
+		var firstContinuous bool
+		var snap core.PlaySession
+		obsNow := w.s.clockNow()
+		w.ss.mu.Lock()
+		w.ss.bytesServed += int64(n)
+		w.credited += n
+		if w.continuous {
+			w.ss.last = obsNow
+			w.ss.mediaStarted = true
+			if !w.ss.firstMediaDelivered {
+				w.ss.firstMediaDelivered = true
+				w.ss.firstDeliveredAt = obsNow
+				firstContinuous = true
+				snap = w.s.sessionSnapshotLocked(w.ss, obsNow)
+			}
+		}
+		w.ss.mu.Unlock()
+		if firstContinuous {
+			w.s.sessionLog(w.ss).Info("live first media response delivered", "status", w.status, "bytes", w.bytes, "elapsed", time.Since(w.started), "write_failed", w.writeFailed)
+			w.s.observeSession(&snap, false, "")
+		}
+	}
 	return n, err
 }
 func (w *mediaObservation) Flush() {
@@ -216,15 +246,26 @@ func (w *mediaObservation) Flush() {
 func (s *Service) observeMedia(w http.ResponseWriter, ss *session) *mediaObservation {
 	return &mediaObservation{ResponseWriter: w, s: s, ss: ss, started: time.Now()}
 }
+func (s *Service) observeContinuousMedia(w http.ResponseWriter, ss *session) *mediaObservation {
+	return &mediaObservation{ResponseWriter: w, s: s, ss: ss, started: time.Now(), continuous: true}
+}
 func (w *mediaObservation) done() {
 	ss := w.ss
 	success := w.status >= 200 && w.status < 300 && w.bytes > 0 && !w.writeFailed
 	failed := w.status >= 400 || w.writeFailed
 	now := time.Now()
+	var snap core.PlaySession
 	ss.mu.Lock()
+	if rem := w.bytes - w.credited; rem > 0 {
+		ss.bytesServed += int64(rem)
+		w.credited = w.bytes
+	}
 	first := success && !ss.firstMediaDelivered
 	if first {
+		obsNow := w.s.clockNow()
 		ss.firstMediaDelivered = true
+		ss.firstDeliveredAt = obsNow
+		snap = w.s.sessionSnapshotLocked(ss, obsNow)
 	}
 	warn := failed && (ss.lastMediaWarning.IsZero() || now.Sub(ss.lastMediaWarning) >= 5*time.Second)
 	if warn {
@@ -234,6 +275,7 @@ func (w *mediaObservation) done() {
 	attrs := []any{"status", w.status, "bytes", w.bytes, "elapsed", time.Since(w.started), "write_failed", w.writeFailed}
 	if first {
 		w.s.sessionLog(ss).Info("live first media response delivered", attrs...)
+		w.s.observeSession(&snap, false, "")
 	}
 	if warn {
 		w.s.sessionLog(ss).Warn("live media response failed", attrs...)

@@ -34,3 +34,34 @@ type edgePortableLinks interface{ edgePortableLinks() bool }
 type cdnEdgeApprover interface {
 	approvesCDNEdge(raw, candidate string) bool
 }
+
+// zipOnlyCheckBlindProvider is a provider whose bulk CheckCached cannot see
+// torrents cached only as a single server-side ZIP archive (TorBox zips
+// torrents of 100+ files and reports them uncached in /torrents/checkcached
+// even when cached-only /torrents/createtorrent returns the cached zip).
+// Returning a positive file-count threshold tells Service not to trust a
+// CheckCached miss for public torrents at or above that file count.
+type zipOnlyCheckBlindProvider interface{ zipOnlyCheckThreshold() int }
+
+// queuedTorrentStatus is the result of checking a provider-queued download
+// (accepted with a queue id instead of a torrent id).
+type queuedTorrentStatus struct {
+	// TorrentID is populated once the provider promotes the queued item into
+	// an active or finished torrent on the account.
+	TorrentID string
+	// StillQueued reports that the item is still waiting in the provider's
+	// queue and has not been promoted yet.
+	StillQueued bool
+	// QueuedID is the current queue id when StillQueued is true.
+	QueuedID string
+	// ActiveDownloads is the number of active downloads currently holding
+	// slots ahead of the queued item, when the lookup obtained it cheaply.
+	ActiveDownloads int
+}
+
+// queuedTorrentFollower is a provider that can queue an add behind active
+// downloads without assigning a torrent id yet (TorBox queued_id), and check
+// whether the queued item has started or is still queued without re-adding it.
+type queuedTorrentFollower interface {
+	followQueuedTorrent(ctx context.Context, hash, queuedHash, queuedID string) (queuedTorrentStatus, error)
+}

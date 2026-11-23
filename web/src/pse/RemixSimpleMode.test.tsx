@@ -221,6 +221,12 @@ it("place le groupe Remix au-dessus de Bibliothèque, avec des libellés traduit
 });
 
 it("l’adresse /remix/langues ouvre la page Qualité de Lecture sans barre de vues", async () => {
+  apiFetch.mockImplementation(async (path: string) => {
+    if (path === "/pse/quality/") return { mode: "simple", profiles: [] };
+    if (path === "/pse/quality/manifest") return [];
+    if (path === "/pse/themes/") return { themes: [] };
+    return { features: [] };
+  });
   render(page("/remix/langues"));
   expect(await screen.findByRole("heading", { name: "Langues et qualité", level: 1 })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Priorités" })).toBeNull();

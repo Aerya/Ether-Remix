@@ -114,20 +114,22 @@ export type PersonalRecipe = {
   maxShowShare: number;
   nightMaxMinutes: number;
 };
+export type ProgrammeBinding = {
+  title: string;
+  time?: string;
+  reason?: string;
+  meta?: string;
+  logline?: string;
+  poster?: string;
+  backdrop?: string;
+};
 export type Bindings = {
   channel?: { name: string; logo?: string };
   viewer?: { name: string; greeting?: string };
-  now?: { title: string };
-  next?: {
-    title: string;
-    time?: string;
-    reason?: string;
-    meta?: string;
-    logline?: string;
-    backdrop?: string;
-  };
+  now?: ProgrammeBinding;
+  next?: ProgrammeBinding;
   offair?: { message: string };
-  list?: { title: string; time: string; reason?: string; meta?: string; poster?: string }[];
+  list?: (ProgrammeBinding & { time: string })[];
   greeting?: string;
 };
 export type OnAirAsset = {

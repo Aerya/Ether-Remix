@@ -23,6 +23,9 @@
 // handle(request) -> response with plain objects (the TypeScript SDK's
 // plugin({...}) router produces this); host services are on the ether
 // global (ether.kv.get, ether.http.fetch, ether.log, ether.abort, ...).
+// Global TextDecoder (UTF-8 labels, {stream, fatal, ignoreBOM}) and
+// TextEncoder.encode are backed by native Go UTF-8 helpers
+// (__ether_text_decode and __ether_text_encode).
 //
 // # Raw WASM ABI
 //

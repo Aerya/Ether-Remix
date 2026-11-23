@@ -10,12 +10,15 @@ import { useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import { t } from "../i18n";
 import { DomainPage } from "../components/layout";
+import { usePageTitle } from "../lib/document-title";
 import { PluginView, pageHeaderText, type PluginViewDoc } from "./PluginView";
 
 export default function PluginPage() {
   const { plugin = "", page = "", "*": rest = "" } = useParams();
   const location = useLocation();
-  const [doc, setDoc] = useState<PluginViewDoc | null>(null);
+  const pageKey = `${plugin}/${page}`;
+  const [loaded, setLoaded] = useState<{ key: string; doc: PluginViewDoc } | null>(null);
+  const doc = loaded?.key === pageKey ? loaded.doc : null;
 
   const params: Record<string, string> = {};
   for (const [key, value] of new URLSearchParams(location.search)) {
@@ -25,7 +28,9 @@ export default function PluginPage() {
 
   // A plugin's own page header becomes the page title, shown once.
   const header = doc ? pageHeaderText(doc) : {};
-  const title = header.title || doc?.title || page;
+  const docTitle = header.title || doc?.title;
+  usePageTitle(docTitle ? [docTitle] : null);
+  const title = docTitle || page;
   return (
     <DomainPage
       title={title}
@@ -43,11 +48,11 @@ export default function PluginPage() {
       }
     >
       <PluginView
-        key={`${plugin}/${page}`}
+        key={pageKey}
         plugin={plugin}
         page={page}
         params={params}
-        onDoc={setDoc}
+        onDoc={(nextDoc) => setLoaded({ key: pageKey, doc: nextDoc })}
         liftPageHeader
       />
     </DomainPage>

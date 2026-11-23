@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -115,11 +117,13 @@ func HostedRuntimeFactory(eng *wasm.Engine) RuntimeFactory {
 		decl := inst.Manifest.Ether.Runtime
 		host := hostBridge{h: inst.Host}
 		lim := HotLimits(inst.Manifest)
+		lim.Stremio = inst.Manifest.SpeaksStremio()
 		if inst.RuntimeLimits != nil {
 			l := inst.RuntimeLimits
 			lim.MemoryBytes = l.MemoryBytes
 			lim.Deadline, _ = time.ParseDuration(l.Deadline)
 			lim.UnitBudget = l.UnitBudget
+			lim.PoolSize = l.PoolSize
 		}
 		lim.Busy = inst.Busy
 		switch {
@@ -205,16 +209,23 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground, Deadline: req.Deadline, AISearch: req.AISearch})
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body}, nil
+	var blob *FrontendBlob
+	if len(resp.Blob) > 0 {
+		if err := json.Unmarshal(resp.Blob, &blob); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 
-func (r *hostedRuntime) Close() error       { return r.p.Close() }
-func (r *hostedRuntime) HasRankKey() bool   { return r.p.HasRankKey() }
-func (r *hostedRuntime) HasCondMatch() bool { return r.p.HasCondMatch() }
+func (r *hostedRuntime) Close() error              { return r.p.Close() }
+func (r *hostedRuntime) HasRankKey() bool          { return r.p.HasRankKey() }
+func (r *hostedRuntime) HasCondMatch() bool        { return r.p.HasCondMatch() }
+func (r *hostedRuntime) PoolStats() wasm.PoolStats { return r.p.PoolStats() }
 
 func (r *hostedRuntime) RankBatch(ctx context.Context, cands []CandidateFacts, config json.RawMessage) ([]int64, HotOutcome, error) {
 	in := make([]wasm.Candidate, len(cands))
@@ -317,12 +328,20 @@ func (m *Manager) warmAsync(pluginID string) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		r, err := m.Get(ctx, pluginID)
-		if err != nil || !r.Enabled {
-			return
-		}
-		if _, err := m.runtimeFor(ctx, r); err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			r, err := m.Get(ctx, pluginID)
+			if err != nil || !r.Enabled {
+				return
+			}
+			_, err = m.runtimeFor(ctx, r)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, ErrUnavailable) && attempt < 2 {
+				continue
+			}
 			m.log.Warn("plugins: warm hot runtime", "plugin", pluginID, "err", err)
+			return
 		}
 	}()
 }
@@ -370,7 +389,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.fetchToCache", "cache.read", "archive.list", "archive.open":
+	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "cache.rasterize", "archive.list", "archive.open", "archive.read", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -395,42 +414,96 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kv.list":
 		keys, err := b.h.KVList(ctx, str(0))
 		return result(keys, err)
+	case "kv.usage":
+		usage, err := b.h.KVUsage(ctx)
+		return result(usage, err)
+	case "badges.set":
+		var entries []BadgeEntry
+		if len(args) > 1 && len(args[1]) > 0 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &entries); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "badges.set takes (setKey, entries[])"}
+			}
+		}
+		return result(nil, b.h.BadgesSet(ctx, str(0), entries))
+	case "badges.clear":
+		return result(nil, b.h.BadgesClear(ctx, str(0)))
+	case "badges.usage":
+		usage, err := b.h.BadgesUsage(ctx)
+		return result(usage, err)
 	case "settings.get":
 		v, err := b.h.Settings(ctx)
 		return result(v, err)
 	case "secret.get":
 		v, err := b.h.SecretGet(ctx, str(0))
 		return result(v, err)
-	case "http.fetch":
-		var req struct {
-			Method  string            `json:"method"`
-			URL     string            `json:"url"`
-			Headers map[string]string `json:"headers"`
-			Body    string            `json:"body"`
-			// BodyBase64 carries a binary request body; it wins over Body.
-			BodyBase64 string `json:"bodyBase64"`
+	case "secret.set":
+		if len(args) < 2 {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set takes (name, value, ttlSec?)"}
 		}
+		var secName, secVal string
+		if err := json.Unmarshal(args[0], &secName); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set name must be a string"}
+		}
+		if err := json.Unmarshal(args[1], &secVal); err != nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set value must be a string"}
+		}
+		var ttlSec int64
+		if len(args) > 2 && len(args[2]) > 0 && string(args[2]) != "null" {
+			var ttl float64
+			if err := json.Unmarshal(args[2], &ttl); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "secret.set ttlSec must be a number"}
+			}
+			if math.IsNaN(ttl) || math.IsInf(ttl, 0) || math.Trunc(ttl) != ttl || ttl < 0 || ttl > float64(MaxDerivedSecretTTLSec) {
+				return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: fmt.Sprintf("secret.set ttlSec must be an integer between 0 and %d", MaxDerivedSecretTTLSec)}
+			}
+			ttlSec = int64(ttl)
+		}
+		return result(nil, b.h.SecretSet(ctx, secName, secVal, ttlSec))
+	case "secret.delete":
+		return result(nil, b.h.SecretDelete(ctx, str(0)))
+	case "http.fetch":
+		var rawReq wireFetchRequest
 		if len(args) > 0 {
-			if err := json.Unmarshal(args[0], &req); err != nil {
+			if err := json.Unmarshal(args[0], &rawReq); err != nil {
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "http.fetch takes {method, url, headers, body}"}
 			}
 		}
-		if req.Method == "" {
-			req.Method = "GET"
+		req, fault := rawReq.toFetchRequest()
+		if fault != nil {
+			return nil, fault
 		}
-		body := []byte(req.Body)
-		if req.BodyBase64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(req.BodyBase64)
-			if err != nil {
-				return nil, &wasm.Fault{Code: "bad_arguments", Message: "bodyBase64 is not valid base64"}
-			}
-			body = decoded
-		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body})
+		resp, err := b.h.HTTPFetch(ctx, req)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		return result(FetchResult(resp), nil)
+	case "http.fetchMany":
+		reqs, opts, fault := ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		var results []FetchManyResult
+		var err error
+		if mh, ok := b.h.(interface {
+			HTTPFetchMany(context.Context, []FetchRequest, FetchManyOptions) ([]FetchManyResult, error)
+		}); ok {
+			results, err = mh.HTTPFetchMany(ctx, reqs, opts)
+		} else {
+			results, err = runFetchMany(ctx, reqs, opts, func(itemCtx context.Context, req FetchRequest, budget *fetchByteBudget) (FetchResponse, error) {
+				resp, ferr := b.h.HTTPFetch(itemCtx, req)
+				if ferr != nil {
+					return FetchResponse{}, ferr
+				}
+				if !budget.reserve(int64(len(resp.Body))) {
+					return FetchResponse{}, fmt.Errorf("plugins: fetchMany batch response larger than %d bytes", budget.limit)
+				}
+				return resp, nil
+			})
+		}
+		if err != nil {
+			return nil, mapHostError(err)
+		}
+		return result(FetchManyResultWire(results), nil)
 	case "catalog.search":
 		v, err := b.h.CatalogSearch(ctx, str(0), int(num(1)), int(num(2)))
 		return result(v, err)
@@ -471,11 +544,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.upsert takes (kind, items[])"}
 			}
 		}
-		accepted, err := b.h.KindUpsert(ctx, str(0), items)
+		var upserted KindUpsertResult
+		var err error
+		if wh, ok := b.h.(interface {
+			KindUpsertWithResult(context.Context, string, []core.KindItem) (KindUpsertResult, error)
+		}); ok {
+			upserted, err = wh.KindUpsertWithResult(ctx, str(0), items)
+		} else {
+			var accepted int
+			accepted, err = b.h.KindUpsert(ctx, str(0), items)
+			upserted.Accepted = accepted
+		}
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		return result(map[string]any{"accepted": accepted}, nil)
+		return result(map[string]any{
+			"accepted": upserted.Accepted, "added": upserted.Added,
+			"updated": upserted.Updated, "unchanged": upserted.Unchanged,
+		}, nil)
 	case "kinds.delete":
 		var ids []string
 		if len(args) > 1 {
@@ -487,8 +573,48 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kinds.items":
 		page, err := b.h.KindItems(ctx, str(0), str(1), int(num(2)))
 		return result(page, err)
+	case "kinds.visible":
+		var ids []string
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &ids); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.visible takes (kind, ids[])"}
+			}
+		}
+		visible, err := b.h.KindVisible(ctx, str(0), ids)
+		return result(visible, err)
+	case "kinds.browse":
+		var q core.KindBrowseRequest
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &q); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.browse takes (kind, query?)"}
+			}
+		}
+		page, err := b.h.KindBrowse(ctx, str(0), q)
+		return result(page, err)
 	case "frontend.streamURL":
-		u, err := b.h.StreamURL(ctx, str(0))
+		var opts StreamURLOptions
+		if len(args) > 1 {
+			rawArg := bytes.TrimSpace(args[1])
+			if len(rawArg) > 0 && string(rawArg) != "null" {
+				if rawArg[0] == '{' {
+					dec := json.NewDecoder(bytes.NewReader(rawArg))
+					dec.DisallowUnknownFields()
+					if err := dec.Decode(&opts); err != nil {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+					}
+					if opts.PartIndex != nil && *opts.PartIndex < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+				} else {
+					var n int
+					if err := json.Unmarshal(rawArg, &n); err != nil || n < 0 {
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+					}
+					opts.PartIndex = &n
+				}
+			}
+		}
+		u, err := b.h.StreamURLWithOptions(ctx, str(0), opts)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -500,14 +626,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "sources.resolve takes a query object"}
 			}
 		}
-		cands, err := b.h.ResolveSources(ctx, q)
+		var (
+			res core.SourceResolveResult
+			err error
+		)
+		if rh, ok := b.h.(interface {
+			ResolveSourcesWithResult(context.Context, core.SourceQuery) (core.SourceResolveResult, error)
+		}); ok {
+			res, err = rh.ResolveSourcesWithResult(ctx, q)
+		} else {
+			res.Candidates, err = b.h.ResolveSources(ctx, q)
+		}
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		if cands == nil {
-			cands = []core.SourceCandidate{}
+		if res.Candidates == nil {
+			res.Candidates = []core.SourceCandidate{}
 		}
-		return result(map[string]any{"candidates": cands}, nil)
+		return result(res, nil)
 	case "cache.put":
 		var body []byte
 		if len(args) > 2 {
@@ -538,17 +674,23 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		return result(map[string]any{"blob": ref}, nil)
 	case "cache.open":
+		readCap := int64(MinDataReadBytes)
+		if provider, ok := b.h.(interface {
+			DataLimits(context.Context) RuntimeLimits
+		}); ok {
+			readCap = dataReadLimit(provider.DataLimits(ctx))
+		}
 		rc, err := b.h.CacheOpen(ctx, str(0))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		defer rc.Close()
-		data, err := io.ReadAll(io.LimitReader(rc, wasm.MaxHostResultBytes+1))
+		data, err := io.ReadAll(io.LimitReader(rc, readCap+1))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		if len(data) > wasm.MaxHostResultBytes {
-			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds host result size cap"}
+		if int64(len(data)) > readCap {
+			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds per-call readBytes limit"}
 		}
 		out := map[string]any{}
 		if utf8.Valid(data) {
@@ -558,6 +700,8 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			out["bodyBase64"] = base64.StdEncoding.EncodeToString(data)
 		}
 		return result(out, nil)
+	case "cache.delete":
+		return result(nil, b.h.CacheDelete(ctx, str(0)))
 	case "folders.list":
 		v, err := b.h.FoldersList(ctx, str(0), str(1))
 		return result(v, err)
@@ -575,6 +719,37 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return result(v, err)
 	case "folders.stat":
 		v, err := b.h.FoldersStat(ctx, str(0), str(1))
+		return result(v, err)
+	case "events.publish":
+		key := str(0)
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		var corr events.Correlation
+		if len(args) > 2 && len(bytes.TrimSpace(args[2])) > 0 && string(bytes.TrimSpace(args[2])) != "null" {
+			if err := json.Unmarshal(args[2], &corr); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "events.publish correlation must be an object"}
+			}
+		}
+		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "ai.complete":
+		var req AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		v, err := b.h.AIComplete(ctx, req)
+		return result(v, err)
+	case "media.probe":
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		v, err := b.h.MediaProbe(ctx, src)
 		return result(v, err)
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
@@ -594,15 +769,44 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 }
 
 func mapHostError(err error) error {
+	var fault *wasm.Fault
 	var input *CollectionInputError
 	var valid *ValidationError
+	var blocked *BlockedLocalHostError
+	var blockedOp *BlockedOperatorHostError
 	switch {
+	case errors.As(err, &blocked):
+		return &wasm.Fault{Code: "host_error", Message: blocked.PluginMessage()}
+	case errors.As(err, &blockedOp):
+		return wasm.Forbidden(blockedOp.PluginMessage())
+	case errors.As(err, &fault):
+		return fault
 	case errors.As(err, &input):
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: input.Message}
 	case errors.As(err, &valid):
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrNotFound):
+		return &wasm.Fault{Code: "not_found", Message: err.Error()}
+	case errors.Is(err, ErrNotConfigured):
+		return &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
+	case errors.Is(err, ErrInvalidOutput):
+		return &wasm.Fault{Code: "invalid_output", Message: strings.TrimPrefix(err.Error(), "plugins: invalid language model output: ")}
+	case errors.Is(err, ErrUnavailable):
+		return &wasm.Fault{Code: "unavailable", Message: err.Error()}
+	case errors.Is(err, ErrQuotaExceeded):
+		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
+	case errors.Is(err, ErrRateLimited):
+		f := &wasm.Fault{Code: "rate_limited", Message: err.Error()}
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			f.RetryAfterSec = rl.RetryAfterSeconds(time.Now())
+			if !rl.RetryAt.IsZero() {
+				f.RetryAt = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+		}
+		return f
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:

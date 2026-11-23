@@ -88,6 +88,46 @@ var genericKeywords = map[string]bool{
 	"anime": true, "based on manga": true, "biography": true, "sitcom": true, "miniseries": true, "limited series": true,
 	"mini-series": true, "based on young adult novel": true, "shared universe": true, "reboot": true, "prequel": true,
 	"spin off": true, "duringcreditstinger": true, "short film": true, "tv movie": true,
+	"based on true story": true, "based on play or musical": true, "based on video game": true, "based on tv series": true,
+	"based on short story": true, "based on children's book": true, "post-credits scene": true, "mid-credits scene": true,
+	"flashback": true, "voice over": true, "narration": true, "ensemble cast": true, "female protagonist": true,
+	"male protagonist": true, "anthology": true, "feature debut": true, "directorial debut": true, "surprise ending": true,
+	"plot twist": true, "title spoken by character": true, "one word title": true, "character name in title": true,
+	"employer": true, "employee": true, "husband wife relationship": true, "parent child relationship": true,
+	"father son relationship": true, "mother daughter relationship": true, "brother sister relationship": true,
+}
+
+var sensitiveThemePhrases = map[string]bool{
+	"sexual assault": true, "sexual violence": true, "sexual abuse": true, "child abuse": true,
+	"domestic violence": true, "domestic abuse": true, "spousal abuse": true, "human trafficking": true,
+	"sex trafficking": true, "forced prostitution": true, "self-harm": true, "self harm": true,
+	"self-injury": true, "self injury": true, "self-mutilation": true, "suicide attempt": true,
+	"erotic movie": true, "full frontal nudity": true, "female nudity": true, "male nudity": true,
+	"prostitution": true, "prostitute": true, "torture": true, "mutilation": true, "genital mutilation": true,
+	"school shooting": true, "mass shooting": true, "ethnic cleansing": true, "concentration camp": true,
+	"drug overdose": true, "overdose": true, "anorexia": true, "bulimia": true, "eating disorder": true,
+	"miscarriage": true, "stillbirth": true, "abortion": true,
+}
+
+var sensitiveThemeWords = map[string]bool{
+	"rape": true, "raped": true, "rapist": true, "suicide": true, "suicidal": true,
+	"incest": true, "pedophilia": true, "paedophilia": true, "pedophile": true, "paedophile": true,
+	"molestation": true, "necrophilia": true, "bestiality": true, "zoophilia": true,
+	"pornography": true, "erotica": true, "softcore": true, "hardcore": true, "nudity": true, "snuff": true,
+}
+
+// isDisplayThemeKeyword reports whether raw is suitable to surface as a viewer theme.
+func isDisplayThemeKeyword(raw string) bool {
+	k := strings.ToLower(strings.TrimSpace(raw))
+	if k == "" || genericKeywords[k] || sensitiveThemePhrases[k] || namesGenre(k) {
+		return false
+	}
+	for _, w := range strings.FieldsFunc(k, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if sensitiveThemeWords[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // cluster is a named slice of the viewer's taste.
@@ -138,7 +178,7 @@ func (b *builder) clustersOfType(typ core.MediaType) []*candRow {
 		for _, g := range gs {
 			for i, k := range e.Title.Keywords {
 				k = strings.ToLower(strings.TrimSpace(k))
-				if i >= 15 || genericKeywords[k] || len(strings.Fields(k)) > 3 || k == "" || namesGenre(k) {
+				if i >= 15 || !isDisplayThemeKeyword(k) || len(strings.Fields(k)) > 3 {
 					continue
 				}
 				add(kw, [2]string{g, k}, e.Weight)

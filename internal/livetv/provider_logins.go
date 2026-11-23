@@ -413,14 +413,17 @@ func (s *Service) failedLogin(l *loginLease) {
 	if l == nil {
 		return
 	}
+	failedUntil := time.Now().Add(time.Minute)
 	p := &s.loginPool
 	p.mu.Lock()
-	p.failed[l.source+"\x00"+l.accountID] = time.Now().Add(time.Minute)
+	p.failed[l.source+"\x00"+l.accountID] = failedUntil
 	l.lost = true
 	for g := range l.grants {
 		g.cancel()
 	}
 	p.mu.Unlock()
+	s.bumpHealthRevision()
+	s.noteHealthExpiry(failedUntil)
 	// Persist a safe status for the source card. Compare-and-swap preserves a
 	// simultaneous owner edit or refresh on another node.
 	ctx, cancel := context.WithTimeout(s.serviceContext(), 2*time.Second)
@@ -516,5 +519,5 @@ func (s *Service) cachedPrimaryLineup(ctx context.Context, src *Source, cause er
 	err = rows.Err()
 	rows.Close()
 	src.Groups = old.Groups
-	return Fetched{Channels: cs, Guide: guide, ProviderNumbers: true}, err
+	return Fetched{Channels: cs, Guide: guide, ProviderNumbers: true, cachedLineup: true}, err
 }

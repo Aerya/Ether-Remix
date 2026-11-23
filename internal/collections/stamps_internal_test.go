@@ -102,14 +102,18 @@ func TestNanosecondStampsAreRepaired(t *testing.T) {
 	}
 	// Seconds and "never" are left alone.
 	other := importStampedList(t, db, at)
+	var builtBefore int64
+	if err := db.QueryRow(`SELECT last_built_at FROM collections_specs WHERE id=?`, other).Scan(&builtBefore); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(repairNanoStampsSQL); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT updated_at, last_built_at FROM collections_specs WHERE id=?`, other).Scan(&updated, &built); err != nil {
 		t.Fatal(err)
 	}
-	if updated != at.Unix() || built != 0 {
-		t.Fatalf("untouched stamps = %d/%d", updated, built)
+	if updated != at.Unix() || built != builtBefore {
+		t.Fatalf("untouched stamps = %d/%d, want %d/%d", updated, built, at.Unix(), builtBefore)
 	}
 	if v := readSpec(t, db, id); v.UpdatedAt == nil || !v.UpdatedAt.Equal(at) {
 		t.Fatalf("updatedAt after repair = %v, want %v", v.UpdatedAt, at)

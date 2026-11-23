@@ -45,8 +45,11 @@ func (s *Service) validateReady(ctx context.Context, cands []candidate, tr *Trac
 	}
 	win := func(j int) (int, []byte, error) {
 		v, i := checks[j].result, indexes[j]
+		if v.rel.ID != "" {
+			cands[i].rel = v.rel
+		}
 		if v.healthChecked && !v.healthCached {
-			s.markVerified(ctx, cands[i].rel.ID)
+			s.markVerifiedKeys(ctx, s.allVerificationKeys(cands[i].rel, v.extraContentKeys...))
 			s.noteStartup(cands[i].rel, max(v.fetchDuration+v.healthDuration, time.Microsecond))
 		}
 		s.recordReputation(ctx, cands[i].rel.Indexer, true)
@@ -61,9 +64,13 @@ func (s *Service) validateReady(ctx context.Context, cands []candidate, tr *Trac
 				}
 				<-f.done
 				v := f.result
-				noteValidation(ctx, cands[indexes[j]].rel, v)
-				if keepFallback && ((!v.healthy && v.err == nil) || permanentFailure(v.err)) {
-					s.noteFailedHealth(cands[indexes[j]].rel.ID)
+				rel := cands[indexes[j]].rel
+				if v.rel.ID != "" {
+					rel = v.rel
+				}
+				noteValidation(ctx, rel, v)
+				if keepFallback && ((!v.healthy && v.err == nil) || permanentFailure(v.err) || (!v.healthChecked && permanentGrabFailure(v.err))) {
+					s.recordFailedValidation(ctx, rel, v)
 				}
 			}
 		}
@@ -97,6 +104,9 @@ func (s *Service) validateReady(ctx context.Context, cands []candidate, tr *Trac
 	record := func(j int) {
 		done[j] = true
 		v := checks[j].result
+		if v.rel.ID != "" {
+			cands[indexes[j]].rel = v.rel
+		}
 		ct := &tr.Candidates[cands[indexes[j]].trace]
 		ct.FetchDuration, ct.HealthDuration = v.fetchDuration, v.healthDuration
 		ct.HealthChecked, ct.Healthy = v.healthChecked, v.healthy && v.err == nil
@@ -106,8 +116,8 @@ func (s *Service) validateReady(ctx context.Context, cands []candidate, tr *Trac
 			if v.err != nil {
 				ct.Reason = v.err.Error()
 			}
-			if v.err == nil || permanentFailure(v.err) {
-				s.noteFailedHealth(cands[indexes[j]].rel.ID)
+			if v.err == nil || permanentFailure(v.err) || (!v.healthChecked && permanentGrabFailure(v.err)) {
+				s.recordFailedValidation(ctx, cands[indexes[j]].rel, v)
 			}
 		}
 	}
@@ -132,6 +142,12 @@ func (s *Service) validateReady(ctx context.Context, cands []candidate, tr *Trac
 			tr.Candidates[cands[peer].trace].Route = "verified cached peer ready; preferred source not ready within quality budget"
 			keepFallback = true
 			return win(1)
+		}
+		if done[0] && (!checks[0].result.healthy || checks[0].result.err != nil) && len(cands[0].fallbacks) > 0 {
+			// Leader failed and has quiet fallbacks inside its repost group:
+			// hand off to ranked validation so the group's fallbacks run before
+			// falling back to another release.
+			return s.validateRanked(ctx, cands, tr)
 		}
 		if done[1] && (!checks[1].result.healthy || checks[1].result.err != nil) {
 			// The cached answer was stale. Normal ranked validation handles errors,

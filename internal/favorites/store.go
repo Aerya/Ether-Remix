@@ -30,6 +30,7 @@ const (
 	KindPerson     Kind = "person"
 	KindCollection Kind = "collection"
 	KindChannel    Kind = "channel"
+	KindEntity     Kind = "entity"
 )
 
 type Subject struct {
@@ -96,11 +97,15 @@ func (s *Service) preloadTitles(ctx context.Context, ids []string) {
 }
 
 func valid(s Subject) bool {
-	if s.Kind != KindTitle && s.Kind != KindPerson && s.Kind != KindCollection && s.Kind != KindChannel {
+	if s.Kind != KindTitle && s.Kind != KindPerson && s.Kind != KindCollection && s.Kind != KindChannel && s.Kind != KindEntity {
 		return false
 	}
 	if s.ID == "" || len(s.ID) > 512 || s.ID != strings.TrimSpace(s.ID) || strings.ContainsAny(s.ID, "\x00\r\n") || strings.Contains(s.ID, "://") {
 		return false
+	}
+	if s.Kind == KindEntity {
+		_, ok := ParseEntityKey(s.ID)
+		return ok
 	}
 	if s.Kind == KindTitle || s.Kind == KindCollection {
 		key, err := core.ParseRatingKey(s.ID)
@@ -336,7 +341,7 @@ func (s *Service) HasTitles(ctx context.Context, viewer *core.User, keys []core.
 
 // List returns permitted favorites newest first, without exposing hidden entries.
 func (s *Service) List(ctx context.Context, viewer *core.User, kind Kind, limit int) ([]Entry, error) {
-	if viewer == nil || viewer.ID <= 0 || (kind != KindTitle && kind != KindPerson && kind != KindCollection && kind != KindChannel) {
+	if viewer == nil || viewer.ID <= 0 || (kind != KindTitle && kind != KindPerson && kind != KindCollection && kind != KindChannel && kind != KindEntity) {
 		return nil, ErrForbidden
 	}
 	active, err := s.o.Active(ctx, viewer.ID)

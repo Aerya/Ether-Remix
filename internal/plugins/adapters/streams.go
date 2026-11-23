@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -126,6 +127,7 @@ type StreamSources struct {
 	anime    stremio.AnimeIDs
 	specials stremio.SpecialEpisodes
 	nzb      *http.Client
+	identity func() config.ClientIdentity
 }
 
 var (
@@ -244,6 +246,17 @@ func (s *StreamSources) ResolveTorrent(ctx context.Context, r core.Release) (cor
 	return r, fmt.Errorf("plugins: torrent %q has no info hash: %w", r.Name, core.ErrReleaseRejected)
 }
 
+// StripLinkAuth forwards credential stripping to the wrapped indexer so
+// plugin-facing source candidates do not expose indexer API keys or secrets.
+func (s *StreamSources) StripLinkAuth(r core.Release) core.Release {
+	if inner, ok := s.inner.(interface {
+		StripLinkAuth(core.Release) core.Release
+	}); ok {
+		return inner.StripLinkAuth(r)
+	}
+	return r
+}
+
 // Name implements core.Indexer.
 func (s *StreamSources) Name() string {
 	if s.inner != nil {
@@ -271,6 +284,49 @@ func (s *StreamSources) SearchWith(ctx context.Context, req core.SearchRequest, 
 		arrived(rels)
 	}
 	return rels, err
+}
+
+// SearchWithOptions forwards controlled fan-out searches to the wrapped indexer.
+func (s *StreamSources) SearchWithOptions(ctx context.Context, req core.SearchRequest, opts core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	if s.inner == nil {
+		return core.IndexerSearchResult{}, core.ErrNoSources
+	}
+	if csi, ok := s.inner.(core.ControlledSearchIndexer); ok {
+		return csi.SearchWithOptions(ctx, req, opts)
+	}
+	started := time.Now()
+	rels, err := s.inner.Search(ctx, req)
+	name := s.Name()
+	ms := max(int64(0), time.Since(started).Milliseconds())
+	if err != nil {
+		return core.IndexerSearchResult{}, err
+	}
+	return core.IndexerSearchResult{
+		Releases: rels,
+		Indexers: []core.IndexerSearchStatus{{
+			IndexerID: name,
+			Indexer:   name,
+			Status:    core.IndexerStatusAnswered,
+			Results:   len(rels),
+			MS:        ms,
+		}},
+	}, nil
+}
+
+// EnabledIndexerStatuses forwards per-indexer status listing to the wrapped indexer.
+func (s *StreamSources) EnabledIndexerStatuses(status string) []core.IndexerSearchStatus {
+	if dir, ok := s.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexerStatuses(status)
+	}
+	return nil
+}
+
+// EnabledIndexers forwards enabled indexer listing to the wrapped indexer.
+func (s *StreamSources) EnabledIndexers() []core.IndexerSearchStatus {
+	if dir, ok := s.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexers()
+	}
+	return []core.IndexerSearchStatus{}
 }
 
 // SearchRescue implements core.RescueIndexer.
@@ -891,6 +947,7 @@ type Engine struct {
 var (
 	_ core.Engine               = (*Engine)(nil)
 	_ core.ReleaseHealthChecker = (*Engine)(nil)
+	_ core.DurablePrefetcher    = (*Engine)(nil)
 )
 
 // WrapEngine wraps inner with local-file payload support backed by s.
@@ -998,6 +1055,62 @@ func (e *Engine) Prefetch(ctx context.Context, releaseID string, payload []byte,
 		return nil
 	}
 	return e.inner.Prefetch(ctx, releaseID, payload, offset, length)
+}
+
+// DurablePrefetch implements core.DurablePrefetcher.
+func (e *Engine) DurablePrefetch(ctx context.Context, id string, payload []byte, off, n int64) error {
+	if IsLocalPayload(payload) {
+		return errors.New("plugins: local file source does not support durable prefetch")
+	}
+	if dp, ok := e.inner.(core.DurablePrefetcher); ok {
+		return dp.DurablePrefetch(ctx, id, payload, off, n)
+	}
+	return errors.New("plugins: durable prefetch unsupported by inner engine")
+}
+
+// ListFiles forwards NZB release file listing (exact decoded sizes via PAR2/yEnc
+// when available) to the wrapped streaming engine.
+func (e *Engine) ListFiles(ctx context.Context, releaseID string, nzbData []byte) ([]core.ReleaseFile, error) {
+	if lister, ok := e.inner.(interface {
+		ListFiles(context.Context, string, []byte) ([]core.ReleaseFile, error)
+	}); ok {
+		return lister.ListFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// ListArchiveMembers forwards bounded NZB archive member listing (RAR, 7z, ZIP)
+// to the wrapped streaming engine.
+func (e *Engine) ListArchiveMembers(ctx context.Context, nzbData []byte) (map[int][]core.ReleaseMember, error) {
+	if IsLocalPayload(nzbData) {
+		return nil, core.ErrNotAvailable
+	}
+	if lister, ok := e.inner.(interface {
+		ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+	}); ok {
+		return lister.ListArchiveMembers(ctx, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// NameFiles forwards PAR2/yEnc obfuscated file naming to the wrapped streaming
+// engine.
+func (e *Engine) NameFiles(ctx context.Context, releaseID string, nzbData []byte) ([]byte, error) {
+	if namer, ok := e.inner.(debrid.PackNamer); ok {
+		return namer.NameFiles(ctx, releaseID, nzbData)
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// CheckArticles forwards bounded Usenet article availability checks to the
+// wrapped streaming engine.
+func (e *Engine) CheckArticles(ctx context.Context, releaseID string, nzbData []byte) (core.UsenetCheckResult, error) {
+	if checker, ok := e.inner.(interface {
+		CheckArticles(context.Context, string, []byte) (core.UsenetCheckResult, error)
+	}); ok {
+		return checker.CheckArticles(ctx, releaseID, nzbData)
+	}
+	return core.UsenetCheckResult{}, core.ErrNotAvailable
 }
 
 type localFileSource struct {

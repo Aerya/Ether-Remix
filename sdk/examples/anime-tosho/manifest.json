@@ -1,0 +1,54 @@
+{
+  "id": "org.ether.examples.anime-tosho",
+  "version": "1.0.0",
+  "name": "Anime Tosho",
+  "description": "Search Anime Tosho NEW for public anime torrents and Usenet NZB mirrors.",
+  "types": ["movie", "series"],
+  "idPrefixes": ["tt", "tmdb", "tvdb", "anidb", "mal", "kitsu"],
+  "resources": [
+    {
+      "name": "stream",
+      "types": ["movie", "series"],
+      "idPrefixes": ["tt", "tmdb", "tvdb", "anidb", "mal", "kitsu"]
+    }
+  ],
+  "ether": {
+    "protocol": 1,
+    "kind": "source",
+    "capabilities": ["stream_source"],
+    "summary": "$t:summary",
+    "author": {
+      "name": "Ether",
+      "url": "https://github.com/braedonsaunders/ether"
+    },
+    "license": "MIT",
+    "repo": "https://github.com/braedonsaunders/ether",
+    "icon": "assets/icon.svg",
+    "runtime": {
+      "kind": "hosted",
+      "entry": "dist/plugin.js"
+    },
+    "permissions": {
+      "network": ["feed.animetosho.net"]
+    },
+    "settings": {
+      "$ref": "settings.schema.json"
+    },
+    "strings": {
+      "en": "i18n/en.json",
+      "fr": "i18n/fr.json"
+    },
+    "contributes": {
+      "source": {
+        "class": "indexer",
+        "abilities": ["search"],
+        "limits": {
+          "searchPerHour": 120,
+          "grabPerHour": 60,
+          "dailySearches": 1000,
+          "dailyGrabs": 300
+        }
+      }
+    }
+  }
+}

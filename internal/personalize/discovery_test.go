@@ -251,3 +251,102 @@ func TestRediscoverBatchesMirroredTitlesWithoutChangingSelection(t *testing.T) {
 		})
 	}
 }
+
+type pageFirstBaseCollections struct {
+	core.Collections
+	owned []core.Collection
+	page  []core.Collection
+	total int
+}
+
+func (f *pageFirstBaseCollections) List(context.Context, *core.User, core.MediaType) ([]core.Collection, error) {
+	return nil, fmt.Errorf("unexpected full List call")
+}
+func (f *pageFirstBaseCollections) ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error) {
+	return nil, fmt.Errorf("unexpected full ListComplete call")
+}
+func (f *pageFirstBaseCollections) ListOwnedComplete(_ context.Context, _ *core.User, _ core.MediaType) ([]core.Collection, bool, error) {
+	return append([]core.Collection(nil), f.owned...), true, nil
+}
+func (f *pageFirstBaseCollections) ListPage(_ context.Context, _ *core.User, _ core.MediaType, offset, limit int) ([]core.Collection, int, error) {
+	if limit == 0 || offset >= len(f.page) {
+		return nil, f.total, nil
+	}
+	end := min(offset+limit, len(f.page))
+	return append([]core.Collection(nil), f.page[offset:end]...), f.total, nil
+}
+func (f *pageFirstBaseCollections) FindVisible(_ context.Context, _ *core.User, _ core.MediaType, accept func(core.Collection) (bool, error)) (bool, error) {
+	for _, c := range f.owned {
+		if ok, err := accept(c); ok || err != nil {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
+func TestReviewCollectionsForwardsPageFirstInterfaces(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cat := newFakeCatalog(testNow)
+	key := movieKey(0, 1)
+	cat.set(core.Title{Key: key, Type: core.TypeMovie, ContentRating: "PG"})
+	st := state.New(db, state.Options{Now: func() time.Time { return time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC) }})
+	if err := st.Scrobble(ctx, 1, key); err != nil {
+		t.Fatal(err)
+	}
+	d := NewDiscovery(db, cat, st, nil)
+	d.now = func() time.Time { return testNow }
+	base := &pageFirstBaseCollections{
+		owned: []core.Collection{{Key: core.SmartKey(1), Title: "Owned", Type: core.TypeMovie}},
+		page: []core.Collection{
+			{Key: core.SmartKey(1), Title: "Owned", Type: core.TypeMovie},
+			{Key: core.CollectionKey(10), Title: "Franchise", Type: core.TypeMovie},
+		},
+		total: 2,
+	}
+	wrapped := d.ReviewCollections(base)
+	viewer := &core.User{ID: 1}
+
+	ownedLister, ok := wrapped.(interface {
+		ListOwnedComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, bool, error)
+	})
+	if !ok {
+		t.Fatal("ReviewCollections hid ListOwnedComplete")
+	}
+	owned, hasFr, err := ownedLister.ListOwnedComplete(ctx, viewer, core.TypeMovie)
+	if err != nil || !hasFr || len(owned) != 2 {
+		t.Fatalf("ListOwnedComplete = len=%d hasFr=%v err=%v, want 2 true nil", len(owned), hasFr, err)
+	}
+
+	pager, ok := wrapped.(interface {
+		ListPage(context.Context, *core.User, core.MediaType, int, int) ([]core.Collection, int, error)
+	})
+	if !ok {
+		t.Fatal("ReviewCollections hid ListPage")
+	}
+	page, total, err := pager.ListPage(ctx, viewer, core.TypeMovie, 0, 10)
+	if err != nil || total != 3 || len(page) != 3 {
+		t.Fatalf("ListPage(0,10) = len=%d total=%d err=%v, want 3 3 nil", len(page), total, err)
+	}
+	probe, probeTotal, err := pager.ListPage(ctx, viewer, core.TypeMovie, 0, 0)
+	if err != nil || probeTotal != 3 || len(probe) != 0 {
+		t.Fatalf("ListPage(0,0) = len=%d total=%d err=%v, want 0 3 nil", len(probe), probeTotal, err)
+	}
+
+	finder, ok := wrapped.(interface {
+		FindVisible(context.Context, *core.User, core.MediaType, func(core.Collection) (bool, error)) (bool, error)
+	})
+	if !ok {
+		t.Fatal("ReviewCollections hid FindVisible")
+	}
+	found, err := finder.FindVisible(ctx, viewer, core.TypeMovie, func(c core.Collection) (bool, error) {
+		return c.Key == core.SmartKey(1), nil
+	})
+	if err != nil || !found {
+		t.Fatalf("FindVisible = %v %v, want true nil", found, err)
+	}
+}

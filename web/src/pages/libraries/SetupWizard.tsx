@@ -141,9 +141,10 @@ function SetupSteps({
   const [values, setValues] = useState<Record<string, unknown>>(data.settings);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [detail, setDetail] = useState("");
+  const [details, setDetails] = useState<Record<string, string>>({});
   useEffect(() => setValues(data.settings), [data.settings]);
   const step: SetupStep | undefined = data.steps[active];
+  const stepDetail = step ? (details[step.key] ?? step.detail) : "";
 
   if (!data.steps.length) {
     return <p className="text-sm text-fg-muted">{t("This plugin needs no setup.")}</p>;
@@ -152,7 +153,7 @@ function SetupSteps({
   const saveAndTest = async () => {
     if (!step) return;
     setBusy(true);
-    setDetail("");
+    setDetails((prev) => ({ ...prev, [step.key]: "" }));
     try {
       const picked: Record<string, unknown> = {};
       for (const k of step.fields) if (k in values) picked[k] = values[k];
@@ -167,9 +168,9 @@ function SetupSteps({
       setFieldErrors({});
       const res = await librariesApi.testSetupStep(data.pluginId, step.key);
       if (res.fields) setFieldErrors(res.fields);
-      setDetail(res.detail || "");
+      setDetails((prev) => ({ ...prev, [step.key]: res.detail || "" }));
       if (res.ok) {
-        toast.success(t("That worked"));
+        toast.success(res.detail || t("That worked"));
         reload();
         if (active < data.steps.length - 1) setActive(active + 1);
       } else {
@@ -243,9 +244,9 @@ function SetupSteps({
               <p className="text-sm text-fg-muted">{t("Nothing to fill in for this step.")}</p>
             ) : null}
           </div>
-          {detail || step.detail ? (
+          {stepDetail ? (
             <p role="status" className="mt-3 text-sm">
-              {detail || step.detail}
+              {stepDetail}
             </p>
           ) : null}
           <div className="mt-4 flex flex-wrap gap-2">

@@ -261,3 +261,60 @@ func TestCommunitySnapshotAttributionAndRollback(t *testing.T) {
 		t.Fatalf("another friend's RSS preserved viewer row: %d %v", count, err)
 	}
 }
+
+func TestSyncCommunityFriendsStopsOnRateLimitAndPrioritizesOldest(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var order []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Variables == nil {
+			_, _ = w.Write([]byte(`{"data":{"allFriendsV2":[{"user":{"id":"f-recent","username":"recent"}},{"user":{"id":"f-old","username":"old"}},{"user":{"id":"f-never","username":"never"}}]}}`))
+			return
+		}
+		u := body.Variables["user"].(map[string]any)["id"].(string)
+		order = append(order, u)
+		if u == "f-old" {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"userV2":{"watchlist":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`))
+	}))
+	defer srv.Close()
+
+	s := New(db, Options{
+		OwnerToken: func(context.Context) (string, error) { return "tok", nil },
+		Community:  &plextv.CommunityClient{URL: srv.URL, MinInterval: 1, MaxRetries: -1},
+	})
+	if err := s.SaveSettings(ctx, Settings{Enabled: true, Plex: true, CheckHours: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.recordFriend(ctx, FriendFeedStatus{ID: "f-recent", Username: "recent", RSSFeedStatus: RSSFeedStatus{Configured: true, LastRead: 200}})
+	s.recordFriend(ctx, FriendFeedStatus{ID: "f-old", Username: "old", RSSFeedStatus: RSSFeedStatus{Configured: true, LastRead: 100}})
+
+	err = s.syncCommunityFriends(ctx, nil, nil)
+	if !errors.Is(err, plextv.ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
+	}
+	// f-never (LastRead=0) must run before f-old (100), and f-recent (200) must not be called after 429.
+	if len(order) != 2 || order[0] != "f-never" || order[1] != "f-old" {
+		t.Fatalf("unexpected friend sync order: %v", order)
+	}
+	for _, st := range s.friendStatuses(ctx) {
+		if st.ID == "f-old" && st.Problem != rssProblemRateLimited {
+			t.Fatalf("f-old problem = %q, want %q", st.Problem, rssProblemRateLimited)
+		}
+	}
+}

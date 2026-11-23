@@ -84,7 +84,7 @@ export function pinLabel(code: string): string {
     case "owner":
       return t("Kept by you");
     case "playback:live":
-      return t("Watching now");
+      return t("Playing now");
     case "playback:inprogress":
       return t("Unfinished");
     case "preloaded":
@@ -94,11 +94,38 @@ export function pinLabel(code: string): string {
   }
 }
 
+/** Deduplicated status pills merging the primary cache cause with active pins. */
+export function statusPills(
+  primaryCode: string,
+  pins?: string[] | null,
+): { label: string; active: boolean }[] {
+  const out: { label: string; active: boolean }[] = [];
+  const seen = new Set<string>();
+  const primaryLabel = causeLabel(primaryCode);
+  seen.add(primaryLabel);
+  out.push({
+    label: primaryLabel,
+    active: primaryCode === "playing" || primaryCode === "paused",
+  });
+  for (const pin of pins ?? []) {
+    if (pin === "playback:live" && (primaryCode === "playing" || primaryCode === "paused")) {
+      continue;
+    }
+    const label = pinLabel(pin);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push({ label, active: pin === "playback:live" });
+  }
+  return out;
+}
+
 export function retentionLabel(retention?: CacheRetention): string {
   if (!retention) return t("Reclaimable anytime");
   switch (retention.kind) {
     case "pinned":
-      return (retention.pins ?? []).map(pinLabel).join(" · ") || t("Kept by you");
+      return (
+        Array.from(new Set((retention.pins ?? []).map(pinLabel))).join(" · ") || t("Kept by you")
+      );
     case "expiry": {
       const days = tn(retention.days ?? 0, "{count} inactive day", "{count} inactive days");
       return retention.until

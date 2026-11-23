@@ -60,15 +60,15 @@ func ArrangeLayout(candidates []LayoutCandidate, finalize func([]LayoutCandidate
 	return out, nil
 }
 
-// LayoutRows applies shared Home placement to neutral frontend rows.
-func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, libraries []Library, req frontend.RowRequest, sit core.HomeSituation, rows []frontend.Row) ([]frontend.Row, error) {
+// LayoutRows applies shared Home or per-library placement to neutral frontend rows.
+func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, _ []Library, req frontend.RowRequest, sit core.HomeSituation, rows []frontend.Row) ([]frontend.Row, error) {
 	section := "home"
 	if req.Placement == frontend.PlacementLibrary {
-		section = "movies"
-		for _, l := range libraries {
-			if strconv.Itoa(l.ID) == req.ViewID && l.Type == core.TypeShow {
-				section = "shows"
-			}
+		if id, err := strconv.Atoi(req.ViewID); err == nil && id > 0 {
+			sit.LibraryID = id
+			section = "library:" + strconv.Itoa(id)
+		} else if sit.LibraryID > 0 {
+			section = "library:" + strconv.Itoa(sit.LibraryID)
 		}
 	}
 	if req.Placement == frontend.PlacementDetail {

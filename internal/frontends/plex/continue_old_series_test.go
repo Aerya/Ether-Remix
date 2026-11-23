@@ -90,3 +90,77 @@ func TestContinueWatchingRetainsImportedOldSeriesOnHome(t *testing.T) {
 		t.Fatalf("missing Home Continue Watching: %v", mc)
 	}
 }
+
+// Pin the mixed Home contract: resume movies and episodes alongside old
+// next-up episodes, one item per show, with separately placed On Deck intact.
+func TestContinueWatchingMixedHomeMembership(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	f := newFixture()
+	defer f.srv.Close()
+	st := watchstate.New(db, watchstate.Options{Now: func() time.Time { return fixedNow }})
+	defer st.Close(ctx)
+	f.srv.setState(st)
+	show, season, ep := breakingBad, bbS1, bbE1
+	show.Key = core.ShowKey(77)
+	season.Key, season.ShowKey = core.SeasonKey(77, 1), show.Key
+	ep.Key, ep.ShowKey = core.EpisodeKey(77, 1, 1), show.Key
+	for _, title := range []core.Title{show, season, ep} {
+		f.catalog.titles[title.Key] = title
+	}
+	f.catalog.children[show.Key] = []core.RatingKey{season.Key}
+	f.catalog.children[season.Key] = []core.RatingKey{ep.Key}
+	if err := st.ImportTransaction(ctx, func(*sql.Tx) (watchstate.ImportBatch, error) {
+		return watchstate.ImportBatch{Records: []watchstate.ImportRecord{
+			{UserID: ownerUser.ID, Key: bbE1.Key, Views: 1, ViewedAt: fixedNow.Add(-163 * 24 * time.Hour)},
+			{UserID: ownerUser.ID, Key: alien.Key, Offset: time.Minute, Duration: time.Hour, ViewedAt: fixedNow.Add(-163 * 24 * time.Hour)},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []core.RatingKey{fightClub.Key, ep.Key} {
+		if err := st.Progress(ctx, ownerUser.ID, key, 5*time.Minute, time.Hour, "playing"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.srv.setRecommender(&onDeckLayoutRecommender{always: true})
+	mc := decodeJSON(t, f.get(t, "/hubs?identifier=home.continue,home.ondeck", jsonAccept...))
+	hubs := mc["Hub"].([]any)
+	if len(hubs) != 1 {
+		t.Fatalf("Home shelves: %v", mc)
+	}
+	for i, wantID := range []string{"home.continue"} {
+		hub := hubs[i].(map[string]any)
+		if hub["hubIdentifier"] != wantID {
+			t.Fatalf("custom placement: %v", mc)
+		}
+		want := map[string]bool{ep.Key.String(): true, bbE2.Key.String(): true}
+		if i == 0 {
+			want[fightClub.Key.String()] = true
+		}
+		items := hub["Metadata"].([]any)
+		if len(items) != len(want) {
+			t.Fatalf("%s membership: %v", wantID, hub)
+		}
+		for _, raw := range items {
+			item := raw.(map[string]any)
+			key := item["ratingKey"].(string)
+			if !want[key] {
+				t.Fatalf("%s duplicated/unexpected item %s: %v", wantID, key, hub)
+			}
+			delete(want, key)
+			if key == bbE2.Key.String() && item["viewOffset"] != nil && item["viewOffset"] != float64(0) {
+				t.Fatalf("next-up offset: %v", item)
+			}
+		}
+	}
+	// With only episodes, the identical series shelf is suppressed.
+	if err := st.Progress(ctx, ownerUser.ID, fightClub.Key, 0, time.Hour, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	mc = decodeJSON(t, f.get(t, "/hubs?identifier=home.continue,home.ondeck", jsonAccept...))
+	hubs = mc["Hub"].([]any)
+	if len(hubs) != 1 || hubs[0].(map[string]any)["hubIdentifier"] != "home.continue" {
+		t.Fatalf("duplicate series shelf: %v", mc)
+	}
+}

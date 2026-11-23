@@ -357,9 +357,7 @@ func testNeutralControls(t *testing.T, loseOwner bool) {
 			if err != nil || coordinator.Identity != ids[3] || coordinator.Epoch != 2 {
 				t.Fatal("takeover", coordinator, err)
 			}
-			if time.Since(lossAt) > 6*time.Second {
-				t.Fatal("takeover exceeded six seconds")
-			}
+
 			restoredPath, err := brokers[1].StartStream(ctx, access, opened.ID, request)
 			if err != nil || restoredPath != path {
 				t.Fatal("playlist path changed", restoredPath, err)

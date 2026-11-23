@@ -11,6 +11,7 @@ import { useLocale } from "../i18n/react";
 
 export type DescriptorKind =
   | "onairSegment"
+  | "posterBadge"
   | "rankingStep"
   | "ruleField"
   | "collectionSource"

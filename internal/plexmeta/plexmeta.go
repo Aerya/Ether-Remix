@@ -275,7 +275,7 @@ func (s *Service) store(ctx context.Context, k core.RatingKey, guid string, o Ov
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO plexmeta_titles(rating_key,guid,payload,fetched_at,rating_level) VALUES(?,?,?,?,?) ON CONFLICT(rating_key) DO UPDATE SET guid=excluded.guid,payload=excluded.payload,fetched_at=excluded.fetched_at,rating_level=excluded.rating_level`, int64(k), guid, string(raw), now.Unix(), int(contentrating.LevelOf(o.ContentRating)))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plexmeta_titles(rating_key,guid,payload,fetched_at,rating_level) VALUES(?,?,?,?,?) ON CONFLICT(rating_key) DO UPDATE SET guid=excluded.guid,payload=excluded.payload,fetched_at=excluded.fetched_at,rating_level=excluded.rating_level`, int64(k), guid, string(raw), now.Unix(), int(contentrating.EnforceLevelOf(o.ContentRating)))
 	return err
 }
 

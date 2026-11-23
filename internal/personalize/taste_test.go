@@ -310,3 +310,27 @@ func TestFitReadsTheRankingWindow(t *testing.T) {
 		t.Fatalf("window fits %v %q, full title %v %q", fitWindow, whyWindow, fitFull, whyFull)
 	}
 }
+
+func TestProfileFiltersSensitiveAndGenericKeywords(t *testing.T) {
+	ts := &Taste{
+		Keyword: map[string]float64{
+			"heist":                  0.9,
+			"time travel":            0.7,
+			"therapist":              0.5,
+			"rape":                   0.8,
+			"attempted rape":         0.6,
+			"suicide":                0.6,
+			"based on novel or book": 0.9,
+			"duringcreditsstinger":   0.4,
+		},
+	}
+	p := ts.Profile(nil)
+	got := make([]string, 0, len(p.Keywords))
+	for _, kw := range p.Keywords {
+		got = append(got, kw.Name)
+	}
+	want := []string{"heist", "time travel", "therapist"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("profile keywords = %v, want %v", got, want)
+	}
+}

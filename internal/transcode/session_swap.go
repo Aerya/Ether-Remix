@@ -34,9 +34,34 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	// Decode a tiny bounded sample outside the session lock. Only proven
 	// embedded side bars matching the existing picture are removed.
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("transcode: session closed")
+	}
+	if s.clientGoneLocked(time.Now()) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.retireSessionAsync()
+		s.mu.Unlock()
+		return errSessionStopped
+	}
+	if s.liveRejected[inputURL] {
+		s.mu.Unlock()
+		return fmt.Errorf("transcode: source exceeds fixed live target; new session required")
+	}
 	if s.headerRejected[inputURL] {
 		s.mu.Unlock()
 		return fmt.Errorf("transcode: input rejected after deterministic header failure")
+	}
+	if s.failedInputs[inputURL] {
+		s.mu.Unlock()
+		return fmt.Errorf("transcode: input rejected after encoder failure")
+	}
+	if s.sessionExhausted || (!s.liveInput && s.totalFailures >= maxSessionFailures) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.mu.Unlock()
+		return errSessionExhausted
 	}
 	if len(s.headerRestarts) >= 8 && time.Since(s.headerLastFailure) < time.Minute {
 		s.mu.Unlock()
@@ -45,6 +70,15 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	retryAt := time.Time{}
 	if !s.headerLastFailure.IsZero() {
 		retryAt = s.headerLastFailure.Add(headerRecoveryDelay(len(s.headerRestarts)))
+	}
+	if !s.liveInput && !s.lastFailureAt.IsZero() && s.totalFailures > 0 {
+		if cand := s.lastFailureAt.Add(s.retryBackoffLocked(s.totalFailures)); cand.After(retryAt) {
+			retryAt = cand
+		}
+	}
+	var cancel <-chan struct{}
+	if s.encoder != nil {
+		cancel = s.encoder.cancel
 	}
 	before := s.recoveryBufferLocked()
 	previousInput := s.input
@@ -56,7 +90,11 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
+		case <-cancel:
+			timer.Stop()
+			return errors.New("transcode: session closed")
 		}
+		timer.Stop()
 	}
 	sampleAt := at
 	if preserve {
@@ -71,10 +109,25 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	info = s.m.stageExternalSubtitles(s.dir, info, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return errors.New("transcode: session closed")
+	}
+	if s.clientGoneLocked(time.Now()) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.retireSessionAsync()
+		return errSessionStopped
+	}
+	if s.failedInputs[inputURL] {
+		return fmt.Errorf("transcode: input rejected after encoder failure")
+	}
+	if s.sessionExhausted || (!s.liveInput && s.totalFailures >= maxSessionFailures) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		return errSessionExhausted
 	}
 	if s.recoverySeekAt != before.SeekAt || s.input != previousInput {
 		return core.ErrReplacementSuperseded
@@ -90,25 +143,10 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 			at = b.ReadyUntil
 		}
 	}
-	seg := 0
-	if at > s.base {
-		if s.plan != nil && !s.isDASH() {
-			seg = s.plan.IndexAt(at - s.base)
-		} else {
-			seg = int((at - s.base) / s.segDur)
-		}
-	}
-	if s.total > 0 && seg >= s.total {
-		seg = s.total - 1
-	}
-	s.stopRunForLocked("input swap")
-	for t, done := range s.done {
-		for n := range done {
-			if n >= seg {
-				_ = os.Remove(s.trackSegPath(t, n))
-				delete(done, n)
-			}
-		}
+	seg := s.segForOffsetLocked(at)
+	if !s.liveInput && s.segFailures[seg] >= maxSegmentFailures {
+		s.inputFailed = true
+		return errSegmentExhausted
 	}
 	next := adaptToContract(s.audioMatchBaseDecision(), s.info, info, s.container, s.contract)
 	next = s.applyAudioMatchLocked(inputURL, next)
@@ -121,6 +159,18 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	}
 	if s.isDASH() {
 		next = dashDecision(info, next)
+	}
+	if s.videoTranscodingOff() && info.Video() != nil && !next.VideoCopy {
+		return ErrVideoTranscodingDisabled
+	}
+	s.stopRunForLocked("input swap")
+	for t, done := range s.done {
+		for n := range done {
+			if n >= seg {
+				_ = os.Remove(s.trackSegPath(t, n))
+				delete(done, n)
+			}
+		}
 	}
 	if next.Kind != s.decision.Kind || next.VideoCopy != s.decision.VideoCopy || next.AudioCopy != s.decision.AudioCopy {
 		s.log.Info("failover changes decision", "from", s.decision.Kind, "to", next.Kind, "reason", next.Reason)
@@ -172,6 +222,8 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	s.inputFailed = false
 	s.headerRecovering = false
 	s.headerFallbackPending = ""
+	s.retryRecovering = false
+	s.retryGen++
 	if !preserve {
 		s.lastReq = seg
 	}
@@ -180,10 +232,311 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	return s.startRunForLocked(seg, false, "input swap")
 }
 
+func (s *Session) segForOffsetLocked(at time.Duration) int {
+	seg := 0
+	if at > s.base {
+		if s.plan != nil {
+			seg = s.plan.IndexAt(at - s.base)
+		} else if s.segDur > 0 {
+			seg = int((at - s.base) / s.segDur)
+		}
+	}
+	if s.total > 0 && seg >= s.total {
+		seg = s.total - 1
+	}
+	return seg
+}
+
+// SkipDamagedSegment implements core.DamagedSegmentSkipper: after failover
+// cannot recover a corrupt mid-stream segment on another release, alias up to
+// maxDamagedSkipsIncident consecutive segments with valid empty placeholders
+// and seek ffmpeg past the damaged range, bounded by exponential backoff,
+// per-session hard caps, and client liveness.
+func (s *Session) SkipDamagedSegment(ctx context.Context, inputURL string, info core.MediaInfo, at time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if inputURL == "" {
+		return errors.New("transcode: SkipDamagedSegment: empty input URL")
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("transcode: session closed")
+	}
+	if s.clientGoneLocked(time.Now()) {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.retireSessionAsync()
+		s.mu.Unlock()
+		return errSessionStopped
+	}
+	if s.liveInput || s.isDASH() {
+		s.mu.Unlock()
+		return errors.New("transcode: damaged segment skip unsupported for live/DASH")
+	}
+	if !looksLikeCorruptInput(s.lastFailStderr, s.failErr) {
+		s.mu.Unlock()
+		return errors.New("transcode: failure is not a localized corrupt segment")
+	}
+	seg := s.segForOffsetLocked(at)
+	if seg <= 0 || (s.total > 0 && seg+1 >= s.total) || len(s.done) == 0 || !s.done[0][seg-1] {
+		s.mu.Unlock()
+		return errors.New("transcode: cannot skip damaged segment without prior published output")
+	}
+	if s.sessionExhausted || s.totalFailures >= maxSessionFailures || s.damagedSkips >= maxDamagedSkipsSession {
+		s.sessionExhausted = true
+		s.inputFailed = true
+		s.mu.Unlock()
+		return errSessionExhausted
+	}
+	var cancel <-chan struct{}
+	if s.encoder != nil {
+		cancel = s.encoder.cancel
+	}
+	probeTimeout := 30 * time.Second
+	if s.m != nil && s.m.opts.segmentTimeout > 0 && s.m.opts.segmentTimeout < probeTimeout {
+		probeTimeout = s.m.opts.segmentTimeout
+	}
+	s.mu.Unlock()
+
+	for step := 0; step < maxDamagedSkipsIncident; step++ {
+		target := seg + step
+		next := target + 1
+
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return errors.New("transcode: session closed")
+		}
+		if s.clientGoneLocked(time.Now()) {
+			s.sessionExhausted = true
+			s.inputFailed = true
+			s.retireSessionAsync()
+			s.mu.Unlock()
+			return errSessionStopped
+		}
+		if s.sessionExhausted || s.totalFailures >= maxSessionFailures || s.damagedSkips >= maxDamagedSkipsSession {
+			s.sessionExhausted = true
+			s.inputFailed = true
+			s.mu.Unlock()
+			return errSessionExhausted
+		}
+		if s.total > 0 && next >= s.total {
+			s.mu.Unlock()
+			return fmt.Errorf("transcode: damaged segment range at %d reached end of title", seg)
+		}
+		if s.segFailures[next] >= maxSegmentFailures {
+			s.inputFailed = true
+			s.mu.Unlock()
+			return errSegmentExhausted
+		}
+		var delay time.Duration
+		if !s.lastFailureAt.IsZero() && s.totalFailures > 0 {
+			delay = time.Until(s.lastFailureAt.Add(s.retryBackoffLocked(s.totalFailures)))
+		}
+		s.mu.Unlock()
+
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-cancel:
+				timer.Stop()
+				return errors.New("transcode: session closed")
+			}
+			timer.Stop()
+		}
+
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return errors.New("transcode: session closed")
+		}
+		if s.clientGoneLocked(time.Now()) {
+			s.sessionExhausted = true
+			s.inputFailed = true
+			s.retireSessionAsync()
+			s.mu.Unlock()
+			return errSessionStopped
+		}
+		if s.sessionExhausted || s.totalFailures >= maxSessionFailures || s.damagedSkips >= maxDamagedSkipsSession {
+			s.sessionExhausted = true
+			s.inputFailed = true
+			s.mu.Unlock()
+			return errSessionExhausted
+		}
+		if !s.publishBoundaryAliasLocked(target) {
+			s.inputFailed = true
+			s.mu.Unlock()
+			return fmt.Errorf("transcode: could not alias damaged segment %d", target)
+		}
+		if s.skippedSegs == nil {
+			s.skippedSegs = make(map[int]bool)
+		}
+		s.skippedSegs[target] = true
+		s.damagedSkips++
+		s.damagedStreak++
+
+		if s.input != inputURL {
+			nextDecision := adaptToContract(s.audioMatchBaseDecision(), s.info, info, s.container, s.contract)
+			nextDecision = s.applyAudioMatchLocked(inputURL, nextDecision)
+			if s.videoTranscodingOff() && info.Video() != nil && !nextDecision.VideoCopy {
+				s.inputFailed = true
+				s.mu.Unlock()
+				return ErrVideoTranscodingDisabled
+			}
+			if len(s.rungs) > 0 {
+				s.rungs[0].decision = nextDecision
+				for i := 1; i < len(s.rungs); i++ {
+					old := s.rungs[i].decision
+					nd := adaptDecision(old, s.info, info, s.container)
+					nd.VideoCopy = false
+					nd.Kind = core.DecisionTranscode
+					nd.MaxHeight, nd.BitrateKbps = old.MaxHeight, old.BitrateKbps
+					s.rungs[i].decision = nd
+				}
+			}
+			s.input = inputURL
+			s.info = info
+			s.decision = nextDecision
+			if s.pictureSamples != nil {
+				s.inputCrop = s.pictureSamples[inputURL]
+			}
+		}
+		s.stopRunForLocked("damaged segment skip")
+		for t, done := range s.done {
+			for n := range done {
+				if n >= next {
+					_ = os.Remove(s.trackSegPath(t, n))
+					delete(done, n)
+				}
+			}
+		}
+		s.wantTrack = 0
+		s.endSeg = -1
+		s.resumeAt = -1
+		s.failures = 0
+		s.failErr = nil
+		s.inputFailed = false
+		s.headerRecovering = false
+		s.headerFallbackPending = ""
+		s.retryRecovering = false
+		s.retryGen++
+		s.skipProbing = true
+		s.seekRampSeg = next
+		startErr := s.startRunForLocked(next, true, "damaged segment skip")
+		probeRun := s.cur
+		s.broadcastLocked()
+		if startErr != nil {
+			s.skipProbing = false
+			s.inputFailed = true
+			s.mu.Unlock()
+			return startErr
+		}
+		s.mu.Unlock()
+
+		probeTimer := time.NewTimer(probeTimeout)
+		stepSucceeded := false
+		stepCorrupt := false
+		var waitErr error
+		for {
+			s.mu.Lock()
+			if s.closed {
+				s.skipProbing = false
+				s.mu.Unlock()
+				waitErr = errors.New("transcode: session closed")
+				break
+			}
+			if s.cur != probeRun {
+				s.skipProbing = false
+				s.mu.Unlock()
+				waitErr = core.ErrReplacementSuperseded
+				break
+			}
+			if probeRun.produced > 0 {
+				s.skipProbing = false
+				s.damagedStreak = 0
+				delete(s.failedInputs, inputURL)
+				s.broadcastLocked()
+				s.log.Warn("skipped damaged segment range", "from", seg, "to", target, "resumedAt", next, "damagedSkips", s.damagedSkips)
+				s.mu.Unlock()
+				stepSucceeded = true
+				break
+			}
+			if probeRun.finished {
+				s.skipProbing = false
+				stepCorrupt = looksLikeCorruptInput(s.lastFailStderr, s.failErr)
+				waitErr = s.failErr
+				s.mu.Unlock()
+				break
+			}
+			changed := s.changed
+			s.mu.Unlock()
+			select {
+			case <-changed:
+			case <-probeTimer.C:
+				s.mu.Lock()
+				s.skipProbing = false
+				s.inputFailed = true
+				s.stopRunForLocked("damaged skip timeout")
+				s.broadcastLocked()
+				s.mu.Unlock()
+				waitErr = errors.New("transcode: damaged segment skip timed out")
+				goto doneWait
+			case <-ctx.Done():
+				s.mu.Lock()
+				s.skipProbing = false
+				s.inputFailed = true
+				s.stopRunForLocked("damaged skip canceled")
+				s.broadcastLocked()
+				s.mu.Unlock()
+				waitErr = ctx.Err()
+				goto doneWait
+			case <-cancel:
+				s.mu.Lock()
+				s.skipProbing = false
+				s.mu.Unlock()
+				waitErr = errors.New("transcode: session closed")
+				goto doneWait
+			}
+		}
+	doneWait:
+		probeTimer.Stop()
+		if stepSucceeded {
+			return nil
+		}
+		if !stepCorrupt {
+			s.mu.Lock()
+			s.inputFailed = true
+			if waitErr == nil {
+				waitErr = errors.New("transcode: damaged segment skip failed")
+			}
+			s.broadcastLocked()
+			s.mu.Unlock()
+			return waitErr
+		}
+	}
+
+	s.mu.Lock()
+	s.skipProbing = false
+	s.inputFailed = true
+	s.sessionExhausted = true
+	s.broadcastLocked()
+	s.mu.Unlock()
+	return fmt.Errorf("transcode: damaged segment range at %d exceeded skip limit: %w", seg, core.ErrEncoderExhausted)
+}
+
 // CheckSwap reports whether SwapInput can deliver info's video in the
 // format the client already opened. Playback calls it before committing
 // a replacement so an incompatible candidate is skipped, not spliced.
 func (s *Session) CheckSwap(info core.MediaInfo) error {
+	if s.videoTranscodingOff() && !info.Estimated && info.Video() != nil && !s.SwapWouldCopyVideo(info) {
+		return ErrVideoTranscodingDisabled
+	}
 	if s.contract == nil {
 		return nil
 	}

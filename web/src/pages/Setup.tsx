@@ -36,9 +36,10 @@ import {
 } from "../components/fields";
 import { loadLocale, localized, rememberLocale, t, tn, tx } from "../i18n";
 import { api, apiFetch, newId, setToken } from "../lib/api";
+import { usePageTitle } from "../lib/document-title";
 import { formatBytes } from "../lib/format";
 import type { DebridProvider, DiskInfo, EtherConfig, Indexer, UsenetProvider } from "../lib/types";
-import { appLabel, appPurpose, appRank } from "./apps/catalog";
+import { appInstalled, appLabel, appPurpose, appRank } from "./apps/catalog";
 import { claimFailureMessage } from "./apps/plex-account";
 import { CachePresetCards, cachePresetKey, presetForFreeBytes } from "./cache/presets";
 import { ProwlarrImport } from "../components/ProwlarrImport";
@@ -122,11 +123,14 @@ function storedStep(): number {
 }
 
 export function appCatalog(
-  list: { descriptor: { id: string; name: string } }[] | null,
+  list:
+    { descriptor: { id: string; name: string }; status?: { webPlayerReady?: boolean } }[] | null,
 ): SetupApp[] {
   const rows = (
     list?.length
-      ? list.map((item) => ({ id: item.descriptor.id, name: item.descriptor.name }))
+      ? list
+          .filter(appInstalled)
+          .map((item) => ({ id: item.descriptor.id, name: item.descriptor.name }))
       : FALLBACK_APPS
   )
     .slice()
@@ -486,7 +490,9 @@ export default function Setup() {
     Promise.all([
       api.getConfig(),
       api.setupStatus(),
-      apiFetch<{ descriptor: { id: string; name: string } }[]>("/frontends").catch(() => null),
+      apiFetch<
+        { descriptor: { id: string; name: string }; status?: { webPlayerReady?: boolean } }[]
+      >("/frontends").catch(() => null),
       apiFetch<Partial<StreamRules>>("/stream-preferences/0").catch(() => ({})),
     ])
       .then(([c, status, list, rules]) => {
@@ -573,6 +579,9 @@ export default function Setup() {
   const showLocalOwner = !plexSelected || plexLater;
   const steps = wizardSteps(plexSelected && !plexLater);
   const stepId = steps[step]?.id ?? "apps";
+  const activeStepTitle =
+    !cfg || cacheRestartRequired || finished || finishReview ? null : steps[step]?.title;
+  usePageTitle([t("Setup"), activeStepTitle]);
   useEffect(() => {
     sessionStorage.setItem("ether.setup.skipped", JSON.stringify(skipped));
   }, [skipped]);
@@ -820,6 +829,12 @@ export default function Setup() {
   const hasDebrid = debrid.some((d) => d.enabled);
   const hasUsenet = providers.some((p) => p.enabled);
   const newIndexerType: IndexerType = hasDebrid && !hasUsenet ? "stremio" : "newznab";
+  const alreadySetUp = Boolean(app?.boot.setupComplete || cfg.setupComplete);
+  const exitSetup = () => {
+    sessionStorage.removeItem(SETUP_STEP_KEY);
+    sessionStorage.removeItem("ether.setup.skipped");
+    navigate("/server");
+  };
 
   const next = async (opts?: { force?: boolean }) => {
     setSaving(true);
@@ -928,22 +943,29 @@ export default function Setup() {
         <h1 className="text-xl font-semibold">{t("Everything is set up")}</h1>
         <p>{t("Finish setup to leave setup mode. Your settings are saved.")}</p>
         <MutationError error={error} />
-        <Button
-          disabled={saving}
-          onClick={async () => {
-            setSaving(true);
-            setError(null);
-            try {
-              await finish(false);
-            } catch (e) {
-              setError(e);
-            } finally {
-              setSaving(false);
-            }
-          }}
-        >
-          {t("Finish setup")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              setError(null);
+              try {
+                await finish(false);
+              } catch (e) {
+                setError(e);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {t("Finish setup")}
+          </Button>
+          {alreadySetUp ? (
+            <Button variant="outline" disabled={saving} onClick={exitSetup}>
+              {t("Exit setup")}
+            </Button>
+          ) : null}
+        </div>
       </div>
     );
 
@@ -951,14 +973,21 @@ export default function Setup() {
     <WizardLayout
       header={
         <div>
-          <div className="flex items-center gap-3">
-            <EtherMark size={32} />
-            <div>
-              <h1 className="text-lg font-semibold text-fg">{t("Set up Ether")}</h1>
-              <p className="text-sm text-fg-muted">
-                {t("Complete the steps below to set up your household.")}
-              </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <EtherMark size={32} />
+              <div>
+                <h1 className="text-lg font-semibold text-fg">{t("Set up Ether")}</h1>
+                <p className="text-sm text-fg-muted">
+                  {t("Complete the steps below to set up your household.")}
+                </p>
+              </div>
             </div>
+            {alreadySetUp ? (
+              <Button variant="outline" size="sm" disabled={saving} onClick={exitSetup}>
+                {t("Exit setup")}
+              </Button>
+            ) : null}
           </div>
           <ol className="mt-4 flex gap-1.5" aria-label={t("Setup progress")}>
             {steps.map((s, i) => {

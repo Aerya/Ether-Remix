@@ -6,10 +6,27 @@
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
+  KindBrowseQuery,
   KindBrowseRequest,
   KindChangePage,
+  KindExpandRequest,
+  KindExpandResponse,
   KindItem,
+  KindLivePage,
+  KindLiveRequest,
+  KindLiveResolveRequest,
+  KindLiveResolveResponse,
+  LiveEntitiesRequest,
+  LiveEventDetail,
+  LiveEventDetailRequest,
+  LiveEventEntitiesResponse,
+  LiveEventsRequest,
+  LiveEventsResponse,
+  LiveEventStandingsResponse,
+  LiveStandingsRequest,
+  PendingReply,
   KindMatchRequest,
   KindMatchScore,
   KindPage,
@@ -21,7 +38,10 @@ import type {
   SetupTestRequest,
   SetupTestResult,
   SourceCandidate,
+  StreamUrlOptions,
 } from "./types.ts";
+
+export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
 
 export interface CatalogProvider<S = Record<string, unknown>> {
   browse(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
@@ -30,25 +50,40 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   changes?(req: { kind: string; cursor?: string; limit?: number }, ctx: PluginContext<S>): MaybePromise<KindChangePage>;
   /** Optional provider search; required when the kind declares browse.liveSearch. */
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
+  /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
+  expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
-  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse>;
+  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse | PendingReply>;
 }
 
 export interface KindMatcher<S = Record<string, unknown>> {
-  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] }>;
+  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] } | PendingReply>;
 }
 
 /** Spec-name alias. */
 export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
 
-export interface FrontendAdapter {
+export interface KindLiveProvider<S = Record<string, unknown>> {
+  live(req: KindLiveRequest, ctx: PluginContext<S>): MaybePromise<KindLivePage>;
+  resolveLive(req: KindLiveResolveRequest, ctx: PluginContext<S>): MaybePromise<KindLiveResolveResponse>;
+}
+
+export interface LiveFeedProvider<S = Record<string, unknown>> {
+  events(req: LiveEventsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventsResponse>;
+  eventDetail(req: LiveEventDetailRequest, ctx: PluginContext<S>): MaybePromise<LiveEventDetail>;
+  entities?(req: LiveEntitiesRequest, ctx: PluginContext<S>): MaybePromise<LiveEventEntitiesResponse>;
+  standings?(req: LiveStandingsRequest, ctx: PluginContext<S>): MaybePromise<LiveEventStandingsResponse>;
+}
+
+export interface FrontendAdapter<S = Record<string, unknown>> {
   handle(
     method: string,
     path: string,
     headers: Record<string, string>,
     body: string,
+    ctx?: PluginContext<S>,
   ): MaybePromise<{ status: number; headers?: Record<string, string>; body: string }>;
 }
 
@@ -60,39 +95,104 @@ export interface SetupTester<S = Record<string, unknown>> {
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
 }
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5). The viewer is the one Ether authenticated on this
- * request (X-Ether-Viewer); bytes are served by Ether, never by the plugin.
+ * kind items (spec §6.5), optionally scoped to a zero-based part (`partIndex`)
+ * and/or a specific resolver `PlayableSource.id` (`source`) (#576, #661). The
+ * viewer is the one Ether authenticated on this request (X-Ether-Viewer);
+ * bytes are served by Ether, never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
+  partIndexOrOpts?: number | StreamUrlOptions,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
+  const opts = normalizeStreamUrlOptions(partIndexOrOpts);
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return ctx.ether.frontend.streamUrl(viewerId, itemRef);
+  if (opts.source !== undefined) {
+    return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
+  }
+  return opts.partIndex === undefined
+    ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, opts.partIndex);
+}
+
+function readViewerToken<S>(ctx: PluginContext<S>): string {
+  for (const [k, v] of Object.entries(ctx.headers ?? {})) {
+    if (k.toLowerCase() === HEADER_VIEWER_TOKEN.toLowerCase()) {
+      const value = Array.isArray(v) ? v[0] : v;
+      return String(value ?? "").trim();
+    }
+  }
+  return "";
+}
+
+/**
+ * Evaluate the library's Rules and viewer access policy for a bounded batch
+ * (at most 500) of external IDs in `kind` (#615). Only frontend adapter
+ * requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsVisible<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  ids: string[],
+): Promise<string[]> {
+  if (!ctx.ether?.kinds?.visible) {
+    throw new Error("kinds.visible: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.visible: no authenticated frontend adapter viewer on this request");
+  }
+  if (ids.length > MAX_KIND_VISIBLE_IDS) {
+    throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+  }
+  return await ctx.ether.kinds.visible(kind, ids, token);
+}
+
+/**
+ * Browse or search `kind` with the library's Rules and viewer access policy
+ * applied for the requesting frontend-adapter viewer (#615). Only frontend
+ * adapter requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsBrowse<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  query: KindBrowseQuery = {},
+): Promise<KindPage> {
+  if (!ctx.ether?.kinds?.browse) {
+    throw new Error("kinds.browse: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.browse: no authenticated frontend adapter viewer on this request");
+  }
+  return await ctx.ether.kinds.browse(kind, query, token);
 }
 
 export interface KindHandlers<S = Record<string, unknown>> {
   catalog: Map<string, CatalogProvider<S>>;
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
-  frontend: Map<string, FrontendAdapter>;
+  live: Map<string, KindLiveProvider<S>>;
+  liveFeeds: Map<string, LiveFeedProvider<S>>;
+  frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
-  return { catalog: new Map(), resolve: new Map(), match: new Map(), frontend: new Map() };
+  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
 }
 
 function ok(body: unknown): RawResponse {
@@ -110,6 +210,35 @@ function parseBody(body: unknown): Record<string, unknown> {
   }
   if (body && typeof body === "object") return body as Record<string, unknown>;
   return {};
+}
+
+/**
+ * The exact bytes of a frontend-adapter request body. Ether sends them in
+ * `bodyBase64` on adapter routes — a non-JSON body (multipart, form-encoded,
+ * binary) arrives only there, with its Content-Type in `contentType` — so
+ * this is the way to read uploads byte-for-byte. Falls back to the string
+ * or JSON body for other routes.
+ */
+export function frontendBodyBytes(req: RawRequest): Uint8Array {
+  if (typeof req.bodyBase64 === "string") return decodeBase64(req.bodyBase64);
+  if (typeof req.body === "string") return encodeText(req.body);
+  if (req.body === undefined || req.body === null) return new Uint8Array(0);
+  return encodeText(JSON.stringify(req.body));
+}
+
+function frontendBodyString(req: RawRequest): string {
+  if (typeof req.body === "string") return req.body;
+  if (typeof req.bodyBase64 === "string") {
+    // Binary string: one char per byte, so string-based adapters still see
+    // the content; use frontendBodyBytes on the raw request for exact bytes.
+    const bytes = decodeBase64(req.bodyBase64);
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      out += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return out;
+  }
+  return "";
 }
 
 /**
@@ -161,7 +290,7 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const query = frontendQuery(req);
     const qs = query.toString();
     if (qs) subPath += `?${qs}`;
-    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "");
+    const res = await adapter.handle(method, subPath, headers, frontendBodyString(req), ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
     return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
@@ -182,6 +311,62 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length >= 3 && parts[0] === "live") {
+    if (method !== "GET") {
+      return err(405, "method_not_allowed", "Live feed routes use GET.");
+    }
+    const feed = parts[1] ?? "";
+    const provider = handlers.liveFeeds.get(feed);
+    if (!provider) {
+      return err(404, "not_found", `No live feed provider is registered for feed "${feed}".`);
+    }
+    const tail = parts.slice(2);
+    const q = ctx.query ?? {};
+    if (tail.length === 1 && tail[0] === "events") {
+      const ids = q.ids
+        ? q.ids
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const res = {
+        ...(await provider.events(
+          { feed, from: q.from || undefined, to: q.to || undefined, league: q.league || undefined, ids },
+          ctx,
+        )),
+      };
+      res.events = res.events ?? [];
+      return ok(res);
+    }
+    if (tail.length === 2 && tail[0] === "events" && tail[1]) {
+      return ok(await provider.eventDetail({ feed, id: tail[1] }, ctx));
+    }
+    if (tail.length === 1 && tail[0] === "entities") {
+      if (!provider.entities) {
+        return err(501, "not_implemented", "This live feed does not list entities.");
+      }
+      const res = {
+        ...(await provider.entities(
+          { feed, kind: q.kind || undefined, league: q.league || undefined, q: q.q || undefined },
+          ctx,
+        )),
+      };
+      res.entities = res.entities ?? [];
+      return ok(res);
+    }
+    if (tail.length === 1 && tail[0] === "standings") {
+      if (!provider.standings) {
+        return err(501, "not_implemented", "This live feed does not serve standings.");
+      }
+      const res = {
+        ...(await provider.standings({ feed, league: q.league || undefined }, ctx)),
+      };
+      res.tables = res.tables ?? [];
+      return ok(res);
+    }
+    return err(404, "not_found", "No live feed route matched.");
   }
 
   if (parts.length < 3 || parts[0] !== "kinds") return null;
@@ -205,6 +390,13 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     }
     return page(provider.browse(browseReq, ctx));
   }
+  if (tail.length === 1 && tail[0] === "expand") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.expand) return err(501, "not_implemented", "This provider does not expand facets.");
+    const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
+    if (!result.job) result.items = result.items ?? [];
+    return ok(result);
+  }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);
     if (!provider) return err(404, "not_found", `No catalogue provider is registered for kind "${kind}".`);
@@ -223,6 +415,21 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await resolver.resolve({ ...body, kind } as unknown as KindResolveRequest, ctx)) };
     result.sources = result.sources ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "live") {
+    const provider = handlers.live.get(kind);
+    if (!provider) return err(404, "not_found", `No live provider is registered for kind "${kind}".`);
+    const liveReq = { ...body, kind } as unknown as KindLiveRequest;
+    const result = { ...(await provider.live(liveReq, ctx)) };
+    const limit = Number(liveReq.limit || 50);
+    result.items = (result.items ?? []).slice(0, limit);
+    if (!result.nextCursor) delete result.nextCursor;
+    return ok(result);
+  }
+  if (tail.length === 2 && tail[0] === "live" && tail[1] === "resolve") {
+    const provider = handlers.live.get(kind);
+    if (!provider) return err(404, "not_found", `No live provider is registered for kind "${kind}".`);
+    return ok(await provider.resolveLive({ ...body, kind } as unknown as KindLiveResolveRequest, ctx));
   }
   if (tail.length === 1 && tail[0] === "match") {
     const matcher = handlers.match.get(kind);

@@ -12,7 +12,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +23,7 @@ import (
 // Source has no protocol server or protocol wire model dependencies.
 type Source struct {
 	OwnerEnabled     func() bool
+	PosterGen        func() uint64
 	OwnerDir         string
 	AssetFolder      func() string
 	Assets           *artwork.LocalAssets
@@ -32,16 +36,19 @@ type Source struct {
 	LiveTV           interface {
 		AllowedChannels(context.Context, *core.User) ([]livetv.Channel, error)
 	}
-	Discovery     *frontend.DiscoveryFeatures
-	Images        *RemoteCache
-	ImageURL      core.ImageURLFunc
-	Palettes      *PaletteCache
-	Now           func() time.Time
-	Variants      func(*core.Title, string) (*frontend.ArtworkImages, bool)
-	Metadata      func(context.Context, frontend.ArtworkRequest, frontend.Image) frontend.Image
-	meta          *MetadataQueue
-	VirtualSeason func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
-	URLImages     interface {
+	Discovery        *frontend.DiscoveryFeatures
+	Images           *RemoteCache
+	ImageURL         core.ImageURLFunc
+	Palettes         *PaletteCache
+	Now              func() time.Time
+	Variants         func(*core.Title, string) (*frontend.ArtworkImages, bool)
+	Metadata         func(context.Context, frontend.ArtworkRequest, frontend.Image) frontend.Image
+	meta             *MetadataQueue
+	VirtualSeason    func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
+	PluginItem       func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)
+	LibraryLiveThumb func(context.Context, *core.Viewer, string, string) (string, error)
+	ViewerAvatar     func(context.Context, *core.Viewer) ([]byte, string, error)
+	URLImages        interface {
 		GetUntrustedURL(context.Context, string) ([]byte, string, error)
 	}
 	Raster   frontend.SVGRasterizer
@@ -59,6 +66,19 @@ func (a Source) now() time.Time {
 		return a.Now()
 	}
 	return time.Now()
+}
+func (a Source) PosterGeneration() uint64 {
+	if a.PosterGen != nil {
+		if gen := a.PosterGen(); gen > 0 {
+			return gen
+		}
+	}
+	if a.Discovery != nil && a.Discovery.Overlays != nil {
+		if pg, ok := a.Discovery.Overlays.(interface{ PosterGeneration() uint64 }); ok {
+			return pg.PosterGeneration()
+		}
+	}
+	return 0
 }
 func (a Source) title(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	if t, ok := frontend.ArtworkTitle(ctx, key); ok {
@@ -231,6 +251,9 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 		}
 		return []frontendArtworkEntry{{image: a.ChannelImage(req.Viewer, channel), channel: true, channelLogo: channel.Logo, channelNumber: channel.Number, channelName: channel.Name}}, true, nil
 	}
+	if req.Item.IsPluginKey() {
+		return s.pluginEntries(ctx, req)
+	}
 	var title *core.Title
 	var virtualSeason *core.Title
 	var collectionVersion string
@@ -241,6 +264,22 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 			return nil, false, err
 		}
 		collectionVersion = collectionStamp(collection)
+		if collection != nil {
+			if _, bound := frontend.ArtworkCollection(ctx, req.Item); !bound {
+				col := *collection
+				if col.PosterPath == "" && s.Collections != nil {
+					if p, err := s.Collections.Items(ctx, req.Viewer, req.Item, 0, 20); err == nil {
+						for i := range p.Items {
+							if p.Items[i].PosterPath != "" && s.visible(ctx, req.Viewer, &p.Items[i]) {
+								col.PosterPath = p.Items[i].PosterPath
+								break
+							}
+						}
+					}
+				}
+				ctx = frontend.WithArtworkCollection(ctx, &col)
+			}
+		}
 	case core.KindPlaylist:
 		if s.Playlists == nil {
 			return nil, false, core.ErrNotFound
@@ -266,9 +305,13 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 		}
 	}
 	var entries []frontendArtworkEntry
+	posterGen := a.PosterGeneration()
 	add := func(kind, source string, entry frontendArtworkEntry) {
 		if !frontend.ArtworkKindWanted(ctx, kind) {
 			return
+		}
+		if posterGen > 0 && (kind == frontend.ImagePoster || (kind == frontend.ImageThumb && !a.LandscapeThumb) || entry.ownerKind != "") {
+			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
 		}
 		identityReq := req
 		if a.LandscapeThumb {
@@ -385,6 +428,191 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 	return entries, complete, nil
 }
 
+func firstNonEmptyPath(paths ...string) string {
+	for _, p := range paths {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func (a Source) pluginEntries(ctx context.Context, req frontend.ArtworkRequest) ([]frontendArtworkEntry, bool, error) {
+	if a.PluginItem == nil {
+		return nil, false, core.ErrNotFound
+	}
+	title, rawImages, err := a.PluginItem(ctx, req.Viewer, req.Device, req.Item)
+	if err != nil || title == nil || title.Key != req.Item {
+		if err == nil {
+			err = core.ErrNotFound
+		}
+		return nil, false, err
+	}
+	byKind := make(map[string]frontend.Image, len(rawImages))
+	for _, img := range rawImages {
+		p := strings.TrimSpace(img.Path)
+		if p == "" {
+			continue
+		}
+		kind := img.Kind
+		if kind == "" {
+			kind = frontend.ImagePoster
+		}
+		if _, exists := byKind[kind]; !exists {
+			img.Kind = kind
+			img.Path = p
+			byKind[kind] = img
+		}
+	}
+	var entries []frontendArtworkEntry
+	posterGen := a.PosterGeneration()
+	add := func(kind, source string, entry frontendArtworkEntry) {
+		if !frontend.ArtworkKindWanted(ctx, kind) {
+			return
+		}
+		if posterGen > 0 && entry.ownerKind != "" {
+			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
+		}
+		identityReq := req
+		if a.LandscapeThumb {
+			viewer := *req.Viewer
+			viewer.ID = 0
+			identityReq.Viewer = &viewer
+		}
+		ref := artworkReference(identityReq, kind, source)
+		entry.image = frontend.Image{
+			Kind:    kind,
+			Path:    ref,
+			Tag:     ref,
+			Subject: entry.subject,
+			Width:   entry.image.Width,
+			Height:  entry.image.Height,
+		}
+		entries = append(entries, entry)
+	}
+	emittedPrimary := make(map[string]string, 6)
+	for _, item := range []struct{ kind, element string }{
+		{frontend.ImagePoster, "poster"},
+		{frontend.ImageThumb, "thumb"},
+		{frontend.ImageBackdrop, "art"},
+		{frontend.ImageLogo, "logo"},
+		{frontend.ImageBanner, "banner"},
+	} {
+		if !frontend.ArtworkKindWanted(ctx, item.kind) {
+			continue
+		}
+		ownerKind := item.kind
+		if ownerKind == frontend.ImageThumb {
+			ownerKind = frontend.ImagePoster
+		}
+		if _, stamp := a.ownerImage(ctx, req.Item, ownerKind); stamp != "" {
+			add(item.kind, stamp, frontendArtworkEntry{ownerKind: ownerKind})
+			continue
+		}
+		if a.LandscapeThumb && item.kind == frontend.ImageThumb {
+			raw := byKind[frontend.ImageBackdrop]
+			path := firstNonEmptyPath(raw.Path, title.BackdropPath)
+			if path == "" {
+				raw = byKind[frontend.ImageThumb]
+				path = raw.Path
+			}
+			if path != "" {
+				emittedPrimary[item.kind] = path
+				add(item.kind, "landscape\x00"+path, frontendArtworkEntry{
+					image:      frontend.Image{Width: raw.Width, Height: raw.Height},
+					remotePath: path,
+				})
+			}
+			continue
+		}
+		var raw frontend.Image
+		var path string
+		switch item.kind {
+		case frontend.ImagePoster:
+			raw = byKind[frontend.ImagePoster]
+			if title.LandscapeCard && frontend.ArtworkKindWanted(ctx, frontend.ImageThumb) {
+				path = raw.Path
+			} else {
+				path = firstNonEmptyPath(raw.Path, title.PosterPath, byKind[frontend.ImageThumb].Path, title.StillPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImageThumb]
+				}
+			}
+		case frontend.ImageThumb:
+			raw = byKind[frontend.ImageThumb]
+			if title.LandscapeCard {
+				path = firstNonEmptyPath(raw.Path, title.ThumbPath, byKind[frontend.ImageBackdrop].Path, title.BackdropPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImageBackdrop]
+				}
+			} else if title.Type == core.TypeEpisode {
+				path = firstNonEmptyPath(raw.Path, title.StillPath, byKind[frontend.ImagePoster].Path, title.PosterPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImagePoster]
+				}
+			} else {
+				path = firstNonEmptyPath(raw.Path, byKind[frontend.ImagePoster].Path, title.PosterPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImagePoster]
+				}
+			}
+		case frontend.ImageBackdrop:
+			raw = byKind[frontend.ImageBackdrop]
+			path = firstNonEmptyPath(raw.Path, title.BackdropPath)
+		case frontend.ImageLogo:
+			raw = byKind[frontend.ImageLogo]
+			path = firstNonEmptyPath(raw.Path, title.LogoPath)
+		case frontend.ImageBanner:
+			raw = byKind[frontend.ImageBanner]
+			path = raw.Path
+		}
+		if path == "" {
+			if p, ok := a.generatedPoster(title, nil, item.kind); ok {
+				add(item.kind, "generated\x00"+p.Stamp(), frontendArtworkEntry{generated: &p})
+			}
+			continue
+		}
+		emittedPrimary[item.kind] = path
+		add(item.kind, "plugin\x00"+item.element+"\x00"+path, frontendArtworkEntry{
+			image:      frontend.Image{Width: raw.Width, Height: raw.Height},
+			remotePath: path,
+		})
+	}
+	stillRaw := byKind[frontend.ImageStill]
+	if stillPath := firstNonEmptyPath(stillRaw.Path, title.StillPath); stillPath != "" {
+		emittedPrimary[frontend.ImageStill] = stillPath
+		add(frontend.ImageStill, "still\x00"+stillPath, frontendArtworkEntry{
+			image:      frontend.Image{Width: stillRaw.Width, Height: stillRaw.Height},
+			remotePath: stillPath,
+		})
+	}
+	for _, img := range rawImages {
+		p := strings.TrimSpace(img.Path)
+		if p == "" {
+			continue
+		}
+		kind := img.Kind
+		if kind == "" {
+			kind = frontend.ImagePoster
+		}
+		if emittedPrimary[kind] == p {
+			continue
+		}
+		add(kind, "plugin-extra\x00"+kind+"\x00"+p, frontendArtworkEntry{
+			image:      frontend.Image{Width: img.Width, Height: img.Height},
+			remotePath: p,
+		})
+	}
+	for _, portrait := range creditedPortraits(*title) {
+		add(frontend.ImagePerson, portrait.source, frontendArtworkEntry{
+			personKind: portrait.role,
+			personID:   base64.RawURLEncoding.EncodeToString([]byte(portrait.thumb)),
+			subject:    portrait.subject,
+		})
+	}
+	return entries, true, nil
+}
+
 // Warm schedules the cache-only variant source for a visible row or grid item.
 func (a Source) Warm(title core.Title, device core.Device) {
 	if a.Palettes != nil && ultraBlurType(title.Type) && title.BackdropPath != "" {
@@ -425,10 +653,22 @@ func (a *Source) StoreMetadata(ctx context.Context, viewer *core.User, titles []
 }
 
 // ListPage lists artwork for titles already loaded by the caller. Overlay
-// settings and saved variants are read once for the page.
+// settings, saved variants, cached ratings, and viewer overlay facts are read
+// once for the page.
 func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.Device, titles []core.Title) (map[core.RatingKey][]frontend.Image, error) {
 	if viewer == nil {
 		return nil, core.ErrUnauthorized
+	}
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	pageViewer := viewer
+	if policy, ok := a.Visibility.Policy.(core.UserPolicySource); ok {
+		resolved := policy.UserPolicy(viewer)
+		if resolved == nil || resolved.ID != viewer.ID {
+			return nil, core.ErrUnauthorized
+		}
+		pageViewer = resolved
 	}
 	ctx = withVisMemo(ctx)
 	memo, _ := ctx.Value(visMemoKey{}).(*visMemo)
@@ -444,12 +684,14 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 		memo.mu.Unlock()
 	}
-	if a.Discovery != nil && a.Discovery.Overlays != nil {
-		keys := make([]core.RatingKey, len(titles))
-		for i := range titles {
-			keys[i] = titles[i].Key
+	var catalogTitles []core.Title
+	for i := range titles {
+		if !titles[i].Key.IsPluginKey() {
+			catalogTitles = append(catalogTitles, titles[i])
 		}
-		next, err := a.Discovery.Overlays.WithArtworkPage(ctx, keys)
+	}
+	if len(catalogTitles) > 0 && a.Discovery != nil && a.Discovery.Overlays != nil {
+		next, err := a.Discovery.Overlays.WithTitlePage(ctx, pageViewer, catalogTitles)
 		if err != nil {
 			return nil, err
 		}
@@ -461,11 +703,13 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 	// An episode or season missing a wanted image falls back to its
 	// series' (ArtPath). Read those series in one batch rather than one
 	// title per series as each row is listed.
-	if pre, ok := a.Catalog.(interface {
-		PreloadStored(context.Context, []core.RatingKey)
-	}); ok {
-		if parents := fallbackParents(ctx, titles); len(parents) > 0 {
-			pre.PreloadStored(ctx, parents)
+	if len(catalogTitles) > 0 {
+		if pre, ok := a.Catalog.(interface {
+			PreloadStored(context.Context, []core.RatingKey)
+		}); ok {
+			if parents := fallbackParents(ctx, catalogTitles); len(parents) > 0 {
+				pre.PreloadStored(ctx, parents)
+			}
 		}
 	}
 	out := make(map[core.RatingKey][]frontend.Image, len(titles))
@@ -527,7 +771,7 @@ func fallbackParents(ctx context.Context, titles []core.Title) []core.RatingKey 
 	var out []core.RatingKey
 	for i := range titles {
 		t := &titles[i]
-		if t.Type != core.TypeEpisode && t.Type != core.TypeSeason {
+		if t.Key.IsPluginKey() || (t.Type != core.TypeEpisode && t.Type != core.TypeSeason) {
 			continue
 		}
 		ownPoster := t.PosterPath != "" || (t.Type == core.TypeEpisode && t.StillPath != "")
@@ -541,7 +785,7 @@ func fallbackParents(ctx context.Context, titles []core.Title) []core.RatingKey 
 				pk = pk.Parent()
 			}
 		}
-		if pk != 0 {
+		if pk != 0 && !pk.IsPluginKey() {
 			out = append(out, pk)
 		}
 	}
@@ -551,5 +795,11 @@ func fallbackParents(ctx context.Context, titles []core.Title) []core.RatingKey 
 // WithLandscapeThumb returns a scoped copy with the adapter-selected thumb shape.
 func (a Source) WithLandscapeThumb(landscape bool) frontend.Artwork {
 	a.LandscapeThumb = landscape
+	return &a
+}
+
+// WithPluginItem returns a scoped copy with a surface-bound plugin item lookup.
+func (a Source) WithPluginItem(fn func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)) frontend.Artwork {
+	a.PluginItem = fn
 	return &a
 }

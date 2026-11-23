@@ -24,7 +24,7 @@ func (s *Service) saveSelection(title *core.Title, lang, release string, sel sel
 		return
 	}
 	b, _ := json.Marshal(sel)
-	if err := writeFileAtomic(p, b); err != nil {
+	if err := s.writeIndexFile(p, b); err != nil {
 		s.log.Debug("subtitle index write", "err", err)
 	}
 }

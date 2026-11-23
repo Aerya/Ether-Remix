@@ -1,7 +1,6 @@
 import { formatBitrate } from "../../lib/format";
 import { Badge, Button, EmptyState, Select, toast } from "@braedonsaunders/appkit-ui";
 import {
-  ArrowRight,
   Cpu,
   Gauge,
   Globe,
@@ -22,25 +21,28 @@ import { Segmented } from "../../components/fields";
 import { Kpi, KpiRow } from "../../components/Kpi";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { t, tn } from "../../i18n";
-import { formatNumber, formatPercent } from "../../lib/format";
-import { channelLabel, decisionLabel, type NowPlaying as Stream } from "../../lib/health";
+import { formatNumber } from "../../lib/format";
+import {
+  channelLabel,
+  decisionLabel,
+  isPausedSession,
+  type NowPlaying as Stream,
+} from "../../lib/health";
 import type { AsyncState } from "../../lib/hooks";
 import { qualityFallback } from "../../lib/quality-fallback";
 import { useTitle } from "../../lib/titles";
-
-const clockOf = (ms: number) => {
-  const total = Math.max(0, Math.round(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const sec = String(total % 60).padStart(2, "0");
-  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
-};
+import { clockOf, Flow, PlayDrawer, progressLabel, usePlayParam } from "./PlayDrawer";
 
 /** Mbps, the unit Activity uses everywhere. */
 export const mbpsOf = formatBitrate;
 
 const isTranscoding = (s: Stream) =>
   s.decision === "transcode" || (s.decision === "copy" && !s.audioCopy);
+
+const streamIdOf = (s: Stream) => s.id || s.key;
+
+const isNestedControl = (target: EventTarget | null) =>
+  Boolean((target as Element | null)?.closest?.("button, a"));
 
 /** One labelled fact on a stream card; hidden when there's nothing to say. */
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -50,19 +52,6 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
       <dt className="text-[11px] font-medium uppercase tracking-wider text-fg-subtle">{label}</dt>
       <dd className="mt-0.5 line-clamp-2 break-words text-sm text-fg">{children}</dd>
     </div>
-  );
-}
-
-/** Source → output, or just the source when it's passed through unchanged. */
-function Flow({ from, to }: { from: string; to: string }) {
-  if (!from && !to) return null;
-  if (!to || to === from) return <>{from}</>;
-  return (
-    <span>
-      <span className="text-fg-muted">{from || "—"}</span>
-      <ArrowRight size={12} className="mx-1 inline text-fg-subtle" aria-label={t("becomes")} />
-      <span>{to}</span>
-    </span>
   );
 }
 
@@ -89,13 +78,23 @@ function ClusterDetails({ s }: { s: Stream }) {
   );
 }
 
-// PSE-HOOK: métadonnées musicales et absence de contrôle vidéo — voir docs/pse/FORK.fr.md
-function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
+function StreamCard({
+  s,
+  stopping,
+  onOpen,
+  onStop,
+}: {
+  s: Stream;
+  stopping: boolean;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
   const title = useTitle(
     s.isMusic ? undefined : s.ratingKey ? String(s.ratingKey) : s.key || undefined,
   );
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
+  const displayTitle = title?.title || s.title;
   const subtitle = s.isMusic
     ? [s.artist, s.album].filter(Boolean).join(" · ")
     : title?.type === "episode" && title.showTitle
@@ -105,8 +104,14 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
         : "";
   const rate = mbpsOf((s.bitrateKbps ?? 0) * 1000);
   return (
-    <article className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
-      <div className="relative isolate h-44 overflow-hidden">
+    <article
+      onClick={(e) => {
+        if (isNestedControl(e.target)) return;
+        onOpen();
+      }}
+      className="cursor-pointer overflow-hidden rounded-2xl border border-border bg-surface shadow-xs transition hover:border-primary/40 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
+      <div className="relative isolate overflow-hidden sm:h-44">
         <Artwork
           src={title?.backdrop || title?.poster}
           alt=""
@@ -115,16 +120,20 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
           imgClassName="size-full object-cover"
         />
         <div className="absolute inset-0 -z-10 bg-gradient-to-t from-black/90 via-black/55 to-black/20" />
-        <div className="flex h-full items-end gap-4 p-4">
+        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-end gap-x-3.5 gap-y-3 p-4 sm:h-full sm:grid-cols-[5rem_minmax(0,1fr)_auto] sm:gap-x-4">
           <SessionArtwork
             s={s}
             poster={title?.poster}
             posterTitle=""
-            className="aspect-[2/3] w-20 shrink-0 rounded-lg shadow-lg ring-1 ring-white/15"
+            className="aspect-[2/3] w-18 shrink-0 rounded-lg shadow-lg ring-1 ring-white/15 sm:w-20"
           />
-          <div className="min-w-0 flex-1 space-y-2 pb-0.5">
+          <div className="min-w-0 space-y-2 pb-0.5">
             <div className="flex flex-wrap items-center gap-1.5">
+              {isPausedSession(s) ? <Badge variant="warning">{t("Paused")}</Badge> : null}
               <Badge variant={converting ? "warning" : "success"}>{decisionLabel(s)}</Badge>
+              {s.bitrateCapSource === "upload_budget" ? (
+                <Badge variant="info">{t("Upload budget")}</Badge>
+              ) : null}
               {s.failovers ? (
                 <Badge variant="warning">
                   {tn(s.failovers, "{count} failover", "{count} failovers")}
@@ -133,9 +142,16 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
             </div>
             <div className="min-w-0">
               <h3 className="truncate text-lg font-semibold text-on-scrim">
-                {title?.title || s.title}
+                <button
+                  type="button"
+                  data-stream-open
+                  onClick={onOpen}
+                  className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+                >
+                  {displayTitle}
+                </button>
               </h3>
-              {channelLabel(s) && channelLabel(s) !== (title?.title || s.title) ? (
+              {channelLabel(s) && channelLabel(s) !== displayTitle ? (
                 <p className="truncate text-sm text-on-scrim/75">{channelLabel(s)}</p>
               ) : null}
               {subtitle ? <p className="truncate text-sm text-on-scrim/75">{subtitle}</p> : null}
@@ -162,16 +178,21 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
             )}
           </div>
           {s.canStop !== false && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 self-start border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
-              disabled={stopping}
-              onClick={onStop}
-              aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-            >
-              <Square size={13} /> {t("Stop")}
-            </Button>
+            <div className="col-span-full flex justify-end border-t border-white/15 pt-2.5 sm:col-span-1 sm:self-start sm:border-t-0 sm:pt-0">
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
+                disabled={stopping}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStop();
+                }}
+                aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+              >
+                <Square size={13} /> {t("Stop")}
+              </Button>
+            </div>
           )}
         </div>
       </div>
@@ -191,7 +212,10 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
           ) : null}
         </Fact>
         <Fact label={t("Network")}>
-          <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span
+            className="inline-flex min-w-0 items-center gap-1.5"
+            title={s.networkReason || undefined}
+          >
             {s.remote ? (
               <Globe size={13} className="shrink-0 text-info" />
             ) : (
@@ -202,6 +226,11 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
               {s.ip ? <span className="font-mono text-xs text-fg-muted"> · {s.ip}</span> : null}
             </span>
           </span>
+          {s.networkReason ? (
+            <span className="block truncate text-xs text-fg-muted" title={s.networkReason}>
+              {s.networkReason}
+            </span>
+          ) : null}
         </Fact>
         <Fact label={t("Video")}>
           <Flow from={s.sourceVideo} to={s.outputVideo} />
@@ -211,6 +240,13 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
         </Fact>
         <Fact label={t("Bitrate")}>
           <span className="tabular-nums">{rate}</span>
+          {s.bitrateCapSource === "upload_budget" && s.bitrateCapKbps ? (
+            <span className="block text-xs text-info">
+              {t("Shared upload budget ({cap} cap)", {
+                cap: mbpsOf(s.bitrateCapKbps * 1000),
+              })}
+            </span>
+          ) : null}
         </Fact>
         <Fact label={t("Subtitles")}>{s.subtitle || null}</Fact>
         <Fact label={t("Source")}>{s.origin || null}</Fact>
@@ -237,12 +273,23 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
 
 /** A rich single-row view of one stream: artwork wash, who and where, the
  * conversion, the network and the position. */
-function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
+function StreamRow({
+  s,
+  stopping,
+  onOpen,
+  onStop,
+}: {
+  s: Stream;
+  stopping: boolean;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
   const title = useTitle(
     s.isMusic ? undefined : s.ratingKey ? String(s.ratingKey) : s.key || undefined,
   );
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
+  const displayTitle = title?.title || s.title;
   const subtitle = s.isMusic
     ? [s.artist, s.album].filter(Boolean).join(" · ")
     : title?.type === "episode" && title.showTitle
@@ -251,7 +298,13 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
         ? String(title.year)
         : "";
   return (
-    <li className="relative isolate overflow-hidden">
+    <li
+      onClick={(e) => {
+        if (isNestedControl(e.target)) return;
+        onOpen();
+      }}
+      className="relative isolate cursor-pointer overflow-hidden transition hover:bg-surface-hover/50 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-inset has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
       <Artwork
         src={title?.backdrop || title?.poster}
         alt=""
@@ -259,7 +312,7 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
         className="absolute inset-y-0 left-0 -z-10 w-2/3 opacity-30 [mask-image:linear-gradient(to_right,black,transparent)]"
         imgClassName="size-full object-cover"
       />
-      <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-x-5 gap-y-3 p-4 lg:grid-cols-[3.5rem_minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_11rem_auto]">
+      <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-x-5 gap-y-3 p-4 sm:grid-cols-[3.5rem_minmax(0,1fr)_auto] lg:grid-cols-[3.5rem_minmax(0,1.7fr)_minmax(0,1.25fr)_minmax(0,1fr)_13rem_auto]">
         <SessionArtwork
           s={s}
           poster={title?.poster}
@@ -269,13 +322,30 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
         <div className="min-w-0 space-y-1">
           <div className="flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2">
             <p className="max-w-full truncate text-base font-semibold text-fg">
-              {title?.title || s.title}
+              <button
+                type="button"
+                data-stream-open
+                onClick={onOpen}
+                className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+              >
+                {displayTitle}
+              </button>
             </p>
+            {isPausedSession(s) ? (
+              <Badge variant="warning" className="shrink-0">
+                {t("Paused")}
+              </Badge>
+            ) : null}
             <Badge variant={converting ? "warning" : "success"} className="shrink-0">
               {decisionLabel(s)}
             </Badge>
+            {s.bitrateCapSource === "upload_budget" ? (
+              <Badge variant="info" className="shrink-0">
+                {t("Upload budget")}
+              </Badge>
+            ) : null}
           </div>
-          {channelLabel(s) && channelLabel(s) !== (title?.title || s.title) ? (
+          {channelLabel(s) && channelLabel(s) !== displayTitle ? (
             <p className="truncate text-sm text-fg-muted">{channelLabel(s)}</p>
           ) : null}
           {subtitle ? <p className="truncate text-sm text-fg-muted">{subtitle}</p> : null}
@@ -290,45 +360,66 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
                 .map((v) => ` · ${v}`)}
             </span>
           </p>
+          {s.qualityFallback ? (
+            <p className="truncate text-xs text-fg-muted">{qualityFallback(s.qualityFallback)}</p>
+          ) : null}
+          {s.release ? (
+            <p className="truncate font-mono text-[11px] text-fg-subtle" title={s.release}>
+              {s.release}
+            </p>
+          ) : null}
         </div>
         <dl className="hidden min-w-0 space-y-1 text-xs lg:block">
           <div className="flex min-w-0 gap-2">
             <dt className="w-14 shrink-0 text-fg-subtle">{t("Video")}</dt>
-            <dd className="truncate text-fg">
+            <dd className="min-w-0 flex-1 truncate text-fg">
               <Flow from={s.sourceVideo} to={s.outputVideo} />
             </dd>
           </div>
           <div className="flex min-w-0 gap-2">
             <dt className="w-14 shrink-0 text-fg-subtle">{t("Audio")}</dt>
-            <dd className="truncate text-fg">
+            <dd className="min-w-0 flex-1 truncate text-fg">
               <Flow from={s.sourceAudio} to={s.outputAudio} />
             </dd>
           </div>
           {s.subtitle ? (
             <div className="flex min-w-0 gap-2">
               <dt className="w-14 shrink-0 text-fg-subtle">{t("Subtitles")}</dt>
-              <dd className="truncate text-fg">{s.subtitle}</dd>
+              <dd className="min-w-0 flex-1 truncate text-fg">{s.subtitle}</dd>
             </div>
           ) : null}
         </dl>
         <div className="hidden min-w-0 space-y-1 text-xs lg:block">
-          <p className="flex min-w-0 items-center gap-1.5 text-fg">
+          <p
+            className="flex min-w-0 items-center gap-1.5 text-fg"
+            title={s.networkReason || undefined}
+          >
             {s.remote ? (
               <Globe size={12} className="shrink-0 text-info" />
             ) : (
               <Home size={12} className="shrink-0 text-success" />
             )}
-            {s.remote ? t("Away") : t("Home")}
+            <span className="shrink-0">{s.remote ? t("Away") : t("Home")}</span>
             {s.ip ? <span className="truncate font-mono text-fg-muted">{s.ip}</span> : null}
           </p>
+          {s.networkReason ? (
+            <p className="truncate text-fg-muted" title={s.networkReason}>
+              {s.networkReason}
+            </p>
+          ) : null}
           <p className="truncate text-fg-muted">
             <span className="font-medium tabular-nums text-fg">
               {mbpsOf((s.bitrateKbps ?? 0) * 1000)}
             </span>
             {s.origin ? ` · ${s.origin}` : ""}
           </p>
+          {s.bitrateCapSource === "upload_budget" && s.bitrateCapKbps ? (
+            <p className="truncate text-info">
+              {t("Upload budget ({cap} cap)", { cap: mbpsOf(s.bitrateCapKbps * 1000) })}
+            </p>
+          ) : null}
         </div>
-        <div className="col-span-2 min-w-0 lg:col-span-1">
+        <div className="col-span-full min-w-0 lg:col-span-1">
           {s.isLive ? (
             <p className="text-xs text-fg-muted">{t("Live")}</p>
           ) : s.progress !== null ? (
@@ -349,25 +440,22 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
             <p className="text-xs text-fg-muted">{t("Waiting for playback position")}</p>
           )}
         </div>
-        {s.qualityFallback ? (
-          <p className="text-xs text-fg-muted">{qualityFallback(s.qualityFallback)}</p>
-        ) : null}
-        {s.release ? (
-          <p className="truncate font-mono text-[11px] text-fg-subtle" title={s.release}>
-            {s.release}
-          </p>
-        ) : null}
         {s.canStop !== false && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={stopping}
-            onClick={onStop}
-            aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-            className="col-start-3 row-start-1 lg:col-auto lg:row-auto"
-          >
-            <Square size={13} /> {t("Stop")}
-          </Button>
+          <div className="col-span-full flex justify-end border-t border-border/60 pt-3 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:border-t-0 sm:pt-0 lg:col-auto lg:row-auto">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={stopping}
+              onClick={(e) => {
+                e.stopPropagation();
+                onStop();
+              }}
+              aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+              className="shrink-0"
+            >
+              <Square size={13} /> {t("Stop")}
+            </Button>
+          </div>
         )}
       </div>
       <ClusterDetails s={s} />
@@ -378,15 +466,6 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
 /** Card or list layout for Now Playing, remembered on this browser. */
 type NowView = "cards" | "list";
 const VIEW_KEY = "ether.activity.nowView";
-/** Watched share, plus the read-ahead buffer when it runs past the playhead. */
-function progressLabel(progress: number, buffered: number) {
-  return buffered > progress
-    ? t("{watched} watched · {buffered} buffered", {
-        watched: formatPercent(progress),
-        buffered: formatPercent(buffered),
-      })
-    : t("{percent}% watched", { percent: Math.round(progress * 100) });
-}
 
 export function useNowView(): [NowView, (v: NowView) => void] {
   const [view, setView] = useState<NowView>(() =>
@@ -472,10 +551,15 @@ export function NowPlaying({
   view?: NowView;
 }) {
   const [stopping, setStopping] = useState<string | null>(null);
+  const [playId, openPlay] = usePlayParam();
   const streams = state.data ?? [];
   const filtered = protocol ? streams.filter((stream) => stream.protocol === protocol) : streams;
-  const converting = filtered.filter(isTranscoding).length;
-  const throughput = filtered.reduce((sum, s) => sum + (s.speedBps || 0), 0);
+  const active = filtered.filter((s) => !isPausedSession(s));
+  const pausedCount = filtered.length - active.length;
+  const converting = active.filter(isTranscoding).length;
+  const throughput = active.reduce((sum, s) => sum + (s.speedBps || 0), 0);
+  const activeStream = playId ? (streams.find((s) => streamIdOf(s) === playId) ?? null) : null;
+  const drawer = <PlayDrawer id={playId} session={activeStream} onClose={() => openPlay(null)} />;
 
   const stop = async (id: string) => {
     setStopping(id);
@@ -494,19 +578,25 @@ export function NowPlaying({
   };
 
   if (state.error && !state.data)
-    return <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
+    return (
+      <>
+        <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
+        {drawer}
+      </>
+    );
   const ready = Boolean(state.data);
   return (
     <>
       <KpiRow>
         <Kpi
           label={t("Streaming now")}
-          value={ready ? formatNumber(filtered.length, 0) : "—"}
+          value={ready ? formatNumber(active.length, 0) : "—"}
+          detail={pausedCount ? t("{count} paused", { count: pausedCount }) : undefined}
           icon={<Radio size={18} />}
         />
         <Kpi
           label={t("Direct")}
-          value={ready ? formatNumber(filtered.length - converting, 0) : "—"}
+          value={ready ? formatNumber(active.length - converting, 0) : "—"}
           detail={t("Played or streamed as-is")}
           icon={<PlayCircle size={18} />}
           tone="success"
@@ -532,9 +622,10 @@ export function NowPlaying({
           <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
             {filtered.map((s) => (
               <StreamRow
-                key={s.id || s.key}
+                key={streamIdOf(s)}
                 s={s}
                 stopping={stopping === s.id}
+                onOpen={() => openPlay(streamIdOf(s))}
                 onStop={() => void stop(s.id)}
               />
             ))}
@@ -543,9 +634,10 @@ export function NowPlaying({
           <div className="grid gap-4 xl:grid-cols-2">
             {filtered.map((s) => (
               <StreamCard
-                key={s.id || s.key}
+                key={streamIdOf(s)}
                 s={s}
                 stopping={stopping === s.id}
+                onOpen={() => openPlay(streamIdOf(s))}
                 onStop={() => void stop(s.id)}
               />
             ))}
@@ -560,6 +652,7 @@ export function NowPlaying({
           description={t("Streams appear here as soon as a viewer presses play.")}
         />
       )}
+      {drawer}
     </>
   );
 }

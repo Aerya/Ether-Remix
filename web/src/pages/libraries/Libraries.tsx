@@ -1,9 +1,17 @@
 import { JukeboxQuickSetup } from "../../pse/JukeboxQuickSetup";
 import { sourceLabel } from "./CatalogueSources";
-import { Button, EmptyState, Switch, toast } from "@braedonsaunders/appkit-ui";
 import {
-  ArrowDown,
-  ArrowUp,
+  Badge,
+  Button,
+  EmptyState,
+  Switch,
+  confirmDialog,
+  toast,
+  type ContextMenuEntry,
+} from "@braedonsaunders/appkit-ui";
+import {
+  ArrowLeft,
+  ArrowRight,
   Clapperboard,
   EyeOff,
   Film,
@@ -11,23 +19,31 @@ import {
   Pencil,
   Plug,
   Plus,
+  RefreshCw,
   Trash2,
   Tv,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useApp } from "../../app-context";
+import { ActionMenu } from "../../components/ActionMenu";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { DomainPage } from "../../components/layout";
+import { DragHandle, SortableList, arrayMove } from "../../components/Sortable";
 import { LevelBadge } from "../../components/status";
-import { t, tn } from "../../i18n";
+import { t, tn, tx } from "../../i18n";
 import { errorMessage } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
-import { librariesApi, publishedTo, type Library } from "./api";
+import { librariesApi, publishedTo, type Library, type LibrarySync } from "./api";
 import { NewLibraryDrawer } from "./LibraryEditor";
 import { LibraryPage } from "./LibraryPage";
+import {
+  formatDeleteGuardSummary,
+  formatItemStorageSummary,
+  resolveDeleteGuard,
+} from "./syncStatus";
 import "./libraries.css";
 
 export default function Libraries() {
@@ -55,6 +71,8 @@ function SourceIcon({ lib }: { lib: Library }) {
 
 function protocolLabel(key: string): string {
   switch (key) {
+    case "vela":
+      return "Vela";
     case "plex":
       return "Plex";
     case "mediaBrowser":
@@ -70,6 +88,53 @@ function protocolLabel(key: string): string {
   }
 }
 
+export function isDisabledPluginError(raw?: string): boolean {
+  if (!raw) return false;
+  return raw.toLowerCase().includes("plugin is disabled");
+}
+
+export function formatLibrarySyncError(raw: string, sync?: LibrarySync | null): ReactNode {
+  const guard = resolveDeleteGuard(sync ?? (raw ? ({ lastError: raw } as LibrarySync) : undefined));
+  if (guard) {
+    return formatDeleteGuardSummary(guard);
+  }
+  const lower = raw.trim().toLowerCase();
+  if (lower.includes("plugin is disabled")) {
+    return tx("Its plugin is turned off. Turn it on in {link}.", {
+      link: (
+        <Link to="/plugins/installed" className="font-medium underline hover:text-fg">
+          {t("Plugins")}
+        </Link>
+      ),
+    });
+  }
+  if (lower === "plugins: not found") {
+    return tx("Its plugin is not installed. Check {link}.", {
+      link: (
+        <Link to="/plugins/installed" className="font-medium underline hover:text-fg">
+          {t("Plugins")}
+        </Link>
+      ),
+    });
+  }
+  if (lower === "plugins: plugin was revoked") {
+    return t("Its plugin was disabled for safety.");
+  }
+  if (lower === "plugins: no runtime registered for this plugin") {
+    return t("Its plugin runtime is unavailable right now.");
+  }
+  if (lower === "plugins: host service unavailable") {
+    return t("A service this plugin needs is unavailable right now.");
+  }
+  if (lower === "plugins: storage quota exceeded") {
+    return t("Its plugin ran out of storage space.");
+  }
+  if (lower === "plugins: permission denied") {
+    return t("Its plugin is missing a required permission.");
+  }
+  return raw.replace(/^plugins:\s*/i, "");
+}
+
 function LibrariesList() {
   const navigate = useNavigate();
   const { health } = useApp();
@@ -81,6 +146,15 @@ function LibrariesList() {
   const [busy, setBusy] = useState(false);
   const catalogHealth = health.find((h) => h.id === "catalog");
   const libs = list.data ?? [];
+  const anyPluginSyncing = libs.some((l) => l.source === "plugin" && l.sync?.running);
+
+  useEffect(() => {
+    if (!anyPluginSyncing) return;
+    const timer = window.setInterval(() => {
+      void list.reload();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [anyPluginSyncing, list.reload]);
 
   const act = async (run: () => Promise<unknown>, done?: string) => {
     setBusy(true);
@@ -95,13 +169,37 @@ function LibrariesList() {
     }
   };
 
-  const move = (lib: Library, dir: -1 | 1) => {
-    const other = libs[libs.indexOf(lib) + dir];
-    if (!other) return;
+  const applyOrder = (next: Library[]) => {
+    const rawSlots = libs.map((l) => l.sort).sort((a, b) => a - b);
+    const hasDuplicates = rawSlots.some((s, idx) => idx > 0 && s === rawSlots[idx - 1]);
+    const targetSort = (idx: number) => (hasDuplicates ? idx + 1 : (rawSlots[idx] ?? idx + 1));
     void act(async () => {
-      await librariesApi.patch(lib.id, { sort: other.sort });
-      await librariesApi.patch(other.id, { sort: lib.sort });
+      for (let idx = 0; idx < next.length; idx++) {
+        const lib = next[idx]!;
+        const want = targetSort(idx);
+        if (lib.sort !== want) {
+          await librariesApi.patch(lib.id, { sort: want });
+        }
+      }
     });
+  };
+
+  const move = (index: number, dir: -1 | 1) => {
+    const to = index + dir;
+    if (to < 0 || to >= libs.length) return;
+    applyOrder(arrayMove(libs, index, to));
+  };
+
+  const confirmDelete = async (lib: Library) => {
+    const ok = await confirmDialog({
+      title: t("Delete {name}?", { name: lib.name }),
+      message: t("Delete the library “{name}”? Media and watch history are kept.", {
+        name: lib.name,
+      }),
+      confirmLabel: t("Delete"),
+      tone: "danger",
+    });
+    if (ok) void act(() => librariesApi.remove(lib.id), t("Library deleted"));
   };
 
   return (
@@ -126,8 +224,13 @@ function LibrariesList() {
           description={t("Your movies and TV shows appear here once the catalog is ready.")}
         />
       ) : (
-        <div className="libraries-grid">
-          {libs.map((lib, i) => {
+        <SortableList
+          items={libs}
+          getId={(lib) => String(lib.id)}
+          strategy="grid"
+          className="libraries-grid"
+          onReorder={(next) => applyOrder(next)}
+          renderItem={(lib, handle, i) => {
             const shown = publishedTo(lib);
             const sources =
               lib.source === "collection"
@@ -141,8 +244,55 @@ function LibrariesList() {
                     .map(sourceLabel)
                     .join(", ");
             const syncBad = lib.sync?.lastError;
+            const syncGuard = lib.sync?.running ? null : resolveDeleteGuard(lib.sync);
+            const pluginDisabled = isDisabledPluginError(syncBad);
+            const removable =
+              lib.source === "catalogue" || lib.source === "collection" || lib.source === "plugin";
+            const menuItems: ContextMenuEntry[] = [
+              {
+                key: "rename",
+                label: t("Rename"),
+                icon: Pencil,
+                disabled: busy,
+                onSelect: () => {
+                  setRenaming(lib);
+                  setNameDraft(lib.name);
+                },
+              },
+              ...(libs.length > 1
+                ? ([
+                    {
+                      key: "move-left",
+                      label: t("Move left"),
+                      icon: ArrowLeft,
+                      disabled: busy || i === 0,
+                      onSelect: () => move(i, -1),
+                    },
+                    {
+                      key: "move-right",
+                      label: t("Move right"),
+                      icon: ArrowRight,
+                      disabled: busy || i === libs.length - 1,
+                      onSelect: () => move(i, 1),
+                    },
+                  ] satisfies ContextMenuEntry[])
+                : []),
+              ...(removable
+                ? ([
+                    { key: "sep-delete", separator: true },
+                    {
+                      key: "delete",
+                      label: t("Delete"),
+                      icon: Trash2,
+                      danger: true,
+                      disabled: busy,
+                      onSelect: () => void confirmDelete(lib),
+                    },
+                  ] satisfies ContextMenuEntry[])
+                : []),
+            ];
             return (
-              <section key={lib.id} className="library-card" aria-label={lib.name}>
+              <section className="library-card" aria-label={lib.name}>
                 <div className="library-card-head">
                   <span className="library-card-icon">
                     <SourceIcon lib={lib} />
@@ -156,11 +306,14 @@ function LibrariesList() {
                       {sources && lib.source === "catalogue" && Boolean(lib.rules?.length)
                         ? ` · ${t("Rules")}`
                         : ""}
-                      {typeof lib.itemCount === "number"
-                        ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
-                            count: formatNumber(lib.itemCount, 0),
-                          })}`
-                        : ""}
+                      {lib.source === "plugin" &&
+                      typeof (lib.storedItems ?? lib.itemCount) === "number"
+                        ? ` · ${formatItemStorageSummary(lib)}`
+                        : typeof lib.itemCount === "number"
+                          ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
+                              count: formatNumber(lib.itemCount, 0),
+                            })}`
+                          : ""}
                     </p>
                   </div>
                   {lib.source === "builtin" && catalogHealth ? (
@@ -168,25 +321,22 @@ function LibrariesList() {
                       level={catalogHealth.level}
                       label={catalogHealth.level === "ok" ? t("Healthy") : t("Needs attention")}
                     />
+                  ) : lib.source === "plugin" && lib.sync?.running ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <RefreshCw size={11} className="animate-spin" aria-hidden />
+                      {lib.sync.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+                    </Badge>
+                  ) : syncGuard ? (
+                    <LevelBadge level="warn" label={t("Needs review")} />
                   ) : syncBad ? (
-                    <LevelBadge level="error" label={t("Sync failed")} />
+                    <LevelBadge
+                      level={pluginDisabled ? "warn" : "error"}
+                      label={pluginDisabled ? t("Plugin off") : t("Sync failed")}
+                    />
                   ) : lib.source === "plugin" && lib.sync?.lastOk ? (
                     <LevelBadge level="ok" label={t("Healthy")} />
                   ) : null}
                 </div>
-                <p className="text-sm text-fg-muted">
-                  {t("Titles from: {sources}", {
-                    sources:
-                      registry.data
-                        ?.filter(
-                          (source) =>
-                            lib.sources?.includes(source.id) ||
-                            source.libraries.some((item) => item.id === lib.id),
-                        )
-                        .map(sourceLabel)
-                        .join(", ") || sourceBadge(lib),
-                  })}
-                </p>
                 <p className="library-card-apps">
                   {lib.hidden ? (
                     <>
@@ -199,25 +349,17 @@ function LibrariesList() {
                   )}
                 </p>
                 {syncBad ||
+                syncGuard ||
                 (lib.source === "builtin" && catalogHealth && catalogHealth.level !== "ok") ? (
                   <p className="library-card-error" role="alert">
-                    {syncBad || catalogHealth?.summary}
+                    {syncBad || syncGuard
+                      ? formatLibrarySyncError(syncBad ?? "", lib.sync)
+                      : catalogHealth?.summary}
                   </p>
                 ) : null}
                 <div className="library-card-actions">
                   <Button size="sm" onClick={() => navigate(`/libraries/${lib.id}`)}>
                     {t("Open")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label={t("Rename {name}", { name: lib.name })}
-                    onClick={() => {
-                      setRenaming(lib);
-                      setNameDraft(lib.name);
-                    }}
-                  >
-                    <Pencil size={14} /> {t("Rename")}
                   </Button>
                   <label className="library-card-hide">
                     <Switch
@@ -231,54 +373,18 @@ function LibrariesList() {
                     <span>{t("Hidden")}</span>
                   </label>
                   <span className="flex-1" />
-                  <span className="inline-flex shrink-0 items-center">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label={t("Move {name} up", { name: lib.name })}
-                      disabled={busy || i === 0}
-                      onClick={() => move(lib, -1)}
-                    >
-                      <ArrowUp size={14} />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label={t("Move {name} down", { name: lib.name })}
-                      disabled={busy || i === libs.length - 1}
-                      onClick={() => move(lib, 1)}
-                    >
-                      <ArrowDown size={14} />
-                    </Button>
-                  </span>
-                  {lib.source === "catalogue" ? (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label={t("Delete {name}", { name: lib.name })}
-                      disabled={busy}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            t(
-                              "Delete the library “{name}”? Its titles stay in Movies and TV Shows.",
-                              {
-                                name: lib.name,
-                              },
-                            ),
-                          )
-                        )
-                          void act(() => librariesApi.remove(lib.id), t("Library deleted"));
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </Button>
+                  {libs.length > 1 ? (
+                    <DragHandle handle={handle} label={t("Reorder {name}", { name: lib.name })} />
                   ) : null}
+                  <ActionMenu
+                    label={t("More actions for {name}", { name: lib.name })}
+                    items={menuItems}
+                  />
                 </div>
               </section>
             );
-          })}
-        </div>
+          }}
+        />
       )}
       {creating ? (
         <NewLibraryDrawer

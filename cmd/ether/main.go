@@ -3,6 +3,7 @@
 //
 //	ether                         run (in the foreground, or under the OS service manager)
 //	ether --spike movie.mp4 ...   run the spike: serve local files as a library
+//	ether healthcheck [--data-dir DIR]
 //	ether service install|uninstall|start|stop|restart|status [--data-dir DIR]
 //	ether cluster init|token|join ...  (see cluster.go)
 //	ether plugin new|check|test|pack|dev|publish ...  (see plugin.go)
@@ -48,6 +49,9 @@ func main() {
 	logLevel := fs.String("log-level", "", "debug, info, warn or error (default from config)")
 
 	_ = fs.Parse(os.Args[1:])
+	if fs.Arg(0) == "healthcheck" {
+		os.Exit(runHealthcheck(fs.Args()[1:], *dataDir, os.Stdout, os.Stderr))
+	}
 	if fs.Arg(0) == "cluster" {
 		os.Exit(runCluster(fs.Args()[1:], *dataDir, os.Stdout, os.Stderr))
 	}

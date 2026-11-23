@@ -37,6 +37,7 @@ type Item struct {
 	DurationMS            int64          `json:"durationMs"`
 	Summary               string         `json:"summary,omitempty"`
 	Rating                string         `json:"rating,omitempty"`
+	EnforcementRating     string         `json:"-"`
 	Thumb                 string         `json:"thumb,omitempty"`
 	// Show metadata keeps episodes in season order inside a shuffle,
 	// marathon or newest-first playout. Zero values are movies and items

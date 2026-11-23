@@ -7,12 +7,16 @@ import { t } from "../../i18n";
 export function UnratedChannelRating({
   value,
   onChange,
+  className,
 }: {
   value: string;
   onChange: (value: string) => void;
+  /** Lets a form align the row with its own fields (e.g. no side padding). */
+  className?: string;
 }) {
   return (
     <SettingsRow
+      className={className}
       title={t("Rating for channels without one")}
       description={t(
         "Profiles with a rating limit hide channels that have no rating. Pick the rating these channels should count as.",

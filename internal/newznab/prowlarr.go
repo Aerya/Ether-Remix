@@ -16,6 +16,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/retryafter"
 )
 
@@ -244,6 +245,7 @@ func prowlarrGET(ctx context.Context, rawURL, apiKey, what string, opts Options)
 	}
 	req.Header.Set("X-Api-Key", apiKey)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	cl := opts.HTTPClient
 	if cl == nil {
 		cl = egress.Client(egress.CapIndexers, defaultHTTPTimeout)

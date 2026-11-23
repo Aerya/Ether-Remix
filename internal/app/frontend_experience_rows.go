@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -141,13 +142,22 @@ func (a *App) experienceContinueKind(ctx context.Context, viewer *core.User, lib
 		sessions = a.playback.Sessions
 	}
 	// Visibility reads each episode's show; the walk prefetches its shows in
-	// one batch and the request memo answers those reads.
+	// one batch. Keep a call-local map so prefetch works even when the caller
+	// did not install reqmemo, and also populate reqmemo when active.
 	type visibleTitle struct {
 		t   *core.Title
 		err error
 	}
+	var localMu sync.RWMutex
+	local := map[core.RatingKey]visibleTitle{}
 	memoKey := func(key core.RatingKey) string { return "app:visible-title:" + key.String() }
 	cachedGet := func(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+		localMu.RLock()
+		if v, ok := local[key]; ok {
+			localMu.RUnlock()
+			return v.t, v.err
+		}
+		localMu.RUnlock()
 		v, err := reqmemo.Do(ctx, memoKey(key), func() (visibleTitle, error) {
 			t, err := a.catalog.CachedGet(ctx, key)
 			if err != nil && !errors.Is(err, core.ErrNotFound) {
@@ -161,18 +171,30 @@ func (a *App) experienceContinueKind(ctx context.Context, viewer *core.User, lib
 		return v.t, v.err
 	}
 	prefetch := func(ctx context.Context, keys []core.RatingKey) {
-		if !reqmemo.Active(ctx) {
+		if len(keys) == 0 {
 			return
 		}
 		found, err := a.catalog.CachedGetMany(ctx, keys)
 		if err != nil {
 			return
 		}
+		localMu.Lock()
 		for _, key := range keys {
 			v := visibleTitle{err: core.ErrNotFound}
 			if t, ok := found[key]; ok && t.Key == key {
-				v = visibleTitle{t: &t}
+				cp := t
+				v = visibleTitle{t: &cp}
 			}
+			local[key] = v
+		}
+		localMu.Unlock()
+		if !reqmemo.Active(ctx) {
+			return
+		}
+		for _, key := range keys {
+			localMu.RLock()
+			v := local[key]
+			localMu.RUnlock()
 			_, _ = reqmemo.Do(ctx, memoKey(key), func() (visibleTitle, error) { return v, nil })
 		}
 	}

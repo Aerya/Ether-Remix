@@ -7,10 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -24,6 +24,7 @@ type RuntimeRowViews struct {
 	Receipts            *Receipts
 	Visibility          Visibility
 	Libraries           []Library
+	LiveLibraries       func() []Library
 	Active              func(context.Context, int64) (*core.User, error)
 	CachedGet           func(context.Context, core.RatingKey) (*core.Title, error)
 	CachedGetMany       func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
@@ -38,13 +39,24 @@ type RuntimeRowViews struct {
 // RowViewRevision reads shared preference and layout versions, so snapshots
 // created by another node fail closed after a relevant change.
 func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
-	var layout string
-	var favorites, exclusions int64
-	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT document FROM personalize_home_layout WHERE id=1),''), COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0)`, user.ID, user.ID).Scan(&layout, &favorites, &exclusions)
-	if err != nil {
-		return "", err
+	if proof := bootstrapProofFor(ctx, user.ID); proof != nil {
+		proof.mu.Lock()
+		defer proof.mu.Unlock()
+		if proof.revision != "" {
+			return proof.revision, nil
+		}
+		rev, err := readRowViewRevision(ctx, db, user)
+		if err == nil {
+			proof.revision = rev
+		}
+		return rev, err
 	}
-	rules, err := catalog.ReadViewerRulesRevision(ctx, db, user.ID)
+	return readRowViewRevision(ctx, db, user)
+}
+func readRowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
+	var layout string
+	var favorites, exclusions, rules int64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT document FROM personalize_home_layout WHERE id=1),''), COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID).Scan(&layout, &favorites, &exclusions, &rules)
 	if err != nil {
 		return "", err
 	}
@@ -56,8 +68,35 @@ func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, 
 	return hex.EncodeToString(sum[:]), nil
 }
 
+type rowRevisionKey struct{}
+type rowRevisionProof struct {
+	viewer   *core.User
+	revision string
+}
+
+type rowCollectionBatchKey struct{}
+type rowCollectionBatchProof struct {
+	viewer  *core.User
+	cols    map[core.RatingKey]*core.Collection
+	matched map[core.RatingKey]bool
+	want    map[core.RatingKey][]core.RatingKey
+}
+
+// RowViewCollectionBatchChecker is an optional extension on core.Collections
+// that validates visibility and membership for multiple collection shelves in
+// one policy pass (bounded queries regardless of shelf count).
+type RowViewCollectionBatchChecker interface {
+	CheckMembersBatch(context.Context, *core.User, []core.RatingKey, map[core.RatingKey][]core.RatingKey, int) (map[core.RatingKey]*core.Collection, map[core.RatingKey]bool, error)
+}
+
 func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
-	protocol, receipts, visibility, libraries := d.Protocol, d.Receipts, d.Visibility, d.Libraries
+	protocol, receipts, visibility := d.Protocol, d.Receipts, d.Visibility
+	currentLibraries := func() []Library {
+		if d.LiveLibraries != nil {
+			return d.LiveLibraries()
+		}
+		return d.Libraries
+	}
 	// A row snapshot is already drawn from the local catalogue. Revalidation
 	// must never trigger a per-title network refresh while a client pages it.
 	cacheVisibility := visibility
@@ -85,6 +124,45 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	}
 	options := RowViewOptions{
 		DB: d.DB, TTL: 15 * time.Minute, Active: d.Active, Receipts: receipts,
+		PreparePolicy: func(ctx context.Context, u *core.User) (context.Context, error) {
+			revision, err := RowViewRevision(ctx, d.DB, u)
+			return context.WithValue(ctx, rowRevisionKey{}, rowRevisionProof{u, revision}), err
+		},
+		PrepareSnapshots: func(ctx context.Context, u *core.User, snaps []RowViewSnapshot) (context.Context, error) {
+			checker, ok := d.Collections.(RowViewCollectionBatchChecker)
+			if !ok {
+				return ctx, nil
+			}
+			var keys []core.RatingKey
+			want := map[core.RatingKey][]core.RatingKey{}
+			for _, snap := range snaps {
+				if snap.Row.Collection == 0 {
+					continue
+				}
+				if _, seen := want[snap.Row.Collection]; seen {
+					continue
+				}
+				w, valid := rowViewMemberKeys(snap.Entries)
+				if !valid {
+					continue
+				}
+				keys = append(keys, snap.Row.Collection)
+				want[snap.Row.Collection] = w
+			}
+			if len(keys) == 0 {
+				return ctx, nil
+			}
+			cols, matched, err := checker.CheckMembersBatch(ctx, u, keys, want, rowViewMemberScanLimit)
+			if err != nil {
+				return nil, err
+			}
+			return context.WithValue(ctx, rowCollectionBatchKey{}, rowCollectionBatchProof{
+				viewer:  u,
+				cols:    cols,
+				matched: matched,
+				want:    want,
+			}), nil
+		},
 		Build: func(ctx context.Context, request frontend.RowViewRequest) ([]RowViewSnapshot, error) {
 			if request.Protocol != protocol {
 				return nil, core.ErrUnauthorized
@@ -93,7 +171,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if err != nil {
 				return nil, err
 			}
-			fresh, err := d.Active(ctx, request.Viewer.ID)
+			fresh, err := bootstrapActive(ctx, d.Active, request.Viewer.ID)
 			if err != nil || fresh == nil {
 				return nil, ErrRowViewStale
 			}
@@ -125,7 +203,14 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if p != protocol {
 				return false
 			}
-			revision, err := RowViewRevision(ctx, d.DB, u)
+			proof, shared := ctx.Value(rowRevisionKey{}).(rowRevisionProof)
+			var revision string
+			var err error
+			if shared && proof.viewer == u {
+				revision = proof.revision
+			} else {
+				revision, err = RowViewRevision(ctx, d.DB, u)
+			}
 			if err != nil || revision != s.Revision {
 				return false
 			}
@@ -134,7 +219,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			case frontend.PlacementLibrary:
 				id, err := strconv.Atoi(s.ViewID)
 				valid := false
-				for _, lib := range libraries {
+				for _, lib := range currentLibraries() {
 					if lib.ID == id {
 						valid = true
 						break
@@ -166,12 +251,32 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 				if d.Collections == nil {
 					return false
 				}
-				c, err := d.Collections.Get(ctx, u, s.Row.Collection)
-				if err != nil || c == nil || !visibility.CollectionAllowed(u, c) {
-					return false
-				}
-				if !RowViewCollectionMembers(ctx, d.Collections, u, s.Row.Collection, s.Entries) {
-					return false
+				if checker, ok := d.Collections.(RowViewCollectionChecker); ok {
+					want, valid := rowViewMemberKeys(s.Entries)
+					if !valid {
+						return false
+					}
+					if batch, ok := ctx.Value(rowCollectionBatchKey{}).(rowCollectionBatchProof); ok && batch.viewer == u {
+						if preWant, checked := batch.want[s.Row.Collection]; checked && slices.Equal(preWant, want) {
+							c := batch.cols[s.Row.Collection]
+							if c == nil || !batch.matched[s.Row.Collection] || !visibility.CollectionAllowed(u, c) {
+								return false
+							}
+							return true
+						}
+					}
+					c, matched, err := checker.CheckMembers(ctx, u, s.Row.Collection, want, rowViewMemberScanLimit)
+					if err != nil || c == nil || !matched || !visibility.CollectionAllowed(u, c) {
+						return false
+					}
+				} else {
+					c, err := d.Collections.Get(ctx, u, s.Row.Collection)
+					if err != nil || c == nil || !visibility.CollectionAllowed(u, c) {
+						return false
+					}
+					if !RowViewCollectionMembers(ctx, d.Collections, u, s.Row.Collection, s.Entries) {
+						return false
+					}
 				}
 			}
 			return true
@@ -206,11 +311,16 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 				if err != nil || d.Playlists == nil {
 					return frontend.RowEntry{}, core.ErrNotFound
 				}
-				p, err := d.Playlists.Get(ctx, u.ID, key)
-				if err != nil || p == nil || p.UserID != u.ID || p.Key != key {
+				var pl *core.Playlist
+				if hdr, ok := d.Playlists.(playlistHeaderSource); ok {
+					pl, err = hdr.GetHeader(ctx, u.ID, key)
+				} else {
+					pl, err = d.Playlists.Get(ctx, u.ID, key)
+				}
+				if err != nil || pl == nil || pl.UserID != u.ID || pl.Key != key {
 					return frontend.RowEntry{}, core.ErrNotFound
 				}
-				copy := *p
+				copy := *pl
 				copy.Items = nil
 				return frontend.RowEntry{Kind: frontend.RowEntryPlaylist, Playlist: &copy}, nil
 			case frontend.RowEntryLiveChannel:
@@ -240,7 +350,39 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 		if current && d.CurrentAvailable != nil {
 			resolutionVisibility.FilterAvailable = nil
 		}
-		entries, err := RowViewResolveBatchTitles(ctx, u, device, p, refs, options.ResolveEntry, d.CachedGetMany, getCached, resolutionVisibility, func(ctx context.Context, viewer *core.User) ([]frontend.RowEntry, error) {
+		// Batch playlist header lookups for this single policy pass so a shelf
+		// of playlists reads state_playlists once without loading playlist items.
+		resolveOne := options.ResolveEntry
+		if batchPl, ok := d.Playlists.(playlistHeadersBatchSource); ok {
+			var plKeys []core.RatingKey
+			for _, ref := range refs {
+				if ref.Kind == string(frontend.RowEntryPlaylist) {
+					if k, err := core.ParseRatingKey(ref.ID); err == nil {
+						plKeys = append(plKeys, k)
+					}
+				}
+			}
+			if len(plKeys) > 1 {
+				if headers, err := batchPl.GetHeaders(ctx, u.ID, plKeys); err == nil {
+					resolveOne = func(ctx context.Context, u *core.User, device core.Device, p core.Protocol, ref core.NeutralEntryRef) (frontend.RowEntry, error) {
+						if ref.Kind == string(frontend.RowEntryPlaylist) {
+							key, err := core.ParseRatingKey(ref.ID)
+							if err != nil {
+								return frontend.RowEntry{}, core.ErrNotFound
+							}
+							pl, found := headers[key]
+							if !found || pl.UserID != u.ID || pl.Key != key {
+								return frontend.RowEntry{}, core.ErrNotFound
+							}
+							pl.Items = nil
+							return frontend.RowEntry{Kind: frontend.RowEntryPlaylist, Playlist: &pl}, nil
+						}
+						return options.ResolveEntry(ctx, u, device, p, ref)
+					}
+				}
+			}
+		}
+		entries, err := RowViewResolveBatchTitles(ctx, u, device, p, refs, resolveOne, d.CachedGetMany, getCached, resolutionVisibility, func(ctx context.Context, viewer *core.User) ([]frontend.RowEntry, error) {
 			if d.Live == nil {
 				return nil, core.ErrNotFound
 			}
@@ -274,15 +416,60 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	return NewRowViewService(options)
 }
 
+type playlistHeaderSource interface {
+	GetHeader(context.Context, int64, core.RatingKey) (*core.Playlist, error)
+}
+
+type playlistHeadersBatchSource interface {
+	GetHeaders(context.Context, int64, []core.RatingKey) (map[core.RatingKey]core.Playlist, error)
+}
+
 type RowViewCollectionSource interface {
 	Items(context.Context, *core.User, core.RatingKey, int, int) (core.Page, error)
+}
+
+// RowViewCollectionChecker is an optional fast path on collection sources that
+// checks visibility and key membership without hydrating full item titles
+// (credits, keywords, aired counts).
+type RowViewCollectionChecker interface {
+	CheckMembers(context.Context, *core.User, core.RatingKey, []core.RatingKey, int) (*core.Collection, bool, error)
+}
+
+func rowViewMemberKeys(refs []core.NeutralEntryRef) ([]core.RatingKey, bool) {
+	if len(refs) == 0 {
+		return nil, false
+	}
+	want := make([]core.RatingKey, 0, len(refs))
+	seen := make(map[core.RatingKey]bool, len(refs))
+	for _, ref := range refs {
+		if ref.Kind != string(frontend.RowEntryTitle) {
+			return nil, false
+		}
+		key, err := core.ParseRatingKey(ref.ID)
+		if err != nil {
+			return nil, false
+		}
+		if !seen[key] {
+			seen[key] = true
+			want = append(want, key)
+		}
+	}
+	return want, len(want) > 0
 }
 
 // RowViewCollectionMembers adapts one call's collection source into neutral
 // member keys. A nil source stays a nil port and fails closed.
 func RowViewCollectionMembers(ctx context.Context, source RowViewCollectionSource, user *core.User, collection core.RatingKey, refs []core.NeutralEntryRef) bool {
-	if source == nil {
-		return RowViewMembers(ctx, nil, user, collection, refs)
+	if source == nil || user == nil {
+		return false
+	}
+	if checker, ok := source.(RowViewCollectionChecker); ok {
+		want, valid := rowViewMemberKeys(refs)
+		if !valid {
+			return false
+		}
+		_, matched, err := checker.CheckMembers(ctx, user, collection, want, rowViewMemberScanLimit)
+		return err == nil && matched
 	}
 	return RowViewMembers(ctx, func(ctx context.Context, viewer *core.User, key core.RatingKey, offset, limit int) (RowViewCollectionPage, error) {
 		page, err := source.Items(ctx, viewer, key, offset, limit)

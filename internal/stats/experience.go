@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 // Activity › Experience: what each viewer actually saw. Aggregation reads
@@ -170,6 +171,9 @@ type ExperiencePlay struct {
 	UserID          int64  `json:"userId"`
 	Username        string `json:"-"`
 	Title           string `json:"title"`
+	ChannelID       string `json:"channelId,omitempty"`
+	ChannelName     string `json:"channelName,omitempty"`
+	ChannelNumber   string `json:"channelNumber,omitempty"`
 	Device          string `json:"device"`
 	Platform        string `json:"platform"`
 	Started         int64  `json:"started"`
@@ -244,7 +248,7 @@ type ExperienceViewer struct {
 	Cause         ExperienceCause   `json:"cause"`
 }
 
-const experienceColumns = `id,user_id,username,title,platform,device,decision,started,ended,bytes,watched_ms,duration_ms,completed,failovers,error,measured,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,played,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback`
+const experienceColumns = `id,user_id,username,title,channel_id,channel_name,channel_number,platform,device,decision,started,ended,bytes,watched_ms,duration_ms,completed,failovers,error,measured,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,played,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback`
 
 // realPlay is a play History counts (stats.Summary): one that delivered
 // media, plus a measured start that never did (a failed start). Older
@@ -252,8 +256,16 @@ const experienceColumns = `id,user_id,username,title,platform,device,decision,st
 // played; older rows predate that distinction and count.
 const realPlay = `(bytes>0 OR watched_ms>0 OR (measured=1 AND played=1))`
 
+// detailPlay also admits recorded failure rows shown in Activity › History
+// even when they failed before any client timeline or media bytes arrived.
+const detailPlay = `(bytes>0 OR watched_ms>0 OR (measured=1 AND played=1) OR error<>'')`
+
 func (s *Service) experienceRows(ctx context.Context, where string, limit int, args ...any) ([]ExperiencePlay, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+experienceColumns+` FROM stats_plays WHERE `+where+` AND `+realPlay+` ORDER BY started DESC LIMIT ?`, append(args, limit)...)
+	return s.experienceRowsFilter(ctx, where, realPlay, limit, args...)
+}
+
+func (s *Service) experienceRowsFilter(ctx context.Context, where, filter string, limit int, args ...any) ([]ExperiencePlay, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+experienceColumns+` FROM stats_plays WHERE `+where+` AND `+filter+` ORDER BY started DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -263,10 +275,11 @@ func (s *Service) experienceRows(ctx context.Context, where string, limit int, a
 		var p ExperiencePlay
 		var measured, played, pictured, startFailed, events, uhd, hdr, remote int
 		var ttff, bufferMS, bytes int64
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.Title, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Ended, &bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Switches, &p.Error,
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.Title, &p.ChannelID, &p.ChannelName, &p.ChannelNumber, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Ended, &bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Switches, &p.Error,
 			&measured, &pictured, &ttff, &startFailed, &events, &bufferMS, &p.downSwitches, &played, &p.sourceKbps, &uhd, &hdr, &remote, &p.Origin, &p.Release, &p.ReasonKind, &p.ReasonDetail, &p.QualityFallback); err != nil {
 			return nil, err
 		}
+		p.Error = clampTimelineText(p.Error)
 		// Measured: a play request reached a client that reports timelines;
 		// older rows and file/DLNA surfaces carry no start or buffering.
 		p.Measured, p.uhd, p.hdr, p.Remote = measured == 1 && played == 1, uhd == 1, hdr == 1, remote == 1
@@ -347,7 +360,7 @@ func metrics(plays []ExperiencePlay) ExperienceMetrics {
 		watched += p.WatchedMS
 		if p.Completed {
 			m.Finished++
-		} else if p.Ended > 0 && !p.Failed && p.WatchedMS < abandonWindow.Milliseconds() {
+		} else if p.Ended > 0 && !p.Failed && p.ChannelID == "" && p.WatchedMS < abandonWindow.Milliseconds() {
 			m.Abandoned++
 		}
 		if p.sourceKbps > 0 && p.WatchedMS > 0 {
@@ -607,19 +620,38 @@ func (s *Service) ExperienceHandler() http.Handler {
 	return m
 }
 
-// PlayByID returns one recorded play with its experience fields merged
-// into the History play's; nil when unknown.
+// PlayByID returns one recorded or live play with its experience fields merged
+// into the History play's; nil when unknown. A live session whose id was
+// coalesced into an earlier viewing row (or has not yet written a row) resolves
+// directly through the in-memory viewing/session lookup without scanning history.
 func (s *Service) PlayByID(ctx context.Context, id string) (map[string]any, error) {
-	exp, err := s.experienceRows(ctx, `id=?`, 1, id)
-	if err != nil || len(exp) == 0 {
-		return nil, err
+	now := s.opts.Now().UTC()
+	live, isLive := s.liveSession(id)
+	s.vmu.Lock()
+	lv, hasViewing := s.viewings.lookup(id, live, now)
+	s.vmu.Unlock()
+
+	rowID := id
+	if hasViewing && lv.row != "" {
+		rowID = lv.row
 	}
-	var p Play
-	err = s.db.QueryRowContext(ctx, `SELECT id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,watched_ms,duration_ms,completed,failovers,error,client_ip FROM stats_plays WHERE id=?`, id).
-		Scan(&p.ID, &p.UserID, &p.Key, &p.Username, &p.Title, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Updated, &p.Ended, &p.Bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Failovers, &p.Error, &p.IP)
+	exp, err := s.experienceRowsFilter(ctx, `id=?`, detailPlay, 1, rowID)
 	if err != nil {
 		return nil, err
 	}
+	if len(exp) == 0 {
+		if isLive && live != nil {
+			return livePlayDetail(id, live, lv, hasViewing, now), nil
+		}
+		return nil, nil
+	}
+	var p Play
+	err = s.db.QueryRowContext(ctx, `SELECT id,user_id,rating_key,username,title,channel_id,channel_name,channel_number,platform,device,decision,started,updated,ended,bytes,watched_ms,duration_ms,completed,failovers,error,client_ip FROM stats_plays WHERE id=?`, rowID).
+		Scan(&p.ID, &p.UserID, &p.Key, &p.Username, &p.Title, &p.ChannelID, &p.ChannelName, &p.ChannelNumber, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Updated, &p.Ended, &p.Bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Failovers, &p.Error, &p.IP)
+	if err != nil {
+		return nil, err
+	}
+	p.Error = clampTimelineText(p.Error)
 	out := map[string]any{}
 	for _, v := range []any{p, exp[0]} {
 		b, err := json.Marshal(v)
@@ -632,15 +664,217 @@ func (s *Service) PlayByID(ctx context.Context, id string) (map[string]any, erro
 	}
 	var sourceKbps, uhd, hdr int
 	var release string
-	err = s.db.QueryRowContext(ctx, `SELECT source_kbps,uhd,hdr,release_name FROM stats_plays WHERE id=?`, id).Scan(&sourceKbps, &uhd, &hdr, &release)
+	err = s.db.QueryRowContext(ctx, `SELECT source_kbps,uhd,hdr,release_name FROM stats_plays WHERE id=?`, rowID).Scan(&sourceKbps, &uhd, &hdr, &release)
 	if err != nil {
 		return nil, err
 	}
+	out["id"] = id
 	out["sourceKbps"], out["uhd"], out["hdr"], out["releaseName"] = sourceKbps, uhd != 0, hdr != 0, release
 	out["ttffMs"] = exp[0].StartMS
 	out["avgBitrateKbps"] = float64(0)
+	var ipStr string
+	if p.IP != nil {
+		ipStr = *p.IP
+	}
+	out["networkReason"] = clientnet.LocalityReason(ipStr, exp[0].Remote)
 	if p.WatchedMS > 0 {
 		out["avgBitrateKbps"] = float64(p.Bytes) * 8 / float64(p.WatchedMS)
 	}
+	if isLive && live != nil {
+		overlayLivePlay(out, live, lv, hasViewing, p.Bytes, p.Failovers, p.WatchedMS, now)
+	}
 	return out, nil
+}
+
+func liveRelease(p *core.PlaySession) string {
+	if p == nil || p.Resolution == nil {
+		return ""
+	}
+	r := p.Resolution.Release.Name
+	if len(r) > maxReleaseName {
+		r = r[:maxReleaseName]
+	}
+	return r
+}
+
+func livePlayDetail(id string, live *core.PlaySession, lv liveViewing, hasViewing bool, now time.Time) map[string]any {
+	rel := liveRelease(live)
+	q := measure(live, rel)
+	if (live.Decision == core.DecisionRemux || live.Decision == core.DecisionTranscode) && q.reasonKind == "" {
+		q.reasonKind, q.reasonDetail = classifyReason(live.DecisionReason)
+	}
+	started := live.StartedAt
+	if hasViewing && !lv.started.IsZero() {
+		started = lv.started
+	}
+	if started.IsZero() {
+		started = now
+	}
+	bytes := live.BytesServed
+	watchedMS := liveWatchedMS(*live, now)
+	failovers := live.Failovers
+	exp := live.Experience
+	if hasViewing {
+		bytes = max(bytes, lv.totals.bytes)
+		watchedMS = max(watchedMS, lv.totals.watchedMS)
+		failovers = max(failovers, lv.totals.failovers)
+		if lv.exp != nil {
+			exp = lv.exp
+		}
+	}
+	var ip any
+	if live.Client.ClientIP != "" {
+		ip = live.Client.ClientIP
+	}
+	measured := exp != nil && exp.Requested
+	var startMS, bufferMS any
+	var bufferEvents any
+	if measured {
+		bufferEvents = exp.BufferEvents
+		ms := exp.Buffering.Milliseconds()
+		bufferMS = ms
+		if exp.Pictured && exp.StartTime >= 0 {
+			ttff := exp.StartTime.Milliseconds()
+			startMS = ttff
+		}
+	}
+	ratingKey := int64(live.Key)
+	durationMS := live.Info.Duration.Milliseconds()
+	if live.LiveChannel != nil {
+		ratingKey = 0
+		durationMS = 0
+	}
+	avgBitrateKbps := float64(0)
+	if watchedMS > 0 {
+		avgBitrateKbps = float64(bytes) * 8 / float64(watchedMS)
+	}
+	out := map[string]any{
+		"id":             id,
+		"userId":         live.UserID,
+		"ratingKey":      ratingKey,
+		"username":       live.Username,
+		"title":          live.TitleName,
+		"platform":       live.Client.Platform,
+		"device":         cmp.Or(live.Client.DeviceName, live.Client.Device),
+		"decision":       string(live.Decision),
+		"started":        started.Unix(),
+		"updated":        now.Unix(),
+		"ended":          int64(0),
+		"bytes":          bytes,
+		"watchedMs":      watchedMS,
+		"durationMs":     durationMS,
+		"completed":      false,
+		"failovers":      failovers,
+		"switches":       failovers,
+		"error":          "",
+		"ip":             ip,
+		"networkReason":  clientnet.LocalityReason(live.Client.ClientIP, live.Client.Remote),
+		"measured":       measured,
+		"startMs":        startMS,
+		"ttffMs":         startMS,
+		"bufferEvents":   bufferEvents,
+		"bufferMs":       bufferMS,
+		"failed":         false,
+		"reasonKind":     q.reasonKind,
+		"reasonDetail":   q.reasonDetail,
+		"origin":         live.Origin,
+		"release":        rel,
+		"releaseName":    rel,
+		"remote":         live.Client.Remote,
+		"sourceKbps":     q.sourceKbps,
+		"avgBitrateKbps": avgBitrateKbps,
+		"uhd":            q.uhd != 0,
+		"hdr":            q.hdr != 0,
+	}
+	if live.LiveChannel != nil {
+		if cid := cmp.Or(live.LiveChannel.ID, live.LiveChannel.Name); cid != "" {
+			out["channelId"] = cid
+		}
+		if cname := cmp.Or(live.LiveChannel.Name, live.TitleName); cname != "" {
+			out["channelName"] = cname
+		}
+		if live.LiveChannel.Number != "" {
+			out["channelNumber"] = live.LiveChannel.Number
+		}
+	}
+	if live.QualityFallback != "" {
+		out["qualityFallback"] = live.QualityFallback
+	}
+	return out
+}
+
+func overlayLivePlay(out map[string]any, live *core.PlaySession, lv liveViewing, hasViewing bool, dbBytes int64, dbFailovers int, watchedMS int64, now time.Time) {
+	out["ended"] = int64(0)
+	out["updated"] = now.Unix()
+	bytes := max(dbBytes, live.BytesServed)
+	watchedMS = max(watchedMS, liveWatchedMS(*live, now))
+	failovers := max(dbFailovers, live.Failovers)
+	exp := live.Experience
+	if hasViewing {
+		bytes = max(bytes, lv.totals.bytes)
+		watchedMS = max(watchedMS, lv.totals.watchedMS)
+		failovers = max(failovers, lv.totals.failovers)
+		if lv.exp != nil {
+			exp = lv.exp
+		}
+	}
+	out["bytes"] = bytes
+	out["watchedMs"] = watchedMS
+	out["failovers"] = failovers
+	out["switches"] = failovers
+	if watchedMS > 0 {
+		out["avgBitrateKbps"] = float64(bytes) * 8 / float64(watchedMS)
+	}
+	if live.LiveChannel != nil {
+		if cid := cmp.Or(live.LiveChannel.ID, live.LiveChannel.Name); cid != "" {
+			out["channelId"] = cid
+		}
+		if cname := cmp.Or(live.LiveChannel.Name, live.TitleName); cname != "" {
+			out["channelName"] = cname
+		}
+		if live.LiveChannel.Number != "" {
+			out["channelNumber"] = live.LiveChannel.Number
+		}
+	}
+	if live.Decision != "" {
+		out["decision"] = string(live.Decision)
+		if live.Decision == core.DecisionRemux || live.Decision == core.DecisionTranscode {
+			kind, detail := classifyReason(live.DecisionReason)
+			out["reasonKind"], out["reasonDetail"] = kind, detail
+		} else {
+			out["reasonKind"], out["reasonDetail"] = "", ""
+		}
+	}
+	if live.QualityFallback != "" {
+		out["qualityFallback"] = live.QualityFallback
+	}
+	if live.Origin != "" {
+		out["origin"] = live.Origin
+	}
+	if rel := liveRelease(live); rel != "" {
+		out["release"], out["releaseName"] = rel, rel
+	}
+	ipStr, _ := out["ip"].(string)
+	if live.Client.ClientIP != "" {
+		ipStr = live.Client.ClientIP
+		out["ip"] = ipStr
+	}
+	out["remote"] = live.Client.Remote
+	out["networkReason"] = clientnet.LocalityReason(ipStr, live.Client.Remote)
+	if device := cmp.Or(live.Client.DeviceName, live.Client.Device); device != "" {
+		out["device"] = device
+	}
+	if live.Client.Platform != "" {
+		out["platform"] = live.Client.Platform
+	}
+	if exp != nil && exp.Requested {
+		out["measured"] = true
+		out["failed"] = false
+		out["bufferEvents"] = exp.BufferEvents
+		out["bufferMs"] = exp.Buffering.Milliseconds()
+		if exp.Pictured && exp.StartTime >= 0 {
+			ttff := exp.StartTime.Milliseconds()
+			out["startMs"], out["ttffMs"] = ttff, ttff
+		}
+	}
 }

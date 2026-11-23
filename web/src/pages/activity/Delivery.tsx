@@ -7,6 +7,104 @@ import { t, tn } from "../../i18n";
 import { fixed, formatBytes, formatNumber, formatPercent } from "../../lib/format";
 import type { Bucket, Summary } from "./types";
 
+const PLATFORM_NAMES: Record<string, string> = {
+  "": "",
+  unknown: "",
+  generic: "",
+  web: "Web",
+  plexweb: "Web",
+  browser: "Web",
+  html5: "Web",
+  tvos: "Apple TV",
+  appletv: "Apple TV",
+  appletvos: "Apple TV",
+  ios: "iOS",
+  iphone: "iOS",
+  ipod: "iOS",
+  ipados: "iPadOS",
+  ipad: "iPadOS",
+  visionos: "visionOS",
+  applevision: "visionOS",
+  macos: "macOS",
+  macosx: "macOS",
+  osx: "macOS",
+  darwin: "macOS",
+  mac: "macOS",
+  androidtv: "Android TV",
+  googletv: "Google TV",
+  firetv: "Fire TV",
+  fireos: "Fire TV",
+  amazonfiretv: "Fire TV",
+  android: "Android",
+  linux: "Linux",
+  windows: "Windows",
+  win32: "Windows",
+  win64: "Windows",
+  uwp: "Windows",
+  tizen: "Tizen",
+  samsung: "Tizen",
+  samsungtizen: "Tizen",
+  webos: "webOS",
+  lgwebos: "webOS",
+  netcast: "webOS",
+  roku: "Roku",
+  chromecast: "Chromecast",
+  xbox: "Xbox",
+  playstation: "PlayStation",
+  ps4: "PlayStation",
+  ps5: "PlayStation",
+  vidaa: "VIDAA",
+  hisense: "VIDAA",
+  vizio: "Vizio",
+  smartcast: "Vizio",
+  kodi: "Kodi",
+  chrome: "Chrome",
+  safari: "Safari",
+  firefox: "Firefox",
+  edge: "Edge",
+};
+
+function friendlyPlatform(raw: string): { label: string; mapped: boolean } {
+  const s = raw.trim();
+  if (!s) return { label: "", mapped: true };
+  const slug = s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (Object.prototype.hasOwnProperty.call(PLATFORM_NAMES, slug)) {
+    return { label: PLATFORM_NAMES[slug]!, mapped: true };
+  }
+  if (s === s.toLowerCase() && /^[a-z]/.test(s)) {
+    return { label: s.slice(0, 1).toUpperCase() + s.slice(1), mapped: false };
+  }
+  return { label: s, mapped: false };
+}
+
+function mergePlatforms(items: Bucket[] | undefined): Bucket[] {
+  const byKey = new Map<string, Bucket>();
+  for (const b of items ?? []) {
+    const trimmed = b.label.trim();
+    const { label, mapped } = friendlyPlatform(trimmed);
+    const key = label.toLowerCase();
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.plays += b.plays;
+      existing.watchedMs += b.watchedMs;
+      existing.bytes += b.bytes;
+      if (!mapped && trimmed !== trimmed.toLowerCase()) {
+        existing.label = trimmed;
+      }
+      continue;
+    }
+    byKey.set(key, {
+      label,
+      plays: b.plays,
+      watchedMs: b.watchedMs,
+      bytes: b.bytes,
+    });
+  }
+  return [...byKey.values()].sort(
+    (a, b) => b.plays - a.plays || b.bytes - a.bytes || a.label.localeCompare(b.label),
+  );
+}
+
 const DECISIONS: Record<string, () => string> = {
   "direct-play": () => t("Direct play"),
   "direct-stream": () => t("Direct stream"),
@@ -57,6 +155,7 @@ export function Delivery({
   if (!summary) return <LoadingRows rows={4} />;
   const s = summary;
   const decisions = s.decisions ?? [];
+  const platforms = mergePlatforms(s.platforms);
   const count = (label: string) => decisions.find((d) => d.label === label)?.plays ?? 0;
   const direct = count("direct-play") + count("direct-stream");
   const converted = count("transcode") + count("audio-transcode");
@@ -168,7 +267,7 @@ export function Delivery({
         <RankedBars
           color="viz-4"
           ariaLabel={t("Apps and devices")}
-          data={s.platforms.slice(0, 10).map((b, i) => ({
+          data={platforms.slice(0, 10).map((b, i) => ({
             key: `${b.label}-${i}`,
             label: b.label || t("Unknown"),
             value: b.plays,

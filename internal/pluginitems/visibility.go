@@ -11,30 +11,19 @@ import (
 
 // RuleFields exposes only rule facts backed by indexed storage.
 func RuleFields(decl plugins.MediaKindMeta) map[string]string {
-	out := map[string]string{}
-	aliases := map[string][]string{"genre": {"genre", "genres", "tags", "tag"}, "studio": {"studio", "studios"}, "country": {"country", "countries"}, "keyword": {"keyword", "keywords"}, "language": {"language"}, "runtime": {"runtime", "duration", "length"}, "votes": {"votes"}, "popularity": {"popularity"}}
-	for field, keys := range aliases {
-		for _, key := range keys {
-			for _, f := range decl.Fields {
-				text := f.Type == "string" || f.Type == "strings" || f.Type == "enum" || f.Type == "people"
-				numeric := f.Type == "int" || f.Type == "float" || f.Type == "duration"
-				wantNumeric := field == "runtime" || field == "votes" || field == "popularity"
-				if f.Key == key && f.Indexed && ((wantNumeric && numeric) || (!wantNumeric && text)) {
-					out[field] = key
-					break
-				}
-			}
-			if out[field] != "" {
-				break
-			}
-		}
-	}
-	return out
+	return plugins.KindRuleFields(decl.Fields)
 }
 
 func (s *Service) policySQL(ctx context.Context, libraryID core.LibraryID, policy *libraryfilter.Filter) (string, []any, error) {
+	return s.policySQLForViewer(ctx, libraryID, policy, true, core.CatalogViewerID(ctx))
+}
+
+func (s *Service) policySQLForViewer(ctx context.Context, libraryID core.LibraryID, policy *libraryfilter.Filter, hidden bool, viewerID int64) (string, []any, error) {
 	if policy.Passive() {
-		return "0=1", nil, nil
+		if hidden {
+			return "0=1", nil, nil
+		}
+		return "1=1", nil, nil
 	}
 	rec, err := s.GetKindByLibrary(ctx, libraryID)
 	if err != nil {
@@ -44,23 +33,29 @@ func (s *Service) policySQL(ctx context.Context, libraryID core.LibraryID, polic
 	if len(rec.Decl.Levels) > 1 {
 		typ = core.TypeShow
 	}
-	q, args := policy.PluginSQLHidden(typ, RuleFields(rec.Decl))
+	if hidden {
+		q, args := policy.PluginSQLHiddenForViewer(typ, RuleFields(rec.Decl), viewerID)
+		return q, args, nil
+	}
+	q, args := policy.PluginSQLShownForViewer(typ, RuleFields(rec.Decl), viewerID)
 	return q, args, nil
 }
 
 func (s *Service) appendVisibility(ctx context.Context, where *strings.Builder, args *[]any, lib core.LibraryID, policy *libraryfilter.Filter, hidden bool) error {
+	return s.appendVisibilityForViewer(ctx, where, args, lib, policy, hidden, core.CatalogViewerID(ctx))
+}
+
+func (s *Service) appendVisibilityForViewer(ctx context.Context, where *strings.Builder, args *[]any, lib core.LibraryID, policy *libraryfilter.Filter, hidden bool, viewerID int64) error {
 	if policy.Passive() && !hidden {
 		return nil
 	}
-	q, a, err := s.policySQL(ctx, lib, policy)
+	q, a, err := s.policySQLForViewer(ctx, lib, policy, hidden, viewerID)
 	if err != nil {
 		return err
 	}
-	where.WriteString(" AND ")
-	if !hidden {
-		where.WriteString("NOT ")
-	}
-	where.WriteString("(" + q + ")")
+	where.WriteString(" AND (")
+	where.WriteString(q)
+	where.WriteString(")")
 	*args = append(*args, a...)
 	return nil
 }
@@ -68,7 +63,8 @@ func (s *Service) appendVisibility(ctx context.Context, where *strings.Builder, 
 // PreviewVisibility aggregates in the indexed item store and fetches at most
 // twelve examples per side. It never projects or loads the whole library.
 func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, specs []core.LibraryExclusion, fallback string) (any, error) {
-	policy, err := libraryfilter.CompilePluginPolicy(specs, fallback)
+	keptSpecs, keptIndices := libraryfilter.PreviewableRules(specs)
+	policy, err := s.CompilePolicy(ctx, lib, keptSpecs, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +95,13 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 	if len(rec.Decl.Levels) > 1 {
 		typ = core.TypeShow
 	}
-	counts := make([]map[string]int, 0, len(specs))
-	if columns, args := policy.PluginCatchCountsSQL(typ, RuleFields(rec.Decl)); columns != "" {
+	counts := make([]map[string]int, len(specs))
+	for i := range counts {
+		counts[i] = map[string]int{"movies": 0, "shows": 0}
+	}
+	if columns, args := policy.PluginCatchCountsSQLForViewer(typ, RuleFields(rec.Decl), core.CatalogViewerID(ctx)); columns != "" {
 		args = append(args, int64(lib), level)
-		values := make([]int, len(specs)*2)
+		values := make([]int, len(keptSpecs)*2)
 		dest := make([]any, len(values))
 		for i := range values {
 			dest[i] = &values[i]
@@ -110,8 +109,8 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 		if err := s.db.QueryRowContext(ctx, "SELECT "+columns+" FROM plugin_items i WHERE i.library_id=? AND i.level=?", args...).Scan(dest...); err != nil {
 			return nil, err
 		}
-		for i := range specs {
-			counts = append(counts, map[string]int{"movies": values[i*2], "shows": values[i*2+1]})
+		for i, orig := range keptIndices {
+			counts[orig] = map[string]int{"movies": values[i*2], "shows": values[i*2+1]}
 		}
 	}
 	movies, shows := hidden.Total, 0
@@ -121,11 +120,11 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 	return map[string]any{"total": hidden.Total + shown.Total, "hidden": hidden.Total, "visible": shown.Total, "movies": movies, "shows": shows, "rules": counts, "items": project(hidden.Items), "shown": project(shown.Items)}, nil
 }
 
-func LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter, error) {
+func (s *Service) LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter, error) {
 	if len(lib.Rules) == 0 && lib.VisibilityDefault != "hide" {
 		return nil, nil
 	}
-	f, err := libraryfilter.CompilePluginPolicy(lib.Rules, lib.VisibilityDefault)
+	f, err := s.CompilePolicy(ctx, lib.ID, lib.Rules, lib.VisibilityDefault)
 	if err == nil && core.ExplicitSearch(ctx) {
 		f = f.ForSearch()
 	}
@@ -133,14 +132,14 @@ func LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter
 }
 
 func (s *Service) ItemHidden(ctx context.Context, lib core.Library, ref core.ItemRef) (bool, error) {
-	policy, err := LibraryPolicy(ctx, lib)
+	policy, err := s.LibraryPolicy(ctx, lib)
 	if err != nil {
 		return false, err
 	}
 	if policy.Passive() {
 		return false, nil
 	}
-	q, args, err := s.policySQL(ctx, lib.ID, policy)
+	q, args, err := s.policySQLForViewer(ctx, lib.ID, policy, true, core.CatalogViewerID(ctx))
 	if err != nil {
 		return false, err
 	}
@@ -148,4 +147,19 @@ func (s *Service) ItemHidden(ctx context.Context, lib core.Library, ref core.Ite
 	var hidden int
 	err = s.db.QueryRowContext(ctx, `SELECT CASE WHEN (`+q+`) THEN 1 ELSE 0 END FROM plugin_items i WHERE i.library_id=? AND i.item_ref=?`, args...).Scan(&hidden)
 	return hidden != 0, err
+}
+
+// CompilePolicy resolves the declaration for this library before validating rules.
+func (s *Service) CompilePolicy(ctx context.Context, lib core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]string{}
+	for _, field := range rec.Decl.Fields {
+		if field.Indexed || field.Type == "people" {
+			declared[field.Key] = field.Type
+		}
+	}
+	return libraryfilter.CompilePluginPolicy(specs, fallback, declared)
 }

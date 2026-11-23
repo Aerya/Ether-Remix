@@ -181,7 +181,7 @@ func (a *App) privateSourcePolicy(ctx context.Context, v *core.Viewer, s *core.P
 	}
 	visibility := experienceVisibility(a.safety, a.catalog.CachedGet, nil, nil, serverLibraries(a.cfg.Read()))
 	visibility.SectionFor = brokerSectionFor(visibility.SectionFor)
-	title, err := cachedSessionTitle(ctx, fresh, s.Key, a.catalog.CachedGet, visibility)
+	title, err := a.librarySessionTitle(ctx, fresh, s.Key, visibility, true, true)
 	if err != nil || title == nil || (!title.Released.IsZero() && title.Released.After(time.Now())) {
 		return core.ErrUnauthorized
 	}

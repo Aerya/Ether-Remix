@@ -13,11 +13,12 @@ import (
 // over. It is server-wide (config.LiveTV.Stability) with a per-channel
 // override (Channel.Stability).
 //
-// The reserve only ever comes from what costs the viewer nothing visible:
-// an HLS provider's backlog (Steady starts that far back), and a provider
-// delivering faster than real time (an initial burst, catch-up after a
-// reconnect). Ether never slows playback to build one and never delays a
-// tune for it.
+// Ether never delays a tune to build a reserve. An HLS backlog or a faster-
+// than-real-time burst accrues immediately; when Balanced or Rock solid is
+// still below its target (at tune-in on a 1x MPEG-TS stream, or after a
+// stall drains the reserve), Steady plays out imperceptibly slower (~3.5%,
+// with pitch-preserved WSOLA audio) until the target is reached, then
+// returns to 1.0x. Fastest always plays at 1.0x.
 const (
 	stabilityFastest   = config.LiveTVStabilityFastest
 	stabilityBalanced  = config.LiveTVStabilityBalanced

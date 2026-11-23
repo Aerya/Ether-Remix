@@ -3,6 +3,7 @@ package plex
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -35,7 +36,7 @@ func TestLiveSectionsKeepIdentityAndHiddenStateOnRefreshError(t *testing.T) {
 	}
 	exp.err = errors.New("store unavailable")
 	failed := srv.LibrarySections()
-	if len(failed) != 1 || failed[0] != after[0] {
+	if len(failed) != 1 || !reflect.DeepEqual(failed[0], after[0]) {
 		t.Fatalf("failed refresh changed sections: %+v", failed)
 	}
 	exp.err = nil

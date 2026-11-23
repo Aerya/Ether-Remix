@@ -50,6 +50,12 @@ func (s *Server) mutationKey(w http.ResponseWriter, r *http.Request, integer boo
 			s.writeErr(w, r, err)
 			return 0, false
 		}
+	} else if key.IsPluginKey() {
+		title, err := s.metadataTitle(frontend.WithNoContainerExpand(r.Context()), pr, key)
+		if err != nil || title == nil || !s.canSeePluginTitle(pr.User, title) {
+			writeHTTPError(w, 404)
+			return 0, false
+		}
 	} else {
 		if s.catalog() == nil {
 			writeHTTPError(w, 404)

@@ -4,7 +4,9 @@ import {
   type GlobalSearchGroup,
   type GlobalSearchResult,
 } from "@braedonsaunders/appkit-ui";
-import { useCallback, useRef } from "react";
+import { Search } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api, apiFetch, errorMessage } from "../lib/api";
 import { t, tn } from "../i18n";
@@ -30,6 +32,8 @@ function matches(q: string, ...fields: (string | undefined)[]): boolean {
 }
 
 const ACTION_PREFIX = "action:";
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface PluginActionOutcome {
   toast?: string | { text: string; kind?: "success" | "error" | "info" };
@@ -43,11 +47,79 @@ interface PluginActionOutcome {
  * with a route or plugin action fill "Actions". Agent suggestions are not ⌘K
  * actions.
  */
-export function CommandSearch() {
+export function CommandSearch({ compact = false }: { compact?: boolean } = {}) {
   const navigate = useNavigate();
   const { descriptors } = useRegistry("page", "navItem", "command");
   const live = useRef<Descriptor[]>([]);
   live.current = descriptors;
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const navigatedRef = useRef(false);
+
+  useEffect(() => {
+    if (!compact) setDialogOpen(false);
+  }, [compact]);
+
+  useEffect(() => {
+    if (!compact || dialogOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.altKey || !(event.metaKey || event.ctrlKey)) return;
+      if (event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setDialogOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [compact, dialogOpen]);
+
+  useEffect(() => {
+    if (!compact || !dialogOpen) return;
+    navigatedRef.current = false;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusTimer = window.setTimeout(() => {
+      dialogRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    }, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDialogOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const panel = dialogRef.current;
+      if (!panel) return;
+      const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      if (event.shiftKey) {
+        if (document.activeElement === first || !panel.contains(document.activeElement)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", onKeyDown);
+      if (!navigatedRef.current && triggerRef.current && document.contains(triggerRef.current)) {
+        triggerRef.current.focus();
+      }
+    };
+  }, [compact, dialogOpen]);
+
   const search = useCallback(
     async (q: string, signal: AbortSignal): Promise<GlobalSearchResult> => {
       const all = live.current;
@@ -200,23 +272,76 @@ export function CommandSearch() {
     },
     [navigate],
   );
+
+  const labels = {
+    placeholder: t("Search or jump to…"),
+    ariaLabel: t("Search Ether"),
+    clear: t("Clear search"),
+    searching: t("Searching…"),
+    noMatches: (query: string) => t("Nothing matches “{query}”", { query }),
+    navigate: t("navigate"),
+    open: t("open"),
+    close: t("close"),
+    resultCount: (count: number) => tn(count, "{count} result", "{count} results"),
+  };
+
+  if (compact) {
+    return (
+      <>
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={() => setDialogOpen(true)}
+          aria-label={t("Search Ether")}
+          aria-keyshortcuts="Meta+K"
+          aria-expanded={dialogOpen}
+          title={t("Search Ether")}
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <Search size={16} aria-hidden />
+        </button>
+        {dialogOpen && typeof document !== "undefined"
+          ? createPortal(
+              <div className="fixed inset-0 z-[65] flex items-start justify-center p-3 pt-14">
+                <div
+                  className="absolute inset-0 bg-overlay/50 backdrop-blur-[2px]"
+                  onClick={() => setDialogOpen(false)}
+                  aria-hidden="true"
+                />
+                <div
+                  ref={dialogRef}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t("Search Ether")}
+                  className="relative w-full max-w-md rounded-xl border border-border bg-surface p-1.5 shadow-lg"
+                >
+                  <GlobalSearch
+                    className="w-full [&_[role=listbox]]:-left-1.5 [&_[role=listbox]]:top-[calc(100%+13px)] [&_[role=listbox]]:max-h-[calc(100dvh-7.5rem)] [&_[role=listbox]]:w-[calc(100%+0.75rem)] [&_[role=listbox]]:min-w-0"
+                    search={search}
+                    minimumQueryLength={1}
+                    onNavigate={(hit) => {
+                      navigatedRef.current = true;
+                      setDialogOpen(false);
+                      runHit(hit.href);
+                    }}
+                    labels={labels}
+                  />
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
+      </>
+    );
+  }
+
   return (
     <GlobalSearch
       className="w-full max-w-md"
       search={search}
       minimumQueryLength={1}
       onNavigate={(hit) => runHit(hit.href)}
-      labels={{
-        placeholder: t("Search or jump to…"),
-        ariaLabel: t("Search Ether"),
-        clear: t("Clear search"),
-        searching: t("Searching…"),
-        noMatches: (query) => t("Nothing matches “{query}”", { query }),
-        navigate: t("navigate"),
-        open: t("open"),
-        close: t("close"),
-        resultCount: (count) => tn(count, "{count} result", "{count} results"),
-      }}
+      labels={labels}
     />
   );
 }

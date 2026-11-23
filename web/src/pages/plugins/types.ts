@@ -1,4 +1,4 @@
-import { Bell, Blocks, FolderOpen, Globe, Network, Plug, Puzzle, Tv } from "lucide-react";
+import { Bell, Blocks, FolderOpen, Globe, Library, Network, Plug, Puzzle, Tv } from "lucide-react";
 import { createElement, type ReactNode } from "react";
 import { getLocale, t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
@@ -57,6 +57,8 @@ export interface PluginGrants {
   folders?: string[];
   revoked?: string[];
   lan?: boolean;
+  localHosts?: string[];
+  operatorHosts?: string[];
 }
 
 export interface DeclaredPermissions {
@@ -69,7 +71,123 @@ export interface DeclaredPermissions {
   };
   collections?: string;
   folders?: string;
+  sources?: string;
+  ai?: string;
+  media?: string;
   secrets?: string[];
+}
+
+export interface LiveFeedContribution {
+  id: string;
+  title: string;
+  minIntervalSec?: number;
+  entityKinds?: string[];
+}
+
+export interface ScreenContribution {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  frontends?: string[];
+  sections?: {
+    id?: string;
+    type: string;
+    title?: string;
+    feed?: string;
+    league?: string;
+    leagues?: { id: string; name: string }[];
+  }[];
+}
+
+export interface PluginFeedHealth {
+  lastPollAt?: string;
+  lastOkAt?: string;
+  lastError?: string;
+  consecutiveErrors: number;
+  nextPollSec?: number;
+  nextPollAt?: string;
+  subscribers: number;
+  polling: boolean;
+}
+
+export interface PluginFeedLeagueSummary {
+  id: string;
+  name: string;
+  abbr?: string;
+  eventCount: number;
+}
+
+export interface PluginFeedOverview {
+  id: string;
+  title: string;
+  minIntervalSec: number;
+  entityKinds?: string[];
+  active: boolean;
+  health: PluginFeedHealth;
+  eventCount: number;
+  liveCount: number;
+  upcomingCount: number;
+  leagues?: PluginFeedLeagueSummary[];
+  entityCounts?: Record<string, number>;
+  entityTotal: number;
+}
+
+export interface PluginScreenFrontendOverview {
+  id: string;
+  name: string;
+  published: boolean;
+  reason: string;
+}
+
+export interface PluginScreenOverview {
+  id: string;
+  title: string;
+  icon?: string;
+  feed?: string;
+  frontends: PluginScreenFrontendOverview[];
+}
+
+export interface PluginLiveEventCompetitor {
+  id: string;
+  name: string;
+  short?: string;
+  abbr?: string;
+  logo?: string;
+  score?: string;
+  home?: boolean;
+  winner?: boolean;
+}
+
+export interface PluginLiveEventRankRow {
+  pos: number;
+  name: string;
+  abbr?: string;
+  detail?: string;
+  secondary?: string;
+}
+
+export interface PluginLiveEventSummary {
+  id: string;
+  feed: string;
+  league: { id: string; name: string; abbr?: string; logo?: string };
+  title?: string;
+  start: string;
+  status: { state: string; detail?: string; period?: number; clock?: string; close?: boolean };
+  competitors: PluginLiveEventCompetitor[];
+  ranking?: PluginLiveEventRankRow[];
+  venue?: string;
+  watchCount: number;
+}
+
+export interface PluginLiveEventsOverview {
+  pluginId: string;
+  feeds: PluginFeedOverview[];
+  screens: PluginScreenOverview[];
+  events: PluginLiveEventSummary[];
+  totalEvents: number;
+  liveCount: number;
+  upcomingCount: number;
 }
 
 export interface PluginManifest {
@@ -101,6 +219,8 @@ export interface PluginManifest {
     permissions?: DeclaredPermissions;
     contributes?: {
       mediaKinds?: { key: string; label: string; library: { name: string } }[];
+      liveFeeds?: LiveFeedContribution[];
+      screens?: ScreenContribution[];
       setup?: { steps: { key: string; label: string; required: boolean }[] };
       events?: { subscribe?: string[] };
       pages?: { key: string; label: string; route: string }[];
@@ -114,9 +234,11 @@ export interface RuntimeLimits {
   archiveMemberBytes?: number;
   archiveExpandedBytes?: number;
   archiveMembers?: number;
+  maxItems?: number;
   memoryBytes: number;
   deadline: string;
   unitBudget: number;
+  poolSize?: number;
 }
 
 export interface PluginDetail extends PluginSummary {
@@ -128,7 +250,10 @@ export interface PluginDetail extends PluginSummary {
     grants: PluginGrants;
     needsViewers: boolean;
     needsFolders: boolean;
+    needsOperatorHosts?: boolean;
   };
+  blockedLocalHosts?: string[];
+  pendingOperatorHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -142,6 +267,8 @@ export interface PluginDetail extends PluginSummary {
     p95Ms: number;
     egressBytes: number;
     kvBytes: number;
+    items?: number;
+    maxItems?: number;
     slow: number;
     eventDrops: number;
     restarts: number;
@@ -155,9 +282,14 @@ export interface InstallPreview {
   manifest: PluginManifest;
   /** Manifest summary with any "$t:" reference resolved by the server. */
   summary?: string;
+  /** Resolved preview icon URL or data URI (packaged SVGs are rasterized). */
+  icon?: string;
   permissions: string[];
   needsViewers: boolean;
   needsFolders: boolean;
+  needsOperatorHosts?: boolean;
+  localHosts?: string[];
+  pendingOperatorHosts?: string[];
   verified: boolean;
   stremioOnly: boolean;
   alreadyInstalled?: boolean;
@@ -175,26 +307,40 @@ export interface JournalEntry {
   created: string;
 }
 
+export interface CatalogueVersion {
+  version: string;
+  url: string;
+  sha256: string;
+  releasedAt?: string;
+  minEther?: string;
+  permissions?: DeclaredPermissions;
+}
+
 export interface CatalogueEntry {
   id: string;
   name: string;
-  version: string;
-  kind: string;
-  category?: string;
   summary: string;
   description?: string;
-  author?: { name?: string; url?: string };
-  repo?: string;
+  kind: string;
+  category?: string;
   icon?: string;
-  verified: boolean;
+  repo?: string;
+  homepage?: string;
+  author?: string;
+  license?: string;
   capabilities?: string[];
-  permissions: string[];
-  needsViewers?: boolean;
-  needsFolders?: boolean;
+  permissions?: DeclaredPermissions;
   screenshots?: string[];
-  limits?: string[];
-  url: string;
-  manifest?: PluginManifest;
+  versions: CatalogueVersion[];
+  revoked?: boolean;
+  reason?: string;
+  latestVersion?: string;
+  artifactUrl?: string;
+  sha256?: string;
+  permissionLines?: string[];
+  installed: boolean;
+  installedVersion?: string;
+  updateAvailable?: boolean;
 }
 
 /** A plugin that answers as a Stremio add-on, edited in Studio or not. */
@@ -215,6 +361,8 @@ export function kindLabel(kind?: string, addon?: boolean): string {
       return t("Live TV");
     case "extension":
       return t("Extension");
+    case "content":
+      return t("Content");
     default:
       return t("Plugin");
   }
@@ -251,6 +399,8 @@ export function kindIcon(kind?: string, size = 18): ReactNode {
       return createElement(Tv, { size });
     case "extension":
       return createElement(Blocks, { size });
+    case "content":
+      return createElement(Library, { size });
     default:
       return createElement(Puzzle, { size });
   }
@@ -289,6 +439,38 @@ export function isPrivateUrl(raw: string): boolean {
   }
 }
 
+const LOCAL_REACH_PREFIX = "May reach on your network: ";
+const CONNECTS_PREFIX = "Connects to ";
+const ADDS_SCREEN_PREFIX = "Adds a screen: ";
+
+export function translatePermissionLine(line: string): string {
+  if (line.startsWith(LOCAL_REACH_PREFIX)) {
+    return t("May reach on your network: {hosts}", {
+      hosts: line.slice(LOCAL_REACH_PREFIX.length),
+    });
+  }
+  if (line.startsWith(ADDS_SCREEN_PREFIX)) {
+    return t("Adds a screen: {screen}", {
+      screen: line.slice(ADDS_SCREEN_PREFIX.length),
+    });
+  }
+  if (line === "Provides live event feeds") {
+    return t("Provides live event feeds");
+  }
+  if (
+    line.startsWith(CONNECTS_PREFIX) &&
+    line !== "Connects to the add-on address you gave" &&
+    line !== "Connects to the add-on it was made from" &&
+    line !== "Connects to addresses you approve"
+  ) {
+    const rest = line.slice(CONNECTS_PREFIX.length);
+    return rest.includes(", ")
+      ? t("Connects to {hosts}", { hosts: rest })
+      : t("Connects to {host}", { host: rest });
+  }
+  return t(line);
+}
+
 export interface GrantItem {
   key: string;
   label: string;
@@ -304,12 +486,21 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
   const items: GrantItem[] = [];
 
   if (d.network && d.network.length > 0) {
+    const fixed = d.network.filter((h) => h !== "operator");
+    const hasOperator = d.network.includes("operator");
+    let label: string;
+    if (hasOperator && fixed.length === 0) {
+      label = t("Connects to addresses you approve");
+    } else {
+      const parts = hasOperator ? [...fixed, t("addresses you approve")] : fixed;
+      label =
+        parts.length === 1
+          ? t("Connects to {host}", { host: parts[0]! })
+          : t("Connects to {hosts}", { hosts: parts.join(", ") });
+    }
     items.push({
       key: "network",
-      label:
-        d.network.length === 1
-          ? t("Connects to {host}", { host: d.network[0]! })
-          : t("Connects to {hosts}", { hosts: d.network.join(", ") }),
+      label,
       revocable: true,
     });
   }
@@ -355,6 +546,47 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
       revocable: true,
     });
   }
+  if (d.sources === "acquire" || d.sources === "acquire+check") {
+    items.push({
+      key: "sources",
+      label: t("Searches your indexers and opens sources through your debrid accounts"),
+      revocable: true,
+    });
+  } else if (d.sources === "search" || d.sources === "search+check") {
+    items.push({
+      key: "sources",
+      label: t("Searches your indexers for sources"),
+      revocable: true,
+    });
+  }
+  if (d.sources === "search+check" || d.sources === "acquire+check") {
+    items.push({
+      key: "sources.check",
+      label: t("Checks Usenet releases in the background within a daily allowance"),
+      revocable: true,
+    });
+  }
+  if (d.ai === "complete" || d.ai === "complete+search") {
+    items.push({
+      key: "ai",
+      label: t("Uses your configured language model"),
+      revocable: true,
+    });
+  }
+  if (d.ai === "complete+search") {
+    items.push({
+      key: "ai.search",
+      label: t("Uses your language model while a viewer searches"),
+      revocable: true,
+    });
+  }
+  if (d.media === "probe") {
+    items.push({
+      key: "media",
+      label: t("Probes media container metadata"),
+      revocable: true,
+    });
+  }
   if (d.secrets && d.secrets.length > 0) {
     items.push({
       key: "secrets",
@@ -381,7 +613,7 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
     for (const [idx, line] of fallbackLines.entries()) {
       items.push({
         key: `line-${idx}`,
-        label: line,
+        label: translatePermissionLine(line),
         revocable: false,
       });
     }
@@ -397,11 +629,36 @@ export interface PlacementLink {
   href: string;
 }
 
+function frontendDisplayName(id: string): string {
+  switch (id) {
+    case "vela":
+      return "Vela";
+    case "plex":
+      return "Plex";
+    case "jellyfin":
+      return "Jellyfin";
+    case "emby":
+      return "Emby";
+    case "silo":
+      return "Silo";
+    case "stremio":
+      return "Stremio";
+    case "xtream":
+      return "Xtream";
+    default:
+      return humanizeKey(id);
+  }
+}
+
 /**
- * Turns registry descriptors owned by a plugin into deep links showing where
- * the plugin appears across the console.
+ * Turns registry descriptors and manifest contributions owned by a plugin into
+ * deep links showing where the plugin appears across the console and apps.
  */
-export function buildPlacements(descriptors: Descriptor[], pluginId: string): PlacementLink[] {
+export function buildPlacements(
+  descriptors: Descriptor[],
+  pluginId: string,
+  manifest?: PluginManifest,
+): PlacementLink[] {
   const owned = descriptors.filter((d) => d.owner === pluginId);
   const out: PlacementLink[] = [];
   const seen = new Set<string>();
@@ -486,6 +743,35 @@ export function buildPlacements(descriptors: Descriptor[], pluginId: string): Pl
     seen.add(dedupeKey);
     out.push({ kind, id: dedupeKey, label, area, href });
   }
+
+  const contributes = manifest?.ether?.contributes;
+  for (const sc of contributes?.screens ?? []) {
+    const title = sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id;
+    const frontends = sc.frontends?.length ? sc.frontends : ["vela"];
+    for (const fe of frontends) {
+      const label = t("{app} › {screen}", { app: frontendDisplayName(fe), screen: title });
+      const href = `/apps/${encodeURIComponent(fe)}`;
+      const dedupeKey = `screen:${fe}:${sc.id}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      out.push({ kind: "screen", id: dedupeKey, label, area: label, href });
+    }
+  }
+
+  for (const lf of contributes?.liveFeeds ?? []) {
+    const title = lf.title && !lf.title.startsWith("$t:") ? lf.title : lf.id;
+    const dedupeKey = `liveFeed:${lf.id}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      kind: "liveFeed",
+      id: dedupeKey,
+      label: title,
+      area: t("Live events"),
+      href: "/apps/vela",
+    });
+  }
+
   return out;
 }
 

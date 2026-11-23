@@ -13,11 +13,13 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 // userAgent identifies Ether honestly. An addon that serves only the
 // Stremio app may refuse it; Ether never poses as a browser or as Stremio.
-const userAgent = "Ether (+https://github.com/braedonsaunders/ether)"
+func userAgent() string { return httpclient.UserAgent() }
 
 const (
 	defaultTimeout = 20 * time.Second
@@ -112,7 +114,7 @@ func getJSON(ctx context.Context, client *http.Client, base *url.URL, suffix str
 		return fmt.Errorf("stremio: %s: invalid request", base.Host)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := withoutReferer(client).Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

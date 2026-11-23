@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -20,8 +21,31 @@ import (
 // Local authenticates unique local usernames, independent of display names.
 // Membership is checked at authentication time against the viewer record.
 type Local struct {
-	db     *sql.DB
-	verify func(string, string) bool
+	db              *sql.DB
+	verify          func(string, string) bool
+	onViewerCreated atomic.Pointer[func(viewerID int64, username, role, source string)]
+}
+
+// SetOnViewerCreated installs an optional observer invoked after a local viewer
+// or owner account is created or activated.
+func (l *Local) SetOnViewerCreated(fn func(viewerID int64, username, role, source string)) {
+	if l == nil {
+		return
+	}
+	if fn == nil {
+		l.onViewerCreated.Store(nil)
+		return
+	}
+	l.onViewerCreated.Store(&fn)
+}
+
+func (l *Local) emitViewerCreated(viewerID int64, username, role, source string) {
+	if l == nil {
+		return
+	}
+	if fn := l.onViewerCreated.Load(); fn != nil && *fn != nil {
+		(*fn)(viewerID, username, role, source)
+	}
 }
 
 var loginKDFSlots = make(chan struct{}, 4)

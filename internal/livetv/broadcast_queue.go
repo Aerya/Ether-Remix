@@ -24,6 +24,9 @@ type broadcastFrameQueue struct {
 	held       []byte
 	heldPolicy []any
 	ready      chan struct{}
+	// tolerance is the backlog (in ticks) the output's published lead can
+	// absorb before pictures degrade; below fps it is ignored.
+	tolerance int
 }
 
 func newBroadcastFrameQueue(fps int) *broadcastFrameQueue {
@@ -34,7 +37,7 @@ func (q *broadcastFrameQueue) push(frame transcode.RawFrame, forcePicture, slowE
 	q.mu.Lock()
 	pending = len(q.frames) - q.head
 	was := q.repeating
-	threshold, recovery := q.fps, q.fps/4
+	threshold, recovery := max(q.fps, q.tolerance), q.fps/4
 	if slowEncoder {
 		threshold, recovery = max(1, q.fps/4), max(1, q.fps/8)
 	}
@@ -108,4 +111,12 @@ func mergeBroadcastTags(a, b []any) []any {
 		}
 	}
 	return out
+}
+
+// setTolerance sets how many ticks of encoder backlog the published lead
+// absorbs before the queue degrades pictures (see push).
+func (q *broadcastFrameQueue) setTolerance(ticks int) {
+	q.mu.Lock()
+	q.tolerance = ticks
+	q.mu.Unlock()
 }

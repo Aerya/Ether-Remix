@@ -40,12 +40,14 @@ type pool struct {
 	log           *slog.Logger
 	sem           *prioSem
 	brk           *breaker
+	statTrust     *statTrust
 
-	mu     sync.Mutex
-	warmMu sync.Mutex
-	idle   []*Conn // LIFO: the most recently used connection is reused first
-	live   int     // idle + in use + being dialled
-	closed bool
+	mu       sync.Mutex
+	warmMu   sync.Mutex
+	idle     []*Conn       // LIFO: the most recently used connection is reused first
+	idleWake chan struct{} // closed and replaced when idle transitions 0 -> 1
+	live     int           // idle + in use + being dialled
+	closed   bool
 	// size is the configured connection count; limit is what the server
 	// was learned to allow (see limit.go), which can hold the semaphore
 	// below it.
@@ -148,12 +150,15 @@ func newPool(key string, cfg config.UsenetProvider, o *Options, log *slog.Logger
 		log:           log.With("provider", providerLabel(cfg)),
 		sem:           newPrioSem(size, prefetchSlots(size, o.PrefetchFraction)),
 		brk:           newBreaker(o.BackoffMin, o.BackoffMax, o.FailThreshold, time.Now),
+		statTrust:     newStatTrust(time.Now),
+		idleWake:      make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
 		stop:          make(chan struct{}),
 	}
 	p.sem.reserveLive = true
 	p.brk.onChange = o.OnStateChange
+	p.wireEvents()
 	if o.AuthRetryMin > 0 {
 		p.brk.authMin = o.AuthRetryMin
 	}
@@ -240,7 +245,7 @@ func (p *pool) noteBodyTransfer(c *Conn, wireBytes int64, d time.Duration) {
 // every socket.
 func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 	for try := 0; ; try++ {
-		if err := p.brk.authDisabled(); err != nil {
+		if err := p.brk.idleAllowed(); err != nil {
 			return nil, err
 		}
 		if err := p.sem.Acquire(ctx, prio); err != nil {
@@ -279,6 +284,9 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 		}
 		p.sem.Release(prio)
 		if !errors.Is(err, errAtLimit) || try >= 3 {
+			if errors.Is(err, errAtLimit) {
+				p.limitUnusable(err)
+			}
 			return nil, err
 		}
 		// The pool just shrank to what the server allows, or the server is
@@ -291,6 +299,54 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 // connection limit while other connections of this pool are working, or
 // because the server had not yet released a socket Ether just closed.
 var errAtLimit = errors.New("usenet: provider connection limit reached")
+
+type atLimitError struct{ err error }
+
+func (e atLimitError) Error() string        { return fmt.Sprintf("%v: %v", errAtLimit, e.err) }
+func (e atLimitError) Unwrap() error        { return e.err }
+func (e atLimitError) Is(target error) bool { return target == errAtLimit }
+
+// limitUnusable records a server capacity refusal that left this pool with no
+// established connections at all (for example, another client holds every slot
+// on the account), so health reflects that the provider cannot serve traffic.
+func (p *pool) limitUnusable(err error) {
+	var al atLimitError
+	if !errors.As(err, &al) || p.establishedCount() > 0 {
+		return
+	}
+	p.errs.Add(1)
+	p.dialFailed()
+	if d := p.brk.connLimitFailure(al.err); d > 0 {
+		p.log.Warn("usenet: connect failed; backing off", "err", al.err, "backoff", d)
+	} else {
+		p.log.Warn("usenet: connect failed", "err", al.err)
+	}
+}
+
+// backoffWait reports whether this pool can serve immediately, is permanently
+// unavailable (closed or credential-disabled), or provides wakeup channels/timer
+// until it may serve again.
+func (p *pool) backoffWait() (ready, disabled, hasTimer bool, wait time.Duration, brkCh, idleCh <-chan struct{}) {
+	p.mu.Lock()
+	closed := p.closed
+	hasIdle := !closed && len(p.idle) > 0
+	var iCh <-chan struct{}
+	if !closed && !hasIdle {
+		iCh = p.idleWake
+	}
+	p.mu.Unlock()
+	if closed {
+		return false, true, false, 0, nil, nil
+	}
+	ready, disabled, hasTimer, wait, brkCh = p.brk.backoffWait(hasIdle)
+	if ready || disabled {
+		return ready, disabled, false, 0, nil, nil
+	}
+	if p.brk.idleAllowed() != nil {
+		iCh = nil
+	}
+	return false, false, hasTimer, wait, brkCh, iCh
+}
 
 // takeIdle returns a live idle connection, or (nil, nil) when the caller
 // must dial. The caller already holds a semaphore slot.
@@ -378,7 +434,7 @@ func (p *pool) dialNew(ctx context.Context, probe bool) (*Conn, error) {
 			// is still tearing down a socket we closed. Either way keep the
 			// provider in rotation.
 			p.brk.noteError(err)
-			return nil, fmt.Errorf("%w: %w", errAtLimit, err)
+			return nil, atLimitError{err: err}
 		default:
 			p.errs.Add(1)
 			if !errors.Is(err, ErrServiceUnavailable) || errors.Is(err, ErrConnectionLimit) {
@@ -423,8 +479,13 @@ func (p *pool) put(c *Conn, prio core.Priority) {
 			p.noteClose(1)
 			go c.Quit()
 		} else {
+			wasEmpty := len(p.idle) == 0
 			c.idleSince = now
 			p.idle = append(p.idle, c)
+			if wasEmpty && p.idleWake != nil {
+				close(p.idleWake)
+				p.idleWake = make(chan struct{})
+			}
 			p.mu.Unlock()
 		}
 	}
@@ -590,8 +651,15 @@ func (p *pool) warmLoop() {
 			p.redialFails.Add(1)
 			p.mu.Lock()
 			p.warmFails++
-			p.warmNext = time.Now().Add(p.warmBackoff(p.warmFails))
+			fails := p.warmFails
+			p.warmNext = time.Now().Add(p.warmBackoff(fails))
 			p.mu.Unlock()
+			// Capacity refusals retry on the warm backoff, never in a tight
+			// loop against the provider; only a run of them with no
+			// established connection marks the provider unusable.
+			if errors.Is(err, errAtLimit) && fails >= 3 {
+				p.limitUnusable(err)
+			}
 			p.log.Debug("usenet: background warm redial failed; backing off", "err", err)
 			return
 		}
@@ -667,7 +735,12 @@ func (p *pool) keepAliveOne(now time.Time) bool {
 	}
 	// Just pinged, but still the least recently used for requests: keep it
 	// at the bottom of the stack.
+	wasEmpty := len(p.idle) == 0
 	p.idle = slices.Insert(p.idle, 0, c)
+	if wasEmpty && p.idleWake != nil {
+		close(p.idleWake)
+		p.idleWake = make(chan struct{})
+	}
 	p.mu.Unlock()
 	return true
 }
@@ -688,6 +761,10 @@ func (p *pool) closeMode(abort bool) {
 		return
 	}
 	p.closed = true
+	if p.idleWake != nil {
+		close(p.idleWake)
+		p.idleWake = nil
+	}
 	idle := p.idle
 	p.idle = nil
 	p.live -= len(idle)
@@ -768,6 +845,8 @@ func (p *pool) stat(ctx context.Context, id string) (bool, error) {
 	}
 	if !ok {
 		p.misses.Add(1)
+	} else {
+		p.statTrust.noteStatPresent(id)
 	}
 	p.latMu.Lock()
 	p.latency.add(rtt)
@@ -796,9 +875,11 @@ func (p *pool) statMany(ctx context.Context, ids []string) (map[string]bool, err
 	if err != nil {
 		return nil, err
 	}
-	for _, ok := range result {
+	for id, ok := range result {
 		if !ok {
 			p.misses.Add(1)
+		} else {
+			p.statTrust.noteStatPresent(id)
 		}
 	}
 	p.latMu.Lock()
@@ -968,12 +1049,16 @@ type ProviderStats struct {
 	LimitRefusals    int64 `json:"limitRefusals"`    // dials refused as over the limit
 	TeardownRefusals int64 `json:"teardownRefusals"` // refusals retried as server teardown
 
-	Bytes         int64 `json:"bytes"` // received off the wire
-	Articles      int64 `json:"articles"`
-	Misses        int64 `json:"misses"`
-	BodyMisses    int64 `json:"bodyMisses"`    // BODY responses unavailable on this provider
-	BodyTakedowns int64 `json:"bodyTakedowns"` // subset of BodyMisses with status 451
-	BackfillSaves int64 `json:"backfillSaves"` // body fetches saved after earlier provider misses
+	Bytes              int64   `json:"bytes"` // received off the wire
+	Articles           int64   `json:"articles"`
+	Misses             int64   `json:"misses"`
+	BodyMisses         int64   `json:"bodyMisses"`              // BODY responses unavailable on this provider
+	BodyTakedowns      int64   `json:"bodyTakedowns"`           // subset of BodyMisses with status 451
+	StatVerified       int64   `json:"statVerified"`            // STAT-223 articles later checked by BODY
+	StatFalsePositives int64   `json:"statFalsePositives"`      // STAT-223 articles whose BODY failed
+	StatUntrusted      bool    `json:"statUntrusted,omitempty"` // STAT-223 is verified with BODY before trusting
+	StatFailureRate    float64 `json:"statFailureRate,omitempty"`
+	BackfillSaves      int64   `json:"backfillSaves"` // body fetches saved after earlier provider misses
 	// Spillovers are requests served by this provider because every
 	// higher-priority provider was saturated (never counted on backfill).
 	Spillovers int64 `json:"spillovers"`
@@ -1054,6 +1139,7 @@ func (p *pool) stats() ProviderStats {
 	st.TeardownRefusals = p.teardownRefusals.Load()
 	st.BodyMisses = p.bodyMisses.Load()
 	st.BodyTakedowns = p.bodyTakedowns.Load()
+	st.StatVerified, st.StatFalsePositives, st.StatUntrusted, st.StatFailureRate = p.statTrust.snapshot()
 	st.Errors = p.errs.Load()
 	st.Dials = p.dials.Load()
 	st.TCPDialTime = time.Duration(p.tcpTime.Load())

@@ -158,7 +158,7 @@ func (m *Manager) ParityProbeNow(ctx context.Context, user *core.User, key core.
 			return nil
 		}
 	}
-	src, err := m.deps.Engine.Open(ctx, res.Release.ID, res.NZB)
+	src, err := m.openResolution(ctx, res)
 	if err != nil {
 		return fmt.Errorf("parity probe %s: %w", title.Title, err)
 	}

@@ -36,6 +36,24 @@ func MIME(name string) string {
 		return "video/x-ms-asf"
 	case ".avi", ".divx":
 		return "video/x-msvideo"
+	case ".flac":
+		return "audio/flac"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".m4a", ".m4b":
+		return "audio/mp4"
+	case ".aac", ".adts":
+		return "audio/aac"
+	case ".ogg", ".oga", ".opus":
+		return "audio/ogg"
+	case ".wav":
+		return "audio/wav"
+	case ".aif", ".aiff":
+		return "audio/aiff"
+	case ".wma":
+		return "audio/x-ms-wma"
+	case ".mka":
+		return "audio/x-matroska"
 	default:
 		return "application/octet-stream"
 	}

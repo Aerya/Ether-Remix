@@ -4,12 +4,19 @@ import { useCallback, useEffect, useState } from "react";
 import { TestButton, type TestState } from "../../../components/fields";
 import { Section } from "../../../components/layout";
 import { useViewers } from "../../../components/pickers";
+import { SaveBarHost } from "../../../components/SaveBar";
 import { SettingsRow } from "../../../components/SettingsRow";
 import { t } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { ApiError, apiFetch, errorMessage } from "../../../lib/api";
 import { SchemaGroups } from "../../settings/SchemaForm";
-import { FolderGrantsPicker, ViewerGrantsPicker } from "../PermissionSheet";
+import {
+  FolderGrantsPicker,
+  LocalHostGrantsPicker,
+  OperatorHostGrantsPicker,
+  ViewerGrantsPicker,
+} from "../PermissionSheet";
+import { RuntimeLimitsEditor } from "../RuntimeLimitsEditor";
 import { SearchSetting } from "./SearchSetting";
 import { AddonSettings } from "./AddonSettings";
 import {
@@ -23,7 +30,7 @@ import {
 
 /**
  * How the plugin is set up: its own settings, who and what it may use,
- * and, out of the way, auto-update and the sites it may reach.
+ * and, out of the way, auto-update, permissions and runtime limits.
  */
 export function PluginSetup({
   detail,
@@ -96,6 +103,7 @@ export function PluginSetup({
       });
       toast.success(t("Settings saved"));
       await load();
+      await onDetail();
       onChanged();
     } catch (e) {
       onError(e);
@@ -116,11 +124,13 @@ export function PluginSetup({
       );
       setTest(
         res.ok
-          ? { status: "ok", durationMs: Date.now() - started }
+          ? { status: "ok", durationMs: Date.now() - started, message: res.message }
           : { status: "fail", message: res.message || t("Test failed") },
       );
+      await onDetail();
     } catch (e) {
       setTest({ status: "fail", message: errorMessage(e) });
+      void onDetail();
     }
   };
 
@@ -170,6 +180,15 @@ export function PluginSetup({
   const revoked = new Set(grants.revoked ?? []);
   const grantItems = buildGrantItems(detail).filter((g) => g.revocable);
   const access = detail.permissions.needsViewers || detail.permissions.needsFolders;
+  const showOperatorHosts = Boolean(
+    detail.permissions.needsOperatorHosts ||
+    (grants.operatorHosts?.length ?? 0) > 0 ||
+    (detail.pendingOperatorHosts?.length ?? 0) > 0,
+  );
+  const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
+  const hasRuntimeLimits = Boolean(
+    detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data",
+  );
   // Updates come from where the plugin was installed; Studio builds and
   // add-ons that always follow their link have nothing to auto-update.
   const updatable = detail.sourceKind !== "studio" && !detail.stremioOnly;
@@ -224,7 +243,7 @@ export function PluginSetup({
         </Section>
       )}
 
-      {access ? (
+      {access || showOperatorHosts || canReachLocalHosts ? (
         <div className="space-y-4">
           {detail.permissions.needsViewers ? (
             <ViewerGrantsPicker
@@ -238,10 +257,24 @@ export function PluginSetup({
               onChange={(f) => void updateGrants({ ...grants, folders: f })}
             />
           ) : null}
+          {showOperatorHosts ? (
+            <OperatorHostGrantsPicker
+              value={grants.operatorHosts ?? []}
+              pending={detail.pendingOperatorHosts ?? []}
+              onChange={(operatorHosts) => void updateGrants({ ...grants, operatorHosts })}
+            />
+          ) : null}
+          {canReachLocalHosts ? (
+            <LocalHostGrantsPicker
+              value={grants.localHosts ?? []}
+              blocked={detail.blockedLocalHosts ?? []}
+              onChange={(localHosts) => void updateGrants({ ...grants, localHosts })}
+            />
+          ) : null}
         </div>
       ) : null}
 
-      {updatable || grantItems.length ? (
+      {updatable || grantItems.length || hasRuntimeLimits ? (
         <section className="overflow-hidden rounded-xl border border-border bg-surface">
           <button
             type="button"
@@ -294,6 +327,24 @@ export function PluginSetup({
                   />
                 );
               })}
+              {hasRuntimeLimits ? (
+                <SaveBarHost>
+                  <RuntimeLimitsEditor
+                    key={detail.id}
+                    plugin={detail.id}
+                    limits={detail.runtimeLimits}
+                    requested={detail.manifest.ether?.runtime?.limits}
+                    storedItems={detail.impact.items}
+                    maxItems={detail.impact.maxItems}
+                    hasMediaKinds={Boolean(detail.manifest.ether?.contributes?.mediaKinds?.length)}
+                    flush
+                    onSaved={() => {
+                      void onDetail();
+                      onChanged();
+                    }}
+                  />
+                </SaveBarHost>
+              ) : null}
             </div>
           ) : null}
         </section>

@@ -19,6 +19,10 @@ func (s *surfaceExperience) personArtwork(ctx context.Context, viewer *frontend.
 			return core.ErrNotFound
 		}
 		result = credit
+		result.KnownFor = person.KnownFor
+		result.Biography = person.Biography
+		result.Birthday = person.Birthday
+		result.Roles = person.Roles
 		artwork, ok := s.artwork.(frontend.PersonArtwork)
 		if !ok {
 			return nil
@@ -33,6 +37,16 @@ func (s *surfaceExperience) personArtwork(ctx context.Context, viewer *frontend.
 				if image.Kind == frontend.ImagePerson && image.Subject == subject && image.Path != "" {
 					result.Images = append(result.Images, image)
 					break
+				}
+			}
+		}
+		if len(result.Images) == 0 && (person.KnownFor == "MusicArtist" || title.MBItemType == "MusicAlbum" || title.MBItemType == "Audio" || title.MBItemType == "MusicArtist") && s.artwork != nil {
+			if art, _, aErr := s.artwork.List(frontend.WithArtworkTitle(ctx, &title), frontend.ArtworkRequest{Viewer: current, Device: device, Item: credit.ArtworkItem}); aErr == nil {
+				for _, image := range art {
+					if image.Kind == frontend.ImagePoster && image.Path != "" {
+						result.Images = append(result.Images, image)
+						break
+					}
 				}
 			}
 		}
@@ -129,6 +143,7 @@ func (s *surfaceExperience) withPersonImage(ctx context.Context, current *core.U
 	}
 	return credit, nil
 }
+
 func (s *surfaceExperience) Person(ctx context.Context, viewer *frontend.Viewer, device frontend.Device, id string, options frontend.PersonReadOptions) (frontend.PersonDetail, error) {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -144,7 +159,83 @@ func (s *surfaceExperience) Person(ctx context.Context, viewer *frontend.Viewer,
 	return s.personArtwork(ctx, viewer, device, person)
 }
 
-var _ frontend.PeopleReader = (*surfaceExperience)(nil)
+func (s *surfaceExperience) LibraryFacetPeople(ctx context.Context, viewer *frontend.Viewer, device frontend.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetPersonPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	res, err := s.Service.LibraryFacetPeople(ctx, viewer, device, viewID, field, order, page)
+	if err != nil || len(res.Items) == 0 {
+		return res, err
+	}
+	artwork, hasArt := s.artwork.(frontend.PersonArtwork)
+	if !hasArt {
+		return res, nil
+	}
+	type indexedRef struct {
+		idx int
+		ref experience.PersonCreditRef
+	}
+	var pending []indexedRef
+	for i, fp := range res.Items {
+		if fp.Person.ArtworkItem != 0 && fp.Person.TMDB > 0 {
+			pending = append(pending, indexedRef{
+				idx: i,
+				ref: experience.PersonCreditRef{Item: fp.Person.ArtworkItem, TMDB: fp.Person.TMDB},
+			})
+		}
+	}
+	const chunkSize = 100
+	for start := 0; start < len(pending); start += chunkSize {
+		chunk := pending[start:min(start+chunkSize, len(pending))]
+		refs := make([]experience.PersonCreditRef, len(chunk))
+		for j, p := range chunk {
+			refs[j] = p.ref
+		}
+		portraits := make(map[core.RatingKey][]frontend.Image, len(chunk))
+		_, cErr := s.Service.WithPersonCredits(ctx, viewer, device, refs, func(n int, current *core.User, credit frontend.PersonDetail, title core.Title) error {
+			targetIdx := chunk[n].idx
+			if credit.ID != res.Items[targetIdx].Person.ID {
+				return nil
+			}
+			images, listed := portraits[title.Key]
+			if !listed {
+				var lErr error
+				images, lErr = artwork.PersonImages(ctx, frontend.ArtworkRequest{Viewer: current, Device: device, Item: credit.ArtworkItem}, title)
+				if lErr == nil {
+					portraits[title.Key] = images
+				}
+			}
+			subject := "tmdb:" + strconv.FormatInt(credit.TMDB, 10)
+			foundPortrait := false
+			for _, image := range images {
+				if image.Kind == frontend.ImagePerson && image.Subject == subject && image.Path != "" {
+					res.Items[targetIdx].Person.Images = []frontend.Image{image}
+					foundPortrait = true
+					break
+				}
+			}
+			if !foundPortrait && (title.MBItemType == "MusicAlbum" || title.MBItemType == "Audio" || title.MBItemType == "MusicArtist") && s.artwork != nil {
+				if art, _, aErr := s.artwork.List(frontend.WithArtworkTitle(ctx, &title), frontend.ArtworkRequest{Viewer: current, Device: device, Item: title.Key}); aErr == nil {
+					for _, image := range art {
+						if image.Kind == frontend.ImagePoster && image.Path != "" {
+							res.Items[targetIdx].Person.Images = []frontend.Image{image}
+							break
+						}
+					}
+				}
+			}
+			return nil
+		})
+		if cErr != nil && !errors.Is(cErr, core.ErrNotAvailable) {
+			return frontend.FacetPersonPage{}, cErr
+		}
+	}
+	return res, nil
+}
+
+var (
+	_ frontend.PeopleReader       = (*surfaceExperience)(nil)
+	_ frontend.LibraryFacetPeople = (*surfaceExperience)(nil)
+)
 
 // AuthorizePersonImages shares the policy/credit proof across the entire page.
 func (s *surfaceExperience) AuthorizePersonImages(ctx context.Context, viewer *frontend.Viewer, device frontend.Device, targets []frontend.PersonImageTarget) ([]bool, error) {
@@ -165,8 +256,18 @@ func (s *surfaceExperience) AuthorizePersonImages(ctx context.Context, viewer *f
 	if !ok {
 		return nil, core.ErrNotAvailable
 	}
+	// Every callback for an item receives the same detached title snapshot.
+	// Build its portrait descriptors once, rather than once per credit.
+	portraits := make(map[core.RatingKey][]frontend.Image)
 	_, err := s.Service.WithPersonCredits(ctx, viewer, device, refs, func(n int, current *core.User, _ frontend.PersonDetail, title core.Title) error {
-		images, err := artwork.PersonImages(ctx, frontend.ArtworkRequest{Viewer: current, Device: device, Item: targets[n].Item}, title)
+		images, listed := portraits[title.Key]
+		var err error
+		if !listed {
+			images, err = artwork.PersonImages(ctx, frontend.ArtworkRequest{Viewer: current, Device: device, Item: targets[n].Item}, title)
+			if err == nil {
+				portraits[title.Key] = images
+			}
+		}
 		if errors.Is(err, core.ErrUnauthorized) || errors.Is(err, core.ErrNotFound) {
 			return nil
 		}

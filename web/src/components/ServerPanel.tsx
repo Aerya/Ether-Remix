@@ -26,7 +26,7 @@ const PRIMARY = { stroke: "stroke-primary", fill: "fill-primary", swatch: "bg-pr
 
 /**
  * One gauge in the Server stack: name, a large live reading and its context
- * on top, the five-minute trace filling the rest of its share of the panel.
+ * on top, the five-minute trace below.
  */
 function Instrument({
   label,
@@ -61,8 +61,8 @@ function Instrument({
   );
 }
 
-/** Chart box: a fixed band when the page scrolls, its share of the height in the cockpit. */
-const chartBox = "h-20 cockpit:h-auto cockpit:flex-1";
+/** Fixed band height so every five-minute trace renders cleanly in natural card flow. */
+const chartBox = "h-20";
 
 /**
  * This server's live CPU, memory, network and GPU load as a stack of
@@ -77,7 +77,7 @@ export function ServerPanel({ hwaccel, className }: { hwaccel?: string; classNam
       title={t("Server")}
       icon={<Server size={16} />}
       className={className}
-      bodyClassName="flex min-h-0 flex-col"
+      bodyClassName="flex flex-col"
       actions={
         <span className="flex items-center gap-2">
           {hwaccel ? <Badge variant="secondary">{hwaccel}</Badge> : null}
@@ -100,9 +100,9 @@ export function ServerPanel({ hwaccel, className }: { hwaccel?: string; classNam
             : t("Load isn't available.")}
         </p>
       ) : !data ? (
-        <div className="flex flex-1 flex-col gap-3">
+        <div className="flex flex-col gap-3">
           {Array.from({ length: 4 }, (_, i) => (
-            <Skeleton key={i} className="h-20 flex-1 rounded-lg" />
+            <Skeleton key={i} className="h-20 rounded-lg" />
           ))}
         </div>
       ) : (
@@ -148,7 +148,7 @@ function Vitals({ data }: { data: SystemLoad }) {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col divide-y divide-border-subtle">
+      <div className="flex flex-col divide-y divide-border-subtle">
         <Instrument
           label="CPU"
           value={pct(cur?.cpu)}
@@ -158,7 +158,6 @@ function Vitals({ data }: { data: SystemLoad }) {
           ]
             .filter(Boolean)
             .join(" · ")}
-          className="cockpit:flex-1"
           chart={
             <LiveChart
               className={chartBox}
@@ -195,7 +194,6 @@ function Vitals({ data }: { data: SystemLoad }) {
               ) : null}
             </>
           }
-          className="cockpit:flex-1"
           chart={
             <LiveChart
               className={chartBox}
@@ -228,7 +226,6 @@ function Vitals({ data }: { data: SystemLoad }) {
               </span>
             </span>
           }
-          className="cockpit:flex-1"
           chart={
             <LiveChart
               className={chartBox}
@@ -278,7 +275,6 @@ function Vitals({ data }: { data: SystemLoad }) {
               t("Not reported by this hardware")
             )
           }
-          className={gpu ? "cockpit:flex-1" : undefined}
           chart={
             gpu ? (
               <LiveChart

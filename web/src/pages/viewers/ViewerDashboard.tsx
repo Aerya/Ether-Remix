@@ -1,4 +1,3 @@
-import { useLayoutEffect, useRef, useState } from "react";
 import { DashboardPanel } from "@braedonsaunders/appkit-dashboard/primitives";
 import { Badge } from "@braedonsaunders/appkit-ui";
 import { Clock3, Sparkles, Clapperboard } from "lucide-react";
@@ -10,7 +9,7 @@ import { api } from "../../lib/api";
 import type { TasteProfile, ViewerDetail } from "../../lib/contract";
 import { formatNumber, formatPercent } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
-import { extractTopPicks } from "./TasteView";
+import { affinityLabel, extractTopPicks } from "./TasteView";
 import { Kpi } from "../../components/Kpi";
 
 export function ViewerDashboard({
@@ -20,29 +19,6 @@ export function ViewerDashboard({
   viewer: ViewerDetail;
   taste?: TasteProfile | null;
 }) {
-  const root = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(400);
-  useLayoutEffect(() => {
-    const node = root.current;
-    if (!node) return;
-    const resize = () =>
-      setHeight(
-        Math.max(
-          120,
-          window.innerHeight -
-            node.getBoundingClientRect().top -
-            (window.innerWidth < 768 ? 80 : 24),
-        ),
-      );
-    resize();
-    const observer = new ResizeObserver(resize);
-    if (node.parentElement) observer.observe(node.parentElement);
-    window.addEventListener("resize", resize);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", resize);
-    };
-  }, []);
   const home = useAsync(
     (signal) =>
       api.viewerHome(
@@ -54,13 +30,8 @@ export function ViewerDashboard({
   );
   const picks = extractTopPicks(home.data, 6).map((pick) => pick.item);
   return (
-    <div
-      ref={root}
-      style={{ height }}
-      aria-label={t("Viewer dashboard")}
-      className="flex min-h-0 flex-col gap-4 overflow-hidden"
-    >
-      <div className="grid shrink-0 grid-cols-3 gap-3">
+    <div aria-label={t("Viewer dashboard")} className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {[
           [t("Plays in 30 days"), formatNumber(viewer.plays30d)],
           [t("Hours in 30 days"), formatNumber(viewer.hoursWatched30d, 1)],
@@ -76,13 +47,8 @@ export function ViewerDashboard({
           <Kpi key={label} label={label!} value={value} />
         ))}
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-2">
-        <DashboardPanel
-          title={t("Next in their feed")}
-          icon={<Sparkles size={16} />}
-          className="min-h-0"
-          bodyClassName="overflow-y-auto"
-        >
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <DashboardPanel title={t("Next in their feed")} icon={<Sparkles size={16} />}>
           {home.error ? (
             <ErrorPanel error={home.error} onRetry={() => void home.reload()} />
           ) : !home.data ? (
@@ -117,13 +83,8 @@ export function ViewerDashboard({
             </div>
           )}
         </DashboardPanel>
-        <div className="grid min-h-0 grid-rows-2 gap-4">
-          <DashboardPanel
-            title={t("When they watch")}
-            icon={<Clock3 size={16} />}
-            className="min-h-0"
-            bodyClassName="overflow-y-auto"
-          >
+        <div className="flex flex-col gap-4">
+          <DashboardPanel title={t("When they watch")} icon={<Clock3 size={16} />}>
             {taste ? (
               <div className="space-y-4">
                 <HourStrip
@@ -141,15 +102,11 @@ export function ViewerDashboard({
               <LoadingRows rows={2} />
             )}
           </DashboardPanel>
-          <DashboardPanel
-            title={t("Top genres")}
-            icon={<Clapperboard size={16} />}
-            className="min-h-0"
-            bodyClassName="overflow-y-auto"
-          >
+          <DashboardPanel title={t("Top genres")} icon={<Clapperboard size={16} />}>
             {taste ? (
               <DivergingBars
                 ariaLabel={t("Genre affinity from dislike to like")}
+                valueFormat={affinityLabel}
                 data={[...taste.genres]
                   .sort((a, b) => b.weight - a.weight)
                   .slice(0, 5)

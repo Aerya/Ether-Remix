@@ -75,8 +75,13 @@ Because opening is irreversible, opening is strict against pre-release fakes:
 
 Matching scans local title identities and resolves episodes locally; it does not
 call TMDB for every feed item. Conflicting identifiers and ambiguous title matches
-are rejected. A season pack only contributes known, already-aired episodes, and
-its health check is targeted to the chosen episode using the existing resolver.
+are rejected. Once a regular season is in progress (at least one episode released
+and at least one TMDB-listed episode still future-dated), viewing the show, season,
+or episode or resolving an episode runs a bounded season search (`RevealSeason`).
+Unreleased TMDB-listed episodes are revealed via `catalog_episode_release` only on
+verified evidence — a cached single-episode copy, a cached season pack whose file
+list contains that episode, or a targeted health check — never from an unverified
+search hit alone.
 
 Library browse, rows, facets, episode counts and search evaluate the sticky gate
 directly inside their existing SQL queries via an indexed `EXISTS` lookup on

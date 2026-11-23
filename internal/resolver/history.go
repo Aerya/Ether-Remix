@@ -14,11 +14,13 @@ import (
 
 // HistoryRecord is one persisted resolution outcome.
 type HistoryRecord struct {
-	ID        int64          `json:"id"`
-	At        time.Time      `json:"at"`
-	TitleKey  core.RatingKey `json:"titleKey,string"`
-	TitleName string         `json:"titleName"`
-	Profile   string         `json:"profile,omitempty"`
+	Kept              bool `json:"kept"`
+	indexerID, packID string
+	ID                int64          `json:"id"`
+	At                time.Time      `json:"at"`
+	TitleKey          core.RatingKey `json:"titleKey,string"`
+	TitleName         string         `json:"titleName"`
+	Profile           string         `json:"profile,omitempty"`
 	// Max-height ceilings behind Profile (configured / client caps /
 	// effective). ProfileMaxHeight carries presence: nil on records
 	// written before the configured ceiling was tracked (unknown), a
@@ -88,6 +90,7 @@ func historyFromTrace(tr Trace) HistoryRecord {
 	}
 	for _, c := range tr.Candidates {
 		if c.ReleaseID != "" && c.ReleaseID == tr.Winner {
+			h.indexerID, h.packID = c.IndexerID, c.PackID
 			h.ReleaseName, h.Indexer, h.Size = c.Name, c.Indexer, c.Size
 			break
 		}
@@ -124,7 +127,7 @@ func (s *Service) recordHistory(ctx context.Context, tr Trace) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var id int64
 	err = s.db.QueryRowContext(ctx,
@@ -165,6 +168,8 @@ func scanHistory(r rowScanner, withTrace bool) (HistoryRecord, error) {
 		var tr Trace
 		if err := json.Unmarshal([]byte(raw), &tr); err == nil {
 			h.Trace = &tr
+			detail := historyFromTrace(tr)
+			h.indexerID, h.packID = detail.indexerID, detail.packID
 			// The ceilings live only in the trace JSON (no new columns);
 			// surface them on the record HistoryEntry returns.
 			if tr.Limits != nil {
@@ -211,6 +216,7 @@ func (s *Service) History(ctx context.Context, f HistoryFilter) ([]HistoryRecord
 		if len(all) > f.Limit {
 			all = all[:f.Limit]
 		}
+		s.markKept(ctx, all)
 		return all, total, nil
 	}
 	cond, args := "", []any{}
@@ -239,7 +245,11 @@ func (s *Service) History(ctx context.Context, f HistoryFilter) ([]HistoryRecord
 		h.Trace = nil
 		out = append(out, h)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	s.markKept(ctx, out)
+	return out, total, nil
 }
 
 // HistoryEntry returns one history record with its full trace, or
@@ -247,18 +257,26 @@ func (s *Service) History(ctx context.Context, f HistoryFilter) ([]HistoryRecord
 func (s *Service) HistoryEntry(ctx context.Context, id int64) (HistoryRecord, error) {
 	if s.db == nil {
 		s.con.mu.Lock()
-		defer s.con.mu.Unlock()
 		for _, h := range s.con.history {
 			if h.ID == id {
-				return h, nil
+				s.con.mu.Unlock()
+				page := []HistoryRecord{h}
+				s.markKept(ctx, page)
+				return page[0], nil
 			}
 		}
+		s.con.mu.Unlock()
 		return HistoryRecord{}, core.ErrNotFound
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT `+historyColumns+`, trace FROM resolver_history WHERE id=?`, id)
 	h, err := scanHistory(row, true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return HistoryRecord{}, core.ErrNotFound
+	}
+	if err == nil {
+		page := []HistoryRecord{h}
+		s.markKept(ctx, page)
+		h = page[0]
 	}
 	return h, err
 }

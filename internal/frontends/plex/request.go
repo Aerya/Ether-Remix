@@ -48,6 +48,7 @@ type Request struct {
 	excludeMedia bool
 	RemoteIP     netip.Addr
 	Remote       bool // not on a private/loopback network
+	Secure       bool // TLS directly or https via a trusted proxy
 
 	User *frontend.User
 
@@ -56,11 +57,22 @@ type Request struct {
 	detailRefillRequested bool
 	detailRefill          <-chan struct{}
 	detailWaitUntil       time.Time // shared Android TV detail probe/version wait budget
+	// Set on play-intent metadata/playQueue reads (Plezy and Bedrock) so
+	// VersionSlots for that title reads concrete search/probe state instead of
+	// falling back to cold placeholders.
+	playIntentVersionKey frontend.RatingKey
 
 	// Capability is set when authentication used a stream grant or other
 	// session-scoped credential, not a user token. Only transcode
 	// session/segment handlers may serve a capability-scoped request.
 	Capability bool
+
+	// deliveryGrantHop marks the request whose delivery grant the authentication
+	// ladder just consumed: the second hop of a redirected part read, and the
+	// only request allowed to leave for the provider. The query parameter only
+	// asks for that hop; consuming the grant decides it, so a client cannot claim
+	// the hop by pasting a grant-shaped parameter next to its own credential.
+	deliveryGrantHop bool
 
 	versionItemKey  frontend.RatingKey // single detail or selected queue item
 	versionFlowKey  frontend.RatingKey // selected pre-play/queue item only
@@ -143,7 +155,7 @@ func pagingParam(r *http.Request, name string) (string, bool) {
 }
 
 // ParseRequest builds the request context from an HTTP request. Forwarded
-// addresses are considered only for a loopback peer (a local reverse proxy).
+// headers are considered only for loopback peers and configured trusted proxies.
 func ParseRequest(r *http.Request, trusted ...netip.Prefix) *Request {
 	pr := &Request{
 		Token:           plexParam(r, "X-Plex-Token"),
@@ -197,7 +209,34 @@ func ParseRequest(r *http.Request, trusted ...netip.Prefix) *Request {
 	var local bool
 	pr.RemoteIP, local = clientnet.ClientNet(r, trusted...)
 	pr.Remote = !local
+	pr.Secure = requestIsSecure(r, trusted...)
 	return pr
+}
+
+// requestIsSecure reports whether the client reached Ether over HTTPS directly
+// or via a trusted reverse proxy.
+func requestIsSecure(r *http.Request, trusted ...netip.Prefix) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if !clientnet.TrustedPeer(r, trusted...) {
+		return false
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		first, _, _ := strings.Cut(proto, ",")
+		return strings.EqualFold(strings.TrimSpace(first), "https")
+	}
+	for _, header := range r.Header.Values("Forwarded") {
+		for _, element := range strings.Split(header, ",") {
+			for _, param := range strings.Split(element, ";") {
+				k, v, ok := strings.Cut(strings.TrimSpace(param), "=")
+				if ok && strings.EqualFold(k, "proto") {
+					return strings.EqualFold(strings.Trim(strings.TrimSpace(v), `"`), "https")
+				}
+			}
+		}
+	}
+	return false
 }
 
 // wantsJSON follows PMS's media-range grammar rather than HTTP's generic

@@ -1,0 +1,300 @@
+{
+  "sports": [
+    {
+      "leagues": [
+        {
+          "teams": [
+            {
+              "team": {
+                "id": "2",
+                "uid": "s:20~l:28~t:2",
+                "location": "Buffalo",
+                "name": "Bills",
+                "abbreviation": "BUF",
+                "displayName": "Buffalo Bills",
+                "shortDisplayName": "Bills",
+                "color": "00338d",
+                "alternateColor": "d50a0a",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/buf.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/buf.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "34",
+                "uid": "s:20~l:28~t:34",
+                "location": "Houston",
+                "name": "Texans",
+                "abbreviation": "HOU",
+                "displayName": "Houston Texans",
+                "shortDisplayName": "Texans",
+                "color": "021018",
+                "alternateColor": "eb0028",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/hou.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "11",
+                "uid": "s:20~l:28~t:11",
+                "location": "Indianapolis",
+                "name": "Colts",
+                "abbreviation": "IND",
+                "displayName": "Indianapolis Colts",
+                "shortDisplayName": "Colts",
+                "color": "003b75",
+                "alternateColor": "ffffff",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/ind.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "12",
+                "uid": "s:20~l:28~t:12",
+                "location": "Kansas City",
+                "name": "Chiefs",
+                "abbreviation": "KC",
+                "displayName": "Kansas City Chiefs",
+                "shortDisplayName": "Chiefs",
+                "color": "e31837",
+                "alternateColor": "ffb612",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/kc.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "15",
+                "uid": "s:20~l:28~t:15",
+                "location": "Miami",
+                "name": "Dolphins",
+                "abbreviation": "MIA",
+                "displayName": "Miami Dolphins",
+                "shortDisplayName": "Dolphins",
+                "color": "008e97",
+                "alternateColor": "fc4c02",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/mia.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/mia.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "21",
+                "uid": "s:20~l:28~t:21",
+                "location": "Philadelphia",
+                "name": "Eagles",
+                "abbreviation": "PHI",
+                "displayName": "Philadelphia Eagles",
+                "shortDisplayName": "Eagles",
+                "color": "06424d",
+                "alternateColor": "000000",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/phi.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/phi.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "23",
+                "uid": "s:20~l:28~t:23",
+                "location": "Pittsburgh",
+                "name": "Steelers",
+                "abbreviation": "PIT",
+                "displayName": "Pittsburgh Steelers",
+                "shortDisplayName": "Steelers",
+                "color": "000000",
+                "alternateColor": "ffb612",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/pit.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/pit.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "25",
+                "uid": "s:20~l:28~t:25",
+                "location": "San Francisco",
+                "name": "49ers",
+                "abbreviation": "SF",
+                "displayName": "San Francisco 49ers",
+                "shortDisplayName": "49ers",
+                "color": "aa0000",
+                "alternateColor": "b3995d",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500/sf.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/sf.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

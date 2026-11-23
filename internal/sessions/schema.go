@@ -112,4 +112,12 @@ CREATE TABLE sessions_delivery_authority (
 	store.Register("sessions", 10, `ALTER TABLE plex_sessions ADD COLUMN broker_managed INTEGER NOT NULL DEFAULT 0;
  UPDATE plex_sessions SET broker_managed=1 WHERE protocol IS NOT NULL AND protocol<>'plex';`)
 
+	store.Register("sessions", 11, `
+ALTER TABLE plex_sessions ADD COLUMN multiview_group TEXT NOT NULL DEFAULT '';
+ALTER TABLE plex_sessions ADD COLUMN multiview_tile INTEGER NOT NULL DEFAULT -1;
+DROP INDEX IF EXISTS sessions_active_device;
+CREATE UNIQUE INDEX sessions_active_device ON plex_sessions(user_id,surface,device_id,multiview_tile)
+ WHERE active=1 AND protocol IS NOT NULL AND protocol<>'plex' AND surface IS NOT NULL AND device_id IS NOT NULL;
+`)
+
 }

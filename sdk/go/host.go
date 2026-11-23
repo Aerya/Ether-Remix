@@ -4,28 +4,68 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	// DefaultFetchManyConcurrency and MaxFetchManyConcurrency bound the
+	// per-call parallelism of Host.FetchMany.
+	DefaultFetchManyConcurrency = 8
+	MaxFetchManyConcurrency     = 8
+	// MaxFetchManyRequests caps the number of requests per FetchMany call.
+	MaxFetchManyRequests = 64
+	// DefaultMaxFetchPerHost bounds concurrent requests to any single origin.
+	DefaultMaxFetchPerHost = 6
 )
 
 // HostFetchRequest describes an outbound HTTP call via the host service.
 type HostFetchRequest struct {
-	Method  string            `json:"method,omitempty"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
+	Method                string            `json:"method,omitempty"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	Body                  string            `json:"body,omitempty"`
+	BodyBase64            string            `json:"bodyBase64,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 
 // HostFetchResponse is returned by Host.Fetch.
 type HostFetchResponse struct {
-	Status  int               `json:"status"`
-	Headers map[string]string `json:"headers"`
-	Body    string            `json:"body"`
+	Status     int               `json:"status"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+}
+
+// HostFetchManyOptions configures a bounded concurrent FetchMany batch.
+type HostFetchManyOptions struct {
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
+// HostFetchError describes a per-item error returned by FetchMany.
+type HostFetchError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// HostFetchManyResult is one ordered result from FetchMany. Either Error is
+// non-nil or Status/Headers/Body carry the HTTP response (including non-2xx).
+type HostFetchManyResult struct {
+	Status     int               `json:"status,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
+	Error      *HostFetchError   `json:"error,omitempty"`
 }
 
 // FolderHashJob is a pollable background hash. Bytes is the progress so far.
@@ -111,6 +151,192 @@ type Host interface {
 	StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error)
 }
 
+// KVUsage reports a plugin's current KV bytes (including the 256-byte charge
+// per key), key count, and configured quotas (#591).
+type KVUsage struct {
+	Bytes      int64 `json:"bytes"`
+	Keys       int64 `json:"keys"`
+	QuotaBytes int64 `json:"quotaBytes"`
+	QuotaKeys  int64 `json:"quotaKeys"`
+}
+
+// KVUsageHost reports current KV usage and quotas (#591).
+// RemoteHostClient and MockHost implement it.
+type KVUsageHost interface {
+	KVUsage(ctx context.Context) (KVUsage, error)
+}
+
+// FetchManyHost executes up to MaxFetchManyRequests outbound HTTP calls
+// concurrently with bounded per-call and per-origin concurrency, returning
+// ordered results with per-item error isolation (#703).
+// RemoteHostClient and MockHost implement it.
+type FetchManyHost interface {
+	FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error)
+}
+
+// SecretWriteHost stores and removes sealed derived secrets declared in
+// permissions.secrets (#660). Owner-configured settings secrets cannot be
+// overwritten. RemoteHostClient and MockHost implement it.
+type SecretWriteHost interface {
+	SecretSet(ctx context.Context, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, name string) error
+}
+
+// BadgesHost pushes, clears, and inspects plugin-owned poster badges (#594).
+// RemoteHostClient and MockHost implement it.
+type BadgesHost interface {
+	BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error
+	BadgesClear(ctx context.Context, setKey string) error
+	BadgesUsage(ctx context.Context) (BadgeUsage, error)
+}
+
+// EventsHost emits declared plugin events onto Ether's event bus.
+// RemoteHostClient and MockHost implement it; Context.PublishEvent uses it automatically.
+type EventsHost interface {
+	PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error
+}
+
+// AIMessage is one chat turn sent to AIHost.AIComplete.
+type AIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// AICompleteRequest configures one completion on the owner's configured
+// language model (#669).
+type AICompleteRequest struct {
+	Messages []AIMessage `json:"messages"`
+	// Schema is an optional JSON Schema object (raw JSON or map[string]any
+	// marshalled to JSON). When set, Ether extracts JSON from the model reply
+	// and validates it against Schema before returning. External $ref URLs are
+	// rejected.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// MaxTokens bounds output tokens (default 1024, max 4096).
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Temperature optionally adjusts sampling in [0, 2]; ignored safely by
+	// providers/models that disallow explicit temperature.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms on
+	// background/action routes, 20000 ms on interactive search routes, and the
+	// enclosing call deadline).
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+	// SearchQuery identifies the viewer's search text when calling ai.complete
+	// on an interactive search route under permissions.ai: "complete+search".
+	// Required on adapter search routes without a URL query param (e.g. GraphQL)
+	// and used for normalized per-query caching.
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// AICompleteResponse is the completion returned by AIHost.AIComplete.
+type AICompleteResponse struct {
+	// Text is the assistant reply (with reasoning blocks stripped). When Schema
+	// was set, Text holds compact canonical JSON.
+	Text string `json:"text"`
+	// JSON holds the validated JSON value when Schema was set.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+
+// HostError is a structured error returned by Ether's plugin-host API,
+// preserving the EPP error code (for example "not_configured", "rate_limited",
+// "permission_denied", or "invalid_output") alongside the human message and
+// optional retry window when rate limited.
+type HostError struct {
+	Status        int
+	Code          string
+	Message       string
+	RetryAfterSec int64
+	RetryAt       string
+}
+
+func (e *HostError) Error() string { return e.Message }
+
+// AIHost runs bounded completions on the owner's configured language model
+// (requires permissions.ai: "complete", or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
+// RemoteHostClient and MockHost implement it; Context.AIComplete uses it
+// automatically.
+type AIHost interface {
+	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+}
+
+// MediaHost probes container metadata for a PlayableSource in the same shape
+// /resolve returns, reusing Ether's durable release_probes cache (requires
+// permissions.media: "probe"; jobs, actions, and background routes only).
+// RemoteHostClient and MockHost implement it; Context.MediaProbe uses it
+// automatically.
+type MediaHost interface {
+	MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
+}
+
+// PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
+// part of a multi-file kind item (#576). RemoteHostClient and MockHost
+// implement it; Context.StreamPartURL uses it automatically.
+type PartStreamHost interface {
+	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
+}
+
+// StreamURLOptionsHost mints a short-lived, scoped ticket for a specific
+// zero-based part and/or resolver PlayableSource.ID of a kind item (#576, #661).
+// RemoteHostClient and MockHost implement it; Context.StreamURLWithOptions
+// uses it automatically.
+type StreamURLOptionsHost interface {
+	StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error)
+}
+
+// ResolveSourcesResultHost runs sources.resolve and returns both the candidate
+// list and per-indexer search statuses for indexer_search queries (#733).
+// RemoteHostClient and MockHost implement it; Context.ResolveSourcesWithResult
+// uses it automatically.
+type ResolveSourcesResultHost interface {
+	ResolveSourcesWithResult(ctx context.Context, q SourceQuery) (SourceResolveResult, error)
+}
+
+// CacheDeleteHost deletes cached blobs from this plugin's own library cache
+// namespaces. RemoteHostClient and MockHost implement it.
+type CacheDeleteHost interface {
+	CacheDelete(ctx context.Context, blobRef string) error
+}
+
+const (
+	// MaxKindVisibleIDs is the per-call batch cap for kinds.visible (#615).
+	MaxKindVisibleIDs = 500
+	// HeaderViewerToken carries the host-minted, request-scoped adapter viewer
+	// proof header on frontend adapter calls (#615).
+	HeaderViewerToken = "X-Ether-Viewer-Token"
+)
+
+type viewerTokenContextKey struct{}
+
+// WithViewerToken attaches the host-minted X-Ether-Viewer-Token from an
+// incoming frontend adapter request onto ctx so KindVisible and KindBrowse
+// authenticate as that request's viewer without passing a viewer ID (#615).
+func WithViewerToken(ctx context.Context, token string) context.Context {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, viewerTokenContextKey{}, token)
+}
+
+// ViewerTokenFromContext returns the adapter viewer token attached by
+// WithViewerToken (or automatically during FrontendAdapter dispatch).
+func ViewerTokenFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tok, ok := ctx.Value(viewerTokenContextKey{}).(string)
+	return tok, ok && tok != ""
+}
+
+// KindPolicyHost evaluates a plugin library's Rules and viewer access policy
+// for the requesting frontend-adapter viewer (#615). RemoteHostClient and
+// MockHost implement it. The viewer identity comes solely from the request's
+// authenticated X-Ether-Viewer-Token on ctx, never from caller-supplied IDs.
+type KindPolicyHost interface {
+	KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error)
+}
+
 // RemoteHostOptions configures a RemoteHostClient for sidecar plugins.
 type RemoteHostOptions struct {
 	BaseURL    string
@@ -169,6 +395,17 @@ func (c *RemoteHostClient) callJSON(
 	out any,
 	allow404 bool,
 ) (bool, error) {
+	return c.callJSONWithHeaders(ctx, method, path, nil, in, out, allow404)
+}
+
+func (c *RemoteHostClient) callJSONWithHeaders(
+	ctx context.Context,
+	method, path string,
+	extraHeaders map[string]string,
+	in any,
+	out any,
+	allow404 bool,
+) (bool, error) {
 	var bodyReader io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -186,13 +423,18 @@ func (c *RemoteHostClient) callJSON(
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for k, v := range extraHeaders {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return false, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (MaxDataReadBytes+2)/3*4+(4<<20)))
 	if err != nil {
 		return false, err
 	}
@@ -202,13 +444,39 @@ func (c *RemoteHostClient) callJSON(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errDoc struct {
 			Error struct {
-				Message string `json:"message"`
+				Code          string `json:"code"`
+				Message       string `json:"message"`
+				RetryAfterSec int64  `json:"retryAfterSec"`
+				RetryAt       string `json:"retryAt"`
 			} `json:"error"`
 		}
-		if json.Unmarshal(raw, &errDoc) == nil && errDoc.Error.Message != "" {
-			return false, fmt.Errorf("%s", errDoc.Error.Message)
+		retryAfterSec := int64(0)
+		if hdr := strings.TrimSpace(resp.Header.Get("Retry-After")); hdr != "" {
+			if n, perr := strconv.ParseInt(hdr, 10, 64); perr == nil && n > 0 {
+				retryAfterSec = n
+			}
 		}
-		return false, fmt.Errorf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+		if json.Unmarshal(raw, &errDoc) == nil && (errDoc.Error.Message != "" || errDoc.Error.Code != "") {
+			msg := errDoc.Error.Message
+			if msg == "" {
+				msg = fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+			}
+			if errDoc.Error.RetryAfterSec > 0 {
+				retryAfterSec = errDoc.Error.RetryAfterSec
+			}
+			return false, &HostError{
+				Status:        resp.StatusCode,
+				Code:          errDoc.Error.Code,
+				Message:       msg,
+				RetryAfterSec: retryAfterSec,
+				RetryAt:       errDoc.Error.RetryAt,
+			}
+		}
+		return false, &HostError{
+			Status:        resp.StatusCode,
+			Message:       fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+			RetryAfterSec: retryAfterSec,
+		}
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -265,13 +533,76 @@ func (c *RemoteHostClient) KVList(ctx context.Context, prefix string) ([]string,
 	return res.Keys, nil
 }
 
+// KVUsage reads the plugin's current KV byte/key usage and quotas.
+func (c *RemoteHostClient) KVUsage(ctx context.Context) (KVUsage, error) {
+	var res KVUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/kv-usage", nil, &res, false); err != nil {
+		return KVUsage{}, err
+	}
+	return res, nil
+}
+
+// BadgesSet pushes poster badges for one declared badge set (#594).
+func (c *RemoteHostClient) BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error {
+	if entries == nil {
+		entries = []BadgeEntry{}
+	}
+	_, err := c.callJSON(
+		ctx,
+		http.MethodPut,
+		"/ether/plugin-host/badges/"+url.PathEscape(setKey),
+		map[string]any{"entries": entries},
+		nil,
+		false,
+	)
+	return err
+}
+
+// BadgesClear removes every badge in one declared set (#594).
+func (c *RemoteHostClient) BadgesClear(ctx context.Context, setKey string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/badges/"+url.PathEscape(setKey), nil, nil, false)
+	return err
+}
+
+// BadgesUsage reads the plugin's current badged title count and quota (#594).
+func (c *RemoteHostClient) BadgesUsage(ctx context.Context) (BadgeUsage, error) {
+	var res BadgeUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/badges-usage", nil, &res, false); err != nil {
+		return BadgeUsage{}, err
+	}
+	return res, nil
+}
+
 // SecretGet is only available in hosted mode; remote plugins receive secrets via /ether/configure.
 func (c *RemoteHostClient) SecretGet(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("secret.get is only available in hosted plugins; remote plugins receive secrets via /ether/configure")
 }
 
+// SecretSet stores a sealed derived secret under a name declared in
+// permissions.secrets (#660). Passing an empty value deletes it.
+func (c *RemoteHostClient) SecretSet(ctx context.Context, name, value string, ttlSec int64) error {
+	payload := map[string]any{"value": value}
+	if ttlSec != 0 {
+		payload["ttlSec"] = ttlSec
+	}
+	_, err := c.callJSON(ctx, http.MethodPut, "/ether/plugin-host/secrets/"+url.PathEscape(name), payload, nil, false)
+	return err
+}
+
+// SecretDelete removes a plugin-written derived secret declared in
+// permissions.secrets (#660).
+func (c *RemoteHostClient) SecretDelete(ctx context.Context, name string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/secrets/"+url.PathEscape(name), nil, nil, false)
+	return err
+}
+
 // Fetch performs an outbound HTTP request.
 func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostFetchResponse, error) {
+	if r.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(r.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
 	method := r.Method
 	if method == "" {
 		method = http.MethodGet
@@ -307,6 +638,159 @@ func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostF
 		Headers: hdrs,
 		Body:    string(raw),
 	}, nil
+}
+
+// FetchMany runs up to MaxFetchManyRequests outbound HTTP calls concurrently
+// (bounded to MaxFetchManyConcurrency per batch and DefaultMaxFetchPerHost per
+// origin), returning ordered results with per-item error isolation.
+func (c *RemoteHostClient) FetchMany(ctx context.Context, reqs []HostFetchRequest, opts ...HostFetchManyOptions) ([]HostFetchManyResult, error) {
+	var opt HostFetchManyOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	return runSDKFetchMany(ctx, reqs, opt, c.Fetch)
+}
+
+func sdkFetchOriginKey(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+func runSDKFetchMany(
+	ctx context.Context,
+	reqs []HostFetchRequest,
+	opts HostFetchManyOptions,
+	doOne func(context.Context, HostFetchRequest) (HostFetchResponse, error),
+) ([]HostFetchManyResult, error) {
+	if len(reqs) > MaxFetchManyRequests {
+		return nil, fmt.Errorf("http.fetchMany accepts at most %d requests per call", MaxFetchManyRequests)
+	}
+	if opts.Concurrency < 0 {
+		return nil, fmt.Errorf("http.fetchMany concurrency must be a non-negative integer")
+	}
+	if len(reqs) == 0 {
+		return []HostFetchManyResult{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultFetchManyConcurrency
+	}
+	if concurrency > MaxFetchManyConcurrency {
+		concurrency = MaxFetchManyConcurrency
+	}
+	if concurrency > len(reqs) {
+		concurrency = len(reqs)
+	}
+
+	var keys []string
+	buckets := make(map[string][]int)
+	for i, req := range reqs {
+		k := sdkFetchOriginKey(req.URL)
+		if _, ok := buckets[k]; !ok {
+			keys = append(keys, k)
+		}
+		buckets[k] = append(buckets[k], i)
+	}
+	jobs := make(chan int, len(reqs))
+	emitted := 0
+	for emitted < len(reqs) {
+		for _, k := range keys {
+			q := buckets[k]
+			if len(q) == 0 {
+				continue
+			}
+			jobs <- q[0]
+			buckets[k] = q[1:]
+			emitted++
+		}
+	}
+	close(jobs)
+
+	var gateMu sync.Mutex
+	gates := make(map[string]chan struct{})
+	acquireOrigin := func(c context.Context, rawURL string) (func(), error) {
+		k := sdkFetchOriginKey(rawURL)
+		if k == "" {
+			return func() {}, nil
+		}
+		gateMu.Lock()
+		sem, ok := gates[k]
+		if !ok {
+			sem = make(chan struct{}, DefaultMaxFetchPerHost)
+			gates[k] = sem
+		}
+		gateMu.Unlock()
+		select {
+		case sem <- struct{}{}:
+			return func() { <-sem }, nil
+		case <-c.Done():
+			return nil, c.Err()
+		}
+	}
+
+	results := make([]HostFetchManyResult, len(reqs))
+	var wg sync.WaitGroup
+	for range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				release, aerr := acquireOrigin(ctx, reqs[idx].URL)
+				if aerr != nil {
+					return
+				}
+				resp, err := doOne(ctx, reqs[idx])
+				release()
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					code := "host_error"
+					if errors.Is(err, context.DeadlineExceeded) {
+						code = "timeout"
+					}
+					results[idx] = HostFetchManyResult{Error: &HostFetchError{Code: code, Message: err.Error()}}
+					continue
+				}
+				results[idx] = HostFetchManyResult{
+					Status:     resp.Status,
+					Headers:    resp.Headers,
+					Body:       resp.Body,
+					BodyBase64: resp.BodyBase64,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // CatalogSearch searches the Ether catalog.
@@ -399,6 +883,55 @@ func (c *RemoteHostClient) FoldersStat(_ context.Context, _, _ string) (FolderEn
 	return FolderEntry{}, fmt.Errorf("folders.stat is for hosted plugins; sidecar plugins read their local fileRoot directly")
 }
 
+// HeaderIdempotencyKey carries the Flow step idempotency key on plugin flow action calls.
+const HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
+
+// PublishEvent emits a declared plugin event ("plugin:<id>/<key>") onto Ether's
+// event bus through POST /ether/plugin-host/events/publish.
+func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body := map[string]any{
+		"key":     key,
+		"payload": payload,
+	}
+	if corr != nil {
+		body["correlation"] = corr
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/events/publish", body, nil, false)
+	return err
+}
+
+// AIComplete runs a bounded text or JSON-Schema-validated completion against
+// the owner's configured language model through POST /ether/plugin-host/ai/complete.
+// Requires permissions.ai: "complete" (or "complete+search" on interactive search
+// routes, forwarding X-Ether-Viewer-Token when present on ctx).
+// When no model is configured, returns a *HostError with Code == "not_configured".
+func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
+	var res AICompleteResponse
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", headers, req, &res, false)
+	return res, err
+}
+
+// MediaProbe probes container metadata for a PlayableSource through
+// POST /ether/plugin-host/media/probe. Requires permissions.media: "probe" and
+// may only be called from jobs, actions, and background routes (never viewer
+// requests; forwarding X-Ether-Viewer-Token is refused by the host).
+func (c *RemoteHostClient) MediaProbe(ctx context.Context, src PlayableSource) (MediaProbeResult, error) {
+	var res MediaProbeResult
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/media/probe", headers, src, &res, false)
+	return res, err
+}
+
 // NotifyOwner sends an owner notification through Ether.
 func (c *RemoteHostClient) NotifyOwner(ctx context.Context, text string) error {
 	_, err := c.callJSON(
@@ -453,13 +986,88 @@ func (c *RemoteHostClient) KindItems(ctx context.Context, kindKey, cursor string
 	return page, err
 }
 
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("kinds.visible: no authenticated frontend adapter viewer token on context")
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, fmt.Errorf("kinds.visible: batch larger than %d ids", MaxKindVisibleIDs)
+	}
+	var out struct {
+		IDs []string `json:"ids"`
+	}
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/visible",
+		map[string]string{HeaderViewerToken: tok},
+		map[string]any{"ids": ids},
+		&out,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if out.IDs == nil {
+		out.IDs = []string{}
+	}
+	return out.IDs, nil
+}
+
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return KindPage{}, fmt.Errorf("kinds.browse: no authenticated frontend adapter viewer token on context")
+	}
+	var page KindPage
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/browse",
+		map[string]string{HeaderViewerToken: tok},
+		query,
+		&page,
+		false,
+	)
+	if err != nil {
+		return KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []KindItem{}
+	}
+	return page, nil
+}
+
 // ResolveSources asks Ether to find sources through its indexers/debrid.
 func (c *RemoteHostClient) ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error) {
-	var out struct {
-		Candidates []SourceCandidate `json:"candidates"`
+	res, err := c.ResolveSourcesWithResult(ctx, q)
+	if err != nil {
+		return nil, err
 	}
+	return res.Candidates, nil
+}
+
+// ResolveSourcesWithResult asks Ether to find sources and additionally returns
+// per-indexer search statuses for indexer_search queries (#733).
+func (c *RemoteHostClient) ResolveSourcesWithResult(ctx context.Context, q SourceQuery) (SourceResolveResult, error) {
+	var out SourceResolveResult
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/sources/resolve", q, &out, false)
-	return out.Candidates, err
+	if err != nil {
+		return SourceResolveResult{}, err
+	}
+	if out.Candidates == nil {
+		out.Candidates = []SourceCandidate{}
+	}
+	return out, nil
 }
 
 // CachePut stores one blob in a kind library's cache; the ref is content-addressed.
@@ -515,6 +1123,14 @@ func (c *RemoteHostClient) CacheOpen(ctx context.Context, blobRef string) ([]byt
 	return io.ReadAll(resp.Body)
 }
 
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting an absent or already
+// evicted ref succeeds.
+func (c *RemoteHostClient) CacheDelete(ctx context.Context, blobRef string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/cache/"+url.PathEscape(blobRef), nil, nil, false)
+	return err
+}
+
 // StreamURL mints a scoped stream ticket and returns the Ether stream URL
 // for one of this plugin's own kind items (spec §6.5).
 func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error) {
@@ -523,6 +1139,42 @@ func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRe
 	}
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
 		map[string]any{"viewerId": viewerID, "itemRef": itemRef}, &out, false)
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+// StreamPartURL mints a scoped stream ticket for one zero-based part of a
+// multi-file kind item (#576).
+func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	return c.StreamURLWithOptions(ctx, viewerID, itemRef, StreamURLOptions{PartIndex: &partIndex})
+}
+
+// StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
+// own kind items, optionally pinned to a zero-based part and/or resolver
+// PlayableSource.ID (#576, #661).
+func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
+	if opts.PartIndex != nil && *opts.PartIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	if opts.Source != "" && strings.TrimSpace(opts.Source) == "" {
+		return "", fmt.Errorf("stream url: source must not be blank")
+	}
+	payload := map[string]any{"viewerId": viewerID, "itemRef": itemRef}
+	if opts.PartIndex != nil {
+		payload["partIndex"] = *opts.PartIndex
+	}
+	if opts.Source != "" {
+		payload["source"] = opts.Source
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
 	if err != nil {
 		return "", err
 	}

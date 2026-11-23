@@ -161,7 +161,7 @@ func (a Source) selectedOwnerPath(ctx context.Context, key core.RatingKey, kind 
 			return p
 		}
 	}
-	if kind == frontend.ImagePoster && a.Assets != nil && a.AssetFolder != nil {
+	if kind == frontend.ImagePoster && a.Assets != nil && a.AssetFolder != nil && key.Kind() != core.KindCollection && key.Kind() != core.KindSmart && key.Kind() != core.KindPlaylist {
 		if t, err := a.title(ctx, key); err == nil {
 			return a.Assets.Path(a.AssetFolder(), t)
 		}

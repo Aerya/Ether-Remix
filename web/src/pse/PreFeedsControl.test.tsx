@@ -64,7 +64,14 @@ it("le bouton Tester envoie les réglages saisis et affiche le résultat par flu
     result: {
       proxy: "proxy inaccessible",
       runs: [
-        { feed: "perso:1", label: "Mon site", state: "ok", fetched: 20, kept: 3, sample: ["Film.2026.MULTi.1080p-GRP"] },
+        {
+          feed: "perso:1",
+          label: "Mon site",
+          state: "ok",
+          fetched: 20,
+          kept: 3,
+          sample: ["Film.2026.MULTi.1080p-GRP"],
+        },
         { feed: "perso:2", state: "error", error: "flux refusé (403)" },
       ],
     },

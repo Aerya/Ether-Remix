@@ -25,7 +25,10 @@ func TestSupportJournalNeverExportsStremioCredential(t *testing.T) {
 		}
 		return &core.Viewer{ID: 1}, nil
 	}}
-	inst, err := (Frontend{}).Mount(context.Background(), frontend.Host{Support: rec, Identity: identity, Experience: frontendtest.Experience{}, Sessions: frontendtest.Sessions{}})
+	experience := frontendtest.Experience{ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+		return []frontend.View{{ID: "movies", Type: "movie"}}, nil
+	}}
+	inst, err := (Frontend{}).Mount(context.Background(), frontend.Host{Support: rec, Identity: identity, Experience: experience, Sessions: frontendtest.Sessions{}})
 	if err != nil {
 		t.Fatal(err)
 	}

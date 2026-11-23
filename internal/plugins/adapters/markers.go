@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -14,6 +15,13 @@ import (
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
+
+const maxMarkerLogEntries = 2048
+
+type markerLogKey struct {
+	key    core.RatingKey
+	reason string
+}
 
 type markerJob struct {
 	key      core.RatingKey
@@ -27,11 +35,13 @@ type MarkerBridge struct {
 	mgr      *plugins.Manager
 	svc      *markers.Service
 	catalog  core.Catalog
+	log      *slog.Logger
 	selected func(string) bool
 	skipdb   func() (enabled bool, apiKey, baseURL string)
 	mu       sync.Mutex
 	active   map[string]bool
 	recent   map[markerJob]time.Time
+	logged   map[markerLogKey]struct{}
 	jobs     chan markerWork
 	done     chan struct{}
 }
@@ -39,6 +49,8 @@ type MarkerBridge struct {
 // MarkerBridgeOptions configure the built-in marker sources the bridge
 // refreshes alongside plugin sources.
 type MarkerBridgeOptions struct {
+	// Logger receives one-time diagnostics for skipped or failed marker fetches.
+	Logger *slog.Logger
 	// Selected reports whether a plugin source is in the owner's source order.
 	Selected func(string) bool
 	// SkipDB reports the built-in SkipDB source's live settings.
@@ -46,10 +58,44 @@ type MarkerBridgeOptions struct {
 }
 
 func AttachMarkers(ctx context.Context, mgr *plugins.Manager, svc *markers.Service, catalog core.Catalog, opts MarkerBridgeOptions) *MarkerBridge {
-	b := &MarkerBridge{mgr: mgr, svc: svc, catalog: catalog, selected: opts.Selected, skipdb: opts.SkipDB, active: map[string]bool{}, recent: map[markerJob]time.Time{}, jobs: make(chan markerWork, 128), done: make(chan struct{})}
+	log := opts.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	b := &MarkerBridge{
+		mgr:      mgr,
+		svc:      svc,
+		catalog:  catalog,
+		log:      log,
+		selected: opts.Selected,
+		skipdb:   opts.SkipDB,
+		active:   map[string]bool{},
+		recent:   map[markerJob]time.Time{},
+		logged:   map[markerLogKey]struct{}{},
+		jobs:     make(chan markerWork, 128),
+		done:     make(chan struct{}),
+	}
 	mgr.OnSync(b.sync)
 	go b.run(ctx)
 	return b
+}
+
+func (b *MarkerBridge) logOnce(level slog.Level, key core.RatingKey, reason, msg string, args ...any) {
+	if b == nil || b.log == nil {
+		return
+	}
+	lk := markerLogKey{key: key, reason: reason}
+	b.mu.Lock()
+	if _, seen := b.logged[lk]; seen {
+		b.mu.Unlock()
+		return
+	}
+	if len(b.logged) >= maxMarkerLogEntries {
+		clear(b.logged)
+	}
+	b.logged[lk] = struct{}{}
+	b.mu.Unlock()
+	b.log.Log(context.Background(), level, msg, args...)
 }
 func (b *MarkerBridge) sync(ctx context.Context, r plugins.Record) {
 	b.mu.Lock()
@@ -134,10 +180,12 @@ func (b *MarkerBridge) run(ctx context.Context) {
 func (b *MarkerBridge) refresh(ctx context.Context, j markerJob) {
 	title, err := b.catalog.Get(ctx, j.key)
 	if err != nil || title == nil {
+		b.logOnce(slog.LevelDebug, j.key, "catalog-get", "marker refresh skipped: title unavailable", "key", j.key, "err", err)
 		return
 	}
 	typ, id, imdb, ok := contentID(title)
 	if !ok || !imdb {
+		b.logOnce(slog.LevelDebug, j.key, "no-imdb", "marker refresh skipped: title has no IMDb id", "key", j.key, "title", title.Title)
 		return
 	}
 	b.mu.Lock()
@@ -202,10 +250,17 @@ func (b *MarkerBridge) refreshSkipDB(ctx context.Context, j markerJob, imdb stri
 		season, episode = j.key.Season(), j.key.Episode()
 	}
 	ranges, err := markers.FetchSkipDB(ctx, baseURL, apiKey, imdb, season, episode, j.duration)
-	if err != nil || len(ranges) == 0 {
+	if err != nil {
+		b.logOnce(slog.LevelInfo, j.key, "skipdb-err", "skipdb marker fetch failed", "key", j.key, "imdb", imdb, "err", err)
 		return
 	}
-	_ = b.svc.PutPlugin(ctx, j.key, j.duration, markers.SkipDBSource, ranges)
+	if len(ranges) == 0 {
+		b.logOnce(slog.LevelDebug, j.key, "skipdb-empty", "skipdb returned no markers", "key", j.key, "imdb", imdb)
+		return
+	}
+	if err := b.svc.PutPlugin(ctx, j.key, j.duration, markers.SkipDBSource, ranges); err != nil {
+		b.logOnce(slog.LevelWarn, j.key, "skipdb-put", "skipdb marker cache write failed", "key", j.key, "imdb", imdb, "err", err)
+	}
 }
 
 // imdbID takes the bare IMDb id from a content id ("tt0903747" or

@@ -58,7 +58,7 @@ func (s *Service) StoreText(title *core.Title, lang, label, text string, fileID 
 		return core.StreamInfo{}, err
 	}
 	s.pickMu.Lock()
-	err = writeFileAtomic(p, b)
+	err = s.writeIndexFile(p, b)
 	s.pickMu.Unlock()
 	if err != nil {
 		return core.StreamInfo{}, err
@@ -126,7 +126,16 @@ func (s *Service) ManualSidecars(title *core.Title, embedded []core.StreamInfo) 
 			next = st.Index + 1
 		}
 	}
-	manual := s.manualSelections(title.Key)
+	all := s.titleSelections(title.Key)
+	if len(all) == 0 {
+		return nil
+	}
+	manual := map[string]selection{}
+	for _, e := range all {
+		if e.sig == manualSig {
+			manual[e.lang] = e.sel
+		}
+	}
 	var out []core.StreamInfo
 	add := func(sel selection, lang string) {
 		if present[URLPrefix+sel.ID] {
@@ -139,7 +148,7 @@ func (s *Service) ManualSidecars(title *core.Title, embedded []core.StreamInfo) 
 	for _, lang := range sortedLanguages(manual) {
 		add(manual[lang], lang)
 	}
-	for _, e := range s.titleSelections(title.Key) {
+	for _, e := range all {
 		if e.sig == uploadSig {
 			add(e.sel, e.lang)
 		}

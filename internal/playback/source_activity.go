@@ -18,7 +18,7 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 	if s == nil {
 		return core.ErrSourceChanged
 	}
-	if err := lock(ctx, s.failSem); err != nil {
+	if err := lockUnlessFailingOver(ctx, s); err != nil {
 		return err
 	}
 	defer unlock(s.failSem)
@@ -36,10 +36,15 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 		s.mu.Unlock()
 		return err
 	}
+	prevState := s.viewerState
+	prevPausedAt := s.pausedAt
+	prevPos := s.viewerPosition
+	prevProgressAt := s.lastProgressAt
 	firstPos := s.viewerAt.IsZero() || s.viewerState != state
 	s.viewerPosition = position
-	s.viewerAt = time.Now()
-	s.viewerState = state
+	s.viewerAt = now
+	s.lastProgressAt = now
+	s.setViewerStateLocked(state, now)
 	if state == "paused" || state == "stopped" {
 		s.invalidateDirectRetryLocked()
 	}
@@ -53,6 +58,8 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 		pausedRelease = s.cur.releaseID()
 	}
 	s.mu.Unlock()
+	m.observeProgressDomainEvents(s, prevState, prevPausedAt, prevPos, prevProgressAt, state, position, now)
+	m.noteTimelineStall(s, now)
 	if firstPos {
 		m.emitEvent("progress", s, nil)
 	}

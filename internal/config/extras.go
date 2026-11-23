@@ -3,18 +3,21 @@ package config
 import "time"
 
 // Extras controls trailers and other clips attached to titles (Plex
-// "Extras" and Cinema Trailers). TMDB only provides YouTube/Vimeo keys,
-// which Plex apps cannot play, so a playable source must be configured by
-// the owner as a yt-dlp-compatible resolver command. Off by default; with no
-// working command Ether advertises no extras at all.
+// "Extras" and Cinema Trailers, Jellyfin/Emby, Vela, Silo, Stremio and
+// Xtream). On by default whenever a playable source is available (Plex
+// Discover via a linked Plex account, or a yt-dlp-compatible resolver
+// command). With no working source Ether advertises no extras at all.
 type Extras struct {
 	// ThemeMusic defaults on when extras are enabled.
 	ThemeMusic *bool `json:"themeMusic,omitempty"`
 	// TrailerCacheMaxBytes bounds on-demand trailer bytes, including staging.
 	// Zero uses 512 MiB; negative disables caching. No prewarming or sweeps.
 	TrailerCacheMaxBytes int64 `json:"trailerCacheMaxBytes,omitempty"`
-	// Enabled turns extras (and Cinema Trailers) on.
+	// Enabled turns extras (and Cinema Trailers) on. Defaults to true.
 	Enabled bool `json:"enabled"`
+	// DefaultOnMigrated records that the v0.3.19 one-time switch-on
+	// migration has run for this config, so a later deliberate off stays off.
+	DefaultOnMigrated bool `json:"defaultOnMigrated,omitempty"`
 	// ResolverCommand is the path (or PATH name) of a yt-dlp-compatible
 	// tool that prints a direct media URL for a video page. Empty disables
 	// the command source. Ether ships no resolver binary.

@@ -119,11 +119,21 @@ your router over UPnP; both need the host network namespace. Docker Desktop
 on Mac and Windows runs containers inside a Linux VM and does not expose
 host-network listeners to your computer or LAN. On Docker Desktop (or Linux
 bridge mode), remove `--network host` / `network_mode: host` and publish ports
-instead: `-p 32400:32400` serves the owner console, Plex, and `/jellyfin`,
+instead: `-p 32400:32400` serves the owner console, Plex, `/vela`, `/jellyfin`,
 `/emby`, and `/silo` on the main port. You do not need to publish port `8096`
 if you connect Jellyfin apps to `http://HOST:32400/jellyfin`, or you can
-optionally publish `-p 8096:8096` (and `8097:8097`, `8090:8090`) if you want
-dedicated per-app ports without a path prefix.
+optionally publish dedicated per-app ports: `-p 8096:8096` (Jellyfin),
+`-p 8097:8097` (Emby), `-p 8090:8090` (Silo), `-p 8098:8098` (Vela, when
+enabled under **Apps › Vela › Port**), and an optional owner console port such
+as `-p 8099:8099` (configured under **Server › General › Owner console port**
+or `ETHER_CONSOLE_PORT`).
+
+In bridge mode Ether sees only its container address (such as `172.17.0.2`),
+so Plex apps and app.plex.tv cannot reach the address it advertises and report
+that the server can't connect securely. Add your host's LAN address under
+**Apps › Away from home › Address and port › Custom server URLs**, for example
+`http://192.168.1.50:32400`. Ether also publishes the secure plex.direct form of
+that address.
 
 Already running Plex on 32400? Use bridge mode and `ETHER_PORT` so Ether does
 not take that port:
@@ -179,6 +189,13 @@ shares are FUSE (`shfs`). Use the pool or disk path instead, for example
 `/mnt/cache/appdata/ether/config:/config`. If the share already lives on that
 pool, no data has to move.
 
+**Choosing a port on Unraid.** The template uses host networking, so Unraid
+port mappings have no effect. To move Ether off 32400, set the `ETHER_PORT`
+**Variable** (the template's *Port* field, or *Add another Path, Port,
+Variable* → *Config Type: Variable*, key `ETHER_PORT`). Adding it as a *Port*
+does nothing. Ether saves the port, so the console, plex.tv and LAN discovery
+all use it.
+
 User and permissions: Ether runs as `PUID`:`PGID` (default 999:999, the
 image's `ether` account). Set them to the user that owns your folders, as
 for other NAS containers (e.g. `PUID=1026 PGID=100` on Synology, `PUID=99
@@ -200,6 +217,8 @@ Intel GPUs use for Quick Sync. **Playback › Streams & transcoding** shows what
 probe found.
 NVENC: use the NVIDIA container toolkit flags shown in
 `docker-compose.example.yml`.
+
+Health check: the image includes a built-in Docker `HEALTHCHECK` (`ether healthcheck`) that probes the local `/ether/api/health` endpoint on the configured console port (falling back to the main port) without authentication.
 
 ## From a tarball/zip (any OS)
 
@@ -250,18 +269,49 @@ for remote access outside your LAN:
   port 443 with *Secure connections* set to *Required*) at your `https://`
   domain; Ether publishes that HTTPS endpoint directly to plex.tv without
   requiring a `plex.direct` certificate.
-  A proxy on the Ether host must set `X-Forwarded-For` to the connecting
-  client's address (or append it to the existing chain). If using
-  `X-Real-IP` instead, overwrite it and remove incoming `X-Forwarded-For`.
-  Never pass client-supplied forwarding headers unchanged.
-  Ether considers forwarded addresses only from loopback peers and treats
-  any public hop in the trusted suffix as remote for playback restrictions.
+  A reverse proxy must set `X-Forwarded-For` to the connecting client's
+  address (or append it to the existing chain) and set `X-Forwarded-Proto`.
+  If using `X-Real-IP` instead, overwrite it and remove incoming
+  `X-Forwarded-For`. Never pass client-supplied forwarding headers unchanged.
+  Ether trusts forwarding headers from loopback peers (`127.0.0.1`, `::1`)
+  by default. If your reverse proxy runs on another host or container
+  network (for example Caddy, Nginx, or Traefik on another LAN machine),
+  add its IP address or CIDR range under **Apps › Overview › Away from home ›
+  Reverse proxy** (`server.trustedProxyCIDRs` in `config.json`); Ether then
+  resolves the real client IP and treats public hops in the trusted suffix
+  as remote for sessions, activity, quality profiles, and playback
+  restrictions.
   The owner console at `/ether/` answers only your home network and VPN
   (including Tailscale) by default, wherever the proxy runs. To reach it
-  through your domain, turn on **Server › General › How apps connect ›
+  through your domain, turn on **Apps › Overview › Server address ›
   Open this console from outside your network**; only the Plex account
   that owns the server can sign in. Complete initial setup before exposing
   the server.
+
+### Dedicated ports for Vela and the owner console
+
+If Ether's main port (`32400` by default) is forwarded directly to the internet
+for Plex, you can put **Vela** and the **owner console (`/ether`)** on separate
+ports so your reverse proxy can front each with its own HTTPS subdomain and
+neither is exposed on the Plex port:
+
+- **Vela dedicated port:** open **Apps › Vela › Port**, turn on *Dedicated
+  port* (default **TCP 8098**), and optionally turn off *Serve `/vela` on
+  Ether's main port* so Vela is no longer reachable through the Plex port. Point
+  your reverse proxy (for example `https://vela.example.com`) at `http://ETHER_HOST:8098`
+  and add `https://vela.example.com` under **Apps › Vela › Published addresses**
+  so pairing links, QR codes, the viewer portal, and PWA manifests use it.
+- **Owner console dedicated port:** open **Server › General › Owner console
+  port** (or set `ETHER_CONSOLE_PORT`, for example `8099`), turn on *Dedicated
+  console port*, and optionally turn off *Serve `/ether` on Ether's main port*.
+  Point your reverse proxy (for example `https://ether-admin.example.com`) at
+  `http://ETHER_HOST:8099`.
+  - Home-network/VPN protection and the **Open this console from outside your
+    network** switch continue to apply on whichever port serves `/ether`.
+  - If the dedicated console port ever fails to bind (for example another
+    service already holds that port), Ether logs a warning and automatically
+    falls back to serving `/ether` and its recovery page on the main port so you
+    are never locked out.
 
 ### HTTPS for Stremio addons
 

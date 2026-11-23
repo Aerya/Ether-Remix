@@ -156,6 +156,9 @@ func RebuildLibraryCounts(ctx context.Context, db *sql.DB) error {
 	if err := rebuildFacetIDs(ctx, tx); err != nil {
 		return err
 	}
+	if err := rebuildFranchiseTally(ctx, tx, store.DialectOf(db) == store.SQLite); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -178,6 +181,7 @@ var libraryTallies = []libraryTally{
 	{"catalog_browse_tally", "type,genre,rating_rank"},
 	{"catalog_stats_tally", "kind,browsable,home,year_pending"},
 	{"catalog_facet_tally", "type,facet,value,rating_rank"},
+	{"catalog_franchise_counts", "id"},
 }
 
 // foldLibraryTallies moves every tally's pending deltas into it, one
@@ -388,14 +392,14 @@ func (c *Catalog) tallyShape(f core.Filter) (tallyShape, bool) {
 	}
 	s.lo, s.hi = 0, int(^uint(0)>>1)
 	if f.MaxContentRating != "" {
-		level := contentrating.LevelOf(f.MaxContentRating)
+		level := contentrating.EnforceLevelOf(f.MaxContentRating)
 		if level == contentrating.Unrated || (f.SaferPlexRating && c.saferRating != nil) {
 			return s, false
 		}
 		s.ranked, s.lo, s.hi = true, max(s.lo, 1), min(s.hi, int(level))
 	}
 	if f.MinContentRating != "" {
-		level := contentrating.LevelOf(f.MinContentRating)
+		level := contentrating.EnforceLevelOf(f.MinContentRating)
 		if level == contentrating.Unrated {
 			return s, false
 		}
@@ -487,10 +491,48 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 			return 0, ok, err
 		}
 		var watched int
-		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (SELECT w.rating_key FROM state_watch w WHERE w.user_id=? AND w.view_count>0) AND `+allWhere, append([]any{g.UserID}, allArgs...)...).Scan(&watched); err != nil {
+		wSQL, wArgs := c.watchedKeysForTypeSQL(all.Type, g.UserID)
+		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (`+wSQL+`) AND `+allWhere, append(wArgs, allArgs...)...).Scan(&watched); err != nil {
 			return 0, false, err
 		}
 		return total - watched, true, nil
+	}
+	if len(f.ExtraRules) > 0 && (f.ExtraFallback == "" || f.ExtraFallback == "show") {
+		base := f
+		base.ExtraRules = nil
+		base.ExtraFallback = ""
+		if _, ok := c.tallyShape(base); ok {
+			extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, false, f.CatalogViewerID)
+			if err != nil {
+				return 0, false, err
+			}
+			if keySQL, keyArgs, ok := extra.SQLHiddenKeys(f.Type); ok {
+				baseWhere, baseArgs, err := c.browseWhere(base)
+				if err != nil {
+					return 0, false, err
+				}
+				baseTotal, tallyOK, err := c.tallyTotal(ctx, base, baseWhere, baseArgs)
+				if err != nil || !tallyOK {
+					return 0, tallyOK, err
+				}
+				if extra.Passive() || keySQL == "" {
+					return baseTotal, true, nil
+				}
+				hiddenSQL, hiddenArgs := extra.SQLHidden()
+				if f.Type != "" {
+					hiddenSQL, hiddenArgs = extra.SQLHiddenForType(f.Type)
+				}
+				var hidden int
+				allArgs := make([]any, 0, len(keyArgs)+len(baseArgs)+len(hiddenArgs))
+				allArgs = append(allArgs, keyArgs...)
+				allArgs = append(allArgs, baseArgs...)
+				allArgs = append(allArgs, hiddenArgs...)
+				if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (`+keySQL+`) AND (`+baseWhere+`) AND (`+hiddenSQL+`)`, allArgs...).Scan(&hidden); err != nil {
+					return 0, false, err
+				}
+				return baseTotal - hidden, true, nil
+			}
+		}
 	}
 	s, ok := c.tallyShape(f)
 	if !ok || c.localMedia.Load() || pseFiltersCatalog(f) { // PSE-HOOK: filtres Accent hors décompte — voir docs/pse/FORK.fr.md
@@ -569,7 +611,18 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 // unwatchedOnly reports whether g is a viewer's "unwatched" state filter
 // and nothing else.
 func unwatchedOnly(g core.FilterGroup) bool {
-	return g.Unwatched != nil && *g.Unwatched && g.UserID > 0 && g.InProgress == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
+	wantUnwatched := (g.Unwatched != nil && *g.Unwatched && g.Watched == nil) ||
+		(g.Watched != nil && !*g.Watched && g.Unwatched == nil)
+	return wantUnwatched && g.UserID > 0 && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
+		g.OnWatchlist == nil && g.StateField == "" && !g.ParentOnly && g.Operator == "" && g.Filter == nil && len(g.Children) == 0
+}
+
+// watchedOnly reports whether g is a viewer's "watched" state filter and
+// nothing else (accepting both Watched=true and Unwatched=false).
+func watchedOnly(g core.FilterGroup) bool {
+	wantWatched := (g.Watched != nil && *g.Watched && g.Unwatched == nil) ||
+		(g.Unwatched != nil && !*g.Unwatched && g.Watched == nil)
+	return wantWatched && g.UserID > 0 && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
 		g.OnWatchlist == nil && g.StateField == "" && !g.ParentOnly && g.Operator == "" && g.Filter == nil && len(g.Children) == 0
 }
 

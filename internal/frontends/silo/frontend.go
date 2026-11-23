@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/conformance"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/support"
 )
@@ -59,6 +60,9 @@ func (f Frontend) Mount(_ context.Context, host frontend.Host) (frontend.Instanc
 	if err := i.mutationRoutes(); err != nil {
 		return nil, err
 	}
+	if err := i.trackPrefRoutes(); err != nil {
+		return nil, err
+	}
 	if err := i.notInterestedRoutes(); err != nil {
 		return nil, err
 	}
@@ -100,6 +104,16 @@ func (i *instance) Handler() http.Handler {
 		return v, device(r)
 	}, func(path string) string { return path }, i.router)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			ctx := r.Context()
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+			r = r.WithContext(ctx)
+		}
 		if strings.HasPrefix(r.URL.Path, "/silo/") {
 			r2 := r.Clone(context.WithValue(r.Context(), sharedPrefix{}, true))
 			u := *r.URL

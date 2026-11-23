@@ -22,6 +22,10 @@ var xtreamVODFile = regexp.MustCompile(`^[0-9]+\.[A-Za-z0-9]+$`)
 
 var m3uAttr = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
 
+var m3uHeaderAttr = regexp.MustCompile(`([a-zA-Z0-9_-]+)=(?:"([^"]*)"|'([^']*)')`)
+
+const maxPlaylistGuideURLs = 8
+
 func stableID(parts ...string) string {
 	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:10])
@@ -31,9 +35,39 @@ func validHTTP(raw string) bool {
 	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
-// m3uStats records what ParseM3U left out, for the import log.
+// m3uStats records what ParseM3U left out and any #EXTM3U guide URLs.
 type m3uStats struct {
 	SkippedVOD int
+	GuideURLs  []string
+}
+
+// parseM3UGuideURLs extracts HTTP(S) guide URLs from an #EXTM3U header's
+// x-tvg-url and url-tvg attributes (each possibly comma-separated).
+func parseM3UGuideURLs(headerLine string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range m3uHeaderAttr.FindAllStringSubmatch(headerLine, -1) {
+		key := m[1]
+		if !strings.EqualFold(key, "x-tvg-url") && !strings.EqualFold(key, "url-tvg") {
+			continue
+		}
+		val := m[2]
+		if val == "" {
+			val = m[3]
+		}
+		for _, part := range strings.Split(val, ",") {
+			u := strings.TrimSpace(part)
+			if u == "" || strings.ContainsAny(u, "\r\n\x00") || !validHTTP(u) || seen[u] {
+				continue
+			}
+			seen[u] = true
+			out = append(out, u)
+			if len(out) >= maxPlaylistGuideURLs {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // isVODStream reports whether an Xtream URL belongs to a VOD family: a path
@@ -85,6 +119,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			if !strings.HasPrefix(line, "#EXTM3U") {
 				return nil, stats, fmt.Errorf("playlist must start with #EXTM3U")
 			}
+			stats.GuideURLs = parseM3UGuideURLs(line)
 			header = true
 			continue
 		}
@@ -111,7 +146,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			if comma >= 0 && strings.TrimSpace(line[comma+1:]) != "" {
 				name = strings.TrimSpace(line[comma+1:])
 			}
-			pending = &Channel{Name: name, TvgName: attrs["tvg-name"], Number: attrs["tvg-chno"], Logo: attrs["tvg-logo"], GuideID: attrs["tvg-id"], Group: attrs["group-title"], SourceID: sourceID, Kind: "iptv", Enabled: true}
+			pending = &Channel{Name: name, TvgName: attrs["tvg-name"], Number: attrs["tvg-chno"], Logo: attrs["tvg-logo"], GuideID: attrs["tvg-id"], ProviderGuideID: attrs["tvg-id"], Group: attrs["group-title"], SourceID: sourceID, Kind: "iptv", Enabled: true}
 			continue
 		}
 		if pending != nil && strings.HasPrefix(line, "#EXTVLCOPT:") {
@@ -226,6 +261,41 @@ type XMLGuide struct {
 	// <programme>. A valid guide has none; they are skipped rather than
 	// buffered, so name candidates they declare are missed.
 	LateChannels int
+}
+
+// mergeXMLGuide folds src into dst when a playlist advertises several XMLTV
+// guide URLs.
+func mergeXMLGuide(dst *XMLGuide, src XMLGuide) {
+	if dst.Channels == nil {
+		dst.Channels = map[string]Channel{}
+	}
+	if dst.Names == nil {
+		dst.Names = map[string][]string{}
+	}
+	for id, ch := range src.Channels {
+		if cur, ok := dst.Channels[id]; ok {
+			if cur.Logo == "" && ch.Logo != "" {
+				cur.Logo = ch.Logo
+			}
+			if (cur.Name == "" || cur.Name == id) && ch.Name != "" {
+				cur.Name = ch.Name
+			}
+			dst.Channels[id] = cur
+		} else {
+			dst.Channels[id] = ch
+		}
+	}
+	for id, names := range src.Names {
+		existing := dst.Names[id]
+		for _, n := range names {
+			if !slices.Contains(existing, n) {
+				existing = append(existing, n)
+			}
+		}
+		dst.Names[id] = existing
+	}
+	dst.Programmes = append(dst.Programmes, src.Programmes...)
+	dst.LateChannels += src.LateChannels
 }
 
 func xmlTime(s string) (time.Time, error) {

@@ -6,7 +6,7 @@ import "context"
 // observations musicales et les sessions du moteur vidéo.
 func (a *App) activitySessions(ctx context.Context) any {
 	out := []any{}
-	for _, row := range ownerSessionStatuses((ownerPlayback{Playback: a.playback, app: a}).Sessions()) {
+	for _, row := range a.ownerSessionStatusesWithBudget((ownerPlayback{Playback: a.playback, app: a}).Sessions()) {
 		out = append(out, row)
 	}
 	if srv := pseRuntimeOf(a).music.Load(); srv != nil {

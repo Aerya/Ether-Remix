@@ -50,12 +50,15 @@ type rawItem struct {
 	enclosure  string
 	size       int64
 	grabs      int
+	subs       []string
 	password   bool
+	private    bool
 	category   int
+	poster     string
 	usenetDate string
 	// Torznab
 	infoHash, magnet, encType string
-	seeders, peers            int
+	seeders, peers, files     int
 	ids                       core.IDs
 }
 
@@ -68,14 +71,17 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	if r.enclosure != "" && !strings.HasPrefix(strings.ToLower(r.enclosure), "magnet:") && (nzbURL == "" || !looksLikeNZBDownload(nzbURL)) {
 		nzbURL = r.enclosure
 	}
+	usenetDate := parseDate(r.usenetDate)
 	pub := parseDate(r.pubDate)
 	if pub.IsZero() {
-		pub = parseDate(r.usenetDate)
+		pub = usenetDate
 	}
 	rel := core.Release{
 		GUID: r.guid, Indexer: indexer, Name: name, NZBURL: nzbURL,
-		Size: r.size, PubDate: pub, Grabs: r.grabs, Password: r.password, Category: r.category,
-		TitleIDs: r.ids,
+		Size: r.size, PubDate: pub, UsenetDate: usenetDate, Poster: strings.TrimSpace(r.poster),
+		Grabs: r.grabs, Password: r.password, Category: r.category,
+		IndexerSubtitles: r.subs,
+		TitleIDs:         r.ids,
 	}
 	// The id keeps its original link-first input so stored releases, pins and
 	// cached NZBs keep their ids.
@@ -87,7 +93,7 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	if name != "" {
 		rel.Info = releaseparse.Parse(name)
 	}
-	rel.Seeders, rel.Peers = r.seeders, r.peers
+	rel.Seeders, rel.Peers, rel.FileCount = r.seeders, r.peers, r.files
 	magnet := r.magnet
 	if magnet == "" && strings.HasPrefix(strings.ToLower(r.link), "magnet:") {
 		magnet = r.link
@@ -105,6 +111,10 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	}
 	if rel.InfoHash != "" || magnet != "" || strings.Contains(strings.ToLower(r.encType), "bittorrent") {
 		rel.Protocol = core.ProtocolTorrent
+		rel.Private = r.private
+		if rel.Private {
+			rel.MagnetURL = BareMagnet(rel.InfoHash)
+		}
 	}
 	return rel
 }
@@ -213,6 +223,10 @@ func parseXMLStream(reader io.Reader, indexer string, arrived func([]core.Releas
 					cur.link += text
 				case "pubDate":
 					cur.pubDate += text
+				case "poster":
+					cur.poster += text
+				case "usenetDate", "usenetdate":
+					cur.usenetDate += text
 				case "size":
 					if n, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64); err == nil {
 						cur.size = n
@@ -238,8 +252,46 @@ func parseXMLStream(reader io.Reader, indexer string, arrived func([]core.Releas
 	return out, nil
 }
 
+// subtitleLanguages reads a Newznab "subs" value. Indexers separate the
+// languages with commas, semicolons, slashes or " - " and write names or ISO
+// codes ("English, French", "eng - spa"); anything that is not a language
+// ("None", "Yes") is dropped. ISO 639-2 codes are folded by releaseparse via
+// langtag.ParseBCP47.
+func subtitleLanguages(val string) []string {
+	fields := strings.FieldsFunc(strings.ReplaceAll(val, " - ", ","), func(r rune) bool {
+		return r == ',' || r == ';' || r == '/' || r == '|'
+	})
+	var out []string
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" || !releaseparse.KnownLanguage(f) {
+			continue
+		}
+		name := releaseparse.LanguageName(f)
+		dup := false
+		for _, have := range out {
+			dup = dup || have == name
+		}
+		if !dup {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func applyAttr(r *rawItem, name, val string) {
-	switch name {
+	// Some indexers pad attribute names ("subs ").
+	switch name = strings.TrimSpace(name); name {
+	case "subs", "subtitles":
+		for _, l := range subtitleLanguages(val) {
+			dup := false
+			for _, have := range r.subs {
+				dup = dup || have == l
+			}
+			if !dup {
+				r.subs = append(r.subs, l)
+			}
+		}
 	case "imdb", "imdbid":
 		v := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(val)), "tt")
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && len(v) <= 10 {
@@ -276,6 +328,8 @@ func applyAttr(r *rawItem, name, val string) {
 				break
 			}
 		}
+	case "poster":
+		r.poster = val
 	case "usenetdate", "usenet_date":
 		r.usenetDate = val
 	case "guid":
@@ -295,6 +349,12 @@ func applyAttr(r *rawItem, name, val string) {
 		if n, err := strconv.Atoi(val); err == nil {
 			r.peers = n
 		}
+	case "files":
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			r.files = n
+		}
+	case "private":
+		r.private = val == "1" || strings.EqualFold(val, "true") || strings.EqualFold(val, "yes")
 	}
 }
 
@@ -322,10 +382,15 @@ func parseJSONFeed(body []byte, indexer string) ([]core.Release, error) {
 	out := make([]core.Release, 0, len(items))
 	for _, it := range items {
 		r := rawItem{
-			title:   asString(it["title"]),
-			guid:    asString(it["guid"]),
-			link:    asString(it["link"]),
-			pubDate: asString(it["pubDate"]),
+			title:      asString(it["title"]),
+			guid:       asString(it["guid"]),
+			link:       asString(it["link"]),
+			pubDate:    asString(it["pubDate"]),
+			poster:     asString(it["poster"]),
+			usenetDate: asString(it["usenetDate"]),
+		}
+		if r.usenetDate == "" {
+			r.usenetDate = asString(it["usenetdate"])
 		}
 		if g, ok := it["guid"].(map[string]any); ok {
 			r.guid = asString(g["#text"])

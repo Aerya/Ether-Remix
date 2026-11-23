@@ -128,3 +128,108 @@ func TestPollingLimitsAreIndependentOfLogin(t *testing.T) {
 		t.Fatalf("poll abuse admitted: %v %v", ok, err)
 	}
 }
+
+func TestLoginLimiterResetListClearAndLogOnce(t *testing.T) {
+	db := store.OpenTest(t)
+	now := time.Unix(2000, 0)
+	ctx := WithRateLimitApp(context.Background(), "Jellyfin Android TV")
+	ip := netip.MustParseAddr("198.51.100.10")
+	login, err := NewLoginLimiter(db, 15*time.Minute, 4, 2, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll, err := NewPollLimiter(db, time.Minute, 10, 2, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var events []RateLimitEvent
+	login.SetOnLimited(func(ev RateLimitEvent) { events = append(events, ev) })
+
+	// Two attempts for alice, then ResetIdentity clears alice+IP but preserves the IP count (2/4).
+	for i := 0; i < 2; i++ {
+		if ok, err := login.Allow(ctx, "alice", ip); err != nil || !ok {
+			t.Fatalf("alice attempt %d: %v %v", i, ok, err)
+		}
+	}
+	if err := login.ResetIdentity(ctx, "alice", ip); err != nil {
+		t.Fatal(err)
+	}
+	// Alice can attempt again (IP count becomes 3/4, alice+IP becomes 1/2).
+	if ok, err := login.Allow(ctx, "alice", ip); err != nil || !ok {
+		t.Fatalf("alice after reset: %v %v", ok, err)
+	}
+	// Bob gets only 1 attempt before the IP bucket reaches 4/4 (proof IP count was not reset).
+	if ok, err := login.Allow(ctx, "bob", ip); err != nil || !ok {
+		t.Fatalf("bob attempt 1: %v %v", ok, err)
+	}
+	if ok, err := login.Allow(ctx, "bob", ip); err != nil || ok {
+		t.Fatalf("bob attempt 2 should hit IP limit: %v %v", ok, err)
+	}
+	// Repeated rejections in the same window fire FirstInWin only once.
+	for i := 0; i < 3; i++ {
+		if ok, err := login.Allow(ctx, "bob", ip); err != nil || ok {
+			t.Fatalf("repeat %d: %v %v", i, ok, err)
+		}
+	}
+	firstCount := 0
+	for _, ev := range events {
+		if ev.FirstInWin {
+			firstCount++
+			if ev.App != "Jellyfin Android TV" || ev.Remaining != 15*time.Minute || ev.RemoteIP != ip.String() {
+				t.Fatalf("unexpected first lockout event: %+v", ev)
+			}
+		}
+	}
+	if firstCount != 1 {
+		t.Fatalf("FirstInWin count = %d, want 1 (events=%+v)", firstCount, events)
+	}
+
+	// Poll lockout with an opaque secret must not persist or return the secret.
+	pollSecret := "super-secret-quickconnect-poll-token"
+	for i := 0; i < 3; i++ {
+		_, _ = poll.Allow(ctx, pollSecret, ip)
+	}
+	pollLockouts, err := poll.ListLockouts(ctx)
+	if err != nil || len(pollLockouts) != 1 {
+		t.Fatalf("poll lockouts: %+v %v", pollLockouts, err)
+	}
+	if pollLockouts[0].Identity != "" {
+		t.Fatalf("poll lockout leaked secret identity: %q", pollLockouts[0].Identity)
+	}
+
+	// ListLockouts shows both the IP-wide and bob+IP locked buckets; clearing
+	// only the IP bucket unblocks carol while bob remains locked until cleared.
+	loginLockouts, err := login.ListLockouts(ctx)
+	if err != nil || len(loginLockouts) != 2 {
+		t.Fatalf("login lockouts: %+v %v", loginLockouts, err)
+	}
+	var ipKey string
+	for _, lo := range loginLockouts {
+		if lo.App != "Jellyfin Android TV" || lo.RemoteIP != ip.String() {
+			t.Fatalf("unexpected lockout row: %+v", lo)
+		}
+		if lo.Scope == "ip" {
+			ipKey = lo.Key
+		}
+	}
+	if ipKey == "" {
+		t.Fatalf("missing IP-wide lockout row in %+v", loginLockouts)
+	}
+	cleared, err := login.ClearLockout(ctx, ipKey)
+	if err != nil || !cleared {
+		t.Fatalf("ClearLockout: %v %v", cleared, err)
+	}
+	if ok, err := login.Allow(ctx, "carol", ip); err != nil || !ok {
+		t.Fatalf("carol after ClearLockout(ip): %v %v", ok, err)
+	}
+	if ok, err := login.Allow(ctx, "bob", ip); err != nil || ok {
+		t.Fatalf("bob should still be locked until bob+ip bucket is cleared: %v %v", ok, err)
+	}
+	if n, err := poll.ClearAll(ctx); err != nil || n == 0 {
+		t.Fatalf("ClearAll poll: %d %v", n, err)
+	}
+	if left, err := poll.ListLockouts(ctx); err != nil || len(left) != 0 {
+		t.Fatalf("poll lockouts after ClearAll: %+v %v", left, err)
+	}
+}

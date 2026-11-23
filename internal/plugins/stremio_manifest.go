@@ -25,11 +25,19 @@ func StremioCatalogKey(c StremioCat) string { return c.Key() }
 // StremioChannelsKey is the channel-source key of a `tv` add-on.
 const StremioChannelsKey = "channels"
 
+// ServesLiveEvents reports whether a plain Stremio add-on publishes event
+// catalogs of custom (non-movie, non-series, non-tv) types with streams.
+func (m Manifest) ServesLiveEvents() bool {
+	return len(m.Stremio().LiveEventCatalogs()) > 0
+}
+
 // ServesTV reports whether a plain Stremio add-on is a Live TV source: it
-// lists `tv` catalogs and answers `tv` streams.
+// either lists `tv` catalogs with `tv` streams or publishes event catalogs
+// of custom live types with playable streams.
 func (m Manifest) ServesTV() bool {
-	return m.HasResource(stremio.ResourceCatalog) && len(m.CatalogsOfType(stremio.TypeTV)) > 0 &&
+	hasTV := m.HasResource(stremio.ResourceCatalog) && len(m.CatalogsOfType(stremio.TypeTV)) > 0 &&
 		m.Serves(stremio.ResourceStream, stremio.TypeTV)
+	return hasTV || m.ServesLiveEvents()
 }
 
 // EffectiveEther describes native adapters without modifying the foreign
@@ -108,6 +116,18 @@ func withoutRoles(e *EtherBlock, off []Capability) *EtherBlock {
 	}
 	if isOff[CapSubtitles] {
 		c.Subtitles = nil
+	}
+	if isOff[CapPosterBadges] {
+		c.PosterBadges = nil
+	}
+	if isOff[CapEvents] {
+		c.Events = nil
+	}
+	if isOff[CapFlowActions] {
+		c.FlowActions = nil
+	}
+	if isOff[CapLiveEvents] {
+		c.LiveFeeds = nil
 	}
 	cp.Contributes = c
 	return &cp

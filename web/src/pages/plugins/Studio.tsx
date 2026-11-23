@@ -12,6 +12,7 @@ import {
 } from "../../components/agent/agentApi";
 import { approvalRequestLabels } from "../../components/agent/approvalLabels";
 import { apiFetch, apiStream, errorMessage } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { PluginView } from "../../viewspec/PluginView";
 import { formatDateTime } from "../../lib/format";
 import { invalidateRegistry } from "../../lib/extend";
@@ -404,6 +405,7 @@ function LiveWorkspace({
     sessionStorage.getItem("ether-studio-thread") || undefined,
   );
   const [project, setProject] = useState<StudioProject | null>(null);
+  usePageTitle(project?.name ? [t("Plugins"), t("Studio"), project.name] : null);
   const [file, setFile] = useState("src/plugin.ts");
   const [source, setSource] = useState("");
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -504,6 +506,7 @@ function LiveWorkspace({
   const [installing, setInstalling] = useState<InstallPreview | null>(null);
   const [grantViewers, setGrantViewers] = useState<number[]>([]);
   const [grantFolders, setGrantFolders] = useState<string[]>([]);
+  const [grantOperatorHosts, setGrantOperatorHosts] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [installError, setInstallError] = useState("");
   const openInstall = async () => {
@@ -511,6 +514,7 @@ function LiveWorkspace({
     setInstallError("");
     setGrantViewers([]);
     setGrantFolders([]);
+    setGrantOperatorHosts([]);
     try {
       const r = await apiFetch<{ preview: InstallPreview }>(
         `/plugins/studio/projects/${encodeURIComponent(project.id)}/install/preview`,
@@ -531,7 +535,11 @@ function LiveWorkspace({
         {
           method: "POST",
           body: JSON.stringify({
-            grants: { viewers: grantViewers, folders: grantFolders },
+            grants: {
+              viewers: grantViewers,
+              folders: grantFolders,
+              operatorHosts: installing.needsOperatorHosts ? grantOperatorHosts : undefined,
+            },
             acceptAddedPermissions: true,
             asCopy,
           }),
@@ -769,10 +777,14 @@ function LiveWorkspace({
               verified={installing.verified}
               needsViewers={installing.needsViewers}
               needsFolders={installing.needsFolders}
+              needsOperatorHosts={installing.needsOperatorHosts}
               viewers={grantViewers}
               onChangeViewers={setGrantViewers}
               folders={grantFolders}
               onChangeFolders={setGrantFolders}
+              operatorHosts={grantOperatorHosts}
+              pendingOperatorHosts={installing.pendingOperatorHosts}
+              onChangeOperatorHosts={setGrantOperatorHosts}
               addedPermissions={installing.addedPermissions}
               ownDraft
             />

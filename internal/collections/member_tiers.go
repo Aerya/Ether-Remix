@@ -165,7 +165,7 @@ func (s *Service) snapshotForServe(ctx context.Context, keys []core.RatingKey, i
 		snap = &snapshot{entries: map[core.RatingKey]*entry{}}
 	}
 	if includeFuture {
-		titles, err := s.mirror.TitlesIncludingFuture(ctx, keys)
+		titles, err := s.mirror.ServeTitles(ctx, keys, true)
 		if err != nil {
 			return nil, err
 		}
@@ -185,7 +185,7 @@ func (s *Service) snapshotForServe(ctx context.Context, keys []core.RatingKey, i
 	if len(missing) == 0 {
 		return snap, nil
 	}
-	titles, err := s.mirror.Titles(ctx, missing)
+	titles, err := s.mirror.ServeTitles(ctx, missing, false)
 	if err != nil {
 		return nil, err
 	}

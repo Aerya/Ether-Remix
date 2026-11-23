@@ -46,6 +46,7 @@ const (
 	FormatPreferredSubtitles      = "ether:preferred-subtitles"
 
 	FormatViewerLanguage    = "ether:viewer-language"
+	FormatViewerSubtitles   = "ether:viewer-subtitles"
 	FormatSeriesYearDiffers = "ether:series-year-differs"
 	FormatVideoTranscode    = "ether:video-transcode"
 	FormatAudioDirect       = "ether:audio-direct"
@@ -98,7 +99,7 @@ func BuiltinFormats() []BuiltinFormat {
 	for _, id := range []string{FormatAtmos, FormatRepackProper, FormatLowBitrate, FormatPreferredLanguage, FormatPreferredLanguageRegion, FormatOtherLanguage, FormatPreferredSubtitles} {
 		out = append(out, BuiltinFormat{ID: id, Kind: FormatKindRelease})
 	}
-	for _, id := range []string{FormatViewerLanguage, FormatSeriesYearDiffers, FormatVideoTranscode, FormatAudioDirect, FormatAudioTranscode, FormatAtmosPassthrough, FormatToneMapping, FormatPastRetention} {
+	for _, id := range []string{FormatViewerLanguage, FormatViewerSubtitles, FormatSeriesYearDiffers, FormatVideoTranscode, FormatAudioDirect, FormatAudioTranscode, FormatAtmosPassthrough, FormatToneMapping, FormatPastRetention} {
 		out = append(out, BuiltinFormat{ID: id, Kind: FormatKindStreaming})
 	}
 	return out
@@ -122,8 +123,16 @@ func IsBuiltinFormat(id string) bool {
 // language is not among them: a profile scores it only when it expresses
 // that preference (Ether's own profiles do; an imported pack's language
 // formats are its authors' choice).
+// ViewerSubtitlesScore is the default StreamingFormatScores weight for
+// FormatViewerSubtitles: enough to settle ties and mild codec/audio
+// differences in favour of a release whose indexer lists the viewer's
+// subtitle language, without forcing video transcodes (-20), expired posts
+// (-20), low-bitrate encodes (-60) or overriding imported pack tiers.
+const ViewerSubtitlesScore = 15
+
 func StreamingFormatScores() map[string]int {
 	return map[string]int{
+		FormatViewerSubtitles:   ViewerSubtitlesScore,
 		FormatSeriesYearDiffers: -10000,
 		FormatVideoTranscode:    -20,
 		FormatAudioDirect:       10,

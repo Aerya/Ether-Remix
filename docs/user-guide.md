@@ -932,6 +932,31 @@ for On Air channels). To change many channels at once, select them and choose
 Disabling a channel still removes it everywhere, and viewer access restrictions
 apply in every app. M3U and Xtream exports retain the imported channel groups.
 
+### Your groups and matching rules
+
+Under **Your groups** on **Live TV › Channels**, create or edit a group to
+collect channels from provider groups, hand-picked channels, or **Channels that
+match** rules. Each rule checks a channel's **Name**, **Provider group**,
+**Guide ID**, **Number**, or **Source** with **contains** (the default), **is**,
+**starts with**, **matches pattern**, **doesn't contain**, or **doesn't match
+pattern**. Choose **Any rule** or **All rules** for positive matches; negative
+rules (**doesn't contain** and **doesn't match pattern**) always exclude
+matching channels from the group, including ones brought in by a provider group
+or picked by hand.
+
+**matches pattern** and **doesn't match pattern** use Go RE2 regular
+expressions, case-insensitive by default and anchored only where you write `^`
+or `$`. For example, to map specific network feeds into a **US Sports** group
+the way Tuliprox filter-and-mapping rules do, add a rule on **Guide ID** (or
+**Name**) with **matches pattern** set to:
+
+`(?i)^(cbs\.wcbs|espn\.us|fs1\.us)$`
+
+The drawer previews the matching channel count and sample channels live as you
+type and flags invalid patterns before you save. Matched channels inherit the
+group's **Show in apps** and unrated content-rating settings automatically,
+including channels a provider adds on a later refresh.
+
 ### Channel logos on Apple TV
 
 Plex for Apple TV shows guide channel logos only when Plex's online image
@@ -1580,3 +1605,121 @@ Les sources restent interrogées normalement. Les filtres contrôlent les releas
 Les critères détaillés importés comprennent les résolutions avec `Unknown`, les formats distincts (HDRip, HC HD-Rip, DVD REMUX, BluRay REMUX, CAM/TS/TC/SCR…), les tags vidéo, les langues `Original` et `Unknown`, ainsi que les exclusions de cache debrid annoncées. `Original` compare les langues audio annoncées à la langue originale du titre dans le catalogue ; le test de noms permet de renseigner cette langue. L’absence de résolution peut satisfaire `Unknown` sans supprimer les autres résolutions autorisées.
 
 Une exclusion « uncached » rejette une annonce explicite de non-disponibilité en cache, pas une information absente. Ces annonces sont conservées lors des nouvelles recherches ; les anciennes entrées sans cette information restent inconnues jusqu’à leur prochaine recherche. Il ne s’agit pas d’une vérification directe du cache auprès du debrid. Les filtres composites par addon/service, les préférences de tri, les variantes et les expressions conditionnelles non prises en charge restent signalés. Les différences entre parseurs et le périmètre des regex sont indiqués dans l’aperçu.
+
+### Startup reports `browse: unsupported type "Movies"` after v0.3.12
+
+A saved catalogue Type condition can contain a display label instead of the
+internal value. v0.3.13 repairs those spellings and keeps invalid viewer rules
+closed while the owner edits them under Viewers → Catalogue rules.
+
+For a v0.3.12 server that cannot start, stop Ether and make a copy of `ether.db`
+first. Run `sqlite3 /path/to/ether.db < docs/troubleshooting/startup-537.sql`, then
+restart Ether. The [repair script](troubleshooting/startup-537.sql) updates only
+`browse:type` conditions whose value is exactly `Movies` in
+`catalog_viewer_rules.document` and `libraries.rules`, including nested groups.
+It preserves rule names and search text, and increments affected viewer rule
+revisions. It does not remove restrictions or repair unrelated errors.
+
+## Vela skins
+
+Owners can install custom `.vskin` archives in **Apps › Vela › Skins** by uploading a file or providing a package URL. Installed skins are stored under `<DataDir>/vela-skins/<id>/<version>/` and served directly by Ether with immutable caching headers, so clients never fetch third-party skin assets at runtime.
+
+### Archive layout and bounds
+
+A `.vskin` file is a standard ZIP archive containing `skin.json` at the root and optional static files under `assets/`:
+
+```text
+harbor.vskin
+├── skin.json
+└── assets/
+    ├── preview.svg
+    ├── display.woff2
+    └── grain.webp
+```
+
+Validation rules enforced at install time:
+
+- **Archive size:** at most 8 MiB compressed, 32 MiB expanded, and 200 entries.
+- **Skin ID:** `^[a-z0-9][a-z0-9-]{1,47}$`. Built-in IDs (`cinematic`, `cinematic-doc`, `mochi`, `marquee`, `jellytwin`, `index`, `lounge`, `latenight`, `kids`, `broadcast`) are reserved and cannot be overwritten or removed.
+- **Version:** `^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$` (up to 64 characters). Installing a new version of an existing ID atomically replaces the prior directory and serves the new versioned asset paths.
+- **Allowlisted asset extensions:** `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, `.ttf`, `.otf`, `.woff`, `.woff2`, `.json`.
+- **Safety checks:** path traversal (`..`), absolute paths, symlinks, duplicate normalized paths, nested archives (checked by extension and magic bytes), and external `http://`, `https://`, `//`, `data:`, or `javascript:` asset URLs are rejected.
+
+### SkinPack (`engine: "cinematic"`)
+
+A `SkinPack` (`<= 64 KiB` `skin.json`) themes the cinematic engine with palettes, typography, radii, and optional surface imagery:
+
+```json
+{
+  "schema": 1,
+  "id": "harbor",
+  "version": "1.0.0",
+  "name": "Harbor",
+  "tagline": "Cool slate surfaces with cyan focus accents",
+  "engine": "cinematic",
+  "palette": {
+    "canvas": "#0b1320",
+    "surface": "#132238",
+    "ink": "#eef4fb",
+    "accent": "#4cc9f0"
+  },
+  "fonts": {
+    "display": {
+      "family": "Harbor Display",
+      "src": "assets/display.woff2"
+    }
+  },
+  "radius": {
+    "card": 12,
+    "button": 999
+  },
+  "images": {
+    "preview": "assets/preview.svg",
+    "grain": "assets/grain.webp"
+  },
+  "swatches": ["#0b1320", "#132238", "#4cc9f0", "#eef4fb"]
+}
+```
+
+When served in `/vela/v0/appearance` (and `/vela/v0/bootstrap`), relative `assets/...` references in `fonts` and `images` are rewritten to `/vela/v0/appearance/packs/<id>/<version>/<file>`.
+
+### SkinDocument (`renderer >= 1`)
+
+A `SkinDocument` (`<= 2 MiB` `skin.json`) supplies a full layout document (`ui`, `routes`, `slots`, and optional `templates` and `assets`):
+
+```json
+{
+  "schema": 1,
+  "renderer": 1,
+  "id": "studio-grid",
+  "version": "1.2.0",
+  "name": "Studio Grid",
+  "preview": "assets/preview.svg",
+  "swatches": ["#121316", "#1d2026", "#f59e0b", "#f3f4f6"],
+  "ui": {
+    "palette": {
+      "canvas": "#121316",
+      "surface": "#1d2026",
+      "ink": "#f3f4f6",
+      "accent": "#f59e0b"
+    }
+  },
+  "routes": {
+    "home": { "slot": "main" }
+  },
+  "slots": {
+    "main": { "kind": "rows" }
+  },
+  "assets": {
+    "preview": "assets/preview.svg"
+  }
+}
+```
+
+Installed documents appear in `appearance.documents[]` with `url: "/vela/v0/appearance/skins/<id>/<version>.json"`, and relative asset paths inside the served document are rewritten to `/vela/v0/appearance/skins/<id>/<version>/<file>`.
+
+### Serving and owner controls
+
+- Public `GET` and `HEAD` requests for `/vela/v0/appearance/packs/<id>/<version>/<file>`, `/vela/v0/appearance/skins/<id>/<version>.json`, and `/vela/v0/appearance/skins/<id>/<version>/<file>` return `Cache-Control: public, max-age=31536000, immutable` and `X-Content-Type-Options: nosniff`. SVG assets also include `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+- In **Apps › Vela › Skins**, the owner selects **Default skin** (`defaultSkinId`) and can turn on **Use this skin for everyone** (`force: true`) to lock all Vela clients to that skin.
+- Installing from a URL blocks private-network addresses unless **Allow local network address** is enabled for that install; link-local metadata addresses remain blocked in all modes.

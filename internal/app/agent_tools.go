@@ -43,6 +43,7 @@ func (a *App) registerBuiltinTools(c *tools.Catalogue) error {
 		Profiles:    &appProfileService{a: a},
 		Frontends:   &appFrontendService{a: a},
 		Server:      &appServerService{a: a},
+		Flows:       &appFlowsService{a: a},
 		OwnerUser: func(ctx context.Context) (*core.User, error) {
 			if a.users == nil {
 				return nil, errors.New("no owner")
@@ -135,6 +136,18 @@ func builtinToolLabel(name, fallback string) extend.Text {
 		return extend.T("Turn a plugin on or off")
 	case "server_restart":
 		return extend.T("Restart the server")
+	case "flows_list":
+		return extend.T("Flows")
+	case "flow_get":
+		return extend.T("Flow details")
+	case "flow_create_from_template":
+		return extend.T("Create a flow from a template")
+	case "flow_enable":
+		return extend.T("Turn a flow on or off")
+	case "flow_test_run":
+		return extend.T("Test-run a flow")
+	case "flow_runs":
+		return extend.T("Flow runs")
 	default:
 		return extend.Text{Source: fallback}
 	}
@@ -184,7 +197,7 @@ func (s *appStatusService) ServerStatus(ctx context.Context) (builtin.ServerStat
 	}
 	active := 0
 	if s.a.playback != nil {
-		active = len((ownerPlayback{Playback: s.a.playback, app: s.a}).Sessions())
+		active = len((ownerPlayback{Playback: s.a.playback, app: s.a}).activeSessions())
 	}
 	channels := 0
 	if s.a.livetv != nil {
@@ -595,12 +608,22 @@ func (p *appPluginService) SetPluginEnabled(ctx context.Context, id string, enab
 
 func toPluginInfo(r plugins.Record, h plugins.Health) builtin.PluginInfo {
 	status := h.Status
-	if status == "" {
-		if r.Enabled {
-			status = "ok"
-		} else {
-			status = "disabled"
+	if !r.Enabled {
+		status = "disabled"
+	} else if status == "" {
+		status = "ok"
+	}
+	var detail string
+	switch status {
+	case "error":
+		detail = firstNonEmptyStr(h.Reason, h.LastError)
+	case "disabled":
+		if h.Status == "disabled" {
+			detail = h.Reason
 		}
+	case "ok":
+	default:
+		detail = h.Reason
 	}
 	return builtin.PluginInfo{
 		ID:      r.ID,
@@ -609,7 +632,7 @@ func toPluginInfo(r plugins.Record, h plugins.Health) builtin.PluginInfo {
 		Kind:    r.Kind,
 		Enabled: r.Enabled,
 		Health:  status,
-		Detail:  firstNonEmptyStr(h.Reason, h.LastError),
+		Detail:  detail,
 	}
 }
 
@@ -670,6 +693,7 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 			Rules:              append([]core.ReleaseRule(nil), p.ReleaseRules...),
 			QualityOrder:       config.CloneQualityOrder(p.QualityOrder),
 			Language:           p.Language,
+			AudioLanguageMode:  p.AudioLanguageMode,
 			PreferredLanguages: append([]string(nil), p.PreferredLanguages...),
 			MaxHeight:          p.MaxHeight,
 			MinHeight:          p.MinHeight,
@@ -815,6 +839,7 @@ func (a *App) consoleRoutes() []builtin.RouteInfo {
 		{Route: "/apps", Label: "Apps"},
 		{Route: "/integrations", Label: "Integrations"},
 		{Route: "/plugins", Label: "Plugins"},
+		{Route: "/flows", Label: "Flows"},
 		{Route: "/notifications", Label: "Notifications"},
 		{Route: "/logs", Label: "Logs"},
 		{Route: "/settings", Label: "Settings"},

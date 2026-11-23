@@ -143,19 +143,19 @@ func TestRefreshExpiry(t *testing.T) {
 		return r
 	}
 	r := issue()
-	now = now.Add(31 * 24 * time.Hour)
+	now = now.Add(91 * 24 * time.Hour)
 	if _, _, err = g.Refresh(ctx, "silo", r, d); !errors.Is(err, core.ErrUnauthorized) {
 		t.Fatalf("idle expiry: %v", err)
 	}
 	r = issue()
-	for j := 0; j < 3; j++ {
-		now = now.Add(29 * 24 * time.Hour)
+	for j := 0; j < 4; j++ {
+		now = now.Add(89 * 24 * time.Hour)
 		_, r, err = g.Refresh(ctx, "silo", r, d)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	now = now.Add(4 * 24 * time.Hour)
+	now = now.Add(10 * 24 * time.Hour)
 	if _, _, err = g.Refresh(ctx, "silo", r, d); !errors.Is(err, core.ErrUnauthorized) {
 		t.Fatalf("absolute expiry: %v", err)
 	}

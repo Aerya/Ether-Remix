@@ -1,12 +1,13 @@
 package identity_test
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -43,10 +45,11 @@ func (i *imageFixture) Get(context.Context, string, int) ([]byte, string, error)
 	i.calls++
 	return []byte("image"), "image/jpeg", nil
 }
+
 func TestImageGrantRevalidatesSessionMembershipAndArtwork(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
-	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0),(2,456,0,0)`); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Unix(100000, 0)
@@ -59,24 +62,32 @@ func TestImageGrantRevalidatesSessionMembershipAndArtwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherViewerCred, err := grants.Issue(ctx, 2, nil, "jellyfin", core.Device{ID: "phone"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	image := frontend.Image{Kind: "person", Path: "opaque-portrait", Tag: "v1", Subject: "tmdb:287"}
 	authoritative := false
 	allowed := true
 	experience := frontendtest.Experience{ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
-		if !allowed {
+		if !allowed || req.Viewer == nil || req.Viewer.ID != 1 {
 			return frontend.ItemDetail{}, core.ErrUnauthorized
 		}
 		return frontend.ItemDetail{ImagesAuthoritative: authoritative, Images: []frontend.Image{image}}, nil
 	}}
 	source := &imageFixture{}
-	makeService := func(surface frontend.Protocol) *identity.ImageGrantService {
+	makeService := func(surface frontend.Protocol, key string) *identity.ImageGrantService {
 		s, err := identity.NewImageGrantService(db, surface, grants, func() frontend.Experience { return experience }, source, time.Minute, clock, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
 		if err != nil {
 			t.Fatal(err)
 		}
+		s.SetImageKey([]byte(key))
 		return s
 	}
-	service, other := makeService("jellyfin"), makeService("emby")
+	service := makeService("jellyfin", "server-image-key")
+	otherSurface := makeService("emby", "server-image-key")
+	wrongKeyService := makeService("jellyfin", "different-image-key")
+
 	request := frontend.ImageGrantRequest{Credential: credential, Device: core.Device{ID: "tv"}, Item: core.MovieKey(1), Image: image}
 	if _, err := service.Issue(ctx, request); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatal("non-authoritative issue", err)
@@ -99,53 +110,130 @@ func TestImageGrantRevalidatesSessionMembershipAndArtwork(t *testing.T) {
 	if secret == credential {
 		t.Fatal("account credential exposed")
 	}
-	call := func(s *identity.ImageGrantService, token string) int {
-		w := httptest.NewRecorder()
-		s.Serve(w, httptest.NewRequest("GET", "/?w=300", nil), token)
-		return w.Code
+	if strings.Contains(secret, image.Path) {
+		t.Fatal("image path exposed in token")
 	}
-	if code := call(other, secret); code != 404 {
+	if raw, err := base64.RawURLEncoding.DecodeString(secret); err != nil || bytes.Contains(raw, []byte(image.Path)) {
+		t.Fatalf("raw token exposed image path or failed decode: err=%v", err)
+	}
+
+	// Same image gets the exact same URL in repeated responses and across devices/time.
+	secondReq := request
+	secondReq.Device.ID = "bedroom-tv"
+	secretAgain, err := service.Issue(ctx, secondReq)
+	if err != nil || secretAgain != secret {
+		t.Fatalf("expected identical URL for same image: %q vs %q (err=%v)", secret, secretAgain, err)
+	}
+
+	callReq := func(s *identity.ImageGrantService, r *http.Request, token string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.Serve(w, r, token)
+		return w
+	}
+	call := func(s *identity.ImageGrantService, token string) int {
+		return callReq(s, httptest.NewRequest("GET", "/?w=300", nil), token).Code
+	}
+
+	// Cross-surface and wrong-key / tampered HMAC deny.
+	if code := call(otherSurface, secret); code != 404 {
 		t.Fatal("cross-surface", code)
 	}
-	if code := call(service, secret); code != 200 {
-		t.Fatal("valid grant", code)
+	if code := call(wrongKeyService, secret); code != 404 {
+		t.Fatal("wrong server key", code)
 	}
+	raw, _ := base64.RawURLEncoding.DecodeString(secret)
+	flippedMAC := append([]byte(nil), raw...)
+	flippedMAC[0] ^= 0x01
+	if code := call(service, base64.RawURLEncoding.EncodeToString(flippedMAC)); code != 404 {
+		t.Fatal("tampered MAC accepted", code)
+	}
+	flippedBody := append([]byte(nil), raw...)
+	flippedBody[len(flippedBody)-1] ^= 0x01
+	if code := call(service, base64.RawURLEncoding.EncodeToString(flippedBody)); code != 404 {
+		t.Fatal("tampered ciphertext accepted", code)
+	}
+	if code := call(service, secret[:len(secret)-2]); code != 404 {
+		t.Fatal("truncated secret accepted", code)
+	}
+
+	// Another viewer's credential cannot open viewer 1's URL, nor issue for a hidden item.
+	otherReq := httptest.NewRequest("GET", "/?w=300", nil)
+	otherReq.Header.Set("X-Emby-Token", otherViewerCred)
+	if code := callReq(service, otherReq, secret).Code; code != 404 {
+		t.Fatal("other viewer X-Emby-Token opened viewer 1 URL", code)
+	}
+	otherBearer := httptest.NewRequest("GET", "/?w=300", nil)
+	otherBearer.Header.Set("Authorization", "Bearer "+otherViewerCred)
+	if code := callReq(service, otherBearer, secret).Code; code != 404 {
+		t.Fatal("other viewer Bearer token opened viewer 1 URL", code)
+	}
+	if _, err := service.Issue(ctx, frontend.ImageGrantRequest{Credential: otherViewerCred, Item: core.MovieKey(1), Image: image}); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatal("other viewer issued hidden item", err)
+	}
+
+	// Valid serve sets immutable Cache-Control + stable ETag and answers 304 on If-None-Match.
+	resp := callReq(service, httptest.NewRequest("GET", "/?w=300", nil), secret)
+	if resp.Code != 200 {
+		t.Fatal("valid grant", resp.Code)
+	}
+	if got := resp.Header().Get("Cache-Control"); got != "private, max-age=31536000, immutable" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+	etag := resp.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag")
+	}
+	callsBefore304 := source.calls
+	condReq := httptest.NewRequest("GET", "/?w=300", nil)
+	condReq.Header.Set("If-None-Match", etag)
+	if condResp := callReq(service, condReq, secret); condResp.Code != 304 || source.calls != callsBefore304 {
+		t.Fatalf("If-None-Match status=%d calls=%d wantCalls=%d", condResp.Code, source.calls, callsBefore304)
+	}
+
+	// Non-identity metadata changes keep URL and Serve valid.
 	image.Width, image.Height, image.BlurHash = 1200, 1800, "00TI:j"
 	image.ThumbHash = "AQIDBA=="
 	if code := call(service, secret); code != 200 {
 		t.Fatal("metadata update revoked stable artwork", code)
 	}
+
+	// Title hidden after issue denies.
 	allowed = false
 	if code := call(service, secret); code != 404 {
 		t.Fatal("policy change ignored", code)
 	}
 	allowed = true
+
+	// Changed image tag denies old URL and produces a new URL on re-issue.
 	image.Tag = "v2"
 	if code := call(service, secret); code != 404 {
 		t.Fatal("artwork change ignored", code)
 	}
+	updatedReq := request
+	updatedReq.Image = image
+	secretV2, err := service.Issue(ctx, updatedReq)
+	if err != nil || secretV2 == secret {
+		t.Fatalf("expected changed image tag to mint a new URL: old=%q new=%q err=%v", secret, secretV2, err)
+	}
+	if code := call(service, secretV2); code != 200 {
+		t.Fatal("updated tag URL failed", code)
+	}
 	image.Tag = "v1"
+
+	// Changed subject denies.
 	image.Subject = "tmdb:819"
 	if code := call(service, secret); code != 404 {
 		t.Fatal("credit change ignored", code)
 	}
 	image.Subject = "tmdb:287"
-	now = now.Add(time.Minute)
-	if code := call(service, secret); code != 404 {
-		t.Fatal("expiry ignored", code)
+
+	// Stateless URLs carry no expiry and remain valid indefinitely while viewer & policy allow.
+	now = now.Add(365 * 24 * time.Hour)
+	if code := call(service, secret); code != 200 {
+		t.Fatal("stateless URL expired", code)
 	}
-	now = now.Add(-time.Minute)
-	secret, err = service.Issue(ctx, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256([]byte(credential))
-	if err := grants.RevokeGrant(ctx, 1, hex.EncodeToString(sum[:])); err != nil {
-		t.Fatal(err)
-	}
-	if code := call(service, secret); code != 404 {
-		t.Fatal("source revocation ignored", code)
-	}
+
+	// Deactivated viewer denies immediately.
 	if _, err := db.ExecContext(ctx, `UPDATE auth_users SET active=0 WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +279,7 @@ func TestImageGrantUsesScopedArtworkAndTransforms(t *testing.T) {
 	if w.Code != 200 || w.Body.String() != "scoped" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("response: %d %q", w.Code, w.Body.String())
 	}
-	if source.calls != 1 || source.request.Viewer.ID != 1 || source.request.Device != device || source.request.Item != core.MovieKey(42) || source.image != image || source.transform != (frontend.ArtworkTransform{Width: 300, Height: 200, Format: "png", Blur: true, Fit: true}) {
+	if source.calls != 1 || source.request.Viewer.ID != 1 || source.request.Device != (core.Device{Language: "en"}) || source.request.Item != core.MovieKey(42) || source.image != image || source.transform != (frontend.ArtworkTransform{Width: 300, Height: 200, Format: "png", Blur: true, Fit: true}) {
 		t.Fatalf("bad source request: %+v", source)
 	}
 	w = httptest.NewRecorder()
@@ -264,7 +352,7 @@ func TestServePublicRechecksPublicArtwork(t *testing.T) {
 	}
 }
 
-// A cached public content tag survives both page expiry and a fresh service.
+// A signed page grant survives elapsed time and a fresh service with the same server image key.
 func TestPublicContentTagSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
@@ -282,9 +370,13 @@ func TestPublicContentTagSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	poster := frontend.Image{Kind: frontend.ImagePoster, Path: "/poster", Tag: "v1"}
-	exp := &publicArtworkExperience{visible: true, image: poster, Experience: frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
-		return frontend.ItemDetail{Images: []frontend.Image{poster}, ImagesAuthoritative: true}, nil
-	}}}
+	exp := &publicArtworkExperience{visible: true, image: poster}
+	exp.Experience = frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
+		if !exp.visible {
+			return frontend.ItemDetail{}, core.ErrUnauthorized
+		}
+		return frontend.ItemDetail{Images: []frontend.Image{exp.image}, ImagesAuthoritative: true}, nil
+	}}
 	source := &imageFixture{}
 	fresh := func() *identity.ImageGrantService {
 		s, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience { return exp }, source, time.Minute, clock, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})

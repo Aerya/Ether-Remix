@@ -23,7 +23,7 @@ func Builtins() []Builtin {
 				{Key: "bindAddress", Label: extend.T("Listen address"), Kind: KindText, Help: extend.T("0.0.0.0 listens on every network interface.")},
 				{Key: "machineIdentifier", Label: extend.T("Machine identifier"), Kind: KindReadonly, Help: extend.T("Generated on first run; never changes.")},
 				{Key: "webFrameOrigins", Label: extend.T("Sites that may embed this page"), Kind: KindList, Help: extend.T("Exact addresses allowed to frame the owner page. Empty means nowhere."), Placeholder: "https://home.example.com"},
-				{Key: "trustedProxyCIDRs", Label: extend.T("Trusted proxy networks"), Kind: KindList, Help: extend.T("Networks whose forwarding headers Ether trusts. Empty trusts none."), Placeholder: "10.0.0.0/8"},
+				{Key: "trustedProxyCIDRs", Label: extend.T("Trusted reverse proxies"), Kind: KindList, Help: extend.T("IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted."), Placeholder: "192.168.1.5, 10.0.0.0/8"},
 				{Key: "logLevel", Label: extend.T("Log level"), Kind: KindSelect, Options: []Option{{Value: "debug", Label: extend.T("Debug")}, {Value: "info", Label: extend.T("Info")}, {Value: "warn", Label: extend.T("Warnings")}, {Value: "error", Label: extend.T("Errors only")}}},
 			}},
 			{ID: "streams", Title: extend.T("Who can watch at once"), Description: extend.T("Leave these at the defaults unless too many people are watching at the same time."), Fields: []Field{}, More: []Field{
@@ -46,6 +46,9 @@ func Builtins() []Builtin {
 			}, More: []Field{
 				{Key: "certFile", Label: extend.T("Certificate file"), Kind: KindText, Help: extend.T("Leave empty to use the plex.direct certificate Ether manages."), Wide: true},
 				{Key: "keyFile", Label: extend.T("Key file"), Kind: KindText, Help: extend.T("The private key that matches the certificate file."), Wide: true},
+			}},
+			{ID: "delivery", Title: extend.T("Media delivery"), Description: extend.T("How a direct play reaches the player."), Fields: []Field{
+				{Key: "delivery", Label: extend.T("Delivery"), Kind: KindSelect, Help: extend.T("Relay is the default. Redirect gives eligible Plex players a temporary TorBox file URL that they can use until it expires. Ether cannot measure bytes delivered directly by TorBox."), Options: []Option{{Value: "relay", Label: extend.T("Relay through Ether")}, {Value: "redirect", Label: extend.T("Redirect to the provider")}}},
 			}},
 			{ID: "compatibility", Title: extend.T("Compatibility"), Fields: []Field{
 				{Key: "trackLatestVersion", Label: extend.T("Report the latest public PMS version"), Kind: KindBool, Help: extend.T("Off reports the version Ether is verified against. Plex enables features by server version.")},
@@ -112,11 +115,14 @@ func Builtins() []Builtin {
 		// TRANSCODE
 		{ID: "transcode", ConfigKey: "transcode", Label: extend.T("Converting for the app"), Schema: Schema{Groups: []Group{
 			{ID: "convert", Title: extend.T("Converting for the app"), Description: extend.T("Ether plays the file directly when the app can. It converts the video on this computer only when it has to."), Fields: []Field{
+				{Key: "videoTranscoding", Label: extend.T("Video transcoding"), Kind: KindSelect, Help: extend.T("Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected."), Options: []Option{{Value: "on", Label: extend.T("On")}, {Value: "off", Label: extend.T("Off")}}},
 				{Key: "hwAccel", Label: extend.T("Hardware acceleration"), Kind: KindSelect, Help: extend.T("Automatic uses this computer's graphics chip when an app can't play the file as-is. Choose Off only if converted video looks wrong."), Options: []Option{{Value: "auto", Label: extend.T("Automatic")}, {Value: "none", Label: extend.T("Off (software)")}, {Value: "videotoolbox", Label: extend.Text{Source: "VideoToolbox (Apple)"}}, {Value: "nvenc", Label: extend.Text{Source: "NVENC (NVIDIA)"}}, {Value: "qsv", Label: extend.Text{Source: "Quick Sync (Intel)"}}, {Value: "vaapi", Label: extend.Text{Source: "VA-API (Linux)"}}}},
 			}, More: []Field{
 				{Key: "vaapiDevice", Label: extend.T("VA-API device"), Kind: KindText, Help: extend.T("Linux graphics device, for example /dev/dri/renderD128. Leave empty unless converted video fails to start.")},
 				{Key: "maxTranscodes", Label: extend.T("Simultaneous transcodes"), Kind: KindNumber, Help: extend.T("How many videos can be converted at once. Leave the default unless several people watch together and the computer struggles."), Min: F(0), Step: F(1)},
+				{Key: "throttleSeconds", Label: extend.T("Throttle buffer (seconds)"), Kind: KindNumber, Help: extend.T("How far ahead of the viewer Ether prepares video before it pauses the work, in every app (16–600 seconds; Live TV is unaffected). 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched."), Min: F(0), Max: F(600), Step: F(1)},
 				{Key: "remoteMaxBitrateKbps", Label: extend.T("Remote bitrate cap"), Kind: KindNumber, Help: extend.T("Limits picture quality for people watching away from home, so the stream fits their connection. 0 means no limit."), Min: F(0), Step: F(500), Unit: extend.Text{Source: "kbps"}},
+				{Key: "remoteUploadBudgetKbps", Label: extend.T("Internet upload speed"), Kind: KindNumber, Help: extend.T("Total upload speed shared across all remote streams. 0 lets Ether measure it automatically from real remote streams."), Min: F(0), Step: F(1000), Unit: extend.Text{Source: "kbps"}},
 			}},
 			{ID: "enhance", Title: extend.T("Sharper picture"), Description: extend.T("On a supported NVIDIA graphics card, Ether can clean up a soft video before sending it. This uses extra graphics power, and Ether installs what it needs on a supported Windows computer."), Fields: []Field{
 				{Key: "rtxVideo", Label: extend.Text{Source: "RTX Video Super Resolution"}, Kind: KindGroup, Fields: []Field{
@@ -249,7 +255,7 @@ func Builtins() []Builtin {
 			}, More: []Field{
 				{Key: "bindAddress", Label: extend.T("Listen address"), Kind: KindText, Help: extend.T("0.0.0.0 listens on every network interface.")},
 				{Key: "machineIdentifier", Label: extend.T("Machine identifier"), Kind: KindReadonly, Help: extend.T("Generated on first run; never changes.")},
-				{Key: "trustedProxyCIDRs", Label: extend.T("Trusted proxy networks"), Kind: KindList, Help: extend.T("Networks whose forwarding headers Ether trusts. Empty trusts none."), Placeholder: "10.0.0.0/8"},
+				{Key: "trustedProxyCIDRs", Label: extend.T("Trusted reverse proxies"), Kind: KindList, Help: extend.T("IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted."), Placeholder: "192.168.1.5, 10.0.0.0/8"},
 				{Key: "logLevel", Label: extend.T("Log level"), Kind: KindSelect, Options: []Option{{Value: "debug", Label: extend.T("Debug")}, {Value: "info", Label: extend.T("Info")}, {Value: "warn", Label: extend.T("Warnings")}, {Value: "error", Label: extend.T("Errors only")}}},
 				{Key: "clusterWeight", Label: extend.T("Node weight"), Kind: KindNumber, Help: extend.T("This computer's share of each provider's connections and request limits, relative to the others. 2 gets twice the share of a computer at 1; 0 means 1."), Min: F(0), Max: F(100), Step: F(1)},
 			}},

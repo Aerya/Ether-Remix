@@ -38,6 +38,7 @@ type Deps struct {
 	Profiles    ProfileService
 	Frontends   FrontendService
 	Server      ServerService
+	Flows       FlowsService // optional
 	OwnerUser   func(ctx context.Context) (*core.User, error)
 	Routes      func() []RouteInfo
 	Now         func() time.Time
@@ -181,6 +182,7 @@ type ProfileInfo struct {
 	Rules              []core.ReleaseRule
 	QualityOrder       []core.QualityItem
 	Language           string
+	AudioLanguageMode  string
 	PreferredLanguages []string
 	MaxHeight          int
 	MinHeight          int
@@ -261,6 +263,7 @@ func All(d Deps) []tools.Tool {
 	out = append(out, webTools()...)
 	out = append(out, onairTools(d)...)
 	out = append(out, channelBuilderTools(d)...)
+	out = append(out, flowsTools(d)...)
 	return out
 }
 

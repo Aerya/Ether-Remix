@@ -257,7 +257,9 @@ func TestRuntimeSuppliesSurfaceExperienceAndRejectsUnknownViewer(t *testing.T) {
 		t.Fatal("surface has no experience")
 	}
 	views, err := host.Experience.Views(ctx, owner)
-	if err != nil || len(views) != 2 {
+	// This probe is not a published protocol. It gets the shared experience,
+	// but must not invent Movies/TV Shows without library publication.
+	if err != nil || len(views) != 0 {
 		t.Fatalf("owner views = %v, %v", views, err)
 	}
 	unknown := &core.User{ID: owner.ID + 10000}

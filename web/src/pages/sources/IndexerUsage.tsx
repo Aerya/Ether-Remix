@@ -14,6 +14,8 @@ type IndexerUsage = {
   dailyLimit: number;
   dailyGrabs: number;
   retryAt?: number;
+  pausedUntil?: number;
+  missingDefinition?: boolean;
   today: UsageWindow;
   week: UsageWindow;
   month: UsageWindow;

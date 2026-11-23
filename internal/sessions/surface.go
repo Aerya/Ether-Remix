@@ -105,6 +105,15 @@ func (s surface) MatchDetailSession(ctx context.Context, scope frontend.VersionS
 	}
 	return core.ErrNotAvailable
 }
+func (s surface) ResolveStaleDetailParent(ctx context.Context, scope frontend.VersionScope, handle string) (core.RatingKey, error) {
+	if scope.Protocol != s.protocol {
+		return 0, core.ErrUnauthorized
+	}
+	if resolver, ok := s.broker.(frontend.StaleDetailResolver); ok {
+		return resolver.ResolveStaleDetailParent(ctx, scope, handle)
+	}
+	return 0, core.ErrNotAvailable
+}
 func (s surface) Open(ctx context.Context, r frontend.OpenRequest) (frontend.Session, error) {
 	if r.Protocol != s.protocol {
 		return frontend.Session{}, core.ErrUnauthorized
@@ -117,6 +126,20 @@ func (s surface) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	return s.broker.StartStream(ctx, a, id, r)
 }
+
+// SwitchVersion forwards a version switch on this surface's own session to
+// the broker; without it every app's quality menu answered
+// feature_unavailable.
+func (s surface) SwitchVersion(ctx context.Context, a frontend.SessionAccess, sessionID, versionHandle string, position time.Duration) (frontend.PlayPlan, error) {
+	if a.Protocol != s.protocol {
+		return frontend.PlayPlan{}, core.ErrUnauthorized
+	}
+	if switcher, ok := s.broker.(frontend.VersionSwitcher); ok {
+		return switcher.SwitchVersion(ctx, a, sessionID, versionHandle, position)
+	}
+	return frontend.PlayPlan{}, core.ErrNotAvailable
+}
+
 func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, id string) (core.Decision, error) {
 	if a.Protocol != s.protocol {
 		return core.Decision{}, core.ErrUnauthorized
@@ -132,6 +155,21 @@ func (s surface) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrUnauthorized
 	}
 	return s.broker.SubtitleURL(ctx, a, id, index, format)
+}
+func (s surface) SubtitleURLs(ctx context.Context, a frontend.SessionAccess, id string, reqs []frontend.SubtitleURLRequest) ([]string, error) {
+	if a.Protocol != s.protocol {
+		return nil, core.ErrUnauthorized
+	}
+	if batch, ok := s.broker.(frontend.SubtitleURLBatch); ok {
+		return batch.SubtitleURLs(ctx, a, id, reqs)
+	}
+	out := make([]string, len(reqs))
+	for i, req := range reqs {
+		if url, err := s.broker.SubtitleURL(ctx, a, id, req.Index, req.Format); err == nil {
+			out[i] = url
+		}
+	}
+	return out, nil
 }
 func (s surface) HasAuthoredASSSubtitle(ctx context.Context, a frontend.SessionAccess, id string, index int) bool {
 	if a.Protocol != s.protocol {
@@ -214,6 +252,13 @@ func (s surface) ServeSessionMedia(w http.ResponseWriter, r *http.Request, a fro
 	}
 	media.ServeSessionMedia(w, r, a, sessionID, resource)
 }
+func (s surface) KeepAlive(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if a.Protocol != s.protocol {
+		return core.ErrUnauthorized
+	}
+	return s.broker.KeepAlive(ctx, a, id)
+}
+
 func (s surface) Report(ctx context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
 	if a.Protocol != s.protocol {
 		return core.ErrUnauthorized
@@ -809,6 +854,15 @@ func (s surface) ProactiveFallbackAvailable() bool {
 	q, ok := s.broker.(frontend.QualitySessions)
 	return s.protocol == "vela" && ok && q.ProactiveFallbackAvailable()
 }
+func (s surface) ProactiveFallbackAvailableFor(v *core.Viewer) bool {
+	if s.protocol != "vela" {
+		return false
+	}
+	if q, ok := s.broker.(interface{ ProactiveFallbackAvailableFor(*core.Viewer) bool }); ok {
+		return q.ProactiveFallbackAvailableFor(v)
+	}
+	return s.ProactiveFallbackAvailable()
+}
 func (s surface) QualityRungs(ctx context.Context, a frontend.SessionAccess, id string) ([]core.HLSRung, error) {
 	q, ok := s.broker.(frontend.QualitySessions)
 	if !ok || a.Protocol != s.protocol {
@@ -839,4 +893,31 @@ func (s surface) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow
 		return reader.LiveWindow(ctx, id)
 	}
 	return frontend.LiveWindow{}, core.ErrNotAvailable
+}
+
+func (s surface) MultiviewAvailable() bool {
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	return ok && mv.MultiviewAvailable()
+}
+
+func (s surface) CreateMultiviewGroup(ctx context.Context, a frontend.SessionAccess) (frontend.MultiviewGroup, error) {
+	if a.Protocol != s.protocol {
+		return frontend.MultiviewGroup{}, core.ErrUnauthorized
+	}
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	if !ok {
+		return frontend.MultiviewGroup{}, core.ErrNotAvailable
+	}
+	return mv.CreateMultiviewGroup(ctx, a)
+}
+
+func (s surface) DeleteMultiviewGroup(ctx context.Context, a frontend.SessionAccess, groupID string) error {
+	if a.Protocol != s.protocol {
+		return core.ErrUnauthorized
+	}
+	mv, ok := s.broker.(frontend.MultiviewSessions)
+	if !ok {
+		return core.ErrNotAvailable
+	}
+	return mv.DeleteMultiviewGroup(ctx, a, groupID)
 }

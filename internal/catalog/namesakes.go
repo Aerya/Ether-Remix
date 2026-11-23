@@ -2,8 +2,11 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -75,47 +78,63 @@ func (c *Catalog) Namesakes(ctx context.Context, key core.RatingKey) (bool, erro
 	if len(variants) == 0 {
 		variants = namesakeTitleVariants(t.OriginalTitle)
 	}
-	if len(variants) == 0 {
-		return false, nil
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")
-	// Year is bound once in each bound (>= y-1, <= y+1) rather than as
-	// ABS(year-?)<=1 so the window reads the index range directly. Lower-cased
-	// comparison keeps one statement for every dialect (SQLite and PostgreSQL).
-	args := make([]any, 0, len(variants)+5)
-	args = append(args, string(t.Type))
-	for _, v := range variants {
-		args = append(args, strings.ToLower(v))
-	}
-	args = append(args, t.Year-1, t.Year+1, key)
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf(`
+	if len(variants) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")
+		// Year is bound once in each bound (>= y-1, <= y+1) rather than as
+		// ABS(year-?)<=1 so the window reads the index range directly. Lower-cased
+		// comparison keeps one statement for every dialect (SQLite and PostgreSQL).
+		args := make([]any, 0, len(variants)+5)
+		args = append(args, string(t.Type))
+		for _, v := range variants {
+			args = append(args, strings.ToLower(v))
+		}
+		args = append(args, t.Year-1, t.Year+1, key)
+		rows, err := c.db.QueryContext(ctx, fmt.Sprintf(`
 SELECT key, title, year FROM catalog_titles
 WHERE type=? AND LOWER(title) IN (%s)
   AND year>=? AND year<=?
   AND key<>?
 LIMIT %d`, placeholders, namesakeMaxRows), args...)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	wantNorm := releaseparse.NormalizeTitle(t.Title)
-	if wantNorm == "" {
-		wantNorm = releaseparse.NormalizeTitle(t.OriginalTitle)
-	}
-	for rows.Next() {
-		var other int64
-		var title string
-		var year int
-		if err := rows.Scan(&other, &title, &year); err != nil {
+		if err != nil {
 			return false, err
 		}
-		// The IN filter is case-insensitive, not article-insensitive; the
-		// normalized comparison is the final word on sameness.
-		if releaseparse.NormalizeTitle(title) == wantNorm {
+		wantNorm := releaseparse.NormalizeTitle(t.Title)
+		if wantNorm == "" {
+			wantNorm = releaseparse.NormalizeTitle(t.OriginalTitle)
+		}
+		for rows.Next() {
+			var other int64
+			var title string
+			var year int
+			if err := rows.Scan(&other, &title, &year); err != nil {
+				rows.Close()
+				return false, err
+			}
+			// The IN filter is case-insensitive, not article-insensitive; the
+			// normalized comparison is the final word on sameness.
+			if releaseparse.NormalizeTitle(title) == wantNorm {
+				rows.Close()
+				return true, nil
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+	}
+	if norm := releaseparse.NormalizeTitle(t.EnglishTitle); norm != "" {
+		var hit int
+		err := c.db.QueryRowContext(ctx, `SELECT 1 FROM catalog_release_names rn JOIN catalog_titles other ON other.key=rn.key WHERE rn.name=? AND other.type=? AND other.year>=? AND other.year<=? AND other.key<>? LIMIT 1`,
+			norm, string(t.Type), t.Year-1, t.Year+1, key).Scan(&hit)
+		if err == nil {
 			return true, nil
 		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 	}
-	return false, rows.Err()
+	return false, nil
 }
 
 // The additive index the Namesakes lookup relies on; SQLite and PostgreSQL
@@ -140,15 +159,54 @@ func (c *Catalog) SeriesNamesake(ctx context.Context, key core.RatingKey, title 
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var other string
 		if err := rows.Scan(&other); err != nil {
+			rows.Close()
 			return false, err
 		}
 		if releaseparse.NormalizeTitle(other) == releaseparse.NormalizeTitle(title) {
+			rows.Close()
 			return true, nil
 		}
 	}
-	return false, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	rows.Close()
+	if norm := releaseparse.NormalizeTitle(title); norm != "" {
+		var hit int
+		err := c.db.QueryRowContext(ctx, `SELECT 1 FROM catalog_release_names rn JOIN catalog_titles t ON t.key=rn.key WHERE rn.name=? AND t.type=? AND t.year>0 AND t.year<>? AND t.key<>? LIMIT 1`,
+			norm, string(core.TypeShow), year, key).Scan(&hit)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// UpdateRuntime persists a consensus media duration onto catalog_titles when
+// independent probes agree on a runtime different from what the metadata
+// provider reported. It is an O(1) primary-key update and invalidates the
+// title cache entry when the row changes.
+func (c *Catalog) UpdateRuntime(ctx context.Context, key core.RatingKey, runtime time.Duration) error {
+	sec := int64(runtime.Round(time.Second) / time.Second)
+	if key == 0 || sec <= 0 {
+		return nil
+	}
+	res, err := c.db.ExecContext(ctx, `UPDATE catalog_titles SET runtime_sec=? WHERE key=? AND runtime_sec<>?`, sec, key, sec)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		c.cacheMu.Lock()
+		delete(c.titleCache, key)
+		c.cacheMu.Unlock()
+		c.writeGen.Add(1)
+	}
+	return nil
 }

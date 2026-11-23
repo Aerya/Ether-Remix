@@ -101,6 +101,7 @@ func (c *Catalog) personCredits(ctx context.Context, persons []int64, types []co
 					return nil, nil, err
 				}
 				titles[st.t.Key] = st.t
+				cr.Browsable = st.browsable
 			} else if err := rows.Scan(dest...); err != nil {
 				rows.Close()
 				return nil, nil, err

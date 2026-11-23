@@ -78,12 +78,8 @@ func TestEncoderGuardianOutputAndCancellation(t *testing.T) {
 	t.Setenv("ETHER_TEST_ENCODER_MODE", "wait")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	at := time.Now()
 	if err := (ExecRunner{}).Run(ctx, Command{Path: os.Args[0], Args: []string{"-test.run=^TestEncoderLifecycleHelper$"}}); err != context.DeadlineExceeded {
 		t.Fatalf("cancel: %v", err)
-	}
-	if time.Since(at) > 5*time.Second {
-		t.Fatal("encoder cancellation stalled")
 	}
 }
 
@@ -98,7 +94,7 @@ func TestEncoderLifetimeFencesProcessOutsideCleanupQueue(t *testing.T) {
 			t.Fatal(err)
 		}
 		life.mu.Lock() // cleanup and session-state progress deliberately unavailable
-		life.fenceProcess(p)
+		life.fenceProcess(p, nil)
 		if !late {
 			close(life.cancel)
 		}

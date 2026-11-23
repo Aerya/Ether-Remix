@@ -1,4 +1,4 @@
-import type { CacheSnapshot } from "../pages/cache/Cache";
+import type { CacheSnapshot, ReleaseDetail } from "../pages/cache/Cache";
 import type { EtherConfig } from "../lib/types";
 
 /** Offline-only fixtures used by the preview and UI tests. */
@@ -22,7 +22,11 @@ export function createCacheMock(
         causes: [{ code: "playing", firstSeen: new Date(Date.now() - 3600000).toISOString() }],
         retention: { kind: "pinned", pins: ["owner"] },
         file: "Arrival.2016.1080p.mkv",
-        source: "Arrival.2016.1080p.BluRay",
+        source: "Arrival.2016.1080p.BluRay.x264.DTS-HD-SPARKS",
+        indexer: "NZBgeek",
+        origin: "Usenet",
+        ratingKey: 100000,
+        cachedAt: new Date(Date.now() - 3600000).toISOString(),
       },
     },
     {
@@ -42,7 +46,11 @@ export function createCacheMock(
         ],
         retention: { kind: "pinned", pins: ["playback:inprogress"] },
         file: "Severance.S02E03.1080p.mkv",
-        source: "Severance.S02E03.1080p.WEB-DL",
+        source: "Severance.S02E03.1080p.WEB-DL.DDP5.1.Atmos.H.265-FLUX",
+        indexer: "Torrentio",
+        origin: "Real-Debrid",
+        ratingKey: 400000,
+        cachedAt: new Date(Date.now() - 7200000).toISOString(),
       },
     },
     {
@@ -65,7 +73,11 @@ export function createCacheMock(
         ],
         retention: { kind: "pinned", pins: ["preloaded"] },
         file: "Dune.Part.Two.2024.2160p.mkv",
-        source: "Dune.Part.Two.2024.2160p.UHD",
+        source: "Dune.Part.Two.2024.2160p.UHD.BluRay.Remux.DV.HDR10.TrueHD.7.1.Atmos-FraMeSToR",
+        indexer: "DrunkenSlug",
+        origin: "Usenet",
+        ratingKey: 100002,
+        cachedAt: new Date(Date.now() - 86400000).toISOString(),
       },
     },
     {
@@ -87,6 +99,8 @@ export function createCacheMock(
         },
         file: "Interstellar.2014.1080p.mkv",
         source: "",
+        origin: "TorBox",
+        indexer: "Prowlarr",
       },
     },
     {
@@ -104,9 +118,70 @@ export function createCacheMock(
         retention: { kind: "lru" },
         file: "bd959c0598e2818d872b8f0e2a1c9d44.mkv",
         source: "The.Americans.2013.S03E01.1080p.BRRip.x264-HiQVE",
+        origin: "Usenet",
+        indexer: "NZBgeek",
+        cachedAt: new Date(Date.now() - 300000).toISOString(),
       },
     },
   ];
+
+  const details: Record<string, ReleaseDetail> = {
+    "demo-arrival-1080": {
+      releaseId: "demo-arrival-1080",
+      segments: 1400,
+      estimatedTotal: 2112,
+      spanCount: 2,
+      spans: [
+        { start: 0, end: 1397 },
+        { start: 2110, end: 2111 },
+      ],
+      coverage: Array.from({ length: 48 }, (_, i) => (i < 32 || i === 47 ? 1 : 0)),
+      firstCached: new Date(Date.now() - 3600000).toISOString(),
+    },
+    "demo-severance-s02e03": {
+      releaseId: "demo-severance-s02e03",
+      segments: 540,
+      estimatedTotal: 772,
+      spanCount: 2,
+      spans: [
+        { start: 0, end: 31 },
+        { start: 260, end: 767 },
+      ],
+      coverage: Array.from({ length: 48 }, (_, i) => (i < 2 || (i >= 16 && i < 47) ? 1 : 0)),
+      firstCached: new Date(Date.now() - 7200000).toISOString(),
+    },
+    "demo-dune-2160": {
+      releaseId: "demo-dune-2160",
+      segments: 2000,
+      estimatedTotal: 5640,
+      spanCount: 1,
+      spans: [{ start: 0, end: 1999 }],
+      coverage: Array.from({ length: 48 }, (_, i) => (i < 17 ? 1 : 0)),
+      firstCached: new Date(Date.now() - 86400000).toISOString(),
+    },
+    "demo-interstellar-1080": {
+      releaseId: "demo-interstellar-1080",
+      segments: 8,
+      estimatedTotal: 3072,
+      spanCount: 2,
+      spans: [
+        { start: 0, end: 5 },
+        { start: 3070, end: 3071 },
+      ],
+      coverage: Array.from({ length: 48 }, (_, i) => (i === 0 || i === 47 ? 0.5 : 0)),
+      firstCached: new Date(Date.now() - 100000).toISOString(),
+    },
+    bd959c0598e2818d872b8f0e2a1c9d44: {
+      releaseId: "bd959c0598e2818d872b8f0e2a1c9d44",
+      segments: 21,
+      estimatedTotal: 21,
+      spanCount: 1,
+      spans: [{ start: 0, end: 20 }],
+      coverage: Array.from({ length: 48 }, () => 1),
+      firstCached: new Date(Date.now() - 300000).toISOString(),
+    },
+  };
+
   return (method: string, seg: string[], body: unknown, cfg: EtherConfig, clustered = false) => {
     if (seg[0] !== "cache") return undefined;
     if (method === "GET" && seg.length === 1)
@@ -210,6 +285,10 @@ export function createCacheMock(
           },
         } satisfies CacheSnapshot,
       };
+    if (method === "GET" && seg[1] === "releases" && seg[2]) {
+      const detail = details[decodeURIComponent(seg[2])];
+      return detail ? { status: 200, body: detail } : { status: 404, body: null };
+    }
     if (seg[1] === "warming") {
       if (method === "GET")
         return {
@@ -241,6 +320,18 @@ export function createCacheMock(
           ? [...new Set([...(r.Pins ?? []), "owner"])]
           : (r.Pins?.filter((p) => p !== "owner") ?? []);
       return { status: 204, body: null };
+    }
+    if (
+      (method === "POST" && seg[1] === "clear") ||
+      (method === "POST" && seg[1] === "clear-block")
+    ) {
+      const b = body as { releaseId: string };
+      const idx = releases.findIndex((r) => r.ReleaseID === b.releaseId);
+      if (idx >= 0) releases.splice(idx, 1);
+      return {
+        status: 200,
+        body: { cleared: true, blocked: seg[1] === "clear-block", message: "Cleared" },
+      };
     }
     if (method === "POST" && seg[1] === "preload") return { status: 202, body: null };
     if (method === "POST" && seg[1] === "warm") return { status: 202, body: null };

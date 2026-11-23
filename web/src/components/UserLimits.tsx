@@ -88,6 +88,7 @@ export function RatingLimitRow({
             options={CONTENT_RATINGS}
             ariaLabel={t("Content rating limit")}
             searchable={false}
+            disabled={Boolean(isOwner)}
             placeholder={t("Select…")}
             selectLabel={t("Select")}
             closeLabel={t("Close")}

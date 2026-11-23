@@ -20,6 +20,8 @@ func consoleFrontendPolicy(id string) core.FrontendHostPolicy {
 		return p
 	case "silo":
 		return core.FrontendHostPolicy{PublicURL: true, SharedPrefix: "/" + id, PasswordConnect: true}
+	case "vela":
+		return core.FrontendHostPolicy{PublicURL: true, SharedPrefix: "/vela"}
 	case "stremio", "webdav", "m3u", "dlna":
 		return core.FrontendHostPolicy{PublicURL: true, SharedPrefix: "/" + id}
 	default:

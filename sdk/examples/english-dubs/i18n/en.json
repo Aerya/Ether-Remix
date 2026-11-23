@@ -1,0 +1,23 @@
+{
+  "summary": "Anime series and films with an English dub from MAL-Dubs.",
+  "list_dubbed_label": "Anime with an English dub",
+  "list_dubbed_hint": "Anime series and films confirmed to have an English dub on MAL-Dubs.",
+  "list_incomplete_label": "Dub in progress",
+  "list_incomplete_hint": "Anime series and films whose English dub is still in progress on MAL-Dubs.",
+  "setting_include_incomplete_label": "Include incomplete dubs",
+  "setting_include_incomplete_hint": "Add anime with an ongoing English dub to the main English dub list.",
+  "setting_type_filter_label": "Type filter",
+  "setting_type_filter_hint": "Limit list results to anime series, anime movies, or both.",
+  "type_both": "Series and movies",
+  "type_series": "Series only",
+  "type_movies": "Movies only",
+  "page_label": "English dubbed anime",
+  "page_title": "English dubbed anime",
+  "stat_mapped_series": "Mapped anime series",
+  "stat_mapped_movies": "Mapped anime movies",
+  "stat_incomplete": "Dubs in progress",
+  "panel_cache": "Cached data and refresh",
+  "action_refresh": "Refresh cache",
+  "panel_source": "Data sources and license",
+  "source_credit": "Dub list from MAL-Dubs under AGPL v3, mapped to TMDB via Fribb anime-lists."
+}

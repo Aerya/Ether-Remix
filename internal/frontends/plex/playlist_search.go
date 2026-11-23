@@ -106,15 +106,6 @@ func (s *Server) playlistInDirectories(pl *frontend.Playlist, raw string) bool {
 	return false
 }
 
-func containsExactSearchToken(raw, token string) bool {
-	for _, v := range strings.Split(raw, ",") {
-		if v == token {
-			return true
-		}
-	}
-	return false
-}
-
 // PMS's playlist search ladder sits below title results at each match class.
 func playlistSearchScore(title, query string) float64 {
 	t, q := searchFoldName(title), searchFoldName(query)

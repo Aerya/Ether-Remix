@@ -166,6 +166,18 @@ const minRecentVotes = 25
 // count) but are unknown with full catalogue records, within the build's
 // budget. Details are cached by the catalogue, so later builds are local.
 func (b *builder) hydrate(items []core.Title, need func(*core.Title) bool) []core.Title {
+	// Hydrate only this build's selected prefix, in local batches. Get below
+	// retains freshness/fallback behavior without a facet query per title.
+	var keys []core.RatingKey
+	for _, title := range items {
+		if len(keys) >= b.hydrateLeft {
+			break
+		}
+		if need(&title) {
+			keys = append(keys, title.Key)
+		}
+	}
+	preloadTitles(b.ctx, b.e.catalog, keys)
 	out := make([]core.Title, 0, len(items))
 	for _, t := range items {
 		if need(&t) && b.hydrateLeft > 0 && b.ctx.Err() == nil {

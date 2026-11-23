@@ -7,8 +7,11 @@ export function createMetadataMock() {
     enabled: false,
     provider: "omdb",
     apiKey: "",
+    backupProvider: "",
+    backupApiKey: "",
     critic: "tomatoes",
     audience: "imdb",
+    missing: "tmdb",
     cacheHours: 168,
   };
   const artwork = new Map<string, unknown>();
@@ -18,14 +21,40 @@ export function createMetadataMock() {
     body: unknown,
     query: URLSearchParams,
   ): Response | undefined => {
-    const json = (v: unknown) =>
-      new Response(JSON.stringify(v), { headers: { "Content-Type": "application/json" } });
+    const json = (v: unknown, status = 200) =>
+      new Response(JSON.stringify(v), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
     if (path === "/discovery/overlays/settings") {
       if (method === "PUT") overlays = normalizeOverlays(body as Overlays);
       return json(overlays);
     }
     if (path === "/discovery/ratings/settings") {
-      if (method === "PUT") ratings = { ...(body as typeof ratings), apiKey: "[configured]" };
+      if (method === "PUT") {
+        const next = { ...ratings, ...(body as Partial<typeof ratings>) };
+        const key = String(next.apiKey ?? "").trim();
+        const resolvedKey = key === "[configured]" ? ratings.apiKey : key;
+        if (next.enabled && !resolvedKey) {
+          return json(
+            { error: { code: "validation", message: "an owner API key is required" } },
+            400,
+          );
+        }
+        const backupKey = String(next.backupApiKey ?? "").trim();
+        const resolvedBackup = backupKey === "[configured]" ? ratings.backupApiKey : backupKey;
+        if (next.backupProvider && !resolvedBackup) {
+          return json(
+            { error: { code: "validation", message: "backup provider requires an API key" } },
+            400,
+          );
+        }
+        ratings = {
+          ...next,
+          apiKey: resolvedKey ? "[configured]" : "",
+          backupApiKey: next.backupProvider && resolvedBackup ? "[configured]" : "",
+        };
+      }
       return json(ratings);
     }
     if (path.startsWith("/discovery/ratings/refresh/"))
@@ -38,10 +67,12 @@ export function createMetadataMock() {
       return json({ posters: [], backdrops: [] });
     if (path.startsWith("/discovery/overlays/explain/")) {
       const s = normalizeOverlays(JSON.parse(query.get("settings") || "{}"));
+      const ratingLabel =
+        s.ratingStyle === "combined" ? "8.6" : s.hideDenominator ? "TMDB 8.6" : "TMDB 8.6/10";
       const facts = {
         status: ["NEW SEASON"],
         quality: [],
-        ratings: ["TMDB 8.6/10"],
+        ratings: [ratingLabel],
         details: ["2025 · 120m"],
       };
       const layers = (Object.keys(facts) as (keyof typeof facts)[]).map((key) => ({
@@ -51,17 +82,21 @@ export function createMetadataMock() {
         reason:
           key === "quality"
             ? "No verified playback yet; release-name guesses are excluded"
-            : "Catalogue fixture data",
+            : key === "ratings" && s.ratingStyle === "combined"
+              ? "Combined 8.6 from TMDB 8.6/10"
+              : "Catalogue fixture data",
       }));
       return json({ labels: layers.flatMap((l) => l.labels), layers });
     }
     if (path === "/discovery/overlays/sample" || path.startsWith("/discovery/overlays/preview/")) {
       const s = normalizeOverlays(JSON.parse(query.get("settings") || "{}"));
+      const ratingLabel =
+        s.ratingStyle === "combined" ? "8.6" : s.hideDenominator ? "TMDB 8.6" : "TMDB 8.6/10";
       const labels = s.enabled
         ? [
             s.status && "NEW SEASON",
             s.quality && path === "/discovery/overlays/sample" && "4K HDR",
-            s.ratings && "TMDB 8.6/10",
+            s.ratings && ratingLabel,
             s.details && "2025 · 120m",
           ].filter(Boolean)
         : [];

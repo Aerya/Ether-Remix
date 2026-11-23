@@ -338,7 +338,8 @@ func (i *instance) info(w http.ResponseWriter, r *http.Request, l login, kind st
 		http.NotFound(w, r)
 		return
 	}
-	detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: l.viewer, Device: l.device, Key: frontend.RatingKey(id)})
+	key := frontend.RatingKey(id)
+	detail, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: l.viewer, Device: l.device, Key: key})
 	if err != nil || string(detail.Title.Type) != kind {
 		http.NotFound(w, r)
 		return
@@ -353,7 +354,7 @@ func (i *instance) info(w http.ResponseWriter, r *http.Request, l login, kind st
 	info["tmdb_id"], info["cover_big"], info["genre"] = t.IDs.TMDB, i.titleImage(r, l, t), strings.Join(t.Genres, ", ")
 	info["release_date"], info["releaseDate"] = dateString(t.Released), dateString(t.Released)
 	info["cast"], info["director"], info["backdrop_path"] = personNames(t.Cast), personNames(t.Directors), []string{}
-	info["last_modified"], info["youtube_trailer"], info["episode_run_time"] = unixString(t.UpdatedAt), "", int(t.Runtime/time.Minute)
+	info["last_modified"], info["youtube_trailer"], info["episode_run_time"] = unixString(t.UpdatedAt), xtreamYouTubeTrailer(detail.Extras), int(t.Runtime/time.Minute)
 	if kind == "movie" {
 		jsonResponse(w, map[string]any{"info": info, "movie_data": row})
 		return
@@ -447,7 +448,7 @@ func (i *instance) pageImages(r *http.Request, l login, titles []frontend.Title)
 	for start := 0; start < len(titles); start += pageSize {
 		page := titles[start:min(start+pageSize, len(titles))]
 		// Xtream rows carry a poster URL only, never its size or hashes.
-		grants, err := signer.SignPage(frontend.WithoutArtworkMetadata(r.Context()), frontend.ImagePageRequest{Credential: l.password, Device: l.device, Titles: page, Kinds: []string{frontend.ImagePoster}})
+		grants, err := signer.SignPage(frontend.WithoutArtworkMetadata(r.Context()), frontend.ImagePageRequest{Credential: l.credential, Device: l.device, Titles: page, Kinds: []string{frontend.ImagePoster}})
 		if err != nil {
 			return err
 		}
@@ -499,4 +500,20 @@ func personNames(people []frontend.Person) string {
 		names = append(names, p.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+func xtreamYouTubeTrailer(extras []frontend.Extra) string {
+	fallback := ""
+	for _, extra := range extras {
+		if !strings.EqualFold(extra.Source, "youtube") || extra.SourceID == "" {
+			continue
+		}
+		if strings.EqualFold(extra.Kind, "trailer") || strings.EqualFold(extra.Kind, "teaser") {
+			return extra.SourceID
+		}
+		if fallback == "" {
+			fallback = extra.SourceID
+		}
+	}
+	return fallback
 }

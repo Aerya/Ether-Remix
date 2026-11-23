@@ -31,6 +31,12 @@ import (
 
 const maxSVGBytes = 512 << 10
 
+// MaxSVGBytes is the largest SVG document Rasterize accepts.
+const MaxSVGBytes = maxSVGBytes
+
+// MaxRasterDimension is the largest width or height Rasterize accepts.
+const MaxRasterDimension = 2048
+
 var ErrSVG = errors.New("artwork: SVG cannot be safely rasterized")
 
 type RasterOptions struct {
@@ -198,7 +204,7 @@ func safeSVGNumbers(s string) bool {
 }
 
 func (r *SVGRasterizer) execute(ctx context.Context, key string, build func(context.Context) (image.Image, error), opts RasterOptions) ([]byte, string, error) {
-	if r == nil || opts.Width < 0 || opts.Height < 0 || opts.Width > 2048 || opts.Height > 2048 || (opts.Format != "" && opts.Format != "png" && opts.Format != "jpeg") {
+	if r == nil || opts.Width < 0 || opts.Height < 0 || opts.Width > MaxRasterDimension || opts.Height > MaxRasterDimension || (opts.Format != "" && opts.Format != "png" && opts.Format != "jpeg") {
 		return nil, "", ErrSVG
 	}
 	if err := ctx.Err(); err != nil {
@@ -300,7 +306,7 @@ func (r *SVGRasterizer) Rasterize(ctx context.Context, reference string, data []
 		if height == 0 {
 			height = max(1, int(float64(width)*icon.ViewBox.H/icon.ViewBox.W))
 		}
-		if width > 2048 || height > 2048 {
+		if width > MaxRasterDimension || height > MaxRasterDimension {
 			return nil, ErrSVG
 		}
 		img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -335,7 +341,7 @@ func (r *SVGRasterizer) ChannelLogo(ctx context.Context, reference, number, name
 		if height == 0 {
 			height = max(1, width*9/16)
 		}
-		if width > 2048 || height > 2048 {
+		if width > MaxRasterDimension || height > MaxRasterDimension {
 			return nil, ErrSVG
 		}
 		img := image.NewRGBA(image.Rect(0, 0, width, height))

@@ -48,7 +48,7 @@ func (s *Server) projectFileAvailability(r *http.Request, mc *model.MediaContain
 			for k := range md.Media[j].Part {
 				part := &md.Media[j].Part[k]
 				key, release, found := s.partTitle(part.ID)
-				if !found {
+				if !found || key.IsPluginKey() {
 					continue
 				}
 				t := target{key, release}
@@ -65,6 +65,17 @@ func (s *Server) projectFileAvailability(r *http.Request, mc *model.MediaContain
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg().Plex.FileCheckTimeoutOrDefault())
 	defer cancel()
 	pr := FromContext(ctx)
+	if len(mc.Metadata) > 1 || libraryToolClient(pr) {
+		// Plex apps ask checkFiles for the one detail page a viewer opened.
+		// A batched lookup (/library/metadata/1,2,…?checkFiles=1), or any
+		// lookup from a monitoring or library tool, reconciles a catalogue
+		// instead (Tracearr, for instance, checks 100 rating keys per request
+		// across the whole library). A warm-up search per title would spend
+		// each indexer's background share in minutes, so these get local
+		// verdicts only: a blocked release or remembered source still
+		// answers, anything else is no verdict and the Part stays available.
+		ctx = frontend.WithLocalResponse(ctx)
+	}
 	caps := s.clientCaps(pr)
 	verdicts := make([]*bool, len(order)) // nil: no verdict
 	slots := make(chan struct{}, fileCheckParallel)
@@ -93,8 +104,24 @@ dispatch:
 		if verdicts[i] != nil {
 			live = *verdicts[i]
 		}
+		anyUnprobed := false
 		for _, part := range parts[t] {
+			// Plezy treats exists+accessible (with Stream) as proof
+			// its cached row is complete and reuses it at Play. A
+			// part rendered from the pre-probe estimate is not
+			// complete, so leave the flags unset — PMS's shape
+			// without a file check — and Plezy re-fetches at Play,
+			// where plezyFirstPlay waits on the probe (#618, #678). A
+			// missing verdict still stamps, so Play stays hidden
+			// for a Part proven gone.
+			if live && plezyClient(pr) && !s.plezyPartProbed(ctx, pr, part) {
+				anyUnprobed = true
+				continue
+			}
 			part.Exists, part.Accessible = model.Ptr(live), model.Ptr(live)
+		}
+		if anyUnprobed && pr != nil && pr.User != nil && t.key != 0 {
+			s.plezyReasks.armIfIdle(plezyReaskKey{userID: pr.User.ID, clientID: pr.ClientID, key: t.key}, s.now())
 		}
 	}
 }

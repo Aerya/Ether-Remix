@@ -105,7 +105,7 @@ func mkRule(field, op string, v any) core.CollectionRule {
 	return core.CollectionRule{Field: field, Op: op, Value: b}
 }
 
-func ratingExceeds(rating, max string) bool { return contentrating.Exceeds(rating, max) }
+func ratingExceeds(rating, max string) bool { return contentrating.EnforceExceeds(rating, max) }
 
 // refreshInterval is how often a scheduled collection is rebuilt.
 func refreshInterval(r string) time.Duration {

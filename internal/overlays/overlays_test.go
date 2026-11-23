@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -125,11 +126,11 @@ func TestDesignerDefaultsAndValidation(t *testing.T) {
 	defer db.Close()
 	s := New(db, Options{})
 	cfg, err := s.Settings(ctx)
-	if err != nil || cfg.Style != "glass" || cfg.Position != "bottom" || cfg.Size != "medium" || cfg.Accent != "#d4a574" {
+	if err != nil || cfg.RatingStyle != "sources" || cfg.Style != "glass" || cfg.Position != "bottom" || cfg.Size != "medium" || cfg.Accent != "#d4a574" {
 		t.Fatalf("defaults: %+v %v", cfg, err)
 	}
 	router := s.Router(nil, nil)
-	for _, body := range []string{`{"style":"neon"}`, `{"position":"left"}`, `{"size":"huge"}`, `{"accent":"red"}`, `{"accent":"#gg0000"}`} {
+	for _, body := range []string{`{"ratingStyle":"average"}`, `{"style":"neon"}`, `{"position":"left"}`, `{"size":"huge"}`, `{"accent":"red"}`, `{"accent":"#gg0000"}`} {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest("PUT", "/settings", strings.NewReader(body)))
 		if w.Code != 400 {
@@ -151,7 +152,7 @@ func TestDesignerDefaultsAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.Settings(ctx)
-	if err != nil || got != saved || got.Accent != "#abcdef" || got.Style != "glass" {
+	if err != nil || !reflect.DeepEqual(got, saved) || got.Accent != "#abcdef" || got.Style != "glass" || got.RatingStyle != "sources" {
 		t.Fatalf("normalized settings: %+v %+v %v", saved, got, err)
 	}
 }
@@ -203,7 +204,7 @@ func TestSampleAndDesignerCacheVariants(t *testing.T) {
 	if err != nil || !bytes.Equal(baseline, again) {
 		t.Fatal("sample cache not stable")
 	}
-	for _, change := range []func(*Settings){func(v *Settings) { v.Style = "solid" }, func(v *Settings) { v.Style = "minimal" }, func(v *Settings) { v.Position = "top" }, func(v *Settings) { v.Size = "small" }, func(v *Settings) { v.Size = "large" }, func(v *Settings) { v.Accent = "#33ccff" }, func(v *Settings) { v.Enabled = false }} {
+	for _, change := range []func(*Settings){func(v *Settings) { v.RatingStyle = "combined" }, func(v *Settings) { v.Style = "solid" }, func(v *Settings) { v.Style = "minimal" }, func(v *Settings) { v.Position = "top" }, func(v *Settings) { v.Size = "small" }, func(v *Settings) { v.Size = "large" }, func(v *Settings) { v.Accent = "#33ccff" }, func(v *Settings) { v.Enabled = false }} {
 		cfg := base
 		change(&cfg)
 		variant, _, err := s.Sample(cfg)

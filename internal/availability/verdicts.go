@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -245,16 +246,48 @@ func (s *Service) drainVerdicts(ctx context.Context) {
 	}
 }
 
-// writeVerdicts upserts rows in one transaction. A failed write leaves them
-// unstored; the next read that needs one judges it again.
+// writeVerdicts upserts rows in one transaction using bounded multi-row chunks
+// so seeding or policy changes over thousands of releases execute a handful of
+// statements instead of one INSERT per release.
 func (s *Service) writeVerdicts(ctx context.Context, rows []verdictRow) {
+	if len(rows) == 0 {
+		return
+	}
+	// Deduplicate by PK (policy, rating_key, release_id, digest), keeping the
+	// last entry, so PostgreSQL ON CONFLICT DO UPDATE never sees duplicate
+	// conflict keys in the same multi-row INSERT.
+	dedup := make([]verdictRow, 0, len(rows))
+	pos := make(map[string]int, len(rows))
+	for _, r := range rows {
+		k := r.queueKey()
+		if idx, exists := pos[k]; exists {
+			dedup[idx] = r
+			continue
+		}
+		pos[k] = len(dedup)
+		dedup = append(dedup, r)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return
 	}
 	defer tx.Rollback()
-	for _, f := range rows {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO availability_verdicts(policy,rating_key,release_id,digest,reason,evaluated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(policy,rating_key,release_id,digest) DO UPDATE SET reason=excluded.reason,evaluated_at=excluded.evaluated_at`, f.policy, int64(f.key), f.id, f.digest, f.why, f.at); err != nil {
+	const batch = 500
+	for chunk := range store.Chunks(dedup, batch) {
+		var sb strings.Builder
+		sb.Grow(128 + len(chunk)*14)
+		sb.WriteString(`INSERT INTO availability_verdicts(policy,rating_key,release_id,digest,reason,evaluated_at) VALUES `)
+		args := make([]any, 0, len(chunk)*6)
+		for i, f := range chunk {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?,?,?,?,?,?)")
+			args = append(args, f.policy, int64(f.key), f.id, f.digest, f.why, f.at)
+		}
+		sb.WriteString(` ON CONFLICT(policy,rating_key,release_id,digest) DO UPDATE SET reason=excluded.reason,evaluated_at=excluded.evaluated_at`)
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
 			return
 		}
 	}

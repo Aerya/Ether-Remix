@@ -83,9 +83,11 @@ func (i *instance) attachTrickplay(r *http.Request, viewer *frontend.Viewer, key
 			}
 		}
 	}
+	// Jellyfin BaseItemDto.Trickplay is Dictionary<string, Dictionary<int, TrickplayInfo>>
+	// keyed by mediaSourceId -> width (stringified int) -> info.
 	dto["Trickplay"] = map[string]any{
-		strconv.Itoa(offer.Width): map[string]any{
-			sourceID: map[string]any{
+		sourceID: map[string]any{
+			strconv.Itoa(offer.Width): map[string]any{
 				"Width":          offer.Width,
 				"Height":         offer.Height,
 				"TileWidth":      offer.Columns,

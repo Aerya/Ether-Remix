@@ -824,7 +824,7 @@ function PlexImport({ users }: { users: EtherUser[] | null }) {
             disabled={servers.loading || !!servers.error}
             onChange={(e) => edit(setServerID)(e.currentTarget.value)}
           >
-            <option value="">{t("Choose a server from Plex Media Server Sync.")}</option>
+            <option value="">{t("Select a server…")}</option>
             {(servers.data ?? []).map((server) => (
               <option key={server.id} value={server.id}>
                 {server.name}
@@ -892,7 +892,7 @@ function CsvTools({ users }: { users: EtherUser[] | null }) {
           "Export or import a diary, ratings or watchlist as CSV. Letterboxd matches need the same title and year.",
         )}
         footer={
-          <>
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -917,7 +917,7 @@ function CsvTools({ users }: { users: EtherUser[] | null }) {
                 })
               }
             />
-          </>
+          </div>
         }
       >
         <SettingsRow

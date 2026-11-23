@@ -30,6 +30,7 @@ import (
 const (
 	// skipWarnInterval throttles the skipped-streams warning per add-on.
 	skipWarnInterval = time.Hour
+	maxAddonResults  = 250
 )
 
 // Backend returns the search backend of an add-on indexer row
@@ -66,6 +67,24 @@ func (s *StreamSources) SetNZBClient(c *http.Client) {
 	s.mu.Lock()
 	s.nzb = c
 	s.mu.Unlock()
+}
+
+// SetClientIdentity wires the server-wide request identity lookup used when
+// downloading add-on NZBs.
+func (s *StreamSources) SetClientIdentity(fn func() config.ClientIdentity) {
+	s.mu.Lock()
+	s.identity = fn
+	s.mu.Unlock()
+}
+
+func (s *StreamSources) clientIdentity() config.ClientIdentity {
+	s.mu.RLock()
+	fn := s.identity
+	s.mu.RUnlock()
+	if fn == nil {
+		return config.ClientIdentity{}
+	}
+	return fn()
 }
 
 type addonBackend struct {
@@ -121,43 +140,130 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 	anime := b.s.anime
 	specials := b.s.specials
 	b.s.mu.RUnlock()
-	look, ok := stremio.LookupStreams(ctx, streamManifest(rec.Manifest), req, anime, specials)
-	if !ok {
+	looks := stremio.LookupStreamList(ctx, streamManifest(rec.Manifest), req, anime, specials)
+	if len(looks) == 0 {
 		return nil, nil
 	}
-	if err := reserve(ctx, "hit"); err != nil {
-		return nil, err
-	}
-	if err := b.s.spendSearch(ctx, rec); err != nil {
-		return nil, err
-	}
-	call := plugins.Request{Method: http.MethodGet, Path: look.Route()}
-	if rec.Manifest.Ether != nil {
-		// Ether source plugins may read search hints; third-party add-ons
-		// get exactly the Stremio request.
-		call.Query = searchHints(req)
-	}
-	resp, err := mgr.Call(ctx, rec.ID, call)
-	if err != nil {
-		b.s.noteFailure(rec.ID)
-		return nil, err
-	}
-	if resp.Status < 200 || resp.Status > 299 {
-		b.s.noteFailure(rec.ID)
-		he := &stremio.HTTPError{Status: resp.Status, RetryAfter: header(resp.Headers, "Retry-After")}
-		if he.RateLimited() {
-			return nil, &newznab.RateLimitError{RetryAfter: he.RetryAfter, Err: he}
+	var merged []core.Release
+	seen := map[string]bool{}
+	var totalNoHash, totalAmbiguous int
+	var firstErr error
+	incomplete := false
+	addonFailed := false
+	succeeded := 0
+	for _, look := range looks {
+		if len(merged) >= maxAddonResults {
+			break
 		}
-		return nil, he
+		if err := reserve(ctx, "hit"); err != nil {
+			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("add-on stream lookup skipped", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
+				break
+			}
+			return nil, err
+		}
+		if err := b.s.spendSearch(ctx, rec); err != nil {
+			if succeeded > 0 {
+				incomplete = true
+				if firstErr == nil {
+					firstErr = err
+				}
+				slog.Default().Warn("add-on stream lookup skipped", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
+				break
+			}
+			return nil, err
+		}
+		call := plugins.Request{Method: http.MethodGet, Path: look.Route()}
+		if rec.Manifest.Ether != nil {
+			// Ether source plugins may read search hints; third-party add-ons
+			// get exactly the Stremio request.
+			call.Query = searchHintsForLookup(req, look)
+		}
+		resp, err := mgr.Call(ctx, rec.ID, call)
+		if err != nil {
+			if ctx.Err() != nil {
+				b.s.noteFailure(rec.ID)
+				return nil, err
+			}
+			incomplete = true
+			addonFailed = true
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", err)
+			continue
+		}
+		if resp.Status < 200 || resp.Status > 299 {
+			he := &stremio.HTTPError{Status: resp.Status, RetryAfter: header(resp.Headers, "Retry-After")}
+			if he.RateLimited() {
+				rl := &newznab.RateLimitError{RetryAfter: he.RetryAfter, Err: he}
+				if succeeded > 0 {
+					incomplete = true
+					addonFailed = true
+					if firstErr == nil {
+						firstErr = rl
+					}
+					newznab.NoteBackendRateLimit(ctx, rl)
+					slog.Default().Warn("add-on stream lookup rate-limited", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", he)
+					break
+				}
+				b.s.noteFailure(rec.ID)
+				return nil, rl
+			}
+			incomplete = true
+			addonFailed = true
+			if firstErr == nil {
+				firstErr = he
+			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", he)
+			continue
+		}
+		var answer struct {
+			Streams []stremio.Stream `json:"streams"`
+		}
+		if err := json.Unmarshal(resp.Body, &answer); err != nil {
+			jerr := errors.New("the add-on answered with invalid stream JSON")
+			incomplete = true
+			addonFailed = true
+			if firstErr == nil {
+				firstErr = jerr
+			}
+			slog.Default().Warn("add-on stream lookup failed", "addon", b.plugin, "kind", look.Type, "id", look.ID, "err", jerr)
+			continue
+		}
+		succeeded++
+		rels, noHash, ambiguous := b.convert(ctx, rec, req, look, answer.Streams)
+		totalNoHash += noHash
+		totalAmbiguous += ambiguous
+		for _, rel := range rels {
+			if seen[rel.GUID] {
+				continue
+			}
+			seen[rel.GUID] = true
+			merged = append(merged, rel)
+			if len(merged) >= maxAddonResults {
+				break
+			}
+		}
 	}
-	var answer struct {
-		Streams []stremio.Stream `json:"streams"`
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
 	}
-	if err := json.Unmarshal(resp.Body, &answer); err != nil {
+	if len(merged) == 0 && firstErr != nil {
+		if addonFailed {
+			b.s.noteFailure(rec.ID)
+		}
+		return nil, firstErr
+	}
+	if addonFailed {
 		b.s.noteFailure(rec.ID)
-		return nil, errors.New("the add-on answered with invalid stream JSON")
 	}
-	return b.convert(ctx, rec, req, look, answer.Streams), nil
+	b.logSkipped(totalNoHash, totalAmbiguous)
+	return merged, nil
 }
 
 // etherStream is the optional `ether` block of a stream an Ether source
@@ -174,7 +280,7 @@ type etherStream struct {
 // convert turns an answer into releases in the add-on's order. Ordinary
 // streams go through stremio.Convert; an Ether plugin's lazy and local-file
 // streams become direct releases opened at play time.
-func (b *addonBackend) convert(ctx context.Context, rec plugins.Record, req core.SearchRequest, look stremio.Lookup, streams []stremio.Stream) []core.Release {
+func (b *addonBackend) convert(ctx context.Context, rec plugins.Record, req core.SearchRequest, look stremio.Lookup, streams []stremio.Stream) ([]core.Release, int, int) {
 	origin := ""
 	if u, err := stremio.NormalizeURL(rec.SourceURL); err == nil {
 		origin = stremio.Origin(u)
@@ -214,7 +320,6 @@ func (b *addonBackend) convert(ctx context.Context, rec plugins.Record, req core
 		ordinaryAt = append(ordinaryAt, i)
 	}
 	conv := stremio.Convert(ordinary, req, look, stremio.ConvertOptions{Origin: origin, Instance: b.instance})
-	b.logSkipped(conv.SkippedNoHash, conv.SkippedAmbiguous)
 	byStream := map[int]core.Release{}
 	for j, rel := range conv.Releases {
 		src := conv.Source[j]
@@ -234,7 +339,7 @@ func (b *addonBackend) convert(ctx context.Context, rec plugins.Record, req core
 			out = append(out, rel)
 		}
 	}
-	return out
+	return out, conv.SkippedNoHash, conv.SkippedAmbiguous
 }
 
 func (b *addonBackend) logSkipped(noHash, ambiguous int) {
@@ -276,7 +381,7 @@ func (b *addonBackend) FetchNZB(ctx context.Context, r core.Release, reserve fun
 	if u, err := stremio.NormalizeURL(rec.SourceURL); err == nil {
 		origin = stremio.Origin(u)
 	}
-	return stremio.FetchNZB(ctx, b.s.nzbClient(), origin, r, func(ctx context.Context, kind string) error {
+	return stremio.FetchNZBWithIdentity(ctx, b.s.nzbClient(), origin, b.instance, b.s.clientIdentity(), r, func(ctx context.Context, kind string) error {
 		if err := reserve(ctx, kind); err != nil {
 			return err
 		}
@@ -318,6 +423,15 @@ func searchHints(req core.SearchRequest) map[string]string {
 	}
 	if req.IDs.TMDB > 0 {
 		q["tmdbId"] = strconv.FormatInt(req.IDs.TMDB, 10)
+	}
+	return q
+}
+
+func searchHintsForLookup(req core.SearchRequest, look stremio.Lookup) map[string]string {
+	q := searchHints(req)
+	if req.Type == core.TypeEpisode && look.Season > 0 && look.Episode > 0 && !look.Packs {
+		q["season"] = strconv.Itoa(look.Season)
+		q["episode"] = strconv.Itoa(look.Episode)
 	}
 	return q
 }

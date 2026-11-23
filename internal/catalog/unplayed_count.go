@@ -41,7 +41,7 @@ func (c *Catalog) CountUnplayedAired(ctx context.Context, userID int64, keys []c
 	restrict := strings.TrimSpace(maxRating) != ""
 	rank := 0
 	if restrict {
-		rank = int(contentrating.LevelOf(maxRating))
+		rank = int(contentrating.EnforceLevelOf(maxRating))
 		if rank == 0 {
 			return out, nil
 		}
@@ -59,7 +59,7 @@ func (c *Catalog) CountUnplayedAired(ctx context.Context, userID int64, keys []c
 		args = append(args, userID)
 		ratingSQL := ""
 		if restrict {
-			ratingSQL = ` AND e.content_rating_rank>0 AND e.content_rating_rank<=?`
+			ratingSQL = ` AND e.content_rating_rank>0 AND e.content_rating_rank<=? AND e.enforcement_rating<>'XXX'`
 			args = append(args, rank)
 			if core.PlexSaferRating(ctx) && c.saferRating != nil {
 				ratingSQL += ` AND ` + c.saferRating.HideExceeding("e.key")

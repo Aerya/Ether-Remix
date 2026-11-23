@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -33,6 +35,9 @@ type librariesConsole struct {
 	items *pluginitems.Service
 	blobs *blobcache.Cache
 	err   error
+
+	liveMu       sync.Mutex
+	liveSessions map[string]consoleLiveSession
 }
 
 // libraryHandlers registers the /api/libraries and /api/plugins-setup
@@ -53,6 +58,8 @@ func (c *librariesConsole) services() (*pluginitems.Service, *blobcache.Cache, e
 		if c.app.pluginsRT != nil && c.app.pluginsRT.mgr != nil {
 			opts.Caller = c.app.pluginsRT.mgr
 			opts.Health = c.app.pluginsRT.mgr
+			opts.Jobs = pluginSyncJobTracker{mgr: c.app.pluginsRT.mgr}
+			opts.MaxPluginItemsFor = c.app.pluginsRT.mgr.MaxPluginItems
 		}
 		if c.items, c.err = pluginitems.New(ctx, c.app.db, opts); c.err != nil {
 			return
@@ -114,30 +121,83 @@ func kindDTOs(items []core.KindItem) []kindItemDTO {
 
 type libraryDTO struct {
 	core.Library
-	ItemCount  *int                   `json:"itemCount,omitempty"`
-	Sync       *pluginitems.SyncState `json:"sync,omitempty"`
-	Kind       *plugins.MediaKindMeta `json:"kind,omitempty"`
-	PluginName string                 `json:"pluginName,omitempty"`
+	EffectiveTabs  []core.LibraryTab           `json:"effectiveTabs,omitempty"`
+	Presentations  *core.ResolvedPresentations `json:"presentations,omitempty"`
+	ItemCount      *int                        `json:"itemCount,omitempty"`
+	StoredItems    *int                        `json:"storedItems,omitempty"`
+	PluginItems    *int                        `json:"pluginItems,omitempty"`
+	MaxPluginItems *int                        `json:"maxPluginItems,omitempty"`
+	Sync           *pluginitems.SyncState      `json:"sync,omitempty"`
+	Kind           *plugins.MediaKindMeta      `json:"kind,omitempty"`
+	PluginName     string                      `json:"pluginName,omitempty"`
+}
+
+func consoleKindPresentationInput(decl plugins.MediaKindMeta) libraries.KindPresentationInput {
+	levels := make([]libraries.KindPresentationLevel, len(decl.Levels))
+	for i, lv := range decl.Levels {
+		levels[i] = libraries.KindPresentationLevel{
+			Key:       lv.Key,
+			Parent:    lv.Parent,
+			Media:     lv.Media,
+			Role:      lv.Role,
+			Playable:  lv.Playable,
+			Container: lv.Container,
+		}
+	}
+	return libraries.KindPresentationInput{
+		Media:   decl.Media,
+		Levels:  levels,
+		Present: decl.Present,
+	}
+}
+
+func (c *librariesConsole) resolveLibraryPresentations(ctx context.Context, lib core.Library, kind *plugins.MediaKindMeta) core.ResolvedPresentations {
+	if lib.Source == core.LibraryPlugin {
+		if kind == nil {
+			if items, _, err := c.services(); err == nil && items != nil {
+				if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil {
+					decl := rec.Decl
+					kind = &decl
+				}
+			}
+		}
+		if kind != nil {
+			return libraries.ResolveKindPresentations(consoleKindPresentationInput(*kind), lib.PresentOverrides)
+		}
+		return libraries.ResolveKindPresentations(libraries.KindPresentationInput{
+			Present: lib.Present,
+		}, lib.PresentOverrides)
+	}
+	return libraries.ResolveCataloguePresentations(lib.MediaType, lib.Present, lib.PresentOverrides, lib.Source == core.LibraryBuiltin)
 }
 
 func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libraryDTO {
-	dto := libraryDTO{Library: lib}
+	dto := libraryDTO{
+		Library:       lib,
+		EffectiveTabs: c.effectiveTabs(ctx, lib),
+	}
 	switch lib.Source {
 	case core.LibraryPlugin:
 		if items, _, err := c.services(); err == nil && items != nil {
+			maxItems := items.MaxItemsFor(lib.PluginID)
+			dto.MaxPluginItems = &maxItems
+			if total, err := items.PluginItemCount(ctx, lib.PluginID); err == nil {
+				dto.PluginItems = &total
+			}
 			if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil {
 				decl := rec.Decl
 				decl.Label = c.catalogueLabel(ctx, lib.PluginID, decl.Label, lib.Name)
 				decl.Library.Name = c.catalogueLabel(ctx, lib.PluginID, decl.Library.Name, lib.Name)
 				dto.Kind = &decl
 				if tally, err := items.LibraryTally(ctx, lib.ID); err == nil {
-					n := 0
+					stored := 0
+					for _, v := range tally {
+						stored += v
+					}
+					dto.StoredItems = &stored
+					n := stored
 					if len(decl.Levels) > 0 {
 						n = tally[decl.Levels[0].Key]
-					} else {
-						for _, v := range tally {
-							n += v
-						}
 					}
 					dto.ItemCount = &n
 				}
@@ -152,7 +212,15 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 			}
 		}
 	case core.LibraryBuiltin:
-		if c.app.catalog != nil {
+		if core.HasLibraryScopedRules(lib.Rules) && c.app.collections != nil {
+			if n, pending, err := c.app.collections.ConsoleCount(ctx, libraryScopeFilter(lib, core.Filter{})); err != nil {
+				if c.app.log != nil {
+					c.app.log.Warn("libraries: library could not be counted", "id", int64(lib.ID), "source", lib.Source, "err", err)
+				}
+			} else if !pending || n > 0 {
+				dto.ItemCount = &n
+			}
+		} else if c.app.catalog != nil {
 			if st, err := c.app.catalog.Stats(ctx); err == nil {
 				n := st.BrowsableMovies
 				if lib.MediaType == core.TypeShow {
@@ -161,19 +229,23 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 				dto.ItemCount = &n
 			}
 		}
-	case core.LibraryCatalog:
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
+	case core.LibraryCatalog, core.LibraryCollection:
+		// The listing never counts a library-sized scope on the request: the
+		// cached count refreshes in the background, and the count is omitted
+		// until the first one completes. A deleted collection counts as empty.
+		if c.app.collections == nil {
+			break
 		}
-	case core.LibraryCollection:
-		// A deleted collection leaves the library empty: the browse reads
-		// no members rather than failing the console listing.
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
-		} else if c.app.log != nil {
-			c.app.log.Warn("libraries: collection library could not be counted", "id", int64(lib.ID), "collection", lib.CollectionID, "err", err)
+		if n, pending, err := c.app.collections.ConsoleCount(ctx, libraryScopeFilter(lib, core.Filter{})); err != nil {
+			if c.app.log != nil {
+				c.app.log.Warn("libraries: library could not be counted", "id", int64(lib.ID), "source", lib.Source, "err", err)
+			}
+		} else if !pending || n > 0 {
+			dto.ItemCount = &n
 		}
 	}
+	resolved := c.resolveLibraryPresentations(ctx, lib, dto.Kind)
+	dto.Presentations = &resolved
 	return dto
 }
 
@@ -186,14 +258,20 @@ func libraryScopeFilter(lib core.Library, req core.Filter) core.Filter {
 	if lib.MediaType != "" {
 		f.Type = lib.MediaType
 	}
-	if lib.Source == core.LibraryCatalog || lib.Source == core.LibraryCollection {
+	if lib.Source == core.LibraryBuiltin || lib.Source == core.LibraryCatalog || lib.Source == core.LibraryCollection {
 		if lib.Source == core.LibraryCollection && lib.CollectionID > 0 {
 			// Exactly the collection's titles: a SQL semi-join, so the
 			// page reads one statement whatever the collection's size.
 			f.CollectionMembers = lib.CollectionID
 			f.CatalogueSources = nil
 		}
-		if f.RuleVisibility != "" {
+		if core.IsBuiltinLibrary(lib.ID) {
+			if f.RuleVisibility == "" {
+				if extra := core.BuiltinLibraryExtraRules(lib.Rules); len(extra) > 0 {
+					f.ExtraRules = extra
+				}
+			}
+		} else if f.RuleVisibility != "" {
 			f.ApplyCanonicalInPreview = true
 		} else if len(lib.Rules) > 0 || lib.VisibilityDefault != "" {
 			f.ExtraRules = lib.Rules
@@ -201,6 +279,84 @@ func libraryScopeFilter(lib core.Library, req core.Filter) core.Filter {
 		}
 	}
 	return f
+}
+
+// libraryAccessFilter builds the membership filter for direct access, server-wide
+// search, and playback. Unlike libraryScopeFilter, it omits a built-in library's
+// library-only hide rules so titles hidden from a built-in library remain
+// reachable everywhere else.
+func libraryAccessFilter(lib core.Library) core.Filter {
+	f := libraryScopeFilter(lib, core.Filter{})
+	if core.IsBuiltinLibrary(lib.ID) {
+		f.ExtraRules = nil
+		f.ExtraFallback = ""
+	}
+	return f
+}
+
+// libraryRecommendationMembers implements personalize.Options.LibraryMembers:
+// catalogue, collection, and library-scoped built-in libraries scope their
+// section rows to their own titles, checked with the same indexed membership
+// SQL as the All browse. Unscoped built-in and plugin libraries stay unscoped.
+// The revision is the library's UpdatedAt, so editing its sources, rules or
+// collection invalidates cached section assemblies.
+func (a *App) libraryRecommendationMembers(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error) {
+	if a.libraries == nil {
+		return nil, 0, false, nil
+	}
+	lib, err := a.libraries.Get(ctx, id)
+	if errors.Is(err, core.ErrNotFound) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if lib.Source != core.LibraryBuiltin && lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
+		return nil, 0, false, nil
+	}
+	if core.IsBuiltinLibrary(lib.ID) && !core.HasLibraryScopedRules(lib.Rules) {
+		return nil, 0, false, nil
+	}
+	queryKeys := keys
+	var remapped bool
+	for _, k := range keys {
+		if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+			remapped = true
+			break
+		}
+	}
+	if remapped {
+		seen := make(map[core.RatingKey]struct{}, len(keys))
+		queryKeys = make([]core.RatingKey, 0, len(keys))
+		for _, k := range keys {
+			pk := k
+			if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+				pk = core.ShowKey(k.TMDB())
+			}
+			if _, ok := seen[pk]; !ok {
+				seen[pk] = struct{}{}
+				queryKeys = append(queryKeys, pk)
+			}
+		}
+	}
+	members, err := a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), queryKeys)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if remapped {
+		out := make(map[core.RatingKey]bool, len(keys))
+		for _, k := range keys {
+			pk := k
+			if k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode {
+				pk = core.ShowKey(k.TMDB())
+			}
+			if members[pk] {
+				out[k] = true
+			}
+		}
+		members = out
+	}
+	return members, lib.UpdatedAt.UnixNano(), true, nil
 }
 
 func (c *librariesConsole) browseTitles(ctx context.Context, lib core.Library, req core.Filter, q core.BrowseQuery) (core.Page, error) {
@@ -281,7 +437,9 @@ func (c *librariesConsole) handler() http.Handler {
 			// is browsed as.
 			CollectionID int64               `json:"collectionId"`
 			MediaType    core.MediaType      `json:"mediaType"`
+			CardShape    *string             `json:"cardShape"`
 			Present      *core.Presentations `json:"present"`
+			Tabs         *[]core.LibraryTab  `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
 			return
@@ -315,6 +473,23 @@ func (c *librariesConsole) handler() http.Handler {
 			}
 			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
 		}
+		if body.CardShape != nil {
+			if err = c.app.libraries.SetCardShape(r.Context(), lib.ID, *body.CardShape); err != nil {
+				_ = c.app.libraries.Delete(r.Context(), lib.ID)
+				libError(w, libErrStatus(err), "Could not set card shape")
+				return
+			}
+			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
+		}
+		if body.Tabs != nil && len(*body.Tabs) > 0 {
+			if _, err = c.app.libraries.SetTabs(r.Context(), lib.ID, *body.Tabs, nil); err != nil {
+				_ = c.app.libraries.Delete(r.Context(), lib.ID)
+				libError(w, libErrStatus(err), err.Error())
+				return
+			}
+			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
+		}
+		c.app.publishLibrarySections()
 		libJSON(w, http.StatusCreated, c.decorate(r.Context(), lib))
 	})
 	mux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -330,21 +505,25 @@ func (c *librariesConsole) handler() http.Handler {
 			return
 		}
 		var body struct {
-			CollectionID      *int64                   `json:"collectionId"`
-			Sources           *[]string                `json:"sources"`
-			Name              *string                  `json:"name"`
-			Hidden            *bool                    `json:"hidden"`
-			Sort              *int                     `json:"sort"`
-			Present           *core.Presentations      `json:"present"`
-			Rules             *[]core.LibraryExclusion `json:"rules"`
-			VisibilityDefault *string                  `json:"visibilityDefault"`
-			QualityProfile    *string                  `json:"qualityProfile"`
+			CollectionID      *int64                    `json:"collectionId"`
+			Sources           *[]string                 `json:"sources"`
+			Name              *string                   `json:"name"`
+			Hidden            *bool                     `json:"hidden"`
+			Sort              *int                      `json:"sort"`
+			CardShape         *string                   `json:"cardShape"`
+			Present           *core.Presentations       `json:"present"`
+			PresentApps       *libraries.AppSwitchPatch `json:"presentApps"`
+			Rules             *[]core.LibraryExclusion  `json:"rules"`
+			VisibilityDefault *string                   `json:"visibilityDefault"`
+			QualityProfile    *string                   `json:"qualityProfile"`
+			Tabs              *[]core.LibraryTab        `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
 			return
 		}
 		ctx := r.Context()
 		svc := c.app.libraries
+		sectionsChanged := false
 		if body.CollectionID != nil {
 			if err := svc.SetCollection(ctx, lib.ID, *body.CollectionID); err != nil {
 				libError(w, libErrStatus(err), "Could not update collection")
@@ -366,24 +545,59 @@ func (c *librariesConsole) handler() http.Handler {
 				libError(w, libErrStatus(err), "Could not rename the library")
 				return
 			}
+			sectionsChanged = true
 		}
 		if body.Hidden != nil {
 			if err := svc.SetHidden(ctx, lib.ID, *body.Hidden); err != nil {
 				libError(w, libErrStatus(err), "Could not update the library")
 				return
 			}
+			sectionsChanged = true
 		}
 		if body.Sort != nil {
 			if err := svc.SetSort(ctx, lib.ID, *body.Sort); err != nil {
 				libError(w, libErrStatus(err), "Could not reorder the library")
 				return
 			}
+			sectionsChanged = true
 		}
-		if body.Present != nil {
-			if err := svc.SetPresent(ctx, lib.ID, *body.Present); err != nil {
+		if body.CardShape != nil {
+			if err := svc.SetCardShape(ctx, lib.ID, *body.CardShape); err != nil {
+				libError(w, libErrStatus(err), "Could not update card shape")
+				return
+			}
+		}
+		if body.PresentApps != nil {
+			resolved := c.resolveLibraryPresentations(ctx, lib, nil)
+			eff, ov, err := libraries.ApplyAppSwitches(resolved, lib.PresentOverrides, *body.PresentApps)
+			if err != nil {
+				libError(w, libErrStatus(err), strings.TrimPrefix(err.Error(), libraries.ErrInvalid.Error()+": "))
+				return
+			}
+			if err := svc.SetPresentAndOverrides(ctx, lib.ID, eff, ov); err != nil {
 				libError(w, libErrStatus(err), "Could not update where the library appears")
 				return
 			}
+			sectionsChanged = true
+		} else if body.Present != nil {
+			if err := libraries.ValidatePresentations(*body.Present); err != nil {
+				libError(w, libErrStatus(err), "Could not update where the library appears")
+				return
+			}
+			resolved := c.resolveLibraryPresentations(ctx, lib, nil)
+			eff, ov, err := libraries.OverridesFromLegacyPresent(resolved, lib.PresentOverrides, *body.Present)
+			if err != nil {
+				libError(w, libErrStatus(err), strings.TrimPrefix(err.Error(), libraries.ErrInvalid.Error()+": "))
+				return
+			}
+			if lib.Source != core.LibraryPlugin {
+				eff = *body.Present
+			}
+			if err := svc.SetPresentAndOverrides(ctx, lib.ID, eff, ov); err != nil {
+				libError(w, libErrStatus(err), "Could not update where the library appears")
+				return
+			}
+			sectionsChanged = true
 		}
 		if body.QualityProfile != nil {
 			name := strings.TrimSpace(*body.QualityProfile)
@@ -413,10 +627,6 @@ func (c *librariesConsole) handler() http.Handler {
 			if body.VisibilityDefault != nil {
 				visDefault = *body.VisibilityDefault
 			}
-			if _, err := libraryfilter.CompilePolicy(rules, visDefault); err != nil {
-				libError(w, http.StatusBadRequest, "Invalid visibility rules")
-				return
-			}
 			if err := svc.SetRules(ctx, lib.ID, rules, visDefault); err != nil {
 				libError(w, libErrStatus(err), "Could not save visibility rules")
 				return
@@ -427,6 +637,23 @@ func (c *librariesConsole) handler() http.Handler {
 					return
 				}
 			}
+		}
+		if body.Tabs != nil {
+			if len(*body.Tabs) == 0 {
+				if err := svc.ResetTabs(ctx, lib.ID); err != nil {
+					libError(w, libErrStatus(err), "Could not reset library tabs")
+					return
+				}
+			} else {
+				schema := c.pluginTabSchema(ctx, lib)
+				if _, err := svc.SetTabs(ctx, lib.ID, *body.Tabs, schema); err != nil {
+					libError(w, libErrStatus(err), err.Error())
+					return
+				}
+			}
+		}
+		if sectionsChanged {
+			c.app.publishLibrarySections()
 		}
 		fresh, err := svc.Get(ctx, lib.ID)
 		if err != nil {
@@ -440,16 +667,31 @@ func (c *librariesConsole) handler() http.Handler {
 		if !ok {
 			return
 		}
-		if lib.Source == core.LibraryPlugin {
-			libError(w, http.StatusConflict, "Plugin libraries are removed with their plugin")
-			return
-		}
 		if err := c.app.libraries.Delete(r.Context(), lib.ID); err != nil {
 			libError(w, libErrStatus(err), "Could not delete the library")
 			return
 		}
+		if lib.Source == core.LibraryPlugin && c.app.pluginsRT != nil && c.app.pluginsRT.pluginitems != nil {
+			c.app.pluginsRT.pluginitems.StopKindSync(lib.PluginID, lib.KindKey)
+		}
+		if err := c.app.refreshLibraryPolicies(r.Context()); err != nil {
+			libError(w, http.StatusInternalServerError, "Could not save visibility rules")
+			return
+		}
+		c.app.publishLibrarySections()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /{id}/tabs", c.handleTabsGet)
+	mux.HandleFunc("PUT /{id}/tabs", c.handleTabsPut)
+	mux.HandleFunc("DELETE /{id}/tabs", c.handleTabsReset)
+	mux.HandleFunc("POST /{id}/tabs/preview", c.handleTabsPreview)
+	mux.HandleFunc("GET /{id}/live", c.handleLiveList)
+	mux.HandleFunc("GET /{id}/live/thumb/{hash}", c.handleLiveThumb)
+	mux.HandleFunc("POST /{id}/live/play", c.handleLivePlay)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/index.m3u8", c.handleLiveSessionPlaylist)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/relay/{segment}", c.handleLiveSessionRelay)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/resource/{resource}", c.handleLiveSessionResource)
+	mux.HandleFunc("DELETE /{id}/live/sessions/{session}", c.handleLiveSessionStop)
 	mux.HandleFunc("GET /{id}/items", c.handleItems)
 	mux.HandleFunc("GET /collection-sources", c.handleCollectionSources)
 	mux.HandleFunc("GET /catalogue-sources", c.handleCatalogueSources)
@@ -501,7 +743,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
 		}
-		policy, err := pluginitems.LibraryPolicy(r.Context(), lib)
+		policy, err := items.LibraryPolicy(r.Context(), lib)
 		if err != nil {
 			libError(w, 400, "Invalid filter")
 			return
@@ -513,7 +755,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 				libError(w, 400, "Invalid filter")
 				return
 			}
-			policy, err = libraryfilter.CompilePolicy(specs, p.Get("ruleFallback"))
+			policy, err = items.CompilePolicy(r.Context(), lib.ID, specs, p.Get("ruleFallback"))
 			if err != nil {
 				libError(w, 400, "Invalid filter")
 				return
@@ -552,9 +794,15 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 			libError(w, http.StatusBadRequest, "Could not browse this library")
 			return
 		}
-		libJSON(w, http.StatusOK, map[string]any{
+		out := map[string]any{
 			"items": kindDTOs(page.Items), "total": page.Total, "nextCursor": page.NextCursor,
-		})
+		}
+		if p.Get("ruleVisibility") == "" && p.Get("parent") == "" && len(facets) > 0 && c.app.pluginsRT != nil && c.app.pluginsRT.kindCatalog != nil {
+			if c.app.pluginsRT.kindCatalog.MaybeExpand(r.Context(), lib, frontend.ItemQuery{Filter: core.Filter{Facets: facets}}) {
+				out["expanding"] = true
+			}
+		}
+		libJSON(w, http.StatusOK, out)
 		return
 	}
 	// Builtin/filter: TMDB titles through the catalogue, scoped.
@@ -628,24 +876,57 @@ func (c *librariesConsole) handleFacets(w http.ResponseWriter, r *http.Request) 
 	field := r.PathValue("field")
 	p := r.URL.Query()
 	limit, _ := strconv.Atoi(p.Get("limit"))
-	if limit <= 0 {
-		limit = 100
-	}
 	if lib.Source == core.LibraryPlugin {
 		items, _, err := c.services()
 		if err != nil || items == nil {
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
 		}
-		values, err := items.Facets(r.Context(), lib.ID, p.Get("level"), field, limit)
+		q := p.Get("q")
+		offset, _ := strconv.Atoi(p.Get("offset"))
+		order := p.Get("order")
+		includeDeclared := p.Get("declared") == "1" || strings.EqualFold(p.Get("declared"), "true")
+		if q != "" || offset > 0 || order != "" || includeDeclared {
+			if limit <= 0 {
+				limit = 40
+			}
+			page, err := items.FieldValues(r.Context(), pluginitems.FieldValuesQuery{
+				LibraryID:       lib.ID,
+				Level:           p.Get("level"),
+				FieldKey:        field,
+				Query:           q,
+				Offset:          offset,
+				Limit:           limit,
+				Order:           order,
+				IncludeDeclared: includeDeclared,
+			})
+			if err != nil {
+				libError(w, http.StatusInternalServerError, "Could not list filter values")
+				return
+			}
+			if page.Values == nil {
+				page.Values = []pluginitems.FacetCount{}
+			}
+			libJSON(w, http.StatusOK, map[string]any{
+				"field":     field,
+				"values":    page.Values,
+				"truncated": page.More,
+				"more":      page.More,
+			})
+			return
+		}
+		if limit <= 0 {
+			limit = 500 // the store's ceiling; the response says when a field has more
+		}
+		page, err := items.Facets(r.Context(), lib.ID, p.Get("level"), field, limit)
 		if err != nil {
 			libError(w, http.StatusInternalServerError, "Could not list filter values")
 			return
 		}
-		if values == nil {
-			values = []pluginitems.FacetCount{}
+		if page.Values == nil {
+			page.Values = []pluginitems.FacetCount{}
 		}
-		libJSON(w, http.StatusOK, map[string]any{"field": field, "values": values})
+		libJSON(w, http.StatusOK, map[string]any{"field": field, "values": page.Values, "truncated": page.Truncated})
 		return
 	}
 	t := lib.MediaType
@@ -778,6 +1059,8 @@ func (c *librariesConsole) handleMatchClear(w http.ResponseWriter, r *http.Reque
 	c.handleMatchGet(w, r)
 }
 
+var matchResolveAccept = []string{"range", "download", "container", "release", "file"}
+
 func (c *librariesConsole) handleMatchRun(w http.ResponseWriter, r *http.Request) {
 	lib, ok := c.library(w, r)
 	if !ok {
@@ -797,20 +1080,186 @@ func (c *librariesConsole) handleMatchRun(w http.ResponseWriter, r *http.Request
 		libError(w, http.StatusNotFound, "Item not found")
 		return
 	}
-	threshold := pluginitems.DefaultMatchThreshold
-	if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil && rec.Decl.Match.ThresholdDefault > 0 {
-		threshold = rec.Decl.Match.ThresholdDefault
+	if item.Unavailable != nil {
+		msg := strings.TrimSpace(item.Unavailable.Detail)
+		if msg == "" {
+			msg = "This item is currently unavailable"
+		}
+		libError(w, http.StatusConflict, msg)
+		return
 	}
-	scores, err := items.MatchItem(ctx, c.app.pluginsRT.mgr, lib.PluginID, lib.KindKey, item, nil, nil, threshold)
-	if err != nil {
+	pr, prErr := c.app.pluginsRT.mgr.Get(ctx, lib.PluginID)
+	if prErr != nil || !pr.Enabled {
+		libError(w, http.StatusServiceUnavailable, "Matching needs the plugin")
+		return
+	}
+	hasResolver := pr.Manifest.HasCapability(plugins.CapKindResolver)
+	hasMatcher := pr.Manifest.HasCapability(plugins.CapMatcher)
+	if !hasResolver && !hasMatcher {
 		libError(w, http.StatusBadGateway, "The plugin could not match this item")
 		return
 	}
-	if err := items.SaveMatches(ctx, ref, "auto", scores, threshold); err != nil {
-		libError(w, http.StatusInternalServerError, "Could not save matches")
-		return
+	rec, recErr := items.GetKindByLibrary(ctx, lib.ID)
+	threshold := pluginitems.DefaultMatchThreshold
+	if recErr == nil && rec.Decl.Match.ThresholdDefault > 0 {
+		threshold = rec.Decl.Match.ThresholdDefault
+	}
+
+	var sources []core.PlayableSource
+	if hasResolver && recErr == nil && c.app.pluginsRT.kindResolver != nil {
+		resolved, rerr := c.app.pluginsRT.kindResolver.ResolveForMatch(ctx, lib, rec, item, matchResolveAccept)
+		if rerr != nil {
+			switch {
+			case errors.Is(rerr, core.ErrPreparing):
+				w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(rerr, 5)))
+				libError(w, http.StatusServiceUnavailable, "Matching is still preparing; try again shortly")
+				return
+			case errors.Is(rerr, core.ErrJobsBusy):
+				w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(rerr, 5)))
+				libError(w, http.StatusServiceUnavailable, "The plugin is busy preparing other items; try again shortly")
+				return
+			case errors.Is(rerr, core.ErrNotAvailable):
+				// Resolver found no releases/sources right now.
+			default:
+				if !hasMatcher {
+					libError(w, http.StatusBadGateway, "The plugin could not match this item")
+					return
+				}
+			}
+		} else {
+			sources = resolved
+		}
+	}
+
+	candidates := sourceCandidatesFromPlayable(sources)
+	if hasMatcher {
+		_, err := items.MatchItem(ctx, c.app.pluginsRT.mgr, lib.PluginID, lib.KindKey, item, candidates, nil, threshold)
+		if err != nil {
+			switch {
+			case errors.Is(err, core.ErrPreparing):
+				w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
+				libError(w, http.StatusServiceUnavailable, "Matching is still preparing; try again shortly")
+				return
+			case errors.Is(err, core.ErrJobsBusy):
+				w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(err, 5)))
+				libError(w, http.StatusServiceUnavailable, "The plugin is busy preparing other items; try again shortly")
+				return
+			}
+			if len(sources) > 0 {
+				scores := scoresFromResolvedSources(sources)
+				if serr := items.SaveMatches(ctx, ref, lib.PluginID, scores, threshold); serr != nil {
+					libError(w, http.StatusInternalServerError, "Could not save matches")
+					return
+				}
+				c.handleMatchGet(w, r)
+				return
+			}
+			libError(w, http.StatusBadGateway, "The plugin could not match this item")
+			return
+		}
+	} else if len(sources) > 0 {
+		scores := scoresFromResolvedSources(sources)
+		if err := items.SaveMatches(ctx, ref, lib.PluginID, scores, threshold); err != nil {
+			libError(w, http.StatusInternalServerError, "Could not save matches")
+			return
+		}
 	}
 	c.handleMatchGet(w, r)
+}
+
+func sourceCandidatesFromPlayable(sources []core.PlayableSource) []core.SourceCandidate {
+	out := make([]core.SourceCandidate, 0, len(sources))
+	for _, src := range sources {
+		out = append(out, sourceCandidateFromPlayable(src))
+	}
+	return out
+}
+
+func sourceCandidateFromPlayable(src core.PlayableSource) core.SourceCandidate {
+	var c core.SourceCandidate
+	if src.Release != nil {
+		if src.Release.Candidate != nil {
+			c = *src.Release.Candidate
+		}
+		if c.InfoHash == "" {
+			c.InfoHash = strings.TrimSpace(src.Release.InfoHash)
+		}
+		if c.Magnet == "" {
+			c.Magnet = strings.TrimSpace(src.Release.Magnet)
+		}
+		if c.TorrentURL == "" {
+			c.TorrentURL = strings.TrimSpace(src.Release.TorrentURL)
+		}
+		if c.NZBURL == "" {
+			c.NZBURL = strings.TrimSpace(src.Release.NZBURL)
+		}
+		if c.FileIndex == nil && src.Release.FileIndex != nil {
+			idx := *src.Release.FileIndex
+			c.FileIndex = &idx
+		}
+		if c.Title == "" {
+			c.Title = firstNonEmptyMatchStr(src.Release.File, src.Release.FileHint, src.Label, src.ID)
+		}
+	} else {
+		c.Title = firstNonEmptyMatchStr(src.Label, src.Path, src.URL, src.ID)
+	}
+	if c.Size <= 0 && src.Size > 0 {
+		c.Size = src.Size
+	}
+	return c
+}
+
+func scoresFromResolvedSources(sources []core.PlayableSource) []core.KindMatchScore {
+	scores := make([]core.KindMatchScore, 0, len(sources))
+	for idx, src := range sources {
+		cand := sourceCandidateFromPlayable(src)
+		ref := candidateRefForPlayable(src, cand)
+		if ref == "" {
+			continue
+		}
+		score := 1.0 - 0.05*float64(idx)
+		if score < 0.5 {
+			score = 0.5
+		}
+		var reasons []string
+		if label := firstNonEmptyMatchStr(src.Label, cand.Title, src.Pattern); label != "" {
+			reasons = []string{label}
+		}
+		scores = append(scores, core.KindMatchScore{
+			CandidateRef: ref,
+			Score:        score,
+			Reasons:      reasons,
+		})
+	}
+	return scores
+}
+
+func candidateRefForPlayable(src core.PlayableSource, c core.SourceCandidate) string {
+	switch {
+	case c.InfoHash != "":
+		return "infohash:" + strings.ToLower(c.InfoHash)
+	case c.Magnet != "":
+		return "magnet:" + c.Magnet
+	case c.TorrentURL != "":
+		return "torrent:" + c.TorrentURL
+	case c.NZBURL != "":
+		return "nzb:" + c.NZBURL
+	case strings.TrimSpace(src.ID) != "":
+		return strings.TrimSpace(src.ID)
+	case c.Title != "":
+		return c.Title
+	default:
+		return strings.TrimSpace(src.URL)
+	}
+}
+
+func firstNonEmptyMatchStr(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {
@@ -821,12 +1270,12 @@ func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {
 	if lib.Source != core.LibraryPlugin {
 		if len(lib.Sources) > 0 && c.app.catalog != nil {
 			for _, id := range lib.Sources {
-				if _, err := c.app.db.ExecContext(r.Context(), `DELETE FROM libraries_catalogue_state WHERE source_id=?`, id); err != nil {
+				if _, err := c.app.db.ExecContext(r.Context(), `UPDATE libraries_catalogue_state SET refreshed=0 WHERE source_id=?`, id); err != nil {
 					libError(w, 500, "Could not refresh source")
 					return
 				}
 			}
-			if err := c.app.catalog.BrowseSourceLibrary(r.Context(), lib.Sources); err != nil {
+			if err := c.app.catalog.BrowseSourceLibrary(withForceCatalogueSync(r.Context()), lib.Sources); err != nil {
 				libError(w, 502, err.Error())
 				return
 			}
@@ -842,22 +1291,135 @@ func (c *librariesConsole) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Force    bool `json:"force"`
-		FullWalk bool `json:"fullWalk"`
+		Force        bool `json:"force"`
+		FullWalk     bool `json:"fullWalk"`
+		KeepExisting bool `json:"keepExisting"`
 	}
 	if r.Body != nil && r.ContentLength != 0 && !decodeLibBody(w, r, &body) {
 		return
 	}
-	res, err := items.SyncKind(r.Context(), lib.PluginID, lib.KindKey, pluginitems.SyncOptions{
-		Force: body.Force, FullWalk: body.FullWalk,
-	})
-	if err != nil {
-		libError(w, http.StatusBadGateway, "Sync failed")
+	if body.KeepExisting {
+		st, err := items.KeepExistingItems(r.Context(), lib.PluginID, lib.KindKey)
+		if err != nil {
+			libError(w, http.StatusInternalServerError, "Could not update sync state")
+			return
+		}
+		libJSON(w, http.StatusOK, map[string]any{
+			"kept":    true,
+			"running": false,
+			"sync":    st,
+		})
 		return
 	}
-	libJSON(w, http.StatusOK, map[string]any{
-		"upserted": res.Upserted, "deleted": res.Deleted, "skipped": res.Skipped,
+	done, alreadyRunning := items.StartManualSync(lib.PluginID, lib.KindKey, pluginitems.SyncOptions{
+		Force:    body.Force,
+		FullWalk: body.FullWalk,
+		Manual:   true,
 	})
+	if alreadyRunning {
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		libJSON(w, http.StatusAccepted, map[string]any{
+			"started":        false,
+			"alreadyRunning": true,
+			"running":        true,
+			"sync":           st,
+		})
+		return
+	}
+	// Wait briefly so fast syncs (and immediate delete-guard aborts) return
+	// their final outcome directly while long syncs return 202 Accepted and
+	// report live progress via sync state and plugin Activity jobs.
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case run := <-done:
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		if run.Err != nil {
+			var dg *pluginitems.DeleteGuardError
+			if errors.As(run.Err, &dg) {
+				libJSON(w, http.StatusConflict, map[string]any{
+					"error":       dg.PlainMessage(),
+					"code":        "delete_guard",
+					"deleteGuard": dg.State(),
+					"sync":        st,
+				})
+				return
+			}
+			msg := strings.TrimSpace(run.Err.Error())
+			if msg == "" {
+				msg = "Sync failed"
+			}
+			libJSON(w, http.StatusBadGateway, map[string]any{
+				"error": msg,
+				"sync":  st,
+			})
+			return
+		}
+		libJSON(w, http.StatusOK, map[string]any{
+			"upserted":  run.Result.Upserted,
+			"deleted":   run.Result.Deleted,
+			"skipped":   run.Result.Skipped,
+			"protected": run.Result.Protected,
+			"running":   false,
+			"sync":      st,
+		})
+	case <-timer.C:
+		st, _ := items.SyncStateOf(r.Context(), lib.PluginID, lib.KindKey)
+		libJSON(w, http.StatusAccepted, map[string]any{
+			"started": true,
+			"running": true,
+			"sync":    st,
+		})
+	case <-r.Context().Done():
+		return
+	}
+}
+
+// pluginTextToken is a plugin "$t:key" text reference inside a label.
+var pluginTextToken = regexp.MustCompile(`\$t:[A-Za-z0-9_.\-]+`)
+
+type pluginSyncJobTracker struct {
+	mgr *plugins.Manager
+}
+
+func (t pluginSyncJobTracker) BeginSyncJob(pluginID, kindKey, routePath, label string, cancel context.CancelFunc) pluginitems.SyncJobHandle {
+	if t.mgr == nil {
+		return nil
+	}
+	if strings.Contains(label, "$t:") {
+		if resolve := t.mgr.ResolveTextFunc(context.Background(), pluginID, ""); resolve != nil {
+			label = pluginTextToken.ReplaceAllStringFunc(label, func(tok string) string {
+				if text, ok := resolve(strings.TrimPrefix(tok, "$t:")); ok {
+					return text
+				}
+				return tok
+			})
+		}
+	}
+	h := t.mgr.BeginHostJob(pluginID, "sync:"+kindKey, routePath, label, kindKey, cancel)
+	if h == nil {
+		return nil
+	}
+	return pluginSyncJobHandle{h: h}
+}
+
+func (t pluginSyncJobTracker) UpdateSyncJob(pluginID, kindKey, state, code, outcome, errMsg string) {
+	if t.mgr == nil {
+		return
+	}
+	t.mgr.UpdateHostJob(pluginID, "sync:"+kindKey, state, code, outcome, errMsg)
+}
+
+type pluginSyncJobHandle struct {
+	h *plugins.HostJobHandle
+}
+
+func (j pluginSyncJobHandle) SetProgress(progress string) {
+	j.h.SetProgress(progress)
+}
+
+func (j pluginSyncJobHandle) Finish(state, code, outcome, errMsg string) {
+	j.h.Finish(state, code, outcome, errMsg)
 }
 
 // --- per-library blob cache (spec §11 Cache row, §15.5) ---
@@ -1126,7 +1688,26 @@ func (c *librariesConsole) setupHandler() http.Handler {
 			libError(w, http.StatusInternalServerError, "Plugin items are unavailable")
 			return
 		}
+		selectedKind := r.URL.Query().Get("kind")
+		if selectedKind != "" {
+			found := false
+			for _, decl := range e.Contributes.MediaKinds {
+				if decl.Key == selectedKind && decl.HasLibrary() {
+					found = true
+				}
+			}
+			if !found {
+				libError(w, http.StatusNotFound, "Library kind not found")
+				return
+			}
+		}
 		for _, decl := range e.Contributes.MediaKinds {
+			if selectedKind != "" && decl.Key != selectedKind {
+				continue
+			}
+			if !decl.HasLibrary() {
+				continue
+			}
 			name := strings.TrimSpace(decl.Library.Name)
 			if name == "" {
 				name = strings.TrimSpace(decl.Label)
@@ -1134,9 +1715,10 @@ func (c *librariesConsole) setupHandler() http.Handler {
 			if name == "" {
 				name = rec.Name
 			}
-			lib, err := c.app.libraries.UpsertPluginLibrary(ctx, pluginID, decl.Key, libraries.PluginLibraryDecl{
+			resolved := libraries.ResolveKindPresentations(consoleKindPresentationInput(decl), core.PresentationOverrides{})
+			lib, err := c.app.libraries.RestorePluginLibrary(ctx, pluginID, decl.Key, libraries.PluginLibraryDecl{
 				Name:    name,
-				Present: decl.Present,
+				Present: resolved.Effective,
 			})
 			if err != nil {
 				libError(w, libErrStatus(err), "Could not create plugin library")
@@ -1147,6 +1729,10 @@ func (c *librariesConsole) setupHandler() http.Handler {
 				return
 			}
 		}
+		if c.app.pluginsRT.kindCatalog != nil {
+			c.app.pluginsRT.kindCatalog.RefreshPlugin(ctx, rec)
+		}
+		c.app.publishLibrarySections()
 		out, err := c.setupFor(ctx, pluginID)
 		if err != nil {
 			libError(w, http.StatusNotFound, "Plugin not found")

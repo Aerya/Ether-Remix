@@ -25,6 +25,8 @@ Customize Plex Home in `/ether/home`: select the viewer and device type when com
 
 ## Remix at a glance
 
+The November 23 Ether synchronization integrates upstream library, plugin, playback version and mobile console changes. Theme libraries, music, strict release checks and Remix settings are retained. Migrations preserve existing settings and collection origins.
+
 Episodes without a filename year are admitted after checking the local catalogue: known series year, complete title, exact episode and no known namesake. Conflicting years remain rejected; catalogue errors keep the strict check.
 
 **Layout templates** save Home, libraries and collection presentation: capture your current setup, duplicate A/B/C variants and reapply them with undo. Plex theme libraries can combine local folders and indexed sources for everyone or selected viewers; private content remains filtered per viewer. [Layouts and sharing guide](docs/pse/FEATURES.en.md#nav-personal-libraries-and-collections).

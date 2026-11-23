@@ -87,7 +87,7 @@ func (m *SpecialMapper) fetch(ctx context.Context, id string) ([]specialVideo, b
 	if err != nil {
 		return nil, false
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return nil, false

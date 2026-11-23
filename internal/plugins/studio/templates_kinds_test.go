@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
@@ -50,9 +51,7 @@ func TestKindProjectionsExplainFlattening(t *testing.T) {
 			{Key: "series"}, {Key: "volume"}, {Key: "book"}, {Key: "chapter", Playable: true},
 		},
 	}
-	decl.Present.Plex = &struct {
-		Base string `json:"base"`
-	}{Base: "show"}
+	decl.Present.Plex = &core.PlexPresentation{Base: "show"}
 	got := kindProjections(decl, plugins.Manifest{})
 	if len(got) != 1 || !strings.Contains(got[0].Summary, "flattened") || !strings.Contains(got[0].Summary, "chapter") {
 		t.Fatalf("projections = %+v, want the Plex flattening explained", got)

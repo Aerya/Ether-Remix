@@ -227,7 +227,7 @@ func TestBroadcastRegistrySharesViewersAndStopsAfterGrace(t *testing.T) {
 			t.Fatal("duplicate shared output")
 		}
 		a.close()
-		time.Sleep(61 * time.Second)
+		time.Sleep(broadcastIdle + time.Second)
 		synctest.Wait()
 		if _, err := b.output(); err != nil {
 			t.Fatal("remaining viewer lost output")
@@ -243,7 +243,7 @@ func TestBroadcastRegistrySharesViewersAndStopsAfterGrace(t *testing.T) {
 			t.Fatal("warm reopen discarded the continuous output")
 		}
 		warm.close()
-		time.Sleep(59 * time.Second)
+		time.Sleep(broadcastIdle - time.Second)
 		synctest.Wait()
 		b.broadcast.mu.Lock()
 		closed := b.broadcast.closed
@@ -396,6 +396,9 @@ func TestBroadcastPrewarmsAcrossShortElements(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer b.close()
+		b.mu.Lock()
+		b.viewers = 1
+		b.mu.Unlock()
 		b.start()
 		time.Sleep(time.Second)
 		synctest.Wait()

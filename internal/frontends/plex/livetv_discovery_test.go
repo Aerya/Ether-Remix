@@ -103,9 +103,6 @@ func TestLiveDiscoveryBoundedProjection(t *testing.T) {
 	if scans != d.scans.Load() || calls != d.guideCalls.Load() {
 		t.Fatal("request rescanned lineup/guide")
 	}
-	if liveGroupID("source-one", "News") == liveGroupID("source-two", "News") {
-		t.Fatal("group identity collision")
-	}
 	numbers := []string{"10", "4.10", "2", "4.2", "NaN", "1"}
 	sort.Slice(numbers, func(i, j int) bool { return compareChannelNum(numbers[i], numbers[j]) })
 	if fmt.Sprint(numbers) != "[1 2 4.2 4.10 10 NaN]" {

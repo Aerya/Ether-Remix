@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -52,7 +51,7 @@ func formatLanguages(rel core.Release, t *core.Title) []string {
 		}
 	}
 	if t != nil && t.Title != "" {
-		langs = dropTitleLanguages(langs, rel.Name, t.Title)
+		langs = releaseparse.DropTitleLanguages(langs, rel.Name, t.Title)
 	}
 	if len(langs) == 0 {
 		langs = []string{original}
@@ -64,28 +63,4 @@ func formatLanguages(rel core.Release, t *core.Title) []string {
 		}
 	}
 	return langs
-}
-
-// dropTitleLanguages removes languages named only by the title's own words
-// ("The German Doctor"), as Servarr does when the normalized title occurs in
-// the release name.
-func dropTitleLanguages(langs []string, name, title string) []string {
-	titleLangs := releaseparse.Parse(title).Languages
-	if len(titleLangs) == 0 {
-		return langs
-	}
-	nName, nTitle := releaseparse.NormalizeTitle(name), releaseparse.NormalizeTitle(title)
-	i := strings.Index(nName, nTitle)
-	if nTitle == "" || i < 0 {
-		return langs
-	}
-	rest := releaseparse.Parse(nName[:i] + " " + nName[i+len(nTitle):]).Languages
-	var out []string
-	for _, l := range langs {
-		if slices.Contains(titleLangs, l) && !slices.Contains(rest, l) {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out
 }

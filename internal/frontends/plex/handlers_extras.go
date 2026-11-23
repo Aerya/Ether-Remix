@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -291,7 +295,7 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parent, err := s.metadataTitle(ctx, pr, k)
-	if err == nil && !s.visibleTitle(ctx, pr.User, parent) {
+	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
 	}
 	if err != nil {
@@ -301,6 +305,9 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 	mc := s.itemContainer(parent.Type)
 	for _, e := range s.extrasFor(ctx, pr, parent, r.URL.Query().Get("extraTypes")) {
 		mc.Metadata = append(mc.Metadata, s.extraMetadata(e, parent, true))
+	}
+	if pluginExtras := s.pluginVideoExtras(ctx, pr, parent); len(pluginExtras) > 0 {
+		mc.Metadata = append(mc.Metadata, pluginExtras...)
 	}
 	mc.Size = len(mc.Metadata)
 	s.write(w, r, mc)
@@ -432,7 +439,15 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 	if resolved.Container != "" {
 		info.Container = resolved.Container
 	}
-	if s.transcoder() != nil {
+	var remoteProxy *url.URL
+	if resolved.LocalPath == "" && resolved.URL != "" {
+		var perr error
+		remoteProxy, perr = s.extraRemoteProxy(resolved.URL)
+		if perr != nil {
+			return nil, perr
+		}
+	}
+	if s.transcoder() != nil && remoteProxy == nil {
 		if pi, perr := s.transcoder().Probe(ctx, resolved.Input()); perr == nil && pi != nil && pi.Video() != nil {
 			info = *pi
 		}
@@ -441,14 +456,21 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 		info.Duration = e.Duration
 	}
 	applySelections(p, info, s.audioLanguages(pr.User))
+	extraCaps := p.caps
+	if s.cfg().Transcode.VideoTranscodingOff() {
+		extraCaps.NoVideoTranscode = true
+	}
 	var dec frontend.Decision
 	if s.transcoder() != nil {
-		dec = s.transcoder().Decide(info, p.caps, p.opts)
+		dec = s.transcoder().Decide(info, extraCaps, p.opts)
 	} else {
-		dec = frontend.DecideTranscode(info, p.caps, p.opts, frontend.TranscodePolicy{RemoteMaxBitrateKbps: s.cfg().Transcode.RemoteMaxBitrateKbps})
+		dec = frontend.DecideTranscode(info, extraCaps, p.opts, frontend.TranscodePolicy{RemoteMaxBitrateKbps: s.cfg().Transcode.RemoteMaxBitrateKbps})
 		if dec.Kind != frontend.DecisionDirectPlay {
 			return nil, errors.New("this client requires media conversion; install or configure FFmpeg")
 		}
+	}
+	if extraCaps.NoVideoTranscode && info.Video() != nil && dec.Kind == frontend.DecisionTranscode && !dec.VideoCopy {
+		return nil, frontend.ErrVideoTranscodingDisabled
 	}
 	sess := &extraSession{
 		id: p.sessionID, userID: pr.User.ID, clientID: pr.ClientID, extra: e,
@@ -464,6 +486,36 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 		caps: p.caps, opts: p.opts, offset: p.offset, updatedAt: s.now(),
 	})
 	return sess, nil
+}
+
+func (s *Server) extraRemoteProxy(rawURL string) (*url.URL, error) {
+	if s.host.DirectProxy == nil || rawURL == "" {
+		return nil, nil
+	}
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.host.DirectProxy(req)
+}
+
+func redactProxyError(err error, proxy *url.URL) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if proxy == nil {
+		return msg
+	}
+	if full, redacted := proxy.String(), proxy.Redacted(); full != "" && full != redacted {
+		msg = strings.ReplaceAll(msg, full, redacted)
+	}
+	if proxy.User != nil {
+		if pass, ok := proxy.User.Password(); ok && pass != "" {
+			msg = strings.ReplaceAll(msg, pass, "xxxxx")
+		}
+	}
+	return msg
 }
 
 // resolveExtra returns an extra's playable input; a pre-roll is its
@@ -483,6 +535,11 @@ func (s *Server) extraSessionFor(ctx context.Context, pr *Request, p *playReques
 	if s.extraPlay != nil {
 		if sess, ok := s.extraPlay.get(p.sessionID); ok && sess.extra.Key == e.Key && sess.userID == pr.User.ID {
 			if sess.resolved.Expires.IsZero() || s.now().Before(sess.resolved.Expires) {
+				if sess.resolved.LocalPath != "" {
+					if _, err := os.Stat(sess.resolved.LocalPath); err != nil {
+						return s.prepareExtra(ctx, pr, p, e)
+					}
+				}
 				return sess, nil
 			}
 		}
@@ -497,7 +554,7 @@ func (s *Server) extraDecision(w http.ResponseWriter, r *http.Request, pr *Reque
 		if ctx.Err() != nil {
 			return
 		}
-		s.log.Info("extra decision failed", "key", e.Key, "err", err)
+		// Shared fill failures are logged by the extras service.
 		msg := "This trailer could not be played right now. Try again in a moment."
 		mc := s.itemContainer(parent.Type)
 		md := s.extraMetadata(e, parent, false)
@@ -554,13 +611,24 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	}
 	sess, err := s.extraSessionFor(ctx, pr, &p, e)
 	if err != nil {
-		s.log.Info("extra start failed", "key", e.Key, "err", err)
+		// Shared fill failures are logged by the extras service.
 		s.writeErr(w, r, err)
 		return
 	}
 	dec := sess.decision
 	if dec.Kind == frontend.DecisionDirectPlay {
-		dec.Kind, dec.VideoCopy, dec.AudioCopy, dec.Container = frontend.DecisionRemux, true, true, "mpegts"
+		caps := sess.caps
+		if s.cfg().Transcode.VideoTranscodingOff() {
+			caps.NoVideoTranscode = true
+		}
+		if sess.info.Video() != nil && caps.EffectiveAlwaysEncodeVideo() {
+			opts := sess.opts
+			opts.DirectPlay = false
+			opts.DirectStream = false
+			dec = s.transcoder().Decide(sess.info, caps, opts)
+		} else {
+			dec.Kind, dec.VideoCopy, dec.AudioCopy, dec.Container = frontend.DecisionRemux, true, true, "mpegts"
+		}
 	}
 	if dec.Container == "" {
 		dec.Container = "mpegts"
@@ -591,10 +659,17 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 		proto = frontend.ProtocolHTTP
 		dec.Container = frontend.ContainerMatroska
 	}
+	if sess.resolved.LocalPath == "" && sess.resolved.URL != "" {
+		if remoteProxy, perr := s.extraRemoteProxy(sess.resolved.URL); perr != nil || remoteProxy != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return
+		}
+	}
 	hs, err := s.transcoder().StartHLS(context.WithoutCancel(ctx), frontend.HLSRequest{
 		SessionID: p.sessionID, InputURL: sess.resolved.Input(),
-		InputHeaders: sess.resolved.Headers, Info: sess.info,
-		Decision: dec, StartOffset: p.offset, Protocol: proto,
+		InputHeaders: sess.resolved.Headers, NoVideoTranscode: sess.caps.NoVideoTranscode,
+		Info: sess.info, Decision: dec, StartOffset: p.offset, Protocol: proto,
+		PMSDASH: dash && !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.log.Warn("start extra session", "session", p.sessionID, "key", e.Key, "err", err)
@@ -632,8 +707,8 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	s.writeMasterPlaylist(w, r, p.sessionID, hs, sess.info, dec)
 }
 
-// handleExtraPart serves direct-play part requests for extras by
-// proxying byte ranges from the resolved URL (or the local file).
+// handleExtraPart serves complete cached extras with byte-range support,
+// or proxies a single-file resolved URL.
 // It returns false when the part is not an extra.
 func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	id, err := strconv.ParseInt(chi.URLParam(r, "part"), 10, 64)
@@ -668,8 +743,22 @@ func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	s.prewarmFeature(ctx, pr, s.featureForExtra(pr, e), s.clientCaps(pr))
 	resolved, err := s.extrasResolve(ctx, e)
 	if err != nil {
-		s.log.Info("extra part resolve failed", "key", e.Key, "err", err)
+		// The extras service logs shared fill failures once per cooldown.
 		writeHTTPError(w, http.StatusNotFound)
+		return true
+	}
+	if resolved.LocalPath != "" {
+		file, err := os.Open(resolved.LocalPath)
+		if err != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return true
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "video/mp4")
+		if err := rangefile.ServeFile(w, r, "extra.mp4", filepath.Base(resolved.LocalPath), time.Time{}, file); err != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return true
+		}
 		return true
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
@@ -687,7 +776,8 @@ func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
-			s.log.Info("extra part proxy failed", "key", e.Key, "err", err)
+			proxyURL, _ := s.extraRemoteProxy(resolved.URL)
+			s.log.Info("extra part proxy failed", "key", e.Key, "err", redactProxyError(err, proxyURL))
 			writeHTTPError(w, http.StatusBadGateway)
 		}
 		return true
@@ -752,7 +842,7 @@ func (s *Server) prewarmFeature(ctx context.Context, pr *Request, feature fronte
 // cinemaTrailerKeys picks up to n trailers of other, unwatched movies
 // for this viewer (PMS Cinema Trailers semantics), in candidate order.
 func (s *Server) cinemaTrailerKeys(ctx context.Context, pr *Request, feature frontend.RatingKey, n int) []frontend.RatingKey {
-	if n <= 0 || !s.extrasEnabled() || s.catalog() == nil {
+	if n <= 0 || !s.extrasEnabled() || s.catalog() == nil || feature.IsPluginKey() {
 		return nil
 	}
 	if n > frontend.MaxExtras {

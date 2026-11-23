@@ -61,6 +61,7 @@ func (s *Service) probeDue(ctx context.Context) error {
 			watch = w
 		}
 	}
+	inProgressMemo := map[core.RatingKey]bool{}
 	gp := s.currentGatePolicy()
 	for _, item := range due {
 		if ctx.Err() != nil {
@@ -84,6 +85,13 @@ func (s *Service) probeDue(ctx context.Context) error {
 			continue
 		}
 		followed := t.Type == core.TypeEpisode && (watch[t.Key] || watch[t.ShowKey])
+		if !t.IsReleased(now) && followed && t.Season > 0 && t.Key.TMDB() > 0 {
+			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
+			if s.isSeasonInProgress(ctx, sk, now, nil, inProgressMemo) {
+				s.RevealSeason(ctx, sk)
+				followed = false
+			}
+		}
 		if !t.IsReleased(now) && !(followed && nowTS >= item.anchor-int64((72*time.Hour).Seconds())) {
 			nextAt := nextRetryAfter(item.anchor, item.windowEnd, nowTS)
 			if !t.Released.IsZero() && t.Released.Unix() > nowTS && (nextAt == 0 || t.Released.Unix() < nextAt) {

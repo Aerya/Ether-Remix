@@ -139,7 +139,7 @@ func (a *assembly) retainItems(sel []*rankedRow, picked map[*rankedRow][]candIte
 		previous[r.id] = r.keys
 	}
 	for _, r := range sel {
-		if r.c.source != core.RowSourceEngine || r.c.keepOrder || !inPhase(r) {
+		if r.c.source != core.RowSourceEngine || r.c.keepOrder || r.d.repeats || !inPhase(r) {
 			continue
 		}
 		eligible := map[core.RatingKey]candItem{}

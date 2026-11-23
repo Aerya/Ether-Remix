@@ -1,17 +1,20 @@
 package sessions
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 )
 
 type PreviewRequest = frontend.TrailerPreviewRequest
@@ -177,7 +180,7 @@ func (b *Broker) trailerSession(ctx context.Context, req PreviewRequest, purpose
 	if err != nil {
 		return unavailable, err
 	}
-	title, err := b.deps.Lookup(ctx, viewer, req.Device, req.Item)
+	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if err != nil {
 		return unavailable, err
 	}
@@ -243,7 +246,7 @@ func (b *Broker) trailerSession(ctx context.Context, req PreviewRequest, purpose
 	if err != nil {
 		return unavailable, err
 	}
-	title, err = b.deps.Lookup(ctx, viewer, req.Device, req.Item)
+	title, err = b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if err != nil {
 		return unavailable, err
 	}
@@ -339,11 +342,14 @@ func (b *Broker) servePreview(protocol frontend.Protocol, access *frontend.Sessi
 		deny()
 		return true
 	}
-	lookup := b.deps.MediaLookup
+	lookup := b.deps.CurrentMediaLookup
+	if lookup == nil {
+		lookup = b.deps.MediaLookup
+	}
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(r.Context(), viewer, s.public.Device, s.public.Item)
+	title, err := lookup(core.WithLiveApp(r.Context(), string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
 	if err != nil || title == nil || title.Key != s.public.Item || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		deny()
 		return true
@@ -372,7 +378,7 @@ func (b *Broker) servePreview(protocol frontend.Protocol, access *frontend.Sessi
 	defer done()
 	w.Header().Set("Content-Type", s.grant.MIMEType)
 	w.Header().Set("Cache-Control", "private, no-store")
-	http.ServeContent(w, r.WithContext(ctx), "preview.mp4", info.ModTime(), previewReadSeeker{File: file, ctx: ctx})
+	rangefile.Serve(w, r.WithContext(ctx), "preview.mp4", cmp.Or(s.source.SourceGeneration, filepath.Base(file.Name())), info.Size(), info.ModTime(), previewReadSeeker{File: file, ctx: ctx})
 	return true
 }
 

@@ -353,42 +353,53 @@ CREATE TRIGGER viewer_policy_catalog_credits_update AFTER UPDATE OF key, person_
 }
 
 // RulesInputs records what library rules (global or one viewer's) read.
-// contentRating is always policy and needs no row.
+// contentRating and title key are always policy and need no row.
 func RulesInputs(in Inputs, specs []core.LibraryExclusion) {
+	var visit func(core.CollectionRule)
+	visit = func(r core.CollectionRule) {
+		field := r.Field
+		if field == "network" {
+			field = "studio" // networks are stored with studios
+		}
+		switch field {
+		case "group":
+			var children []core.CollectionRule
+			if json.Unmarshal(r.Value, &children) == nil {
+				for _, child := range children {
+					visit(child)
+				}
+			}
+		case "genre", "keyword":
+			var values []string
+			var one string
+			if json.Unmarshal(r.Value, &one) == nil {
+				values = []string{one}
+			} else if json.Unmarshal(r.Value, &values) != nil {
+				var objs []struct {
+					Name string `json:"name"`
+				}
+				var obj struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(r.Value, &objs) == nil {
+					for _, o := range objs {
+						values = append(values, o.Name)
+					}
+				} else if json.Unmarshal(r.Value, &obj) == nil {
+					values = []string{obj.Name}
+				} else if len(r.Value) > 0 && string(r.Value) != "null" {
+					values = []string{"\x00"} // unreadable: any change
+				}
+			}
+			in.Field(field, values...)
+		case "contentRating", "title":
+		default:
+			in.Field(field)
+		}
+	}
 	for _, spec := range specs {
 		for _, r := range spec.Rules {
-			field := r.Field
-			if field == "network" {
-				field = "studio" // networks are stored with studios
-			}
-			switch field {
-			case "genre", "keyword":
-				var values []string
-				var one string
-				if json.Unmarshal(r.Value, &one) == nil {
-					values = []string{one}
-				} else if json.Unmarshal(r.Value, &values) != nil {
-					var objs []struct {
-						Name string `json:"name"`
-					}
-					var obj struct {
-						Name string `json:"name"`
-					}
-					if json.Unmarshal(r.Value, &objs) == nil {
-						for _, o := range objs {
-							values = append(values, o.Name)
-						}
-					} else if json.Unmarshal(r.Value, &obj) == nil {
-						values = []string{obj.Name}
-					} else if len(r.Value) > 0 && string(r.Value) != "null" {
-						values = []string{"\x00"} // unreadable: any change
-					}
-				}
-				in.Field(field, values...)
-			case "contentRating":
-			default:
-				in.Field(field)
-			}
+			visit(r)
 		}
 	}
 }

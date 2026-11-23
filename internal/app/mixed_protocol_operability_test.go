@@ -649,6 +649,19 @@ func TestMixedProtocolOperability(t *testing.T) {
 		if code >= 300 {
 			t.Fatalf("silo play %d %s", code, body)
 		}
+		var siloStart struct {
+			Plan struct {
+				Stream struct {
+					URL string `json:"url"`
+				} `json:"stream"`
+			} `json:"playback_plan"`
+		}
+		if json.Unmarshal(body, &siloStart) != nil || siloStart.Plan.Stream.URL == "" {
+			t.Fatalf("silo stream url %s", body)
+		}
+		if code, body = call(http.MethodGet, "/silo"+siloStart.Plan.Stream.URL, "", silo); code >= 400 {
+			t.Fatalf("silo media %d %s", code, body)
+		}
 
 		code, body = call(http.MethodGet, "/stremio/"+tokens["stremio"]+"/stream/movie/tmdb:999.json", "", nil)
 		var streams struct {

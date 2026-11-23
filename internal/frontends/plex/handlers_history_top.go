@@ -10,24 +10,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func (s *Server) historyStatsQuery(r *http.Request) (frontend.HistoryQuery, map[int64]frontend.User, error) {
+func (s *Server) historyStatsQuery(r *http.Request) (frontend.HistoryQuery, *plexAccountDir, error) {
 	pr := FromContext(r.Context())
 	q := frontend.HistoryQuery{Limit: 100}
-	users := map[int64]frontend.User{}
-	if pr.User != nil {
-		users[pr.User.ID] = *pr.User
-		if !pr.User.IsOwner {
-			q.UserID = pr.User.ID
-		}
+	if pr.User != nil && !pr.User.IsOwner {
+		q.UserID = pr.User.ID
 	}
-	if pr.User != nil && pr.User.IsOwner && s.getHost().Identity != nil {
-		us, err := s.listUsers(r.Context())
-		if err != nil {
-			return q, nil, err
-		}
-		for _, u := range us {
-			users[u.ID] = u
-		}
+	dir, err := s.newPlexAccountDirErr(r.Context(), pr.User, pr.User != nil && pr.User.IsOwner)
+	if err != nil {
+		return q, nil, err
 	}
 	values := r.URL.Query()
 	if values.Has("accountID") {
@@ -35,11 +26,10 @@ func (s *Server) historyStatsQuery(r *http.Request) (frontend.HistoryQuery, map[
 		if err != nil {
 			return q, nil, err
 		}
-		q.UserID = -1
-		for uid, u := range users {
-			if u.PlexID == id {
-				q.UserID = uid
-			}
+		if entry, ok := dir.resolve(r.Context(), id); ok {
+			q.UserID = entry.user.ID
+		} else {
+			q.UserID = -1
 		}
 	}
 	for _, field := range []struct {
@@ -61,7 +51,7 @@ func (s *Server) historyStatsQuery(r *http.Request) (frontend.HistoryQuery, map[
 		}
 		q.Limit = int(max(0, min(n, 500)))
 	}
-	return q, users, nil
+	return q, dir, nil
 }
 func (s *Server) handleHistoryTop(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(r.Context())
@@ -71,7 +61,7 @@ func (s *Server) handleHistoryTop(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, 400)
 		return
 	}
-	q, users, err := s.historyStatsQuery(r)
+	q, dir, err := s.historyStatsQuery(r)
 	if err != nil {
 		writeHTTPError(w, 500)
 		return
@@ -133,8 +123,8 @@ func (s *Server) handleHistoryTop(w http.ResponseWriter, r *http.Request) {
 		md.GlobalViewCount = model.Ptr(h.Count)
 		md.UserCount = model.Ptr(len(h.Users))
 		for _, uid := range h.Users {
-			if u, ok := users[uid]; ok {
-				md.TopUsers = append(md.TopUsers, model.HistoryUser{ID: u.PlexID})
+			if entry, ok := dir.user(r.Context(), uid); ok {
+				md.TopUsers = append(md.TopUsers, model.HistoryUser{ID: entry.canonical})
 			}
 		}
 		if kind == frontend.KindShow || kind == frontend.KindSeason {
@@ -164,7 +154,7 @@ func (s *Server) handleHistoryTopUsers(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, 500)
 		return
 	}
-	q, users, err := s.historyStatsQuery(r)
+	q, dir, err := s.historyStatsQuery(r)
 	if err != nil {
 		writeHTTPError(w, 500)
 		return
@@ -177,11 +167,11 @@ func (s *Server) handleHistoryTopUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, h := range rows {
-			u, ok := users[h.Users[0]]
+			entry, ok := dir.user(r.Context(), h.Users[0])
 			if !ok {
 				continue
 			}
-			mc.Account = append(mc.Account, model.Account{ID: u.PlexID, Name: u.Username, GlobalViewCount: model.Ptr(h.Count)})
+			mc.Account = append(mc.Account, model.Account{ID: entry.canonical, Name: plexAccountName(entry.user), GlobalViewCount: model.Ptr(h.Count)})
 		}
 	}
 	mc.Size = len(mc.Account)

@@ -167,6 +167,7 @@ interface MediaKindDecl {
   levels?: { key: string; label?: string }[];
   present?: {
     adapterOnly?: boolean;
+    vela?: { type?: string };
     plex?: { base?: string };
     mediaBrowser?: { collectionType?: string };
     stremio?: { type?: string };
@@ -186,6 +187,11 @@ function kindProjections(decl: MediaKindDecl): { protocol: string; summary: stri
   const out: { protocol: string; summary: string }[] = [];
   const levels = decl.levels ?? [];
   const p = decl.present ?? {};
+  if (p.vela)
+    out.push({
+      protocol: "Vela",
+      summary: t("Shows as a {type} library", { type: p.vela.type ?? "" }),
+    });
   if (p.plex) {
     const base =
       p.plex.base === "movie"

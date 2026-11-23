@@ -13,14 +13,16 @@ import (
 // profile. The values come from the capability registry. Profile-extra
 // directives refine them afterwards.
 type baseCaps struct {
-	video        []string
-	audio        []string
-	containers   []string
-	maxHeight    int
-	hdr10        bool
-	dv           bool
-	dvOff        bool // owner override turned Dolby Vision off
-	heightLocked bool
+	id                string
+	video             []string
+	audio             []string
+	containers        []string
+	maxHeight         int
+	hdr10             bool
+	dv                bool
+	dvOff             bool // owner override turned Dolby Vision off
+	alwaysEncodeVideo bool // owner override disabled video copy on streams
+	heightLocked      bool
 }
 
 // ClientCaps derives frontend.ClientCaps for the request. remoteMaxKbps caps
@@ -29,8 +31,8 @@ func (pr *Request) ClientCaps(remoteMaxKbps int) frontend.ClientCaps {
 	return pr.ClientCapsWith(remoteMaxKbps, nil)
 }
 
-// ClientCapsWith is ClientCaps with owner registry overrides applied before
-// the request's own profile and capability headers.
+// ClientCapsWith applies registry defaults, runtime declarations, then any
+// explicitly forced owner facts. Remote server limits are applied last.
 func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.ClientCapabilityOverride) frontend.ClientCaps {
 	if pr == nil {
 		return frontend.ClientCaps{}
@@ -52,6 +54,7 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 		ClientID:                   pr.ClientID,
 		Version:                    pr.Version,
 		MaxHeight:                  b.maxHeight,
+		MaxHeightSource:            baseMaxHeightSource(pr, b),
 		HDR10:                      b.hdr10,
 		DolbyVision:                b.dv,
 		VideoCodecs:                slices.Clone(b.video),
@@ -68,7 +71,10 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 	if b.dvOff {
 		c.DolbyVisionBaseOnly = true
 	}
-	dv, subs, dvChanged, subsChanged := frontend.PolicyStamp(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
+	if b.alwaysEncodeVideo {
+		c.AlwaysEncodeVideo = true
+	}
+	dv, subs, dvChanged, subsChanged := frontend.PolicyStamp(pr.Product, pr.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, overrides)
 	if dvChanged {
 		c.DVProfiles = dv
 	}
@@ -82,18 +88,55 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 		ev := applyProfileExtra(&c, pr.ProfileExtra)
 		promoteWebHDRFromProfile(&c, pr.Product, ev)
 	}
+	c = frontend.ApplyForcedOverrides(c, pr.Model, overrides)
+	if pr.ClientCapabilities == "" && pr.ProfileExtra == "" {
+		c.ForcedOverrideApplied = false
+	}
 	if c.Remote && remoteMaxKbps > 0 && (c.MaxBitrateKbps == 0 || c.MaxBitrateKbps > remoteMaxKbps) {
-		if c.MaxBitrateKbps == 0 {
-			c.DefaultRemoteBitrate = true
-		}
+		c.DefaultRemoteBitrate = true
 		c.MaxBitrateKbps = remoteMaxKbps
 	}
 	return c
 }
 
 func playbackCaps(pr *Request, overrides []frontend.ClientCapabilityOverride) baseCaps {
-	got := frontend.PlaybackDefaultsFor(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, overrides)
-	return baseCaps{video: got.Video, audio: got.Audio, containers: got.Containers, maxHeight: got.MaxHeight, hdr10: got.HDR10, dv: got.DolbyVision, dvOff: got.DolbyVisionOff, heightLocked: got.HeightLocked}
+	got := frontend.PlaybackDefaultsFor(pr.Product, pr.Platform, pr.Device, pr.DeviceName, pr.Model, pr.Version, overrides)
+	return baseCaps{id: got.ID, video: got.Video, audio: got.Audio, containers: got.Containers, maxHeight: got.MaxHeight, hdr10: got.HDR10, dv: got.DolbyVision, dvOff: got.DolbyVisionOff, alwaysEncodeVideo: got.AlwaysEncodeVideo, heightLocked: got.HeightLocked}
+}
+
+func baseMaxHeightSource(pr *Request, b baseCaps) string {
+	if b.maxHeight <= 0 {
+		return ""
+	}
+	if b.heightLocked {
+		return "App compatibility override"
+	}
+	if b.id == "generic" {
+		if pr != nil && pr.Product == "Native player" {
+			if plat := strings.TrimSpace(pr.Platform); plat != "" {
+				return "generic fallback profile (no client headers on /library/parts request; user-agent " + strconv.Quote(plat) + ")"
+			}
+			return "generic fallback profile (no client headers on /library/parts request)"
+		}
+		if pr != nil {
+			if p := strings.TrimSpace(pr.Product); p != "" {
+				return "generic registry fallback for unknown client " + strconv.Quote(p)
+			}
+		}
+		return "generic registry fallback (no client identity reported)"
+	}
+	if b.id != "" {
+		return "registry preset " + strconv.Quote(b.id)
+	}
+	return ""
+}
+
+func formatLimitationSource(scope, scopeName, name, val string) string {
+	sn := strings.TrimSpace(scopeName)
+	if sn != "" && sn != "*" {
+		return "X-Plex-Client-Profile-Extra add-limitation(scope=" + scope + ", scopeName=" + sn + ", " + name + "=" + val + ")"
+	}
+	return "X-Plex-Client-Profile-Extra add-limitation(scope=" + scope + ", " + name + "=" + val + ")"
 }
 
 // declaredCaps is the registry plus this request's headers, before a quality
@@ -109,29 +152,31 @@ func (s *Server) declaredCaps(pr *Request) frontend.ClientCaps {
 // from X-Plex-Client-Profile-Extra. Omission is not support: listing hevc
 // alone never implies HDR10 (Braedon review of #136).
 type profileExtraEvidence struct {
-	affirmativeHEVC  bool
-	affirmativeHDR10 bool // bitDepth≥10 and/or colorTrc allow-list includes smpte2084
-	hdrDenied        bool
+	affirmativeHEVC        bool
+	affirmativeHDR10       bool // bitDepth>=10 and/or colorTrc allow-list includes smpte2084/arib-std-b67
+	affirmativeBitDepth10  bool
+	affirmativeColorTrcHDR bool
+	hdrDenied              bool
 }
 
-// promoteWebHDRFromProfile enables HDR10 remux for Plex Web when profile-extra
-// affirmatively listed hevc and also claimed 10-bit/PQ, with no HDR denial.
-// Matches the Profile-Extra Plex Web sends once it knows the title is HDR10
-// HEVC (bitDepth upperBound=10 and/or colorTrc allow-list including smpte2084).
-// HEVC alone never implies HDR10 (Braedon #136); browser name alone never
-// promotes. An early thin Profile-Extra may still tone-map; a later start with
-// the full report remuxes.
+// promoteWebHDRFromProfile enables HDR10 when profile-extra affirmatively
+// declares HEVC and HDR capability without an effective HDR denial.
+// Plex Web promotes on HEVC + (bitDepth>=10 or PQ/HLG colorTrc). Non-web
+// clients keep registry defaults unless they explicitly declare HEVC +
+// bitDepth>=10 + PQ/HLG colorTrc (Bedrock Generic profiles).
 func promoteWebHDRFromProfile(c *frontend.ClientCaps, product string, ev profileExtraEvidence) {
-	if !strings.Contains(strings.ToLower(product), "plex web") {
+	if strings.Contains(strings.ToLower(product), "plex web") {
+		if ev.affirmativeHEVC {
+			c.VideoCodecs = addUnique(c.VideoCodecs, "hevc")
+		}
+		if ev.affirmativeHEVC && ev.affirmativeHDR10 && !ev.hdrDenied {
+			c.HDR10 = true
+		}
 		return
 	}
-	if ev.affirmativeHEVC {
-		c.VideoCodecs = addUnique(c.VideoCodecs, "hevc")
+	if ev.affirmativeHEVC && ev.affirmativeBitDepth10 && ev.affirmativeColorTrcHDR && !ev.hdrDenied {
+		c.HDR10 = true
 	}
-	if !ev.affirmativeHEVC || !ev.affirmativeHDR10 || ev.hdrDenied {
-		return
-	}
-	c.HDR10 = true
 }
 
 // limitationDeniesHDR reports profile-extra limits that mean this client
@@ -156,23 +201,42 @@ func limitationDeniesHDR(a map[string]string) bool {
 	return false
 }
 
-// limitationAffirmsHDR10 reports profile-extra limits that affirmatively claim
-// 10-bit and/or PQ (HDR10) support — the signals PMS Firefox sent when it
-// Direct Streamed an HDR10 HEVC remux.
-func limitationAffirmsHDR10(a map[string]string) bool {
-	sn := normalizeCodec(a["scopeName"])
-	if sn != "hevc" && sn != "av1" && sn != "*" && sn != "" {
+// limitationScopesHDRCodec and the helpers below read profile-extra limits
+// that affirmatively claim 10-bit and/or PQ (HDR10) support, the signals PMS
+// Firefox sent when it Direct Streamed an HDR10 HEVC remux.
+func limitationScopesHDRCodec(scopeName string) bool {
+	sn := normalizeCodec(scopeName)
+	if sn == "hevc" || sn == "av1" || sn == "*" || sn == "" {
+		return true
+	}
+	for _, part := range splitList(scopeName) {
+		if part == "hevc" || part == "av1" {
+			return true
+		}
+	}
+	return false
+}
+
+func limitationAffirmsBitDepth10(a map[string]string) bool {
+	if !limitationScopesHDRCodec(a["scopeName"]) {
 		return false
 	}
-	name, typ, scope := a["name"], a["type"], a["scope"]
-	val := limitationValue(a)
-	if name == "video.bitDepth" && typ == "upperBound" && scope == "videoCodec" {
-		n, err := strconv.Atoi(val)
+	scope := a["scope"]
+	if a["name"] == "video.bitDepth" && a["type"] == "upperBound" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
+		n, err := strconv.Atoi(limitationValue(a))
 		return err == nil && n >= 10
 	}
-	// PMS: scope=videoTranscodeTarget&type=match&name=video.colorTrc&list=...|smpte2084
-	if name == "video.colorTrc" && typ == "match" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
-		return strings.Contains(val, "smpte2084")
+	return false
+}
+
+func limitationAffirmsColorTrcHDR(a map[string]string) bool {
+	if !limitationScopesHDRCodec(a["scopeName"]) {
+		return false
+	}
+	scope := a["scope"]
+	if a["name"] == "video.colorTrc" && a["type"] == "match" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
+		val := limitationValue(a)
+		return strings.Contains(val, "smpte2084") || strings.Contains(val, "arib-std-b67")
 	}
 	return false
 }
@@ -192,21 +256,31 @@ func (s *Server) clientCaps(pr *Request) frontend.ClientCaps {
 	return s.clientCapsForKey(pr, 0)
 }
 
+func (s *Server) stampViewerTranscoding(u *frontend.User, caps *frontend.ClientCaps) {
+	if s == nil || u == nil || caps == nil {
+		return
+	}
+	if policy, ok := s.policy().(frontend.VideoTranscodingPolicy); ok && policy.VideoTranscodingDisabled(u) {
+		caps.NoVideoTranscode = true
+	}
+}
+
 func (s *Server) clientCapsForKey(pr *Request, key frontend.RatingKey) frontend.ClientCaps {
 	cfg := s.cfg()
 	caps := s.declaredCaps(pr)
 	h := s.getHost()
-	if h.Capabilities == nil {
-		return caps
+	if h.Capabilities != nil {
+		media := frontend.MediaAny
+		switch key.Kind() {
+		case frontend.KindMovie:
+			media = frontend.MediaMovie
+		case frontend.KindEpisode:
+			media = frontend.MediaTV
+		}
+		caps = h.Capabilities.ApplyClientRules(cfg.Quality, caps, pr.User, media)
 	}
-	media := frontend.MediaAny
-	switch key.Kind() {
-	case frontend.KindMovie:
-		media = frontend.MediaMovie
-	case frontend.KindEpisode:
-		media = frontend.MediaTV
-	}
-	return h.Capabilities.ApplyClientRules(cfg.Quality, caps, pr.User, media)
+	s.stampViewerTranscoding(pr.User, &caps)
+	return caps
 }
 
 // Directive is one parsed X-Plex-Client-Profile-Extra directive, e.g.
@@ -304,8 +378,77 @@ func addUnique(xs []string, add ...string) []string {
 	return xs
 }
 
+// isTranscodeTargetLimitation reports whether an add-limitation directive
+// constrains a segmented/transcode output target rather than direct-play
+// decoding. Such declarations must never cap direct-play release selection.
+func isTranscodeTargetLimitation(a map[string]string) bool {
+	switch a["scope"] {
+	case "videoTranscodeTarget", "transcodeTarget":
+		return true
+	}
+	if proto := strings.TrimSpace(a["protocol"]); proto != "" && proto != "*" && !strings.EqualFold(proto, frontend.ProtocolHTTP) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(a["context"])) {
+	case "transcode", "conversion":
+		return true
+	}
+	return false
+}
+
+type heightBound struct {
+	height int
+	source string
+}
+
+func updateHeightBound(cur heightBound, h int, src string, replace bool) heightBound {
+	if h <= 0 {
+		return cur
+	}
+	if replace || cur.height == 0 || h < cur.height {
+		return heightBound{height: h, source: src}
+	}
+	return cur
+}
+
+func effectiveAxisBound(h, w heightBound) heightBound {
+	switch {
+	case h.height > 0 && w.height > 0:
+		if w.height < h.height {
+			return w
+		}
+		return h
+	case h.height > 0:
+		return h
+	default:
+		return w
+	}
+}
+
+func widthBoundHeight(w int) int {
+	switch {
+	case w <= 0:
+		return 0
+	case w <= 1280:
+		return 720
+	case w <= 1920:
+		return 1080
+	case w <= 3840:
+		return 2160
+	default:
+		return w * 9 / 16
+	}
+}
+
 func applyProfileExtra(c *frontend.ClientCaps, extra string) profileExtraEvidence {
 	var ev profileExtraEvidence
+	wildcardBitDepth := 0
+	codecBitDepth := map[string]int{}
+	var wildH, wildW heightBound
+	codecH := map[string]heightBound{}
+	codecW := map[string]heightBound{}
+	levelSource := ""
+	colorTrcDenied := false
 	for _, d := range ParseProfileExtra(extra) {
 		a := d.Args
 		switch d.Verb {
@@ -351,19 +494,153 @@ func applyProfileExtra(c *frontend.ClientCaps, extra string) profileExtraEvidenc
 			c.AudioCodecs = addUnique(c.AudioCodecs, splitList(a["audioCodec"])...)
 			c.Containers = addUnique(c.Containers, splitList(a["container"])...)
 		case "add-limitation":
+			if limitationAffirmsBitDepth10(a) {
+				ev.affirmativeBitDepth10 = true
+				ev.affirmativeHDR10 = true
+			}
+			if limitationAffirmsColorTrcHDR(a) {
+				ev.affirmativeColorTrcHDR = true
+				ev.affirmativeHDR10 = true
+			}
+			if isTranscodeTargetLimitation(a) {
+				continue
+			}
 			if (strings.EqualFold(c.Product, "PM4K") || strings.EqualFold(c.Product, "Plex for Kodi")) && a["scope"] == "videoAudioCodec" {
 				n, err := strconv.Atoi(limitationValue(a))
 				if err == nil && n > 0 && ((a["name"] == "audio.channels" && n <= 32) || (a["name"] == "audio.bitrate" && n <= 100000) || (a["name"] == "audio.samplingRate" && n <= 192000)) && (a["type"] == "upperBound" || a["type"] == "lowerBound") && (a["name"] == "audio.channels" || a["name"] == "audio.bitrate" || a["name"] == "audio.samplingRate") {
 					c.AudioLimits = append(c.AudioLimits, frontend.AudioLimit{Codec: normalizeCodec(a["scopeName"]), Name: a["name"], Type: a["type"], Value: n})
 				}
 			}
-			if limitationDeniesHDR(a) {
-				ev.hdrDenied = true
+			if a["scope"] == "videoCodec" && a["type"] == "upperBound" {
+				val := limitationValue(a)
+				if n, err := strconv.Atoi(val); err == nil && n > 0 {
+					repl := strings.EqualFold(a["replace"], "true")
+					rawSN := strings.TrimSpace(a["scopeName"])
+					switch a["name"] {
+					case "video.height":
+						src := formatLimitationSource(a["scope"], a["scopeName"], a["name"], val)
+						if rawSN == "" || rawSN == "*" {
+							wildH = updateHeightBound(wildH, n, src, repl)
+						} else {
+							for _, codec := range splitList(rawSN) {
+								codecH[codec] = updateHeightBound(codecH[codec], n, src, repl)
+							}
+						}
+					case "video.width":
+						h := widthBoundHeight(n)
+						src := formatLimitationSource(a["scope"], a["scopeName"], a["name"], val)
+						if rawSN == "" || rawSN == "*" {
+							wildW = updateHeightBound(wildW, h, src, repl)
+						} else {
+							for _, codec := range splitList(rawSN) {
+								codecW[codec] = updateHeightBound(codecW[codec], h, src, repl)
+							}
+						}
+					case "video.bitDepth":
+						if rawSN == "" || rawSN == "*" {
+							if repl || wildcardBitDepth == 0 || n < wildcardBitDepth {
+								wildcardBitDepth = n
+							}
+						} else {
+							for _, codec := range splitList(rawSN) {
+								if codec == "hevc" || codec == "av1" {
+									if repl || codecBitDepth[codec] == 0 || n < codecBitDepth[codec] {
+										codecBitDepth[codec] = n
+									}
+								}
+							}
+						}
+					}
+				}
 			}
-			if limitationAffirmsHDR10(a) {
-				ev.affirmativeHDR10 = true
+			if a["scope"] == "videoCodec" && a["name"] == "video.colorTrc" && a["type"] == "notMatch" && limitationScopesHDRCodec(a["scopeName"]) && strings.Contains(limitationValue(a), "smpte2084") {
+				colorTrcDenied = true
 			}
-			applyLimitation(c, a)
+			if src := applyLimitation(c, a); src != "" {
+				levelSource = src
+			}
+		}
+	}
+	wild := effectiveAxisBound(wildH, wildW)
+	codecBound := map[string]heightBound{}
+	for codec, b := range codecH {
+		codecBound[codec] = effectiveAxisBound(b, codecW[codec])
+	}
+	for codec, b := range codecW {
+		if _, ok := codecBound[codec]; !ok {
+			codecBound[codec] = b
+		}
+	}
+	for codec, b := range codecBound {
+		if b.height > 0 {
+			if c.VideoMaxHeights == nil {
+				c.VideoMaxHeights = map[string]int{}
+			}
+			if old := c.VideoMaxHeights[codec]; old == 0 || b.height < old {
+				c.VideoMaxHeights[codec] = b.height
+			}
+		}
+	}
+	var chosen heightBound
+	switch {
+	case wild.height > 0:
+		if len(c.VideoCodecs) == 0 {
+			chosen = wild
+		} else {
+			for _, codec := range c.VideoCodecs {
+				b := wild
+				if cb, ok := codecBound[codec]; ok && cb.height > 0 {
+					b = cb
+				}
+				if b.height > chosen.height {
+					chosen = b
+				}
+			}
+			if chosen.height > wild.height {
+				for _, codec := range c.VideoCodecs {
+					if _, ok := codecBound[codec]; !ok {
+						if c.VideoMaxHeights == nil {
+							c.VideoMaxHeights = map[string]int{}
+						}
+						if old := c.VideoMaxHeights[codec]; old == 0 || wild.height < old {
+							c.VideoMaxHeights[codec] = wild.height
+						}
+					}
+				}
+			}
+		}
+	case len(codecBound) > 0:
+		for _, b := range codecBound {
+			if b.height > chosen.height {
+				chosen = b
+			}
+		}
+	}
+	if chosen.height > 0 && (c.MaxHeight == 0 || chosen.height < c.MaxHeight) {
+		c.MaxHeight = chosen.height
+		c.ExplicitMaxHeight = true
+		c.MaxHeightSource = chosen.source
+	}
+	if levelSource != "" {
+		if ceiling := decoderCeiling(*c); ceiling > 0 && (c.MaxHeight == 0 || ceiling < c.MaxHeight) {
+			c.MaxHeight = ceiling
+			c.ExplicitMaxHeight = true
+			c.MaxHeightSource = levelSource
+		}
+	}
+	bitDepthDeniesHDR := false
+	switch {
+	case codecBitDepth["hevc"] > 0 || codecBitDepth["av1"] > 0:
+		bitDepthDeniesHDR = codecBitDepth["hevc"] < 10 && codecBitDepth["av1"] < 10
+	case wildcardBitDepth > 0:
+		bitDepthDeniesHDR = wildcardBitDepth < 10
+	}
+	if bitDepthDeniesHDR || colorTrcDenied {
+		ev.hdrDenied = true
+		c.HDR10 = false
+		c.ExplicitNoHDR = true
+		if bitDepthDeniesHDR {
+			c.DolbyVision = false
 		}
 	}
 	return ev
@@ -421,6 +698,83 @@ func streamingAudioTarget(extra, protocol string) []string {
 	return codecs
 }
 
+// subtitleProfileTargetFormat returns the HTTP subtitle transcode format
+// ("ass", "srt", or "vtt") declared in X-Plex-Client-Profile-Extra via
+// type=subtitleProfile directives (e.g. Plex for LG's container=srt&subtitleCodec=srt),
+// or "" when none is declared.
+func subtitleProfileTargetFormat(extra string) string {
+	target := ""
+	for _, d := range ParseProfileExtra(extra) {
+		switch d.Verb {
+		case "add-transcode-target", "add-transcode-target-codec", "append-transcode-target-codec":
+		default:
+			continue
+		}
+		a := d.Args
+		if a["type"] != "subtitleProfile" {
+			continue
+		}
+		if ctx := a["context"]; ctx != "" && ctx != "all" && ctx != "streaming" {
+			continue
+		}
+		if proto := a["protocol"]; proto != "" && !strings.EqualFold(proto, frontend.ProtocolHTTP) {
+			continue
+		}
+		if strings.EqualFold(a["replace"], "true") {
+			target = ""
+		}
+		if target != "" {
+			continue
+		}
+		for _, field := range []string{a["subtitleCodec"], a["container"]} {
+			for _, codec := range splitList(field) {
+				if f := normalizeSoftSubtitleFormat(codec); f != "" {
+					target = f
+					break
+				}
+			}
+			if target != "" {
+				break
+			}
+		}
+	}
+	return target
+}
+
+func directMusicProfile(extra string) (containers, codecs []string) {
+	for _, d := range ParseProfileExtra(extra) {
+		if d.Verb != "add-direct-play-profile" || d.Args["type"] != "musicProfile" {
+			continue
+		}
+		containers = addUnique(containers, splitList(d.Args["container"])...)
+		codecs = addUnique(codecs, splitList(d.Args["audioCodec"])...)
+	}
+	return containers, codecs
+}
+
+func streamingMusicTarget(extra, protocol string) (containers, codecs []string) {
+	for _, d := range ParseProfileExtra(extra) {
+		switch d.Verb {
+		case "add-transcode-target", "add-transcode-target-codec", "append-transcode-target-codec":
+		default:
+			continue
+		}
+		a := d.Args
+		if a["type"] != "musicProfile" {
+			continue
+		}
+		if context := a["context"]; context != "" && context != "all" && context != "streaming" {
+			continue
+		}
+		if target := a["protocol"]; target != "" && !strings.EqualFold(target, protocol) {
+			continue
+		}
+		containers = addUnique(containers, splitList(a["container"])...)
+		codecs = addUnique(codecs, splitList(a["audioCodec"])...)
+	}
+	return containers, codecs
+}
+
 // h264LevelMaxHeight maps an H.264 level*10 upper bound (e.g. 40, 41, 42) to
 // the tallest standard frame height that level's macroblock ceiling supports.
 // Levels >= 5.0 support 4K and return 0 (unbounded).
@@ -439,10 +793,10 @@ func h264LevelMaxHeight(level int) int {
 	}
 }
 
-func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
+func applyLimitation(c *frontend.ClientCaps, a map[string]string) string {
 	scope := a["scope"]
-	if scope != "videoCodec" && scope != "videoAudioCodec" && scope != "transcodeTarget" && scope != "videoContainer" {
-		return
+	if scope != "videoCodec" && scope != "videoAudioCodec" && scope != "videoContainer" {
+		return ""
 	}
 	name := a["name"]
 	typ := a["type"]
@@ -450,25 +804,6 @@ func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
 	val := limitationValue(a)
 	n, numErr := strconv.Atoi(val)
 	switch {
-	case scope == "videoCodec" && name == "video.height" && typ == "upperBound" && numErr == nil && n > 0:
-		if c.MaxHeight == 0 || n < c.MaxHeight {
-			c.MaxHeight = n
-			c.ExplicitMaxHeight = true
-		}
-	case scope == "videoCodec" && name == "video.width" && typ == "upperBound" && numErr == nil && n > 0:
-		h := n * 9 / 16
-		switch {
-		case n <= 1280:
-			h = 720
-		case n <= 1920:
-			h = 1080
-		case n <= 3840:
-			h = 2160
-		}
-		if c.MaxHeight == 0 || h < c.MaxHeight {
-			c.MaxHeight = h
-			c.ExplicitMaxHeight = true
-		}
 	case scope == "videoCodec" && name == "video.level" && typ == "upperBound" && numErr == nil && n > 0:
 		sn := normalizeCodec(a["scopeName"])
 		if sn != "" && sn != "*" {
@@ -486,10 +821,7 @@ func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
 					if old := c.VideoMaxHeights["h264"]; old == 0 || h < old {
 						c.VideoMaxHeights["h264"] = h
 					}
-					if ceiling := decoderCeiling(*c); ceiling > 0 && (c.MaxHeight == 0 || ceiling < c.MaxHeight) {
-						c.MaxHeight = ceiling
-						c.ExplicitMaxHeight = true
-					}
+					return formatLimitationSource(scope, a["scopeName"], name, val)
 				}
 			}
 		}
@@ -497,15 +829,6 @@ func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
 		c.DefaultRemoteBitrate = false
 		if c.MaxBitrateKbps == 0 || n < c.MaxBitrateKbps {
 			c.MaxBitrateKbps = n
-		}
-	case scope == "videoCodec" && name == "video.bitDepth" && typ == "upperBound" && numErr == nil:
-		// 8-bit only for the scoped codec: no HDR on that codec. HDR is
-		// effectively HEVC/AV1 only, so an 8-bit cap on either kills HDR.
-		sn := normalizeCodec(a["scopeName"])
-		if n < 10 && (sn == "hevc" || sn == "av1" || sn == "*") {
-			c.HDR10 = false
-			c.ExplicitNoHDR = true
-			c.DolbyVision = false
 		}
 	case scope == "videoCodec" && strings.EqualFold(name, "video.DOVIProfile"):
 		if strings.EqualFold(typ, "notMatch") {
@@ -521,12 +844,8 @@ func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
 				}
 			}
 		}
-	case scope == "videoCodec" && name == "video.colorTrc" && typ == "notMatch":
-		if strings.Contains(val, "smpte2084") {
-			c.HDR10 = false
-			c.ExplicitNoHDR = true
-		}
 	}
+	return ""
 }
 
 // applyLegacyCapabilities parses the old X-Plex-Client-Capabilities header,
@@ -558,6 +877,7 @@ func applyLegacyCapabilities(c *frontend.ClientCaps, s string) {
 			if ceiling := decoderCeiling(*c); ceiling > 0 && ceiling < c.MaxHeight {
 				c.MaxHeight = ceiling
 				c.ExplicitMaxHeight = true
+				c.MaxHeightSource = "X-Plex-Client-Capabilities (videoDecoders resolution=" + strconv.Itoa(ceiling) + ")"
 			}
 		case "audioDecoders":
 			for _, dec := range splitDecoders(v) {
@@ -627,9 +947,11 @@ func splitDecoders(s string) []decoder {
 }
 
 // applyDecisionQuery refines caps with per-request transcode parameters
-// (maxVideoBitrate, videoResolution, location).
+// (maxVideoBitrate, videoResolution, audio limits). Locality (Remote) is
+// decided solely by the authenticated source IP resolved in ParseRequest,
+// never by the client-claimed location parameter.
 func applyDecisionQuery(c *frontend.ClientCaps, q url.Values) {
-	for _, name := range []string{"maxVideoBitrate", "videoBitrate"} {
+	for _, name := range []string{"maxVideoBitrate", "videoBitrate", "musicBitrate"} {
 		if n, err := strconv.Atoi(q.Get(name)); err == nil && n > 0 {
 			c.DefaultRemoteBitrate = false
 			if c.MaxBitrateKbps == 0 || n < c.MaxBitrateKbps {
@@ -637,18 +959,28 @@ func applyDecisionQuery(c *frontend.ClientCaps, q url.Values) {
 			}
 		}
 	}
-	if h := parseResolutionHeight(q.Get("videoResolution")); h > 0 {
-		c.ExplicitMaxHeight = true
-		if c.MaxHeight == 0 || h < c.MaxHeight {
-			c.MaxHeight = h
+	if n, err := strconv.Atoi(q.Get("maxAudioChannels")); err == nil && n > 0 {
+		c.AudioLimits = append(c.AudioLimits, frontend.AudioLimit{Codec: "*", Name: "audio.channels", Type: "upperBound", Value: n})
+	}
+	if raw := strings.TrimSpace(q.Get("audioCodec")); raw != "" {
+		var codecs []string
+		for _, part := range strings.Split(raw, ",") {
+			if p := strings.ToLower(strings.TrimSpace(part)); p != "" {
+				codecs = append(codecs, p)
+			}
+		}
+		if len(codecs) > 0 {
+			c.TranscodeAudioCodecs = codecs
 		}
 	}
-	switch q.Get("location") {
-	case "wan", "cellular":
-		c.Remote = true
-	case "lan":
-		// Trust the network check over the client's claim for LAN; a client
-		// saying "lan" while coming from a public address is still remote.
+	if raw := strings.TrimSpace(q.Get("videoResolution")); raw != "" {
+		if h := parseResolutionHeight(raw); h > 0 {
+			c.ExplicitMaxHeight = true
+			if c.MaxHeight == 0 || h < c.MaxHeight {
+				c.MaxHeight = h
+				c.MaxHeightSource = "request parameter videoResolution=" + raw
+			}
+		}
 	}
 }
 

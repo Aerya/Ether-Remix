@@ -38,6 +38,10 @@ func (images frontendImages) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid image path", http.StatusBadRequest)
 			return
 		}
+		if errors.Is(err, artwork.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "image unavailable", http.StatusBadGateway)
 		return
 	}

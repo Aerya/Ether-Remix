@@ -31,6 +31,8 @@ type condition struct {
 	allCountries bool
 	values       []string
 	nums         []float64
+	keys         []core.RatingKey
+	keySet       map[core.RatingKey]struct{}
 	// levels are a content-rating rule's age levels. Unrated is the explicit
 	// "Not rated" choice. gte and lte hold exactly one rated level.
 	levels []contentrating.Level
@@ -39,6 +41,7 @@ type rule struct {
 	name               string
 	action, typ, match string
 	discovery          bool // hide from discovery only; search ignores it
+	libraryOnly        bool // hide only in the built-in library that owns the rule
 	rules              []condition
 }
 type Filter struct {
@@ -50,6 +53,13 @@ type Filter struct {
 // CompilePolicy compiles ordered rules. fallback is "show" or "hide" for
 // titles that match nothing; empty means show.
 func CompilePolicy(specs []core.LibraryExclusion, fallback string) (*Filter, error) {
+	return compilePolicy(specs, fallback, nil)
+}
+
+// BrowseCompiler validates a kind's field and compiles its indexed predicate.
+type BrowseCompiler func(string, json.RawMessage) (string, []any, error)
+
+func compilePolicy(specs []core.LibraryExclusion, fallback string, browse BrowseCompiler) (*Filter, error) {
 	switch fallback {
 	case "", "show":
 		fallback = "show"
@@ -61,7 +71,7 @@ func CompilePolicy(specs []core.LibraryExclusion, fallback string) (*Filter, err
 		return nil, fmt.Errorf("at most 34 visibility rules")
 	}
 	f := &Filter{movieFallback: fallback, showFallback: fallback}
-	for i, s := range specs {
+	for i, s := range core.NormalizeLibraryRules(specs) {
 		// A name is optional. The owner UI labels a rule from its conditions.
 		name := strings.TrimSpace(s.Name)
 		if len(name) > 120 {
@@ -91,13 +101,18 @@ func CompilePolicy(specs []core.LibraryExclusion, fallback string) (*Filter, err
 				return nil, fmt.Errorf("group %d: only hide rules can be limited to browsing", i+1)
 			}
 			g.discovery = true
+		case core.VisibilityLibrary:
+			if action != "hide" {
+				return nil, fmt.Errorf("group %d: only hide rules can be limited to this library", i+1)
+			}
+			g.libraryOnly = true
 		default:
-			return nil, fmt.Errorf("group %d: scope must be everywhere or discovery", i+1)
+			return nil, fmt.Errorf("group %d: scope must be everywhere, discovery or library", i+1)
 		}
 		for _, r := range s.Rules {
-			c, err := compileCondition(r)
+			c, err := compileConditionDepth(r, 0, browse)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("rule %d (%s): %w", i+1, name, err)
 			}
 			c.allCountries = action == "hide" && c.field == "country" && (c.op == "in" || c.op == "is")
 			g.rules = append(g.rules, c)
@@ -130,13 +145,27 @@ func CompileLibraryPolicies(movies []core.LibraryExclusion, movieFallback string
 	if err != nil {
 		return nil, fmt.Errorf("shows rules: %w", err)
 	}
+	keepCanonical := func(rules []rule, fallback string) []rule {
+		out := make([]rule, 0, len(rules))
+		for _, g := range rules {
+			if !g.libraryOnly {
+				out = append(out, g)
+			}
+		}
+		if fallback != "hide" {
+			for len(out) > 0 && out[len(out)-1].action == "show" {
+				out = out[:len(out)-1]
+			}
+		}
+		return out
+	}
 	f := &Filter{
 		movieFallback: mf.movieFallback,
 		showFallback:  sf.showFallback,
 		rules:         make([]rule, 0, len(mf.rules)+len(sf.rules)),
 	}
-	f.rules = append(f.rules, mf.rules...)
-	f.rules = append(f.rules, sf.rules...)
+	f.rules = append(f.rules, keepCanonical(mf.rules, mf.movieFallback)...)
+	f.rules = append(f.rules, keepCanonical(sf.rules, sf.showFallback)...)
 	return f, nil
 }
 
@@ -148,8 +177,7 @@ func (f *Filter) RuleName(index int) string {
 	return f.rules[index].name
 }
 
-func compileCondition(r core.CollectionRule) (condition, error) { return compileConditionDepth(r, 0) }
-func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) {
+func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompiler) (condition, error) {
 	if depth > 8 {
 		return condition{}, fmt.Errorf("rule groups may nest at most eight levels")
 	}
@@ -166,7 +194,7 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 		}
 		c := condition{field: r.Field, op: r.Op}
 		for _, s := range specs {
-			child, err := compileConditionDepth(s, depth+1)
+			child, err := compileConditionDepth(s, depth+1, browse)
 			if err != nil {
 				return condition{}, err
 			}
@@ -181,16 +209,36 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 		var f core.Filter
 		if r.Field == "viewer" {
 			var g core.FilterGroup
-			if err := json.Unmarshal(r.Value, &g); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(r.Value))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&g); err != nil {
 				return condition{}, err
 			}
 			if g.Filter != nil || len(g.Children) > 0 {
 				return condition{}, fmt.Errorf("viewer conditions only describe activity")
 			}
+			if g.LastViewedAfter < 0 || g.LastViewedBefore < 0 {
+				return condition{}, fmt.Errorf("viewer timestamp bounds must be non-negative")
+			}
+			if !viewerGroupHasCondition(&g) {
+				return condition{}, fmt.Errorf("viewer condition needs at least one activity filter")
+			}
+			if g.StateField != "" {
+				if !validViewerStateOperator(g.StateOperator) {
+					return condition{}, fmt.Errorf("invalid viewer state operator %q", g.StateOperator)
+				}
+			}
 			g.Operator = "and"
 			f.Group = &g
 		} else {
 			key := strings.TrimPrefix(r.Field, "browse:")
+			if browse != nil {
+				q, args, err := browse(key, r.Value)
+				if err != nil {
+					return condition{}, err
+				}
+				return condition{field: r.Field, op: r.Op, predicate: &f, predicateSQL: q, predicateArgs: args}, nil
+			}
 			valid := false
 			typ := reflect.TypeOf(f)
 			for i := 0; i < typ.NumField(); i++ {
@@ -209,6 +257,10 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 				return condition{}, err
 			}
 		}
+		f.Type = core.MediaType(core.NormalizeRuleMediaType(string(f.Type)))
+		if f.Type != "" && f.Type != core.TypeMovie && f.Type != core.TypeShow {
+			return condition{}, fmt.Errorf("unsupported media type %q", f.Type)
+		}
 		return condition{field: r.Field, op: r.Op, predicate: &f}, nil
 	}
 	field := r.Field
@@ -225,6 +277,13 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 		}
 	}
 	switch field {
+	case "title":
+		keys, set, err := compileTitles(r.Op, r.Value)
+		if err != nil {
+			return condition{}, err
+		}
+		c.keys = keys
+		c.keySet = set
 	case "contentRating":
 		levels, err := compileRatings(r.Op, r.Value)
 		if err != nil {
@@ -284,6 +343,66 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 		return condition{}, fmt.Errorf("unsupported catalogue field %q", r.Field)
 	}
 	return c, nil
+}
+
+func compileTitles(op string, raw json.RawMessage) ([]core.RatingKey, map[core.RatingKey]struct{}, error) {
+	switch op {
+	case "in", "notIn", "is", "isNot":
+	default:
+		return nil, nil, fmt.Errorf("unsupported title comparison")
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil, fmt.Errorf("title needs 1–%d titles", core.MaxTitleRuleKeys)
+	}
+	var decVal any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decVal); err != nil {
+		return nil, nil, fmt.Errorf("title needs rating keys")
+	}
+	var items []any
+	switch x := decVal.(type) {
+	case []any:
+		items = x
+	case string, json.Number, map[string]any:
+		items = []any{x}
+	default:
+		return nil, nil, fmt.Errorf("title needs rating keys")
+	}
+	if len(items) == 0 || len(items) > core.MaxTitleRuleKeys {
+		return nil, nil, fmt.Errorf("title needs 1–%d titles", core.MaxTitleRuleKeys)
+	}
+	keys := make([]core.RatingKey, 0, len(items))
+	set := make(map[core.RatingKey]struct{}, len(items))
+	for _, item := range items {
+		var keyStr string
+		switch x := item.(type) {
+		case string:
+			keyStr = strings.TrimSpace(x)
+		case json.Number:
+			keyStr = strings.TrimSpace(x.String())
+		case map[string]any:
+			switch k := x["key"].(type) {
+			case string:
+				keyStr = strings.TrimSpace(k)
+			case json.Number:
+				keyStr = strings.TrimSpace(k.String())
+			default:
+				return nil, nil, fmt.Errorf("invalid title key")
+			}
+		default:
+			return nil, nil, fmt.Errorf("invalid title key")
+		}
+		rk, err := core.ParseRatingKey(keyStr)
+		if err != nil || !rk.IsTitleKey() {
+			return nil, nil, fmt.Errorf("unknown title key %q", keyStr)
+		}
+		if _, dup := set[rk]; !dup {
+			set[rk] = struct{}{}
+			keys = append(keys, rk)
+		}
+	}
+	return keys, set, nil
 }
 
 func textValues(raw json.RawMessage) ([]string, error) {
@@ -547,7 +666,7 @@ func (f *Filter) SQLUndecidable() string {
 		}
 		var unknown []string
 		for _, c := range g.rules {
-			if c.op == "unknown" || c.op == "known" || c.field == "votes" {
+			if c.op == "unknown" || c.op == "known" || c.field == "votes" || c.field == "title" {
 				continue
 			}
 			if q := c.knownSQL(); q != "" {
@@ -616,6 +735,16 @@ func (c condition) matches(t *core.Title) bool {
 
 	if c.op == "unknown" || c.op == "known" {
 		return c.known(t) == (c.op == "known")
+	}
+	if c.field == "title" {
+		if t == nil || t.Key == 0 {
+			return false
+		}
+		_, in := c.keySet[t.Key]
+		if c.op == "notIn" || c.op == "isNot" {
+			return !in
+		}
+		return in
 	}
 	if c.field == "contentRating" {
 		l := contentrating.LevelOf(t.ContentRating)
@@ -716,6 +845,8 @@ func (c condition) known(t *core.Title) bool {
 		return true
 	}
 	switch c.field {
+	case "title":
+		return t != nil && t.Key != 0
 	case "year":
 		return t.Year != 0
 	case "rating":
@@ -797,15 +928,28 @@ func (f *Filter) SQLHiddenForType(typ core.MediaType) (string, []any) {
 	if f == nil {
 		return "0=1", nil
 	}
+	return f.specializeForType(typ).SQLHidden()
+}
+
+// SQLShownForType specializes the policy for a known media type while keeping
+// a single allow rule sargable (no wrapping CASE).
+func (f *Filter) SQLShownForType(typ core.MediaType) (string, []any) {
+	if f == nil {
+		return "1=1", nil
+	}
+	return f.specializeForType(typ).SQLShown()
+}
+
+func (f *Filter) specializeForType(typ core.MediaType) *Filter {
 	fb := f.FallbackForType(typ)
-	copy := &Filter{movieFallback: fb, showFallback: fb}
+	cp := &Filter{movieFallback: fb, showFallback: fb}
 	for _, r := range f.rules {
 		if r.typ == "mixed" || r.typ == string(typ) {
 			r.typ = "mixed"
-			copy.rules = append(copy.rules, r)
+			cp.rules = append(cp.rules, r)
 		}
 	}
-	return copy.SQLHidden()
+	return cp
 }
 
 func (f *Filter) legacyOr() bool {
@@ -898,6 +1042,23 @@ func (c condition) sql() (string, []any) {
 		}
 		return q, nil
 	}
+	if c.field == "title" {
+		if len(c.keys) == 0 {
+			if c.op == "notIn" || c.op == "isNot" {
+				return "1=1", nil
+			}
+			return "0=1", nil
+		}
+		args := make([]any, len(c.keys))
+		for i, k := range c.keys {
+			args[i] = int64(k)
+		}
+		op := " IN ("
+		if c.op == "notIn" || c.op == "isNot" {
+			op = " NOT IN ("
+		}
+		return "t.key" + op + store.Placeholders(len(c.keys)) + ")", args
+	}
 	if c.field == "contentRating" {
 		var q string
 		switch c.op {
@@ -984,7 +1145,7 @@ func (c condition) knownSQL() string {
 	if c.field == "group" {
 		parts := []string{"1=1"}
 		for _, child := range c.children {
-			if child.op == "known" || child.op == "unknown" || child.field == "votes" {
+			if child.op == "known" || child.op == "unknown" || child.field == "votes" || child.field == "title" {
 				continue
 			}
 			parts = append(parts, "("+child.knownSQL()+")")
@@ -992,6 +1153,8 @@ func (c condition) knownSQL() string {
 		return strings.Join(parts, " AND ")
 	}
 	switch c.field {
+	case "title":
+		return "1=1"
 	case "year":
 		return "t.year>0"
 	case "rating":
@@ -1106,4 +1269,212 @@ func (f *Filter) SQLShown() (string, []any) {
 	}
 	q, a := f.SQLHidden()
 	return "NOT (" + q + ")", a
+}
+
+// SQLHiddenKeys returns an index-driven key subquery that is a superset of
+// every title of typ that f can hide, when f's fallback is "show" and every
+// applicable hide rule has a selective indexed driver (title key, keyword or
+// country). When ok is true and query is empty, f hides no titles of typ.
+// Callers still AND the result with SQLHidden() for exact first-match semantics.
+func (f *Filter) SQLHiddenKeys(typ core.MediaType) (string, []any, bool) {
+	if f == nil || f.Passive() {
+		return "", nil, true
+	}
+	if typ != "" {
+		if f.FallbackForType(typ) == "hide" {
+			return "", nil, false
+		}
+	} else if f.movieFallback == "hide" || f.showFallback == "hide" {
+		return "", nil, false
+	}
+	var parts []string
+	var args []any
+	for _, g := range f.rules {
+		if g.action != "hide" {
+			continue
+		}
+		if typ != "" && g.typ != "mixed" && g.typ != string(typ) {
+			continue
+		}
+		q, a, ok := g.hiddenKeysSQL()
+		if !ok {
+			return "", nil, false
+		}
+		if q == "" {
+			continue
+		}
+		parts = append(parts, q)
+		args = append(args, a...)
+	}
+	if len(parts) == 0 {
+		return "", nil, true
+	}
+	return strings.Join(parts, " UNION "), args, true
+}
+
+func (g rule) hiddenKeysSQL() (string, []any, bool) {
+	if len(g.rules) == 0 {
+		return "", nil, false
+	}
+	if g.match == "any" {
+		var parts []string
+		var args []any
+		for _, c := range g.rules {
+			q, a, ok := c.indexedKeysSQL()
+			if !ok {
+				return "", nil, false
+			}
+			if q != "" {
+				parts = append(parts, q)
+				args = append(args, a...)
+			}
+		}
+		return strings.Join(parts, " UNION "), args, true
+	}
+	for _, c := range g.rules {
+		if q, a, ok := c.indexedKeysSQL(); ok {
+			return q, a, true
+		}
+	}
+	return "", nil, false
+}
+
+func (c condition) indexedKeysSQL() (string, []any, bool) {
+	if c.predicate != nil || c.op == "unknown" || c.op == "known" {
+		return "", nil, false
+	}
+	switch c.field {
+	case "group":
+		if c.op == "isNot" || len(c.children) == 0 {
+			return "", nil, false
+		}
+		if c.op == "in" {
+			var parts []string
+			var args []any
+			for _, child := range c.children {
+				q, a, ok := child.indexedKeysSQL()
+				if !ok {
+					return "", nil, false
+				}
+				if q != "" {
+					parts = append(parts, q)
+					args = append(args, a...)
+				}
+			}
+			return strings.Join(parts, " UNION "), args, true
+		}
+		for _, child := range c.children {
+			if q, a, ok := child.indexedKeysSQL(); ok {
+				return q, a, true
+			}
+		}
+		return "", nil, false
+	case "title":
+		if c.op != "in" && c.op != "is" {
+			return "", nil, false
+		}
+		if len(c.keys) == 0 {
+			return "", nil, true
+		}
+		args := make([]any, len(c.keys))
+		for i, k := range c.keys {
+			args[i] = int64(k)
+		}
+		return "SELECT key FROM catalog_titles WHERE key IN (" + store.Placeholders(len(c.keys)) + ")", args, true
+	case "keyword":
+		if (c.op != "in" && c.op != "is") || len(c.values) == 0 {
+			return "", nil, false
+		}
+		args := make([]any, len(c.values))
+		for i, v := range c.values {
+			args[i] = v
+		}
+		return "SELECT key FROM catalog_keywords WHERE LOWER(keyword) IN (" + store.Placeholders(len(c.values)) + ")", args, true
+	case "country":
+		if (c.op != "in" && c.op != "is") || len(c.values) == 0 {
+			return "", nil, false
+		}
+		args := make([]any, len(c.values))
+		for i, v := range c.values {
+			args[i] = v
+		}
+		return "SELECT key FROM catalog_countries WHERE LOWER(country) IN (" + store.Placeholders(len(c.values)) + ")", args, true
+	default:
+		return "", nil, false
+	}
+}
+
+func viewerGroupHasCondition(g *core.FilterGroup) bool {
+	if g == nil {
+		return false
+	}
+	return g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil ||
+		g.Favorite != nil || g.Watchlist != nil || g.OnWatchlist != nil ||
+		g.LastViewedAfter > 0 || g.LastViewedBefore > 0 || g.StateField != ""
+}
+
+func validViewerStateOperator(op string) bool {
+	switch op {
+	case "=", "==", "!=", "!==", "<<", "<", "<<=", "<=", ">>", ">", ">>=", ">=":
+		return true
+	default:
+		return false
+	}
+}
+
+// HasViewerState reports whether any compiled rule in f contains a viewer-state
+// condition.
+func (f *Filter) HasViewerState() bool {
+	if f == nil {
+		return false
+	}
+	var walk func(condition) bool
+	walk = func(c condition) bool {
+		if c.field == "viewer" {
+			return true
+		}
+		for _, child := range c.children {
+			if walk(child) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, g := range f.rules {
+		for _, c := range g.rules {
+			if walk(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RulesHaveViewerState reports whether specs contain any viewer-state condition
+// (including nested inside rule groups).
+func RulesHaveViewerState(specs []core.LibraryExclusion) bool {
+	var walk func([]core.CollectionRule, int) bool
+	walk = func(rules []core.CollectionRule, depth int) bool {
+		if depth > 8 {
+			return false
+		}
+		for _, r := range rules {
+			if r.Field == "viewer" {
+				return true
+			}
+			if r.Field == "group" {
+				var children []core.CollectionRule
+				if json.Unmarshal(r.Value, &children) == nil && walk(children, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, s := range specs {
+		if walk(s.Rules, 0) {
+			return true
+		}
+	}
+	return false
 }

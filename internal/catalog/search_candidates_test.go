@@ -51,8 +51,8 @@ func testSearchCandidates(t *testing.T, indexed bool) {
 	if !indexed {
 		// Before the title index's first build, the literal match answers.
 		c.searchIx.next = c.now().Add(time.Hour)
-	} else if c.searchIndex(ctx, true) == nil {
-		t.Fatal("index unavailable")
+	} else {
+		waitSearchIndex(t, c, ctx)
 	}
 	hideKR := []core.LibraryExclusion{{MediaType: "mixed", Match: "all", Rules: []core.CollectionRule{{Field: "country", Op: "is", Value: json.RawMessage(`"KR"`)}}}}
 	all := []core.MediaType{core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode}

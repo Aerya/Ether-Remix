@@ -23,15 +23,33 @@ export function SessionArtwork({
   if (s.isMusic) return <Artwork alt={s.title} className={className} icon={<Music2 size={28} />} />;
   if (!s.isLive)
     return <Artwork src={poster} alt={s.title} title={posterTitle} className={className} />;
-  return <LiveArtwork key={s.channelId} s={s} className={className} />;
+  return (
+    <LiveChannelArtwork
+      key={s.channelId}
+      channelId={s.channelId}
+      name={s.channelName || s.channelNumber || s.title}
+      className={className}
+    />
+  );
 }
 
-function LiveArtwork({ s, className }: { s: NowPlaying; className: string }) {
+/** Live TV channel logo with server-scored light/dark backing and initials fallback. */
+export function LiveChannelArtwork({
+  channelId,
+  name,
+  className,
+  imgClassName = "p-2",
+}: {
+  channelId?: string;
+  name: string;
+  className: string;
+  imgClassName?: string;
+}) {
   const [lightFor, setLightFor] = useState<string>();
-  const name = s.channelName || s.channelNumber || s.title;
-  const src = s.channelId
-    ? `/ether/api/livetv/channels/${encodeURIComponent(s.channelId)}/logo`
-    : undefined;
+  const src =
+    channelId && !channelId.startsWith("direct:")
+      ? `/ether/api/livetv/channels/${encodeURIComponent(channelId)}/logo`
+      : undefined;
   // The server scores the logo's ink against both tiles. A missing header, a
   // plain <img> load (no response headers) or a fetch failure keeps the dark
   // default, which is what an unreadable logo should look like.
@@ -47,8 +65,8 @@ function LiveArtwork({ s, className }: { s: NowPlaying; className: string }) {
       alt={name}
       title=""
       className={className}
-      imgClassName={`object-contain p-2 ${src && lightFor === src ? "bg-white" : "bg-zinc-900"}`}
-      icon={<span>{initials(name)}</span>}
+      imgClassName={`object-contain ${imgClassName} ${src && lightFor === src ? "bg-white" : "bg-zinc-900"}`}
+      icon={<span className="text-[11px] font-semibold">{initials(name)}</span>}
       onImageResponse={onImageResponse}
     />
   );

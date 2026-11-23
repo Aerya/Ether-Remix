@@ -116,9 +116,13 @@ func TestPlexTimelineNoopDurationAndOffline(t *testing.T) {
 	if after.ViewOffset != before.ViewOffset || !after.LastViewedAt.Equal(before.LastViewedAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Fatalf("no-op changed state: %+v -> %+v", before, after)
 	}
-	rec := f.get(t, "/:/timeline?ratingKey="+key+"&state=playing&time=1000001&duration=1000000")
-	if rec.Code != 400 {
-		t.Fatalf("impossible time: %d", rec.Code)
+	rec := f.get(t, "/:/timeline?ratingKey="+key+"&state=playing&time=1005000&duration=1000000")
+	if rec.Code != 200 {
+		t.Fatalf("impossible time: %d %s", rec.Code, rec.Body.String())
+	}
+	after, _ = watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+	if after.ViewOffset != before.ViewOffset || after.ViewCount != 0 {
+		t.Fatalf("impossible time changed state: %+v", after)
 	}
 	call("state=stopped&offline=1&viewCount=3")
 	after, _ = watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
@@ -243,15 +247,22 @@ func TestPlexTimelineCrossingIsolatedByClientAndValidation(t *testing.T) {
 	if got.ViewCount != 0 {
 		t.Fatal("other client's position armed a completion")
 	}
-	if call("state=playing&time=1000001&duration=1000000", "one") != 400 {
-		t.Fatal("out-of-range report accepted")
+	if call("state=playing&time=-1&duration=1000000", "one") != 400 {
+		t.Fatal("malformed report accepted")
+	}
+	if call("state=playing&time=1005000&duration=1000000", "one") != 200 {
+		t.Fatal("impossible playhead rejected")
+	}
+	got, _ = watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+	if got.ViewCount != 0 {
+		t.Fatal("impossible playhead falsely completed")
 	}
 	if call("state=stopped&time=920000&duration=1000000", "one") != 200 {
 		t.Fatal("crossing")
 	}
 	got, _ = watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
 	if got.ViewCount != 1 {
-		t.Fatal("refused beat consumed the valid client's crossing")
+		t.Fatal("refused or impossible beat consumed the valid client's crossing")
 	}
 	for _, count := range []string{"-1", "oops"} {
 		if call("state=stopped&offline=1&viewCount="+count, "one") != 200 {
@@ -301,4 +312,109 @@ func TestLegacyProgressGrammarAndRawPersistence(t *testing.T) {
 	if unknown.ViewOffset != 0 {
 		t.Fatal("unknown key wrote state")
 	}
+}
+
+func TestPlexTimelineExceedingClientDuration(t *testing.T) {
+	t.Run("active probed source longer than client estimate", func(t *testing.T) {
+		f := newFixture()
+		defer f.srv.Close()
+		watch := state.New(store.OpenTest(t), state.Options{})
+		f.srv.setState(watch)
+		ps := &core.PlaySession{
+			ID:          "probed-long",
+			UserID:      ownerUser.ID,
+			ClientID:    "appletv",
+			Key:         fightClub.Key,
+			Info:        core.MediaInfo{Duration: 1500 * time.Second},
+			BytesServed: 4096,
+		}
+		f.playback.sessions[ps.ID] = ps
+		f.srv.transcodes.put(&transcodeEntry{
+			id:       "enc-1",
+			userID:   ownerUser.ID,
+			clientID: "appletv",
+			key:      fightClub.Key,
+			decision: core.Decision{Kind: core.DecisionDirectPlay},
+		})
+		send := func(status string, posMS int) {
+			t.Helper()
+			rec := f.get(t, fmt.Sprintf("/:/timeline?ratingKey=%s&state=%s&time=%d&duration=1000000", fightClub.Key, status, posMS), "X-Plex-Client-Identifier", "appletv")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s@%d: status %d %s", status, posMS, rec.Code, rec.Body.String())
+			}
+		}
+		send("playing", 120000)
+		// Past stale client duration (1000s), still below 90% of probed 1500s.
+		send("playing", 1100000)
+		got, err := watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+		if err != nil || got.ViewOffset != 1100*time.Second || got.ViewCount != 0 || got.Duration != 1500*time.Second {
+			t.Fatalf("resume past client duration: %+v err=%v", got, err)
+		}
+		// Cross 90% of probed 1500s (1350s).
+		send("playing", 1380000)
+		got, err = watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+		if err != nil || got.ViewCount != 1 || got.ViewOffset != 0 {
+			t.Fatalf("completion past client duration: %+v err=%v", got, err)
+		}
+		// Stop past client duration must still tear down session and encoder.
+		send("stopped", 1400000)
+		if len(f.srv.sessions.list()) != 0 {
+			t.Fatalf("session survived stop: %+v", f.srv.sessions.list())
+		}
+		if _, ok := f.srv.transcodes.get("enc-1"); ok {
+			t.Fatal("transcode entry survived stop")
+		}
+	})
+
+	t.Run("active estimated source accepts reports and stops cleanly", func(t *testing.T) {
+		f := newFixture()
+		defer f.srv.Close()
+		watch := state.New(store.OpenTest(t), state.Options{})
+		f.srv.setState(watch)
+		ps := &core.PlaySession{
+			ID:          "est-long",
+			UserID:      ownerUser.ID,
+			ClientID:    "appletv-est",
+			Key:         fightClub.Key,
+			Info:        core.MediaInfo{Duration: 1000 * time.Second, Estimated: true},
+			BytesServed: 4096,
+		}
+		f.playback.sessions[ps.ID] = ps
+		for _, q := range []string{
+			"state=playing&time=1100000&duration=1000000",
+			"state=stopped&time=1150000&duration=1000000",
+		} {
+			rec := f.get(t, "/:/timeline?ratingKey="+fightClub.Key.String()+"&"+q, "X-Plex-Client-Identifier", "appletv-est")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: status %d %s", q, rec.Code, rec.Body.String())
+			}
+		}
+		got, _ := watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+		if got.ViewCount != 0 || len(f.srv.sessions.list()) != 0 {
+			t.Fatalf("estimated play state=%+v sessions=%+v", got, f.srv.sessions.list())
+		}
+	})
+
+	t.Run("small overshoot near EOF clamps to duration", func(t *testing.T) {
+		f := newFixture()
+		defer f.srv.Close()
+		watch := state.New(store.OpenTest(t), state.Options{})
+		f.srv.setState(watch)
+		for _, q := range []string{
+			"state=playing&time=70000&duration=1000000",
+			"state=playing&time=1000001&duration=1000000",
+		} {
+			rec := f.get(t, "/:/timeline?ratingKey="+fightClub.Key.String()+"&"+q)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: status %d %s", q, rec.Code, rec.Body.String())
+			}
+		}
+		got, _ := watch.Get(context.Background(), ownerUser.ID, fightClub.Key)
+		if got.ViewCount != 1 || got.ViewOffset != 0 {
+			t.Fatalf("clamped EOF did not complete cleanly: %+v", got)
+		}
+		if sessions := f.srv.sessions.list(); len(sessions) != 1 || sessions[0].offset != 1000*time.Second {
+			t.Fatalf("session offset not clamped to duration: %+v", sessions)
+		}
+	})
 }

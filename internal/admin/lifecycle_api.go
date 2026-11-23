@@ -21,8 +21,8 @@ type ViewerLifecycle interface {
 }
 
 // viewerLifecycle is the lifecycle object every user and viewer row
-// carries. Plex viewers are managed on plex.tv: Ether never pauses,
-// removes or merges them, which managedBy and the can* flags say plainly.
+// carries. Plex viewers are managed on plex.tv for removal and merging,
+// while the owner can still pause and resume their access on this server.
 type viewerLifecycle struct {
 	Source     string `json:"source"` // owner | local | invite | plex | plexHome | dlnaGuest
 	Paused     bool   `json:"paused"`
@@ -54,6 +54,7 @@ func lifecycleOf(u ViewerRecord) viewerLifecycle {
 	if !u.IsOwner && u.Origin != "dlna_guest" && hasPlex {
 		lc.PlexShared = u.PlexShared
 		lc.ManagedBy = "plex"
+		lc.CanPause = true
 		return lc
 	}
 	if lc.Source != "owner" {
@@ -98,14 +99,14 @@ func lifecycleID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-// refuseLifecycle answers for viewers Ether must not pause, remove or
-// merge: the owner (403) and Plex viewers managed on plex.tv (409).
-func refuseLifecycle(w http.ResponseWriter, u *ViewerRecord) bool {
+// refuseLifecycle answers for viewers Ether must not change in the requested
+// way: the owner (403) and plex.tv-only operations like remove/merge (409).
+func refuseLifecycle(w http.ResponseWriter, u *ViewerRecord, allowed func(viewerLifecycle) bool) bool {
 	if u.IsOwner {
 		writeError(w, http.StatusForbidden, "owner", "You can't change your own account this way.")
 		return true
 	}
-	if !lifecycleOf(*u).CanPause {
+	if !allowed(lifecycleOf(*u)) {
 		writeError(w, http.StatusConflict, "plex_managed", "This viewer is managed on plex.tv. Change their access there.")
 		return true
 	}
@@ -171,7 +172,7 @@ func (h *Handler) handlePauseViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, ok := h.recordByID(w, r, id)
-	if !ok || refuseLifecycle(w, u) {
+	if !ok || refuseLifecycle(w, u, func(lc viewerLifecycle) bool { return lc.CanPause }) {
 		return
 	}
 	if err := h.deps.Lifecycle.PauseViewer(r.Context(), id); err != nil {
@@ -194,7 +195,7 @@ func (h *Handler) handleResumeViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, ok := h.recordByID(w, r, id)
-	if !ok || refuseLifecycle(w, u) {
+	if !ok || refuseLifecycle(w, u, func(lc viewerLifecycle) bool { return lc.CanPause }) {
 		return
 	}
 	if err := h.deps.Lifecycle.ResumeViewer(r.Context(), id); err != nil {
@@ -204,9 +205,9 @@ func (h *Handler) handleResumeViewer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"paused": false})
 }
 
-// handleSignOutViewer signs a viewer out everywhere. Unlike pause,
-// remove and merge it is allowed for Plex viewers too: it only revokes
-// Ether-side credentials, never the plex.tv account or share.
+// handleSignOutViewer signs a viewer out everywhere. Like pause, it is
+// allowed for Plex viewers too: it only revokes Ether-side credentials,
+// never the plex.tv account or share.
 func (h *Handler) handleSignOutViewer(w http.ResponseWriter, r *http.Request) {
 	access, _ := RequestAccess(r.Context())
 	if !access.Owner {
@@ -241,7 +242,7 @@ func (h *Handler) handleRemoveViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, ok := h.recordByID(w, r, id)
-	if !ok || refuseLifecycle(w, u) {
+	if !ok || refuseLifecycle(w, u, func(lc viewerLifecycle) bool { return lc.CanRemove }) {
 		return
 	}
 	if err := h.deps.Lifecycle.RemoveViewer(r.Context(), id); err != nil {
@@ -277,11 +278,11 @@ func (h *Handler) handleMergeViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, ok := h.recordByID(w, r, id)
-	if !ok || refuseLifecycle(w, u) {
+	if !ok || refuseLifecycle(w, u, func(lc viewerLifecycle) bool { return lc.CanMerge }) {
 		return
 	}
 	target, ok := h.recordByID(w, r, body.Into)
-	if !ok || refuseLifecycle(w, target) {
+	if !ok || refuseLifecycle(w, target, func(lc viewerLifecycle) bool { return lc.CanMerge }) {
 		return
 	}
 	if err := h.deps.Lifecycle.MergeViewers(r.Context(), id, body.Into); err != nil {

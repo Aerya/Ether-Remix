@@ -26,6 +26,38 @@ func (s *Service) Router() http.Handler {
 		}
 		return u, k, true
 	}
+	releaseShow := func(w http.ResponseWriter, r *http.Request) (core.RatingKey, bool) {
+		k, err := core.ParseRatingKey(chi.URLParam(r, "show"))
+		if err != nil || k.Kind() != core.KindShow {
+			http.Error(w, "Invalid show", 400)
+			return 0, false
+		}
+		return k, true
+	}
+	r.Get("/shows/{show}/release-numbering", func(w http.ResponseWriter, r *http.Request) {
+		k, ok := releaseShow(w, r)
+		if !ok {
+			return
+		}
+		p, err := s.ReleasePreference(r.Context(), k)
+		if err != nil {
+			http.Error(w, "Preference unavailable", 500)
+			return
+		}
+		reply(w, p)
+	})
+	r.Put("/shows/{show}/release-numbering", func(w http.ResponseWriter, r *http.Request) {
+		k, ok := releaseShow(w, r)
+		if !ok {
+			return
+		}
+		var p ReleasePreference
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&p) != nil || s.SaveReleasePreference(r.Context(), k, p) != nil {
+			http.Error(w, "Invalid release numbering", 400)
+			return
+		}
+		reply(w, p)
+	})
 	r.Get("/shows/{show}/groups", func(w http.ResponseWriter, r *http.Request) {
 		k, e := core.ParseRatingKey(chi.URLParam(r, "show"))
 		if e != nil || k.Kind() != core.KindShow {

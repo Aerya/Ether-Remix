@@ -112,4 +112,70 @@ it("copies a friendly message for a local viewer", async () => {
   expect(message).toContain("Your username is riley-fox.");
   expect(message).toContain("Jellyfin:");
   expect(message).toContain("http://192.168.1.2:8096");
+  expect(message).toContain(`${window.location.origin}/ether/me`);
+});
+
+it("uses the server's published portalUrl across local, invite, and plex viewer paths", async () => {
+  const publishedPortal = "https://watch.example.com/ether/me";
+  const publishedFrontends = FRONTENDS.map((f) => ({ ...f, portalUrl: publishedPortal }));
+  const stubPublished = (create: (url: string, init?: RequestInit) => Promise<Response>) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (String(input).includes("/frontends")) {
+          return new Response(JSON.stringify(publishedFrontends), { status: 200 });
+        }
+        return create(String(input), init);
+      }),
+    );
+  };
+
+  // Local viewer: Quick Connect uses publishedPortal instead of window.location.origin.
+  stubPublished(async () => new Response(JSON.stringify({ id: 10 }), { status: 201 }));
+  const { unmount: unmountLocal } = render(
+    <AddViewerDrawer open onClose={() => {}} onCreated={() => {}} />,
+  );
+  fireEvent.change(screen.getByLabelText("Their name"), { target: { value: "Alex" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: "a-very-long-password" },
+  });
+  fireEvent.change(screen.getByLabelText("Confirm password"), {
+    target: { value: "a-very-long-password" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Create viewer" }));
+  expect(await screen.findByText(/How to connect/)).toBeInTheDocument();
+  expect(screen.getByText(new RegExp(publishedPortal))).toBeInTheDocument();
+  expect(screen.queryByText(new RegExp(window.location.origin))).not.toBeInTheDocument();
+  unmountLocal();
+
+  // Plex viewer: Jellyfin Quick Connect card also uses publishedPortal.
+  stubPublished(async () => new Response("{}", { status: 200 }));
+  const { unmount: unmountPlex } = render(
+    <AddViewerDrawer open onClose={() => {}} onCreated={() => {}} />,
+  );
+  fireEvent.change(screen.getByLabelText("Their name"), { target: { value: "Sam" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(await screen.findByRole("radio", { name: /Share with their Plex account/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(await screen.findByText(/How to connect/)).toBeInTheDocument();
+  expect(screen.getByText(new RegExp(publishedPortal))).toBeInTheDocument();
+  unmountPlex();
+
+  // Invite viewer: Quick Connect uses publishedPortal.
+  stubPublished(
+    async () =>
+      new Response(JSON.stringify({ id: 11, url: `${publishedPortal}#invite=tok` }), {
+        status: 201,
+      }),
+  );
+  render(<AddViewerDrawer open onClose={() => {}} onCreated={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Their name"), { target: { value: "Taylor" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(await screen.findByRole("radio", { name: /Send an invite link/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Create invite" }));
+  expect(await screen.findByText(/How to connect/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/approve the code from the app at https:\/\/watch\.example\.com\/ether\/me/),
+  ).toBeInTheDocument();
 });

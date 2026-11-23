@@ -46,6 +46,14 @@ func (h *fixtureHost) KVList(_ context.Context, p string) ([]string, error) {
 	}
 	return out, nil
 }
+func (h *fixtureHost) KVUsage(context.Context) (plugins.KVUsage, error) {
+	var used int64
+	for _, v := range h.kv {
+		used += int64(len(v))
+	}
+	keys := int64(len(h.kv))
+	return plugins.KVUsage{Bytes: used + keys*plugins.KVKeyChargeBytes, Keys: keys, QuotaBytes: plugins.KVQuotaBytes, QuotaKeys: plugins.KVQuotaKeys}, nil
+}
 func (h *fixtureHost) FoldersList(_ context.Context, root, path string) ([]plugins.FolderEntry, error) {
 	if path != "" {
 		root += "/" + path
@@ -149,7 +157,7 @@ func TestExamplesPackAndRunHosted(t *testing.T) {
 }
 
 func TestStudioExamplesPackAndConform(t *testing.T) {
-	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night"} {
+	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night", "english-dubs", "smart-lights", "sports"} {
 		t.Run(name, func(t *testing.T) {
 			pkg, err := kit.LoadDir(name)
 			if err != nil {

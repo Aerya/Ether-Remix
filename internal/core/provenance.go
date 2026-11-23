@@ -41,9 +41,12 @@ type CacheCause struct {
 // or a cause is established. Empty fields leave the existing metadata alone.
 type CacheProvenance struct {
 	ReleaseID string
+	RatingKey RatingKey
 	File      string
 	Size      int64
 	Source    string // release name, else indexer name
+	Indexer   string // indexer / source provider name
+	Origin    string // streaming service ("Usenet", "Real-Debrid", "HTTP", ...)
 	Title     string // cache-facing display title
 	Cause     string
 	Play      bool

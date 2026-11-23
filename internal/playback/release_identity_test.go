@@ -136,3 +136,68 @@ func TestStaleWrongEpisodeResumeAndPreferredFallThrough(t *testing.T) {
 		t.Fatalf("expected stale preferred wrong-episode release to fall through to fresh candidate, got ps=%+v err=%v", ps, err)
 	}
 }
+
+func TestOpenTimeIdentityAcceptsAliasNumberedFiles(t *testing.T) {
+	title := &core.Title{
+		Key:             core.EpisodeKey(37854, 1, 750),
+		Type:            core.TypeEpisode,
+		ShowKey:         core.ShowKey(37854),
+		ShowTitle:       "One Piece",
+		ShowYear:        1999,
+		Title:           "A Desperate Situation!",
+		Season:          1,
+		Episode:         750,
+		AbsoluteEpisode: 750,
+	}
+	canonicalTarget := &core.ReleaseTarget{
+		Season:           1,
+		Episode:          750,
+		CanonicalSeason:  1,
+		CanonicalEpisode: 750,
+		AbsoluteEpisode:  750,
+		Aliases:          []core.EpisodeNumber{{Season: 18, Episode: 4}},
+		ShowYear:         1999,
+		EpisodeTitle:     title.Title,
+	}
+	absRel := core.Release{
+		ID:       "abs",
+		Name:     "One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)",
+		Protocol: core.ProtocolHTTP,
+		Target:   canonicalTarget,
+	}
+	if !releaseMatchesTitle(absRel, title) {
+		t.Fatal("canonical/absolute release with alias target was rejected")
+	}
+	aliasPayload := []byte(`ETHER-DEBRID/1` + "\n" + `{"path":"One.Piece.S18E04.1080p.WEB-DL.mkv","size":943718400,"target":{"season":1,"episode":750,"canonicalSeason":1,"canonicalEpisode":750,"absoluteEpisode":750,"aliases":[{"season":18,"episode":4}],"showYear":1999}}`)
+	if !payloadMatchesTitle(aliasPayload, title) {
+		t.Fatal("alias-numbered payload file S18E04 was rejected at open time")
+	}
+
+	tvdbRel := core.Release{
+		ID:       "tvdb",
+		Name:     "[Judas] One Piece - S18E04 [1080p]",
+		Protocol: core.ProtocolTorrent,
+		Target: &core.ReleaseTarget{
+			Season:           18,
+			Episode:          4,
+			CanonicalSeason:  1,
+			CanonicalEpisode: 750,
+			AbsoluteEpisode:  750,
+			Aliases:          []core.EpisodeNumber{{Season: 18, Episode: 4}},
+			ShowYear:         1999,
+			EpisodeTitle:     title.Title,
+		},
+	}
+	if !releaseMatchesTitle(tvdbRel, title) {
+		t.Fatal("TVDB alias release S18E04 was rejected")
+	}
+	absPayload := []byte(`ETHER-DEBRID/1` + "\n" + `{"path":"[SubsPlease] One Piece - 750 (1080p).mkv","size":1258291200,"target":{"season":18,"episode":4,"canonicalSeason":1,"canonicalEpisode":750,"absoluteEpisode":750,"aliases":[{"season":18,"episode":4}],"showYear":1999}}`)
+	if !payloadMatchesTitle(absPayload, title) {
+		t.Fatal("absolute-numbered payload file on TVDB alias release was rejected")
+	}
+
+	wrongAliasPayload := []byte(`ETHER-DEBRID/1` + "\n" + `{"path":"One.Piece.S18E05.1080p.WEB-DL.mkv","size":943718400,"target":{"season":1,"episode":750,"canonicalSeason":1,"canonicalEpisode":750,"absoluteEpisode":750,"aliases":[{"season":18,"episode":4}],"showYear":1999}}`)
+	if payloadMatchesTitle(wrongAliasPayload, title) {
+		t.Fatal("wrong alias episode S18E05 matched S01E750")
+	}
+}

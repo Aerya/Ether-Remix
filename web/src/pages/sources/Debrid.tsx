@@ -120,6 +120,7 @@ function activity(s: DebridProviderStatus): string[] {
         { slots },
       ),
     );
+  if (s.queuedDetail) out.push(s.queuedDetail);
   if (s.lastSuccess) out.push(t("last worked {time}", { time: relativeTime(s.lastSuccess) }));
   return out;
 }
@@ -463,15 +464,19 @@ export function DebridSources({
 
       <RecordDrawer
         summary={
-          draft ? (
+          draft && !isNew ? (
             <div className="space-y-5">
               <SourceEditorHeader
                 icon={<Cloud size={22} />}
-                title={isNew ? t("New debrid provider") : name}
+                title={name}
                 description={
-                  <>
-                    {debridKindLabel(draft.kind)} · <StateBadge p={draft} s={selectedStatus} />
-                  </>
+                  !draft.enabled || selectedStatus ? (
+                    <>
+                      {debridKindLabel(draft.kind)} · <StateBadge p={draft} s={selectedStatus} />
+                    </>
+                  ) : (
+                    debridKindLabel(draft.kind)
+                  )
                 }
               />
               <SourceEditorMetrics

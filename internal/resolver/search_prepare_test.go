@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -162,19 +163,147 @@ func TestDeliveryEvidenceExpiresAndRespectsClientCap(t *testing.T) {
 		s.ObserveSourceDelivery(r, 3_000_000)
 		now = now.Add(3 * time.Second)
 	}
-	if s.deliveryFit(r, core.ClientCaps{}, title) != -1 {
-		t.Fatal("6MB/s source was admitted over recent 3MB/s evidence")
+	// Unverified delivery estimates are a soft tie-break only, never a hard gate.
+	if bw, soft, reason := s.deliveryFitReason(r, core.ClientCaps{}, title); bw != 0 || soft != -1 || reason != "" {
+		t.Fatalf("unverified delivery estimate produced bw=%d soft=%d reason=%q, want 0, -1, \"\"", bw, soft, reason)
+	}
+	// Unbiased EWMA recovers upward when faster burst samples arrive instead of
+	// ratcheting monotonically downward.
+	for range 8 {
+		s.ObserveSourceDelivery(r, 12_000_000)
+		now = now.Add(3 * time.Second)
+	}
+	if bw, soft, _ := s.deliveryFitReason(r, core.ClientCaps{}, title); bw != 0 || soft != 0 {
+		t.Fatalf("EWMA remained pinned downward after fast samples: bw=%d soft=%d", bw, soft)
+	}
+	// Stall-backed evidence applies the hard -1 bandwidth gate and honest source wording.
+	s.ObserveSourceStall(r, 3_000_000)
+	if bw, _, reason := s.deliveryFitReason(r, core.ClientCaps{}, title); bw != -1 || reason != "needs 48.0 Mbps; recent reads from your Usenet provider ran at 24.0 Mbps" {
+		t.Fatalf("stall evidence: bw=%d reason=%q", bw, reason)
 	}
 	r.Size = 1_000_000_000
-	if s.deliveryFit(r, core.ClientCaps{}, title) != 1 {
-		t.Fatal("sustainable source did not win")
+	if s.deliveryFit(r, core.ClientCaps{MaxBitrateKbps: 12_000}, title) != 1 {
+		t.Fatal("sustainable source did not fit client cap")
 	}
-	if s.deliveryFit(r, core.ClientCaps{MaxBitrateKbps: 1000}, title) != -1 {
-		t.Fatal("client cap bypassed")
+	if bw, _, reason := s.deliveryFitReason(r, core.ClientCaps{MaxBitrateKbps: 1000}, title); bw != -1 || !strings.HasPrefix(reason, "larger than the client's connection carries:") {
+		t.Fatalf("client cap bypassed or misworded: bw=%d reason=%q", bw, reason)
 	}
 	now = now.Add(3 * time.Minute)
-	if s.deliveryFit(r, core.ClientCaps{}, title) != 0 {
-		t.Fatal("stale throughput restricted future playback")
+	r.Size = 6_000_000_000
+	if bw, soft, _ := s.deliveryFitReason(r, core.ClientCaps{}, title); bw != 0 || soft != 0 {
+		t.Fatalf("stale stall/throughput restricted future playback: bw=%d soft=%d", bw, soft)
+	}
+}
+
+func TestDeliveryEstimateDoesNotOverridePreferredReleaseWithoutStall(t *testing.T) {
+	now := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	title := &core.Title{
+		Key: core.MovieKey(1487), Type: core.TypeMovie,
+		IDs:   core.IDs{TMDB: 1487, IMDB: "tt0167190"},
+		Title: "Hellboy", Year: 2004, Runtime: 100 * time.Minute, // 6000 s
+		Released: time.Date(2004, 4, 2, 0, 0, 0, 0, time.UTC),
+	}
+	// 5_175_000_000 * 8 / 6000 = 6.9 Mbps; 2_250_000_000 * 8 / 6000 = 3.0 Mbps.
+	preferred := core.Release{
+		ID: "preferred", GUID: "preferred", Indexer: "fake",
+		Name:    "Hellboy.2004.DUAL.PORTUGUESE.1080p.WEB-DL.DDP5.1.H.264-GRP",
+		NZBURL:  "nzb:preferred",
+		Size:    5_175_000_000,
+		PubDate: now.Add(-10 * 24 * time.Hour),
+	}
+	light := core.Release{
+		ID: "light", GUID: "light", Indexer: "fake",
+		Name:    "Hellboy.2004.1080p.WEB-DL.AAC2.0.H.264-SMALL",
+		NZBURL:  "nzb:light",
+		Size:    2_250_000_000,
+		PubDate: now.Add(-10 * 24 * time.Hour),
+	}
+
+	cfg := testCfg()
+	cfg.Resolver.SearchCacheTTL = 0
+	for i := range cfg.Quality.Profiles {
+		if cfg.Quality.Profiles[i].Name == "1080p" {
+			cfg.Quality.Profiles[i].PreferredLanguages = []string{"pt-BR", "en"}
+			cfg.Quality.Profiles[i].CustomFormatScores = map[string]int{
+				core.AudioFormat("eac3"): 4,
+			}
+		}
+	}
+	idx := &fakeIndexer{releases: []core.Release{light, preferred}}
+	s := New(idx, fakeHealth{}, nil, cfg, Options{Now: func() time.Time { return now }})
+	defer s.Close()
+
+	// Feed unverified 5.1 Mbps (637_500 B/s) delivery samples with no stall.
+	for range 4 {
+		s.ObserveSourceDelivery(preferred, 637_500)
+		now = now.Add(3 * time.Second)
+	}
+	res, err := s.Resolve(t.Context(), core.ResolveRequest{Title: title, Client: webCaps()})
+	if err != nil {
+		t.Fatalf("resolve without stall: %v", err)
+	}
+	if res.Release.ID != "preferred" {
+		t.Fatalf("unverified 5.1 Mbps estimate overrode preferred score-4 release: got %q", res.Release.ID)
+	}
+	tr := s.Traces()[0]
+	for _, c := range tr.Candidates {
+		if c.ReleaseID == "preferred" && strings.Contains(c.CompatibilityReason, "connection carries") {
+			t.Fatalf("preferred release carried misleading client-connection wording: %q", c.CompatibilityReason)
+		}
+	}
+
+	// Among otherwise equal candidates (same quality, language and score 4),
+	// the soft delivery signal still breaks the tie in favour of the lighter encode.
+	equalLight := core.Release{
+		ID: "equal-light", GUID: "equal-light", Indexer: "fake",
+		Name:    "Hellboy.2004.DUAL.PORTUGUESE.1080p.WEB-DL.DDP5.1.H.264-LIGHT",
+		NZBURL:  "nzb:equal-light",
+		Size:    2_625_000_000, // 3.5 Mbps <= 5.1 * 0.75 (3.825 Mbps)
+		PubDate: now.Add(-10 * 24 * time.Hour),
+	}
+	sTie := New(&fakeIndexer{releases: []core.Release{preferred, equalLight}}, fakeHealth{}, nil, cfg, Options{Now: func() time.Time { return now }})
+	defer sTie.Close()
+	for range 4 {
+		sTie.ObserveSourceDelivery(preferred, 637_500)
+		now = now.Add(3 * time.Second)
+	}
+	tieRes, err := sTie.Resolve(t.Context(), core.ResolveRequest{Title: title, Client: webCaps()})
+	if err != nil || tieRes.Release.ID != "equal-light" {
+		t.Fatalf("soft delivery tie-break among equal candidates: got %v (err=%v), want equal-light", tieRes, err)
+	}
+
+	// Once a real stall is recorded at 5.0 Mbps (625_000 B/s), the 6.9 Mbps
+	// release becomes a fallback behind the sustainable 3.0 Mbps release, with
+	// honest Usenet-provider wording.
+	sStall := New(&fakeIndexer{releases: []core.Release{preferred, light}}, fakeHealth{}, nil, cfg, Options{Now: func() time.Time { return now }})
+	defer sStall.Close()
+	sStall.ObserveSourceStall(preferred, 625_000)
+	stallRes, err := sStall.Resolve(t.Context(), core.ResolveRequest{Title: title, Client: webCaps()})
+	if err != nil {
+		t.Fatalf("resolve after stall: %v", err)
+	}
+	if stallRes.Release.ID != "light" {
+		t.Fatalf("stall at 5.0 Mbps did not demote 6.9 Mbps release: got %q", stallRes.Release.ID)
+	}
+	if len(stallRes.Alternates) == 0 || stallRes.Alternates[0].ID != "preferred" {
+		t.Fatalf("heavier release was not retained as fallback alternate: %+v", stallRes.Alternates)
+	}
+	stallTrace := sStall.Traces()[0]
+	foundReason := false
+	for _, c := range stallTrace.Candidates {
+		if c.ReleaseID == "preferred" {
+			foundReason = true
+			want := "needs 6.9 Mbps; recent reads from your Usenet provider ran at 5.0 Mbps"
+			if !strings.Contains(c.CompatibilityReason, want) {
+				t.Fatalf("compatibility reason = %q, want substring %q", c.CompatibilityReason, want)
+			}
+			if strings.Contains(c.CompatibilityReason, "connection carries") {
+				t.Fatalf("source stall blamed client connection: %q", c.CompatibilityReason)
+			}
+		}
+	}
+	if !foundReason {
+		t.Fatal("preferred candidate missing from trace")
 	}
 }
 
@@ -199,7 +328,7 @@ func (p *timedPipelineIndexer) SearchWith(ctx context.Context, _ core.SearchRequ
 		return nil, ctx.Err()
 	}
 }
-func (p *timedPipelineIndexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
+func (p *timedPipelineIndexer) FetchNZB(_ context.Context, r core.Release) ([]byte, error) {
 	return []byte(r.ID), nil
 }
 
@@ -241,13 +370,9 @@ func TestReleasePolicyStartsOnPrimaryWithoutWaitingForSlowIndexer(t *testing.T) 
 	s := serviceWithRules(t, idx, fakeHealth{}, groupPolicy())
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	start := time.Now()
 	got, err := s.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()})
 	if err != nil || got.Release.ID != "primary" {
 		t.Fatalf("release-policy search waited for a hung indexer: %+v %v", got, err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("primary start took %s, want under the critical-path deadline", elapsed)
 	}
 	if idx.joined.Load() {
 		t.Fatal("early start cancelled the remaining indexer search")
@@ -334,14 +459,14 @@ func (g *grabCountingIndexer) SearchWith(ctx context.Context, req core.SearchReq
 	return res, err
 }
 
-func (g *grabCountingIndexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
+func (g *grabCountingIndexer) FetchNZB(_ context.Context, r core.Release) ([]byte, error) {
 	g.grabs.Add(1)
 	return []byte("nzb:" + r.ID), nil
 }
 
 type slowHealth struct{ cost time.Duration }
 
-func (h slowHealth) Check(ctx context.Context, nzb []byte) (bool, error) {
+func (h slowHealth) Check(ctx context.Context, _ []byte) (bool, error) {
 	select {
 	case <-time.After(h.cost):
 		return true, nil

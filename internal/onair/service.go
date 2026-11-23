@@ -58,6 +58,7 @@ type Options struct {
 	WorkingSize    func() (int, int)
 	EncoderOptions func(int, int) ([]string, []string)
 	Artwork        func(context.Context, string) (image.Image, error)
+	ArtworkBytes   func(context.Context, string) ([]byte, string, error)
 	// Render is a seam for verifying that Ensure never executes work inline.
 	Render func(context.Context, scene.Document, raster.Bindings, string) error
 	// RenderFrame is an optional seam for testing live frame rasterization speed gates.
@@ -516,8 +517,11 @@ func (s *Service) planRaw(r core.ClipRequest) (renderJob, bool) {
 			b.Slots[k] = ""
 		}
 	}
-	if f != "signal" && l.Name != "" {
-		b.Slots["channel.name"] = l.Name
+	if f != "signal" {
+		if l.Name != "" {
+			b.Slots["channel.name"] = l.Name
+		}
+		b.Slots["offair.message"] = "Off air"
 		if l.Brand.Tagline != "" {
 			b.Slots["offair.message"] = l.Brand.Tagline
 		}
@@ -536,6 +540,9 @@ func (s *Service) planRaw(r core.ClipRequest) (renderJob, bool) {
 		b.Tokens["type.body"] = normalizeFont(l.Brand.Type.Body)
 		b.Tokens["type.mono"] = normalizeFont(l.Brand.Type.Body)
 		b.Tokens["energy"] = l.Brand.Energy
+		for k, v := range scene.DefaultWords {
+			b.Tokens[k] = v
+		}
 		b.Tokens["words.tagline"] = l.Brand.Tagline
 		b.Tokens["brand.logo"] = l.Brand.Logo
 		b.Slots["brand.logo"] = l.Brand.Logo
@@ -625,8 +632,9 @@ func (s *Service) plan(r core.ClipRequest) (renderJob, bool) {
 	// Normalize cache identity strictly to the look + selected scene + look brand,
 	// excluding ChannelID, channel.name overrides, and per-programme slots/artwork.
 	staticSlots := map[string]string{
-		"brand.logo":   l.Brand.Logo,
-		"channel.name": l.Name,
+		"brand.logo":     l.Brand.Logo,
+		"channel.name":   l.Name,
+		"offair.message": "Off air",
 	}
 	if l.Brand.Tagline != "" {
 		staticSlots["offair.message"] = l.Brand.Tagline

@@ -1,1 +1,0 @@
-import{u as e}from"./i18n-Djn-SKi9.js";var t=t=>{let n=t.title||t.username;return t.isOwner?e(`{name} (owner)`,{name:n}):n};function n(e){let t=-new Date().getTimezoneOffset();return`?days=${e.days}&user=${encodeURIComponent(e.user)}${e.year?`&year=${e.year}`:``}&tz=${t}`}var r=e=>Math.round(e/36e4)/10;export{t as n,n as r,r as t};

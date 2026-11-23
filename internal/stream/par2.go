@@ -199,6 +199,9 @@ func (b *builder) nameFromPar2(pf *postedFile, f *par2.File) bool {
 	}
 	b.rel.setFileInfo(func() { pf.file.Name, pf.file.Info, pf.file.Obfuscated = name, info, nzb.IsObfuscated(name) })
 	pf.setName(name)
+	if !pf.SizeKnown() && f.Length > 0 {
+		pf.setAssumed(f.Length)
+	}
 	return true
 }
 

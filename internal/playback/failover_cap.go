@@ -18,6 +18,9 @@ func (m *Manager) failoverAttempts() int {
 	if n <= 0 {
 		n = m.opts.MaxAttempts
 	}
+	if n <= 0 {
+		n = 4
+	}
 	// A value typed by hand in config.json skips the admin validation.
 	return min(n, maxFailoverAttempts)
 }

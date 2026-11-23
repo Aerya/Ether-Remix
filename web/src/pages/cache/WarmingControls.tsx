@@ -1,10 +1,11 @@
 import { Button, Switch } from "@braedonsaunders/appkit-ui";
 import { Flame } from "lucide-react";
 import { useState } from "react";
+import { ErrorPanel } from "../../components/feedback";
+import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { ErrorPanel } from "../../components/feedback";
 
 type Warming = { titles: { key: number; title: string }[]; speculative: boolean };
 const path = "/cache/warming";
@@ -48,7 +49,7 @@ export function WarmingControls({ titleKey }: { titleKey: string }) {
   );
 }
 
-/** Changes join the cache policy draft and are persisted by its existing Save bar. */
+/** Rows inside the Managed local shelf section; changes join the cache policy draft. */
 export function WarmingPolicy({
   keys,
   speculative,
@@ -64,41 +65,68 @@ export function WarmingPolicy({
 }) {
   const state = useAsync((signal) => apiFetch<Warming>(path, { signal }), []);
   return (
-    <section className="py-3">
-      <h3 className="text-sm font-medium">{t("Keep warm")}</h3>
-      <p className="mt-1 text-xs text-fg-muted">
-        {t("People's next episodes come first, then your pins. Uses your cache budget.")}
-      </p>
-      <ul className="my-3 max-h-36 space-y-2 overflow-y-auto">
-        {keys.map((key) => (
-          <li key={key} className="flex items-center justify-between gap-3 text-sm">
-            <span>{state.data?.titles.find((title) => title.key === key)?.title ?? key}</span>
-            <Button size="sm" disabled={disabled} onClick={() => onRemove(key)}>
-              {t("Remove")}
-            </Button>
-          </li>
-        ))}
-      </ul>
-      {!keys.length && (
-        <p className="my-3 text-xs text-fg-muted">{t("Choose Keep warm on a movie or show.")}</p>
-      )}
-      <div className="flex items-center justify-between gap-4 border-t border-border pt-3">
-        <div>
-          <label htmlFor="speculative-warming" className="text-sm font-medium">
-            {t("Speculative warming")}
-          </label>
-          <p className="text-xs text-fg-muted">
-            {t("Off: only pins, watchlists and what people are watching.")}
-          </p>
-        </div>
-        <Switch
-          id="speculative-warming"
-          checked={speculative}
-          disabled={disabled}
-          onChange={(e) => onSpeculativeChange(e.currentTarget.checked)}
+    <>
+      {keys.length ? (
+        <SettingsRow
+          setting="keep-warm"
+          stacked
+          title={t("Keep warm")}
+          description={t(
+            "People's next episodes come first, then your pins. Uses your cache budget.",
+          )}
+        >
+          <ul className="max-h-40 divide-y divide-border overflow-y-auto rounded-lg border border-border bg-bg-subtle/40 px-3">
+            {keys.map((key) => (
+              <li key={key} className="flex items-center justify-between gap-3 py-2 text-sm">
+                <span className="min-w-0 truncate text-fg">
+                  {state.data?.titles.find((title) => title.key === key)?.title ?? key}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={disabled}
+                  onClick={() => onRemove(key)}
+                >
+                  {t("Remove")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </SettingsRow>
+      ) : (
+        <SettingsRow
+          setting="keep-warm"
+          title={t("Keep warm")}
+          description={t(
+            "People's next episodes come first, then your pins. Uses your cache budget.",
+          )}
+          control={
+            <span className="text-xs text-fg-muted">
+              {t("Choose Keep warm on a movie or show.")}
+            </span>
+          }
         />
-      </div>
-      {state.error ? <ErrorPanel error={state.error} onRetry={() => void state.reload()} /> : null}
-    </section>
+      )}
+      <SettingsRow
+        setting="speculative-warming"
+        title={<label htmlFor="speculative-warming">{t("Speculative warming")}</label>}
+        description={t("Off: only pins, watchlists and what people are watching.")}
+        control={
+          <Switch
+            id="speculative-warming"
+            aria-label={t("Speculative warming")}
+            checked={speculative}
+            disabled={disabled}
+            onChange={(e) => onSpeculativeChange(e.currentTarget.checked)}
+          />
+        }
+      />
+      {state.error ? (
+        <div className="px-5 py-3">
+          <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
+        </div>
+      ) : null}
+    </>
   );
 }

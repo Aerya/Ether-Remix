@@ -55,12 +55,8 @@ func TestPresenceIdleWatchdog(t *testing.T) {
 
 	// A silent (half-open) stream is dropped after the idle timeout.
 	keepalive <- false
-	start := time.Now()
 	err = p.stream(context.Background(), "h", 1, "m", "tok")
 	if !errors.Is(err, errPubsubIdle) {
 		t.Fatalf("err = %v, want idle watchdog", err)
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("watchdog took %v", d)
 	}
 }

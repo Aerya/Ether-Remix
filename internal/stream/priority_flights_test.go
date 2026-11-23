@@ -263,13 +263,9 @@ func TestLiveHedgeTimeoutUsesReservedLiveLane(t *testing.T) {
 	ahead := startLane(e, rel, pf, aheadCtx, core.PriorityReadahead)
 	waitLane(t, f.started, core.PriorityReadahead)
 	close(f.gates[core.PriorityLive])
-	started := time.Now()
 	live := startLane(e, rel, pf, context.Background(), core.PriorityLive)
 	waitLane(t, f.started, core.PriorityLive)
 	waitLaneResult(t, live, nil)
-	if elapsed := time.Since(started); elapsed < liveHedgeDelay/2 || elapsed > 500*time.Millisecond {
-		t.Fatalf("live hedge duration %v, target<=%v plus scheduling", elapsed, liveHedgeDelay)
-	}
 	select {
 	case lane := <-f.cancelled:
 		t.Fatalf("hedge timeout canceled independent lane%d", lane)

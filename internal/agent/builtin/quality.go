@@ -30,8 +30,9 @@ func qualityProfilesTool(d Deps) tools.Tool {
 				out = append(out, map[string]any{
 					"name": p.Name, "media": p.Media,
 					"qualityOrder": order, "scores": p.Scores,
-					"language": p.Language, "preferredLanguages": p.PreferredLanguages,
-					"maxHeight": p.MaxHeight, "minHeight": p.MinHeight,
+					"language": p.Language, "audioLanguageMode": p.AudioLanguageMode,
+					"preferredLanguages": p.PreferredLanguages,
+					"maxHeight":          p.MaxHeight, "minHeight": p.MinHeight,
 					"allowedQualities": p.AllowedQualities,
 				})
 			}

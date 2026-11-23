@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addDays,
   addMonths,
+  formatDay,
   localToday,
   periodRange,
   relativeDay,
@@ -191,5 +192,62 @@ describe("calendar page", () => {
         : undefined,
     );
     expect(await screen.findByText(/fetching upcoming episodes/, {}, WAIT)).toBeTruthy();
+  });
+
+  it("formats regional certifications in Agenda and keeps status and viewers readable in Week", async () => {
+    const today = localToday();
+    const tomorrow = addDays(today, 1);
+    const fixture = {
+      from: today,
+      to: tomorrow,
+      today,
+      viewers: [
+        { id: 1, name: "Owner" },
+        { id: 2, name: "Sam" },
+        { id: 3, name: "Kids" },
+        { id: 4, name: "Guest" },
+      ],
+      entries: [
+        {
+          id: "movie-ro",
+          kind: "movie",
+          date: tomorrow,
+          state: "upcoming",
+          title: "Guarding Stars",
+          year: 2026,
+          contentRating: "ro/12",
+          viewers: [1, 2, 3, 4],
+          reasons: ["anticipated"],
+          open: { key: "1000000000000999", type: "movie" },
+        },
+      ],
+      shows: 1,
+      generatedAt: "",
+    };
+    renderAppWith("/calendar/agenda", (method, path) =>
+      method === "GET" && path.startsWith("/calendar/") ? fixture : undefined,
+    );
+    const agendaSection = await screen.findByRole(
+      "region",
+      { name: formatDay.long(tomorrow) },
+      WAIT,
+    );
+    const row = within(agendaSection).getByRole("button", { name: /Guarding Stars/ });
+    expect(within(row).getByText("12 (RO)")).toBeInTheDocument();
+    expect(within(row).queryByText("ro/12")).toBeNull();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Week" }));
+    // On the last day of a week, tomorrow is already in next week.
+    if (startOfWeek(tomorrow) !== startOfWeek(today)) {
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    }
+    const weekSection = await screen.findByRole(
+      "region",
+      { name: `${formatDay.long(tomorrow)}, 1 release` },
+      WAIT,
+    );
+    const card = within(weekSection).getByRole("button", { name: /Guarding Stars/ });
+    expect(within(card).getByText("Upcoming")).toBeInTheDocument();
+    expect(within(card).getByRole("img", { name: "For everyone" })).toBeInTheDocument();
   });
 });

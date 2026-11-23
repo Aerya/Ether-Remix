@@ -111,11 +111,20 @@ func TestFreshGrantResolveDoesNotWrite(t *testing.T) {
 	if _, err = grants.Resolve(ctx, "emby", token); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.QueryRowContext(ctx, `SELECT last_used,expires FROM identity_grants WHERE viewer_id=1`).Scan(&againUsed, &againExpires); err != nil {
-		t.Fatal(err)
-	}
-	if againUsed == used || againExpires == expires {
-		t.Fatal("stale grant was not extended")
+	// The sliding refresh is queued off the request path (#648); wait
+	// for the drainer to land it rather than assuming Resolve wrote it.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err = db.QueryRowContext(ctx, `SELECT last_used,expires FROM identity_grants WHERE viewer_id=1`).Scan(&againUsed, &againExpires); err != nil {
+			t.Fatal(err)
+		}
+		if againUsed != used && againExpires != expires {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stale grant was not extended")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	used, expires = againUsed, againExpires
 	if _, err = grants.Resolve(ctx, "emby", token); err != nil {

@@ -103,10 +103,14 @@ COPY packaging/docker/entrypoint.sh /usr/lib/ether/entrypoint
 ENV ETHER_DATA_DIR=/config \
     XDG_CACHE_HOME=/cache
 
-# Plex API + web UI. GDM discovery (32410-32414/udp) and DLNA-ish ports only
-# work with host networking; EXPOSE is documentation here.
-EXPOSE 32400/tcp 32410-32414/udp
+# Plex API + web UI (32400/tcp), optional dedicated Vela port (8098/tcp),
+# optional dedicated owner console port (e.g. 8099/tcp). GDM discovery
+# (32410-32414/udp) only works with host networking; EXPOSE is documentation here.
+EXPOSE 32400/tcp 8098/tcp 8099/tcp 32410-32414/udp
 VOLUME ["/config", "/cache"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10m --retries=3 \
+  CMD ["/usr/lib/ether/ether", "healthcheck"]
 
 # Starts as root only to hand the volumes to PUID:PGID (default 999, the
 # ether account) and drop privileges; see packaging/docker/entrypoint.sh.

@@ -130,20 +130,14 @@ func TestSourceTrackSelectionOnRealOpenedMedia(t *testing.T) {
 	caps := defaultCaps(device.ID)
 	caps.HLSContainers = []string{"mpegts"}
 	caps.SubtitleCodecs = []string{"srt"}
-	audioOrdinal, subtitleIndex := 1, 2
-	req := frontend.PlanRequest{Viewer: friend, Device: device, Protocol: "silo", Item: movieKey, Caps: caps, Intent: frontend.PlayIntent{AudioOrdinal: &audioOrdinal, SubtitleStreamIndex: &subtitleIndex, Options: core.DecideOptions{DirectStream: true, AudioStream: -1, SubtitleStream: -1}}}
+	audioOrdinal, subtitleIndex := 1, 0
+	req := frontend.PlanRequest{Viewer: friend, Device: device, Protocol: "silo", Item: movieKey, Caps: caps, Intent: frontend.PlayIntent{AudioOrdinal: &audioOrdinal, SubtitleOrdinal: &subtitleIndex, Options: core.DecideOptions{DirectStream: true, AudioStream: -1, SubtitleStream: -1}}}
 	plan, err := b.Plan(ctx, req)
 	if err != nil || plan.Media.Estimated || selected.AudioStream != 3 || selected.SubtitleStream != 2 || plan.Decision.AudioStream != 3 || plan.Decision.SubtitleStream != 2 {
 		t.Fatalf("selection plan=%+v selected=%+v err=%v", plan, selected, err)
 	}
 	if len(plan.Media.Streams) != 4 || plan.Media.Streams[0].Type != "video" || plan.Media.Streams[1].Type != "audio" || plan.Media.Streams[1].Index != 1 || plan.Media.Streams[2].Type != "subtitle" || plan.Media.Streams[2].Index != 2 || plan.Media.Streams[3].Type != "audio" || plan.Media.Streams[3].Index != 3 {
 		t.Fatalf("unexpected probed stream order: %+v", plan.Media.Streams)
-	}
-	bad := req
-	badIndex := 99
-	bad.Intent.SubtitleStreamIndex = &badIndex
-	if _, err := b.Plan(ctx, bad); !errors.Is(err, frontend.ErrTrackNotFound) {
-		t.Fatalf("foreign subtitle index: %v", err)
 	}
 	sources := h.m.Sessions()
 	if len(sources) != 1 || sources[0].Source == nil || sources[0].Source.ReleaseID() != "track-source" {

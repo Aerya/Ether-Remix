@@ -1,9 +1,16 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { resetRegistryCache } from "../lib/extend";
 import { calls } from "./harness";
 import { renderAppWith } from "./routes";
 
 const WAIT = { timeout: 4000 };
+
+async function choose(label: string, option: string | RegExp) {
+  fireEvent.click(screen.getByRole("button", { name: label }));
+  fireEvent.click(await screen.findByRole("option", { name: option }, WAIT));
+}
+
 const ARTWORK_TITLES = [
   {
     key: "1000000000000001",
@@ -104,14 +111,16 @@ describe("Metadata episode orders", () => {
 });
 
 describe("Metadata artwork studio", () => {
+  beforeEach(() => resetRegistryCache());
+
   it("previews a draft without saving, compares originals, discards and persists the complete design", async () => {
     const { fake } = renderAppWith("/metadata", (_method, path) =>
       path === "/collections/preview" ? { items: [ARTWORK_TITLES[0]!], total: 1 } : undefined,
     );
-    const style = await screen.findByLabelText("Badge finish", {}, WAIT);
+    const style = await screen.findByRole("button", { name: "Badge finish" }, WAIT);
     fireEvent.click(screen.getByRole("button", { name: /Spotlight/ }));
-    expect(style).toHaveValue("solid");
-    expect(screen.getByLabelText("Placement")).toHaveValue("top");
+    expect(style).toHaveTextContent("Solid");
+    expect(screen.getByRole("button", { name: "Placement" })).toHaveTextContent("Top");
     expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(0);
     await waitFor(() => {
       const img = screen.getByRole("img", { name: "Catalogue Movie Your design" });
@@ -130,8 +139,8 @@ describe("Metadata artwork studio", () => {
       ),
     ).toMatchObject({ enabled: false });
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    await waitFor(() => expect(style).toHaveValue("glass"));
-    fireEvent.change(screen.getByLabelText("Badge size"), { target: { value: "large" } });
+    await waitFor(() => expect(style).toHaveTextContent("Glass"));
+    await choose("Badge size", "Large");
     fireEvent.click(screen.getByRole("button", { name: "Lavender" }));
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
@@ -145,6 +154,30 @@ describe("Metadata artwork studio", () => {
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("places section tabs in the header bar and picks preview languages by name", async () => {
+    renderAppWith("/metadata/artwork", (_method, path) =>
+      path === "/collections/preview" ? { items: [ARTWORK_TITLES[0]!], total: 1 } : undefined,
+    );
+    const langButton = await screen.findByRole("button", { name: "Preview language" }, WAIT);
+    const controls = screen.getByRole("complementary", { name: "Metadata controls" });
+    expect(within(controls).queryByRole("tablist", { name: "Metadata sections" })).toBeNull();
+    const tabs = screen.getByRole("tablist", { name: "Metadata sections" });
+    expect(within(tabs).getByRole("tab", { name: "Artwork" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    expect(langButton).toHaveTextContent("English");
+    await choose("Preview language", "French");
+    expect(langButton).toHaveTextContent("French");
+    await waitFor(() => {
+      const img = screen.getByRole("img", { name: "Catalogue Movie Your design" });
+      expect(new URL(img.getAttribute("src")!, "http://localhost").searchParams.get("lang")).toBe(
+        "fr",
+      );
+    });
   });
 
   it("loads real catalogue posters, refreshes to a different title and uses real art across library and compare views", async () => {
@@ -170,7 +203,7 @@ describe("Metadata artwork studio", () => {
           .split("?")[0],
       ).not.toBe(initialURL.split("?")[0]),
     );
-    expect(screen.getByLabelText("Badge finish")).toHaveValue("solid");
+    expect(screen.getByRole("button", { name: "Badge finish" })).toHaveTextContent("Solid");
     expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(0);
     expect(calls(fake, "POST", "/collections/preview")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Library" }));
@@ -217,7 +250,7 @@ describe("Metadata artwork studio", () => {
     expect(
       await screen.findByRole("img", { name: "Catalogue Movie Your design" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Badge finish")).toHaveValue("solid");
+    expect(screen.getByRole("button", { name: "Badge finish" })).toHaveTextContent("Solid");
   });
 
   it("explains unavailable badges and keeps preset detail choices in the draft", async () => {
@@ -262,6 +295,43 @@ describe("Metadata artwork studio", () => {
     expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(0);
   });
 
+  it("shows Rating style only when Rating badges is on and saves One combined score", async () => {
+    const { fake } = renderAppWith("/metadata/artwork", (_method, path) =>
+      path === "/collections/preview" ? { items: [ARTWORK_TITLES[0]!], total: 1 } : undefined,
+    );
+    const ratingStyle = await screen.findByRole("button", { name: "Rating style" }, WAIT);
+    expect(ratingStyle).toHaveTextContent("Each source");
+    expect(await screen.findByText("TMDB 8.6/10", {}, WAIT)).toBeInTheDocument();
+
+    await choose("Rating style", "One combined score");
+    expect(ratingStyle).toHaveTextContent("One combined score");
+    expect(await screen.findByText("8.6", {}, WAIT)).toBeInTheDocument();
+    await waitFor(() => {
+      const img = screen.getByRole("img", { name: "Catalogue Movie Your design" });
+      const settings = JSON.parse(
+        new URL(img.getAttribute("src")!, "http://localhost").searchParams.get("settings")!,
+      );
+      expect(settings).toMatchObject({ ratings: true, ratingStyle: "combined" });
+    });
+
+    const ratingsSwitch = screen.getByRole("switch", { name: "Rating badges" });
+    fireEvent.click(ratingsSwitch);
+    expect(screen.queryByRole("button", { name: "Rating style" })).toBeNull();
+
+    fireEvent.click(ratingsSwitch);
+    expect(screen.getByRole("button", { name: "Rating style" })).toHaveTextContent(
+      "One combined score",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        ratings: true,
+        ratingStyle: "combined",
+      }),
+    );
+  });
+
   it("clears the previous viewer's badge evidence when the next viewer lookup fails", async () => {
     renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
       if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]], total: 1 };
@@ -282,7 +352,7 @@ describe("Metadata artwork studio", () => {
       return undefined;
     });
     expect(await screen.findByText("PLAYED 4K", {}, WAIT)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Preview as"), { target: { value: "2" } });
+    await choose("Preview as", "Sam Rivera");
     expect(screen.queryByText("PLAYED 4K")).not.toBeInTheDocument();
     await screen.findByRole("button", { name: "Retry title data" });
     expect(screen.queryByText("PLAYED 4K")).not.toBeInTheDocument();
@@ -295,17 +365,98 @@ describe("Metadata artwork studio", () => {
         return new Response("Storage unavailable", { status: 500 });
       return undefined;
     });
-    fireEvent.change(await screen.findByLabelText("Placement", {}, WAIT), {
-      target: { value: "top" },
-    });
+    await screen.findByRole("button", { name: "Placement" }, WAIT);
+    await choose("Placement", "Top");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await screen.findByRole("alert");
-    expect(screen.getByLabelText("Placement")).toHaveValue("top");
+    expect(screen.getByRole("button", { name: "Placement" })).toHaveTextContent("Top");
     failed = false;
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(2));
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("hides From plugins when no plugin declares poster badges and toggles disabledBadgeSets when present", async () => {
+    let badgeDescriptors: unknown[] = [];
+    const { unmount } = renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
+      if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]!], total: 1 };
+      if (path === "/extend/registry" && query.get("kinds") === "posterBadge") {
+        return { version: 1, descriptors: badgeDescriptors };
+      }
+      return undefined;
+    });
+    const layers = await screen.findByRole("region", { name: "Poster layers" }, WAIT);
+    expect(within(layers).queryByRole("group", { name: "From plugins" })).toBeNull();
+    expect(screen.queryByText("From plugins")).not.toBeInTheDocument();
+    unmount();
+    resetRegistryCache();
+
+    badgeDescriptors = [
+      {
+        kind: "posterBadge",
+        id: "plugin:org.example.anime/dub_languages",
+        owner: "org.example.anime",
+        label: { resolved: "Dub languages" },
+        hint: { resolved: "Spoken dub languages available for anime." },
+        group: "Anime Hub",
+        meta: {
+          key: "dub_languages",
+          layerKey: "plugin:org.example.anime:dub_languages",
+          pluginName: "Anime Hub",
+        },
+      },
+      {
+        kind: "posterBadge",
+        id: "plugin:org.example.editions/editions",
+        owner: "org.example.editions",
+        label: { resolved: "Editions" },
+        group: "Cinema Cuts",
+        meta: {
+          key: "editions",
+          layerKey: "plugin:org.example.editions:editions",
+          pluginName: "Cinema Cuts",
+        },
+      },
+    ];
+    const { fake } = renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
+      if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]!], total: 1 };
+      if (path === "/extend/registry" && query.get("kinds") === "posterBadge") {
+        return { version: 2, descriptors: badgeDescriptors };
+      }
+      return undefined;
+    });
+
+    const pluginGroup = await screen.findByRole("group", { name: "From plugins" }, WAIT);
+    const dubSwitch = within(pluginGroup).getByRole("switch", {
+      name: "Dub languages · Anime Hub",
+    });
+    const editionsSwitch = within(pluginGroup).getByRole("switch", {
+      name: "Editions · Cinema Cuts",
+    });
+    expect(dubSwitch).toBeChecked();
+    expect(editionsSwitch).toBeChecked();
+    expect(
+      within(pluginGroup).getByText("Spoken dub languages available for anime."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(dubSwitch);
+    expect(dubSwitch).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        disabledBadgeSets: ["org.example.anime:dub_languages"],
+      }),
+    );
+
+    fireEvent.click(dubSwitch);
+    expect(dubSwitch).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        disabledBadgeSets: [],
+      }),
     );
   });
 

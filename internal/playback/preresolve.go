@@ -2,13 +2,19 @@ package playback
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 const (
@@ -58,6 +64,7 @@ type warmEntry struct {
 	cancel        context.CancelFunc
 	runtime       time.Duration // title runtime, for size rules without a probe
 	res           *core.Resolution
+	sourceReady   bool // mu; a warm source is resolved before its probe completes
 	probe         *probeCache
 	// originalAudio is set when the warmed profile compares audio with
 	// the catalogue language. originalLanguage is the Title.Language
@@ -69,6 +76,35 @@ type warmEntry struct {
 	// nil means the entry predates this field and is treated as proven.
 	opened chan struct{}
 	openDo sync.Once
+	// detailOnly marks the viewer's last played release, warmed for a
+	// detail page's tracks only: it is never prefetched and Play never
+	// opens it.
+	detailOnly bool
+	// playProbe marks a warm-up started directly for explicit play-time
+	// metadata probing (foreground playback rules, zero prefetch).
+	playProbe bool
+	// promoted is closed when a play-intent wait promotes an already
+	// in-flight speculative warm-up without tying its lifetime to the
+	// metadata request.
+	promoted   chan struct{}
+	promoteDo  sync.Once
+	promotedAt atomic.Bool
+}
+
+func (e *warmEntry) markPromoted() {
+	if e == nil {
+		return
+	}
+	e.promotedAt.Store(true)
+	e.promoteDo.Do(func() {
+		if e.promoted != nil {
+			close(e.promoted)
+		}
+	})
+}
+
+func (e *warmEntry) isPromoted() bool {
+	return e != nil && e.promotedAt.Load()
 }
 
 func (e *warmEntry) markOpeningReady() {
@@ -102,6 +138,7 @@ func (e *warmEntry) abort() {
 }
 
 type probeCache struct {
+	warmReads *core.WarmReadWindow
 	releaseID string
 	info      core.MediaInfo
 	points    []IndexPoint
@@ -131,7 +168,33 @@ type probeCache struct {
 // Prefetch goes through Engine.Prefetch, which runs at core.PriorityPrefetch
 // and yields to live streams.
 func (m *Manager) Prewarm(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions) bool {
-	return m.prewarm(ctx, user, key, caps, opts, false)
+	return m.prewarm(ctx, user, key, caps, opts, false, false)
+}
+
+// RevealDetail triggers a background season-drop check for a show, season, or
+// episode detail open unless the client is reading pages like a crawler.
+func (m *Manager) RevealDetail(user *core.User, clientID string, key core.RatingKey) {
+	if m == nil || m.deps.SeasonRevealer == nil || user == nil || !isTVDetailKey(key) {
+		return
+	}
+	if core.DetailBurst(user.ID, clientID, key) {
+		return
+	}
+	m.deps.SeasonRevealer(key)
+}
+
+func isTVDetailKey(key core.RatingKey) bool {
+	if key == 0 || key.IsPluginKey() || key.TMDB() <= 0 {
+		return false
+	}
+	switch key.Kind() {
+	case core.KindShow:
+		return true
+	case core.KindSeason, core.KindEpisode:
+		return key.Season() > 0
+	default:
+		return false
+	}
 }
 
 // ProbeMetadata resolves and probes the detail page's source without creating a
@@ -139,37 +202,313 @@ func (m *Manager) Prewarm(ctx context.Context, user *core.User, key core.RatingK
 // admission limits apply. Slow probes finish in the background; the caller
 // can render estimated metadata until exact facts become available.
 func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
-	if err := ctx.Err(); err != nil {
+	// A caller deadline bounds only the wait: one already past still
+	// schedules the warm-up. Cancellation stops before any work.
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
+		m.RevealDetail(user, caps.ClientID, key)
+		m.scheduleVersionProbes(user, key, caps)
 		return nil
 	}
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		m.RevealDetail(user, caps.ClientID, key)
+		m.scheduleVersionProbes(user, key, caps)
 		return nil
+	}
+	if user != nil && core.DetailBurst(user.ID, caps.ClientID, key) {
+		return core.ErrPrepareSlow
+	}
+	if user != nil && m.deps.SeasonRevealer != nil && isTVDetailKey(key) {
+		m.deps.SeasonRevealer(key)
+	}
+	if core.LocalResponse(ctx) {
+		if user == nil {
+			return core.ErrPrepareSlow
+		}
+		m.mu.Lock()
+		entry := m.findWarmEntryLocked(user, caps, key, m.now())
+		ready := entry != nil && (entry.sourceReady || entry.res != nil)
+		m.mu.Unlock()
+		if !ready {
+			// An already stored source may need its first probe after restart.
+			// Without such a source the page must not resolve/search to wait.
+			point, err := m.resumeFor(ctx, user, key, caps, false)
+			if err != nil || point == nil {
+				return core.ErrPrepareSlow
+			}
+		}
 	}
 	// Viewing the detail page admits one bounded on-demand open, just as
 	// playback intent does, while metadata mode still forbids video prefetch.
-	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true)
-	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, 1500*time.Millisecond); ok {
+	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true, false)
+	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, probeMetadataWait(ctx)); ok {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	return core.ErrPrepareSlow
 }
 
-func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata bool) bool {
-	if user == nil || caps.ClientID == "" || caps.Product == "" {
+// defaultProbeMetadataWait bounds ProbeMetadata when the caller sets no
+// deadline of its own.
+const defaultProbeMetadataWait = 1500 * time.Millisecond
+
+// maxProbeMetadataWait caps a caller-declared deadline: the Bedrock detail
+// allowance is 4 s, and no caller may hold a response longer for a probe.
+const maxProbeMetadataWait = 4 * time.Second
+
+// maxPlayProbeMetadataWait caps the bounded wait for explicit play-intent
+// metadata re-asks (such as Plezy's first play), where a cold remux resolve
+// can exceed the 4 s browsing allowance. Moving that wait onto the metadata
+// re-ask costs no time to first frame because the following stream request
+// adopts the same warm entry.
+const maxPlayProbeMetadataWait = 12 * time.Second
+
+// probeMetadataWait is how long ProbeMetadata holds the caller for the probe.
+// A caller that declares a deadline owns the allowance: Plex Android and iOS
+// build their subtitle picker from the response being written, so the probe
+// gets the whole budget the caller granted. Without a deadline the wait stays
+// short. The warm-up itself is never cancelled; a probe that finishes later is
+// still adopted by later reads.
+func probeMetadataWait(ctx context.Context) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		return min(time.Until(dl), maxProbeMetadataWait)
+	}
+	return defaultProbeMetadataWait
+}
+
+func playProbeMetadataWait(ctx context.Context) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		return min(time.Until(dl), maxPlayProbeMetadataWait)
+	}
+	return maxPlayProbeMetadataWait
+}
+
+var _ core.PlayMetadataProber = (*Manager)(nil)
+
+// ProbePlayMetadata joins or starts the shared resolve+probe flight for a
+// play-time metadata read (POST /playQueues, pre-play /library/metadata, or
+// Plezy's first play) and waits bounded by ctx (capped at
+// maxPlayProbeMetadataWait) until probed tracks are ready.
+//
+// Unlike browsing ProbeMetadata, this carries explicit play intent:
+//   - LocalResponse, speculation/detail-warmup settings, DetailBurst, and a
+//     prior speculative warmMiss never short-circuit it.
+//   - An already in-flight foreground Prepare is joined without affecting its
+//     waiters or cancellation, so metadata reads arriving during playback
+//     startup receive the probed streams once Prepare registers the session.
+//   - An already in-flight speculative warm-up is promoted and joined; if that
+//     speculative attempt finishes without a probe while wait budget remains,
+//     one foreground play-intent flight is started in its place.
+//   - A flight started here runs under foreground playback resolution rules
+//     with zero video prefetch, publishing into m.warm so the following stream
+//     request adopts the same resolved source and probe without repeating work.
+//   - Caller cancellation or deadline expiry ends only the wait; the shared
+//     flight keeps running for the stream request.
+func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if user == nil || caps.ClientID == "" {
+		return core.ErrPrepareSlow
+	}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
+	if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+		return nil
+	}
+	budget := playProbeMetadataWait(ctx)
+	deadline := time.Now().Add(budget)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		now := m.now()
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return core.ErrPrepareSlow
+		}
+		if pf := m.activeFlightLocked(id); pf != nil {
+			m.mu.Unlock()
+			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+		}
+		e := m.warm[id]
+		if e != nil && !now.Before(e.expires) {
+			delete(m.warm, id)
+			e = nil
+		}
+		var inFlight bool
+		var wasSpeculative bool
+		if e != nil {
+			select {
+			case <-e.done:
+				if e.probe == nil || e.probe.info.Estimated || len(e.probe.info.Streams) == 0 {
+					delete(m.warm, id)
+					e = nil
+				}
+			default:
+				inFlight = true
+				wasSpeculative = !e.playProbe
+			}
+		}
+		m.mu.Unlock()
+
+		if e != nil && !inFlight {
+			if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+				return nil
+			}
+			return core.ErrPrepareSlow
+		}
+
+		if !inFlight {
+			m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true, true)
+			now = m.now()
+			m.mu.Lock()
+			e = m.warm[id]
+			if e != nil && !now.Before(e.expires) {
+				e = nil
+			}
+			var pf *flight
+			if e == nil {
+				pf = m.activeFlightLocked(id)
+			}
+			m.mu.Unlock()
+			if e == nil {
+				if pf != nil {
+					return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+				}
+				if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+					return nil
+				}
+				return core.ErrPrepareSlow
+			}
+			wasSpeculative = !e.playProbe
+		}
+
+		if wasSpeculative {
+			e.markPromoted()
+		}
+
+		if err := waitFlightDone(ctx, e.done, deadline); err != nil {
+			if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+				return nil
+			}
+			return err
+		}
+
+		if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+			return nil
+		}
+		m.mu.Lock()
+		pf := m.activeFlightLocked(id)
+		m.mu.Unlock()
+		if pf != nil {
+			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+		}
+		if !wasSpeculative {
+			return core.ErrPrepareSlow
+		}
+	}
+	return core.ErrPrepareSlow
+}
+
+// HasActivePrepare reports whether a foreground Prepare flight is currently
+// running for this viewer, client, title, and surface.
+func (m *Manager) HasActivePrepare(user *core.User, key core.RatingKey, caps core.ClientCaps) bool {
+	if user == nil || caps.ClientID == "" {
+		return false
+	}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed && m.activeFlightLocked(id) != nil
+}
+
+func (m *Manager) waitActivePrepare(ctx context.Context, pf *flight, deadline time.Time, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+	if err := waitFlightDone(ctx, pf.done, deadline); err != nil {
+		if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+			return nil
+		}
+		return err
+	}
+	if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
+		return nil
+	}
+	return core.ErrPrepareSlow
+}
+
+func (m *Manager) hasExactPlayMetadata(ctx context.Context, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) bool {
+	m.mu.Lock()
+	s := m.byIdent[id]
+	m.mu.Unlock()
+	if s != nil {
+		if ps := s.snapshot(m.now()); ps != nil && !ps.Info.Estimated && len(ps.Info.Streams) > 0 {
+			return true
+		}
+	}
+	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
+		return true
+	}
+	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		m.mu.Lock()
+		if e := m.findWarmEntryLocked(user, caps, key, m.now()); e != nil {
+			e.markPromoted()
+		}
+		m.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+func waitFlightDone(ctx context.Context, done <-chan struct{}, deadline time.Time) error {
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return core.ErrPrepareSlow
+	}
+	timer := time.NewTimer(wait)
+	select {
+	case <-done:
+		timer.Stop()
+		return nil
+	case <-ctx.Done():
+		timer.Stop()
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return core.ErrPrepareSlow
+	case <-timer.C:
+		return core.ErrPrepareSlow
+	}
+}
+
+func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata, playProbe bool) bool {
+	if key.IsPluginKey() {
+		return false
+	}
+	cachedMetadata := metadata && !playProbe && core.LocalResponse(requestCtx)
+	if user == nil || caps.ClientID == "" || (!playProbe && caps.Product == "") {
 		return false
 	}
 	reason := opts.Reason
 	if reason != core.PrewarmTrailer && reason != core.PrewarmPostPlay && reason != core.PrewarmBrowse && reason != core.PrewarmNextEpisode {
 		reason = core.PrewarmDetail
 	}
+	if !playProbe && reason == core.PrewarmDetail && !opts.DuringPlayback {
+		if core.DetailBurst(user.ID, caps.ClientID, key) {
+			return false
+		}
+		if m.deps.SeasonRevealer != nil && isTVDetailKey(key) {
+			m.deps.SeasonRevealer(key)
+		}
+	}
 	cfg := m.config().Cache
-	if cfg.DisableSpeculation || cfg.Mode == "off" || (cfg.SpeculativeWarming == "off" && reason != core.PrewarmNextEpisode && !metadata) || (reason == core.PrewarmDetail && cfg.DetailWarmup == "off") {
+	if !playProbe && (cfg.DisableSpeculation || cfg.Mode == "off" || (cfg.SpeculativeWarming == "off" && reason != core.PrewarmNextEpisode && !metadata) || (reason == core.PrewarmDetail && cfg.DetailWarmup == "off")) {
 		return false
 	}
 	automaticReserve := reason == core.PrewarmDetail && opts.PrefetchBytes <= 0 && cfg.DetailBytes <= 0
@@ -211,9 +550,14 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 	if existing := m.warm[id]; existing != nil {
 		accepted := m.scheduleChannelWindowLocked(existing, opts.StartOffset)
 		m.mu.Unlock()
+		if reason == core.PrewarmDetail && !opts.DuringPlayback {
+			m.scheduleVersionProbes(user, key, caps)
+		}
 		return accepted
 	}
-	if at, ok := m.warmMisses[id]; ok {
+	if playProbe {
+		delete(m.warmMisses, id)
+	} else if at, ok := m.warmMisses[id]; ok {
 		if now.Sub(at) < warmMissTTL {
 			m.mu.Unlock()
 			return false
@@ -227,18 +571,18 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			continue
 		default:
 		}
-		if reason == core.PrewarmDetail && ident.userID == user.ID && ident.clientID == caps.ClientID && ident.key != key && now.Sub(e.started) >= 2*time.Second {
+		if reason == core.PrewarmDetail && ident.userID == user.ID && ident.clientID == caps.ClientID && ident.key != key && (playProbe || now.Sub(e.started) >= 2*time.Second) {
 			delete(m.warm, ident)
 			e.abort()
 			continue
 		}
 		active++
-		if ident.userID == user.ID {
+		if !playProbe && ident.userID == user.ID {
 			m.mu.Unlock()
 			return false
 		}
 	}
-	if active >= 2 {
+	if !playProbe && active >= 2 {
 		m.mu.Unlock()
 		return false
 	}
@@ -270,30 +614,38 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		m.mu.Unlock()
 		return false
 	}
-	budgetReason := "speculative"
-	rateLimit := 6
-	if reason == core.PrewarmNextEpisode {
-		budgetReason = core.PrewarmNextEpisode
-	}
-	if reason == core.PrewarmDetail {
-		budgetReason = core.PrewarmDetail
-		rateLimit = 30
-	}
-	bk := warmBudgetKey{userID: user.ID, reason: budgetReason}
-	requests := m.warmRequests[bk]
-	recent := requests[:0]
-	for _, at := range requests {
-		if now.Sub(at) < time.Minute {
-			recent = append(recent, at)
+	if !playProbe {
+		budgetReason := "speculative"
+		rateLimit := 6
+		if reason == core.PrewarmNextEpisode {
+			budgetReason = core.PrewarmNextEpisode
 		}
+		if reason == core.PrewarmDetail {
+			budgetReason = core.PrewarmDetail
+			rateLimit = 30
+		}
+		bk := warmBudgetKey{userID: user.ID, reason: budgetReason}
+		requests := m.warmRequests[bk]
+		recent := requests[:0]
+		for _, at := range requests {
+			if now.Sub(at) < time.Minute {
+				recent = append(recent, at)
+			}
+		}
+		if len(recent) >= rateLimit {
+			m.mu.Unlock()
+			return false
+		}
+		m.warmRequests[bk] = append(recent, now)
 	}
-	if len(recent) >= rateLimit {
-		m.mu.Unlock()
-		return false
-	}
-	m.warmRequests[bk] = append(recent, now)
 	profileObj := m.selectProfile(caps, user, key)
-	e := &warmEntry{offset: opts.StartOffset, profileKey: profileKey(profileObj), profileObj: profileObj, caps: caps, done: make(chan struct{}), opened: make(chan struct{}), foreground: make(chan context.Context, 1), started: now, expires: now.Add(preResolveTTL)}
+	var fg chan context.Context
+	var promoted chan struct{}
+	if !playProbe {
+		fg = make(chan context.Context, 1)
+		promoted = make(chan struct{})
+	}
+	e := &warmEntry{offset: opts.StartOffset, profileKey: profileKey(profileObj), profileObj: profileObj, caps: caps, done: make(chan struct{}), opened: make(chan struct{}), foreground: fg, playProbe: playProbe, promoted: promoted, started: now, expires: now.Add(preResolveTTL)}
 	m.warm[id] = e
 	u := *user
 	wallStarted := time.Now()
@@ -307,86 +659,360 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 				delete(m.warm, id)
 				// A warm-up superseded by another title was removed above
 				// and is not a miss; neither is one cut short by shutdown.
-				if m.ctx.Err() == nil {
+				if m.ctx.Err() == nil && !playProbe {
 					m.recordWarmMissLocked(id)
 				}
 			}
 			m.mu.Unlock()
 			e.ready.Do(func() { close(e.done) })
 		}()
-		ctx, cancel := warmPreparationContext(core.WithIndexerPurpose(m.ctx, core.IndexerPurposeWarmup), timeout, e.foreground)
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if playProbe {
+			// Explicit play intent (e.g. Plezy's play-time metadata re-ask):
+			// resolve under foreground playback rules so the immediately
+			// following stream request adopts the same source and probe.
+			ctx, cancel = context.WithTimeout(core.WithIndexerPurpose(m.ctx, core.IndexerPurposePlayback), timeout)
+		} else {
+			ctx, cancel = warmPreparationContextWithPromote(core.WithIndexerPurpose(m.ctx, core.IndexerPurposeWarmup), timeout, e.foreground, e.promoted)
+		}
 		e.setCancel(cancel)
 		defer cancel()
-		if opts.PlayIntent || reason == core.PrewarmPostPlay || reason == core.PrewarmNextEpisode {
+		if !playProbe && (opts.PlayIntent || reason == core.PrewarmPostPlay || reason == core.PrewarmNextEpisode) {
 			hold := time.Duration(0)
 			if reason == core.PrewarmDetail {
 				hold = onDemandWarmHold
 			}
 			ctx = core.WithOnDemandWarm(ctx, m.onDemandWarmAdmit(ctx, id, e, wallStarted, hold))
 		}
-		title, err := m.deps.Catalog.Get(ctx, key)
+		var title *core.Title
+		var err error
+		if cachedMetadata {
+			cached, ok := m.deps.Catalog.(interface {
+				CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+			})
+			if !ok {
+				return
+			}
+			title, err = cached.CachedGet(ctx, key)
+		} else {
+			title, err = m.deps.Catalog.Get(ctx, key)
+		}
 		if err != nil || title == nil || title.IsFutureRelease(m.now()) || title.Type == core.TypeShow || title.Type == core.TypeSeason {
 			return
 		}
+		if reason == core.PrewarmDetail && !opts.DuringPlayback {
+			defer m.scheduleVersionProbes(&u, key, caps)
+		}
 		// Warming must not override the source that actually survived the
 		// previous playback with the original, slower top-ranked release.
-		res := m.resumeResolution(ctx, u.ID, key, e.profileObj, caps, strings.TrimSpace(title.Language))
-		if releasepolicy.UsesOriginalAudio(e.profileObj.ReleaseRules) {
+		profile := e.profileObj
+		res := m.resumeResolution(ctx, u.ID, key, profile, caps, strings.TrimSpace(title.Language))
+		if releasepolicy.UsesOriginalAudio(profile.ReleaseRules) {
 			e.originalAudio = true
 			e.originalLanguage = strings.TrimSpace(title.Language)
 		}
-		if res == nil || !m.rememberedReleaseMatchesTitle(ctx, res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
-			res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
-		} else if reason == core.PrewarmDetail {
-			// Reusing the remembered source skips Resolve/search. Recover only
-			// the picker candidates, without delaying or changing that source.
-			if refill, ok := m.deps.Resolver.(core.SearchCacheRefiller); ok {
-				refill.RefillSearchCache(title)
+		fromResume := false
+		detailOnly := false
+		if res != nil && m.rememberedReleaseMatchesTitle(ctx, res.Release, title) && payloadMatchesTitle(res.NZB, title) {
+			fromResume = true
+			if reason == core.PrewarmDetail && !cachedMetadata {
+				// Reusing the remembered source skips Resolve/search. Recover only
+				// the picker candidates, without delaying or changing that source.
+				if refill, ok := m.deps.Resolver.(core.WarmupSearchCacheRefiller); ok {
+					refill.RefillWarmupSearchCache(title)
+				}
 			}
-		}
-		if err != nil || res == nil {
-			return
-		}
-		session := newSession(randomID(16), id, &u, caps, title, e.profileKey, m.now())
-		defer session.sources.seal()
-		src, finish, err := m.openSource(ctx, session.sources, res)
-		if err != nil {
-			if reason == core.PrewarmNextEpisode {
-				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
-			}
-			return
-		}
-		m.noteWarmCause(res, src, reason, cacheTitle(*title))
-		generation, err := m.probeGeneration(ctx, session, res, src, finish, func(size int64) core.MediaInfo {
-			info := EstimateInfo(title, caps, m.selectProfile(caps, &u, title.Key))
-			info.Size = size
-			return info
-		}, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
-		if err != nil {
-			if reason == core.PrewarmNextEpisode {
-				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
-			}
-			return
-		}
-		defer m.dropGeneration(generation)
-		if caps.BroadcastBitrateKbps > 0 {
-			file := res.Release
-			file.Size, file.Info.FullSeason = src.Size(), false
-			if video := generation.infoSnapshot().Video(); video != nil && video.Height > file.Info.Height {
-				file.Info.Height = video.Height
-			}
-			if !m.channelSourceAllowed(session, file) {
+		} else {
+			res = nil
+			if cachedMetadata {
 				return
 			}
 		}
-		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), points: generation.timeMapSnapshot().Points}
+		u = m.effectiveResolveUser(ctx, u)
+		session := newSession(randomID(16), id, &u, caps, title, e.profileKey, m.now())
+		defer session.stopCancel()
+		defer session.sources.seal()
+		maxAttempts := m.opts.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 4
+		}
+		if cachedMetadata {
+			maxAttempts = 1
+		}
+		var (
+			tried              []string
+			audioRejected      []core.Release
+			alternates         []core.Release
+			unknownAudioProbes int
+			fallbackGen        *generation
+			fallbackRes        *core.Resolution
+			fallbackBurned     bool
+			chosenGen          *generation
+			chosenRes          *core.Resolution
+			lastRel            core.Release
+			lastErr            error
+		)
+		rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
+			info := g.infoSnapshot()
+			if m.knownHardSubbed(ctx, g) && m.hardSubtitleBlocked(ctx, res.Release) {
+				return false
+			}
+			if probedRequiredAudioRejection(profile, title, res.Release, info, false) != "" {
+				return false
+			}
+			if caps.BroadcastBitrateKbps > 0 {
+				file := res.Release
+				file.Size, file.Info.FullSeason = info.Size, false
+				if video := info.Video(); video != nil && video.Height > file.Info.Height {
+					file.Info.Height = video.Height
+				}
+				if !m.channelSourceAllowed(session, file) {
+					return false
+				}
+			}
+			return true
+		})
+		defer rt.close(m)
+		defer func() {
+			if fallbackGen != nil {
+				m.dropGeneration(fallbackGen)
+			}
+		}()
+		fallbackInfo := func(size int64) core.MediaInfo {
+			info := EstimateInfo(title, caps, profile)
+			info.Size = size
+			return info
+		}
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if res == nil {
+				fromResume = false
+				if len(tried) == 0 {
+					res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
+					if (err != nil || res == nil) && reason == core.PrewarmDetail && caps.BroadcastBitrateKbps == 0 {
+						// A detail page for a title the viewer played keeps that
+						// file's stored tracks while no search can answer. The
+						// entry serves the page only; Play selects its own source.
+						if last := m.lastPlayedResolution(ctx, u.ID, title, profile, caps); last != nil {
+							res, err, detailOnly = last, nil, true
+						}
+					}
+				} else if playProbe {
+					res, err = m.nextResolutionTracking(ctx, session, &tried, audioRejected, alternates)
+				} else {
+					res, err = m.nextWarmResolution(ctx, session, &tried, audioRejected, alternates)
+				}
+				if err != nil || res == nil {
+					lastErr = err
+					break
+				}
+			}
+			m.mu.Lock()
+			e.sourceReady = true
+			m.mu.Unlock()
+			if len(res.NZB) > 0 {
+				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
+			}
+			if !cachedMetadata && !detailOnly {
+				if m.titleReleaseRejected(ctx, key, res.Release) || audioExcluded(audioRejected, res.Release) {
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+				if m.releaseNamesakeRejected(ctx, session, res.Release) {
+					m.markBad(res.Release.ID, "release names the other title")
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+			}
+			needsAudioProbe := false
+			if !cachedMetadata && !detailOnly && m.ownerPinAllows(session, "") {
+				if langs, unverified := candidateNeedsAudioVerification(profile, title, res.Release); unverified {
+					if unknownAudioProbes >= maxUnknownAudioProbes {
+						lastRel, lastErr = res.Release, fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+						tried = append(tried, res.Release.ID)
+						if len(res.Alternates) > 0 {
+							alternates = res.Alternates
+						}
+						res = nil
+						continue
+					}
+					unknownAudioProbes++
+					needsAudioProbe = true
+				}
+			}
+			src, finish, err := m.openSource(ctx, session.sources, res)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				lastRel, lastErr = res.Release, err
+				if fromResume && reason == core.PrewarmNextEpisode && permanentSourceFailure(err) {
+					_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+					return
+				}
+				if cachedMetadata || detailOnly {
+					break
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			m.noteWarmCause(res, src, reason, cacheTitle(*title))
+			probeCtx := withDeferredGenerationFills(ctx)
+			if !cachedMetadata && !detailOnly {
+				probeCtx = withRuntimeTracker(probeCtx, rt)
+			}
+			generation, err := m.probeGeneration(probeCtx, session, res, src, finish, fallbackInfo, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				lastRel, lastErr = res.Release, err
+				if fromResume && reason == core.PrewarmNextEpisode && permanentSourceFailure(err) {
+					_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+					return
+				}
+				if cachedMetadata || detailOnly {
+					break
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			m.RecordReleaseProbe(ctx, res.Release, res.NZB, generation.infoSnapshot())
+			burned := !cachedMetadata && !detailOnly && m.knownHardSubbed(ctx, generation)
+			if burned && m.hardSubtitleBlocked(ctx, res.Release) {
+				m.dropGeneration(generation)
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			info := generation.infoSnapshot()
+			if reqReason := probedRequiredAudioRejection(profile, title, res.Release, info, fromResume); reqReason != "" {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
+				m.log.Debug("prewarm skipped: required audio absent", "key", key, "release", res.Release.Name, "reason", reqReason)
+				m.dropGeneration(generation)
+				lastRel, lastErr = res.Release, errors.New(reqReason)
+				if cachedMetadata || detailOnly {
+					break
+				}
+				if needsAudioProbe && unknownAudioProbes < maxUnknownAudioProbes {
+					attempt--
+				}
+				tried = append(tried, res.Release.ID)
+				audioRejected = append(audioRejected, res.Release)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			if !cachedMetadata && !detailOnly && !fromResume {
+				audioOK := m.probedAudioAcceptable(session, profile, info)
+				if burned || !audioOK {
+					skipReason := "probed release lacks viewer audio language"
+					if burned {
+						skipReason = "burned-in subtitles detected"
+					} else {
+						m.noteReleaseProbeMemory(res.Release, res.NZB, info)
+					}
+					m.log.Debug("prewarm trying next candidate", "key", key, "release", res.Release.Name, "reason", skipReason)
+					if fallbackGen == nil || (fallbackBurned && !burned) {
+						if fallbackGen != nil {
+							m.dropGeneration(fallbackGen)
+						}
+						fallbackGen, fallbackRes, fallbackBurned = generation, res, burned
+					} else {
+						m.dropGeneration(generation)
+					}
+					tried = append(tried, res.Release.ID)
+					if !audioOK {
+						audioRejected = append(audioRejected, res.Release)
+					}
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+			}
+			if caps.BroadcastBitrateKbps > 0 {
+				file := res.Release
+				file.Size, file.Info.FullSeason = generation.src.Size(), false
+				if video := generation.infoSnapshot().Video(); video != nil && video.Height > file.Info.Height {
+					file.Info.Height = video.Height
+				}
+				if !m.channelSourceAllowed(session, file) {
+					m.dropGeneration(generation)
+					if cachedMetadata || detailOnly {
+						break
+					}
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+			}
+			chosenGen, chosenRes = generation, res
+			break
+		}
+		if chosenGen == nil && fallbackGen != nil {
+			chosenGen, chosenRes = fallbackGen, fallbackRes
+			fallbackGen = nil
+		}
+		if chosenGen == nil && !cachedMetadata && !detailOnly && ctx.Err() == nil {
+			if g, fRes, med, disagree, ok := rt.takeFallback(); ok {
+				m.recordConsensusRuntime(m.ctx, title, med)
+				for _, r := range disagree {
+					if err := m.RejectRelease(m.ctx, title.Key, r); err != nil {
+						m.log.Debug("persist runtime rejection failed", "key", title.Key, "release", r.ID, "err", err)
+					}
+					m.rememberOpenFailure(session, r, core.ErrReleaseRejected)
+				}
+				m.log.Info("probed runtime consensus overrides catalogue runtime",
+					"key", key, "release", fRes.Release.Name, "consensus", med, "catalogue", title.Runtime, "fallback", true)
+				chosenGen, chosenRes = g, fRes
+			}
+		}
+		if ctx.Err() == nil {
+			rt.commitPendingRejections(m.ctx, m, session)
+		}
+		if chosenGen == nil {
+			if reason == core.PrewarmNextEpisode && lastRel.ID != "" && lastErr != nil {
+				_ = m.ReplaceWarmSource(ctx, &u, key, caps, lastRel, opts.StartOffset, title.Runtime, lastErr)
+			}
+			return
+		}
+		m.startGenerationFills(chosenGen)
+		generation, res := chosenGen, chosenRes
+		defer m.dropGeneration(generation)
+		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}
 		if facts.info.Estimated {
 			facts = nil
 		}
 		if !metadata && (automaticReserve || reason == core.PrewarmDetail || reason == core.PrewarmNextEpisode) {
 			info := generation.infoSnapshot()
 			if info.Duration > 0 {
-				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(src.Size())*25/info.Duration.Seconds())))
+				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(generation.src.Size())*25/info.Duration.Seconds())))
 			}
 		}
 
@@ -394,14 +1020,17 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		// background IO on debrid/HTTP. Usenet still has to prove the
 		// opening articles exist; takeWarm will not consume it until then.
 		m.mu.Lock()
-		e.res, e.probe, e.runtime = res, facts, title.Runtime
+		e.res, e.probe, e.runtime, e.detailOnly = res, facts, title.Runtime, detailOnly
 		m.mu.Unlock()
 		e.ready.Do(func() { close(e.done) })
 		if !usenetWarm(res) {
 			e.markOpeningReady()
 		}
-		m.log.Debug("prewarm ready", "key", key, "reason", reason, "release", res.Release.Name, "prefetch", prefetchBytes)
-		if prefetchBytes <= 0 {
+		if facts != nil && !facts.info.Estimated {
+			m.RecordReleaseProbe(ctx, res.Release, res.NZB, facts.info)
+		}
+		m.log.Debug("prewarm ready", "key", key, "reason", reason, "release", res.Release.Name, "prefetch", prefetchBytes, "detailOnly", detailOnly)
+		if prefetchBytes <= 0 || detailOnly {
 			e.markOpeningReady()
 			return
 		}
@@ -413,7 +1042,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		}
 		warmOffset := int64(0)
 		if resumeOffset > 0 && facts != nil {
-			tm := TimeMap{Size: src.Size(), Duration: facts.info.Duration, Points: facts.points}
+			tm := TimeMap{Size: generation.src.Size(), Duration: facts.info.Duration, Points: facts.points}
 			lo, hi := warmSpanFor(tm, resumeOffset, resumeOffset+25*time.Second)
 			warmOffset = lo
 			prefetchBytes = min(hi-lo, int64(256<<20))
@@ -421,7 +1050,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		if cfg.BudgetBytes > 0 {
 			prefetchBytes = min(prefetchBytes, cfg.BudgetBytes/10)
 		}
-		if err := m.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, warmOffset, prefetchBytes); err != nil {
+		if err := m.deps.Engine.Prefetch(core.WithWarmReadWindow(core.WithReadOrigin(ctx, "playback.prewarm", string(reason)), generation.warmReads), res.Release.ID, res.NZB, warmOffset, prefetchBytes); err != nil {
 			if permanentSourceFailure(err) {
 				// Probe success is not proof that the opening window is intact.
 				// Invalidate the published warm result before a later Play uses it.
@@ -451,7 +1080,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		case <-ctx.Done():
 			return
 		}
-		complete := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), points: generation.timeMapSnapshot().Points}
+		complete := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}
 		if !complete.info.Estimated {
 			m.mu.Lock()
 			if m.warm[id] == e {
@@ -461,6 +1090,79 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		}
 	}()
 	return true
+}
+
+func (m *Manager) nextWarmResolution(ctx context.Context, s *session, tried *[]string, audioRejected []core.Release, alternates []core.Release) (*core.Resolution, error) {
+	if m.deps.Vault == nil || len(alternates) == 0 {
+		return nil, core.ErrNotAvailable
+	}
+	exclude := append(slices.Clone(*tried), s.caps.BroadcastExclude...)
+	m.mu.Lock()
+	for id := range m.openFailures[s.ident.key] {
+		if !slices.Contains(exclude, id) {
+			exclude = append(exclude, id)
+		}
+	}
+	m.mu.Unlock()
+	for i, alt := range alternates {
+		if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || audioExcluded(audioRejected, alt) || !releaseMatchesTitle(alt, s.title) {
+			continue
+		}
+		vk := vault.KeyOf(alt)
+		if vk == "" && strings.HasPrefix(alt.ContentID, "nzb:") {
+			vk = vault.Key(alt.ContentID)
+		}
+		if vk == "" {
+			continue
+		}
+		rec, err := m.deps.Vault.Get(ctx, vk)
+		if err != nil || rec == nil || len(rec.XML) == 0 {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		return &core.Resolution{
+			Title:      s.ident.key,
+			Release:    alt,
+			NZB:        rec.XML,
+			Alternates: slices.Clone(alternates[i+1:]),
+			ResolvedAt: m.now(),
+		}, nil
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// lastPlayedResolution is the release that last served the viewer's title,
+// for a detail warm-up whose Resolve found no source. Unlike
+// resumeResolution it does not require the profile selection key the
+// release was chosen under, so a page opened with other capabilities (home
+// versus away) still lists that file's stored tracks. The release must
+// still match the title, be allowed by the source preference, carry no open
+// failure or title rejection, satisfy the current profile's release rules
+// and original-audio language, and fit these caps and the profile's height,
+// codec, HDR and size bounds as far as its name and size tell.
+// resumePoint already drops a blocked release and an episode payload for
+// another episode. The warm entry built from it is detailOnly: Play
+// discards it and selects under its own profile.
+func (m *Manager) lastPlayedResolution(ctx context.Context, userID int64, title *core.Title, profile core.QualityProfile, caps core.ClientCaps) *core.Resolution {
+	rp, err := m.resumePoint(ctx, userID, title.Key, true)
+	if err != nil || rp == nil || len(rp.NZB) == 0 || !m.resumeSourceAllowed(rp.Release) ||
+		!m.rememberedReleaseMatchesTitle(ctx, rp.Release, title) || m.titleReleaseRejected(ctx, title.Key, rp.Release) {
+		return nil
+	}
+	lang := strings.TrimSpace(title.Language)
+	if !rememberedOriginalAudioCurrent(profile, rp.originalLanguage, lang, rp.Release) {
+		return nil
+	}
+	if pol, err := releasepolicy.Compile(profile.ReleaseRules); err != nil || pol.Evaluate(rp.Release, releasepolicy.Context{OriginalLanguage: lang}).Rejected {
+		return nil
+	}
+	res := &core.Resolution{Title: title.Key, Release: rp.Release, NZB: rp.NZB, ResolvedAt: rp.UpdatedAt}
+	if !warmAcceptable(&warmEntry{res: res, profileObj: profile, runtime: title.Runtime}, profile, caps, lang) {
+		return nil
+	}
+	return res
 }
 
 const (
@@ -481,16 +1183,20 @@ const (
 // and the add-on must be under its window limit.
 func (m *Manager) onDemandWarmAdmit(ctx context.Context, id identity, e *warmEntry, started time.Time, hold time.Duration) func(core.Release) bool {
 	return func(rel core.Release) bool {
-		if wait := time.Until(started.Add(hold)); wait > 0 {
-			t := time.NewTimer(wait)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return false
+		if !e.isPromoted() {
+			if wait := time.Until(started.Add(hold)); wait > 0 {
+				t := time.NewTimer(wait)
+				select {
+				case <-t.C:
+				case <-e.promoted:
+					t.Stop()
+				case <-ctx.Done():
+					t.Stop()
+					return false
+				}
 			}
 		}
-		if ctx.Err() != nil || !core.IsSpeculative(ctx) {
+		if ctx.Err() != nil || !core.IsSpeculative(ctx) || e.isPromoted() {
 			return ctx.Err() == nil // Play took the warm-up over: normal rules apply
 		}
 		addon := rel.IndexerID
@@ -628,6 +1334,11 @@ func warmAcceptable(e *warmEntry, profile core.QualityProfile, caps core.ClientC
 
 func (m *Manager) findWarmEntryLocked(user *core.User, caps core.ClientCaps, key core.RatingKey, now time.Time) *warmEntry {
 	if caps.ClientID != "" {
+		if surf := m.playbackSurface(string(caps.Protocol)); surf != "" {
+			if e := m.warm[identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: surf}]; e != nil && now.Before(e.expires) {
+				return e
+			}
+		}
 		if e := m.warm[identity{userID: user.ID, clientID: caps.ClientID, key: key}]; e != nil && now.Before(e.expires) {
 			return e
 		}
@@ -754,14 +1465,32 @@ func (m *Manager) takeWarmResolution(ctx context.Context, id identity, profile c
 	// Warm facts are keyed by viewer/device/title, then checked against the
 	// selected release below; a plan's variant identity is not a warm key.
 	id.variant, id.exact = "", false
+	now := m.now()
 	m.mu.Lock()
+	warmID := id
 	e := m.warm[id]
-	if e == nil {
-		m.mu.Unlock()
-		return nil
-	}
-	if !m.now().Before(e.expires) {
+	if e != nil && !now.Before(e.expires) {
 		delete(m.warm, id)
+		e = nil
+	}
+	if e == nil {
+		// Clientless native players (such as Plezy's libmpv) drop
+		// X-Plex-Client-Identifier on /library/parts reads and receive a
+		// synthetic native-* device ID. Let Play join a play-intent or
+		// promoted warm flight started by the viewer's metadata re-ask so
+		// file.mkv reuses the same resolution and probe without repeating work.
+		pk := profileKey(profile)
+		for candID, cand := range m.warm {
+			if (!cand.playProbe && !cand.isPromoted()) || candID.userID != id.userID || candID.key != id.key || candID.surface != id.surface || !now.Before(cand.expires) {
+				continue
+			}
+			if e == nil || (cand.profileKey == pk && e.profileKey != pk) || (cand.profileKey == e.profileKey && cand.expires.After(e.expires)) {
+				warmID = candID
+				e = cand
+			}
+		}
+	}
+	if e == nil {
 		m.mu.Unlock()
 		return nil
 	}
@@ -775,29 +1504,57 @@ func (m *Manager) takeWarmResolution(ctx context.Context, id identity, profile c
 		default:
 		}
 	}
-	deadline := time.Now().Add(takeWarmBudget)
-	if !waitWarmChan(ctx, e.done, deadline) {
-		return nil
-	}
-	if e.opened != nil && !waitWarmChan(ctx, e.opened, deadline) {
-		// Probe published but the usenet opening is still unproven.
-		// Let Play resolve a cached debrid remux instead of waiting.
-		return nil
+	if (e.playProbe || e.isPromoted()) && prefer == "" {
+		select {
+		case <-e.done:
+		case <-ctx.Done():
+			return nil
+		}
+		if e.opened != nil {
+			select {
+			case <-e.opened:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	} else {
+		deadline := time.Now().Add(takeWarmBudget)
+		if !waitWarmChan(ctx, e.done, deadline) {
+			return nil
+		}
+		if e.opened != nil && !waitWarmChan(ctx, e.opened, deadline) {
+			// Probe published but the usenet opening is still unproven.
+			// Let Play resolve a cached debrid remux instead of waiting.
+			return nil
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.warm[id] != e {
+	if m.warm[warmID] != e {
+		return nil
+	}
+	if e.detailOnly {
+		// The last played release, kept for the detail page's tracks;
+		// Play selects its own source.
+		if warmID == id {
+			delete(m.warm, warmID)
+		}
 		return nil
 	}
 	if prefer != "" && (e.res == nil || !e.res.MatchesVersion(prefer)) {
 		return nil // keep it: a plain Prepare may still use it
 	}
-	if !warmAcceptable(e, profile, caps, originalLanguage) || (e.res != nil && m.releaseBlocked(ctx, e.res.Release.ID)) {
-		delete(m.warm, id)
+	blocked := e.res != nil && m.releaseBlocked(ctx, e.res.Release.ID)
+	if !warmAcceptable(e, profile, caps, originalLanguage) || blocked {
+		if warmID == id || blocked {
+			delete(m.warm, warmID)
+		}
 		return nil
 	}
 	if e.probe == nil {
-		delete(m.warm, id)
+		if warmID == id {
+			delete(m.warm, warmID)
+		}
 	} else {
 		e.expires = m.now().Add(preResolveTTL)
 	}
@@ -860,6 +1617,12 @@ func titleIncludes(parent, key core.RatingKey) bool {
 }
 
 func (m *Manager) releaseBlocked(ctx context.Context, id string) bool {
+	if local, ok := m.deps.Resolver.(interface{ LocalReleaseBlocked(string) bool }); ok && local.LocalReleaseBlocked(id) {
+		return true
+	}
+	if blocked, ok := preloadedReleaseBlocked(ctx, id); ok {
+		return blocked
+	}
 	if checker, ok := m.deps.Resolver.(core.ReleaseBlockChecker); ok {
 		blocked, err := checker.ReleaseBlocked(ctx, id)
 		return blocked || err != nil

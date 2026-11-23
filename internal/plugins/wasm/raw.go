@@ -166,8 +166,7 @@ func (e *Engine) LoadWASM(id, version string, module []byte, host Host, lim Limi
 	p := &Plugin{id: id, version: version, eng: e, host: host, lim: lim, memo: newMemo(4096)}
 	makeSvc := func(ctx context.Context) (instance, error) { return newRawInstance(ctx, rr, cm, false, lim.Deadline) }
 	makeHot := func(ctx context.Context) (instance, error) { return newRawInstance(ctx, rr, cm, true, lim.Deadline) }
-	p.svc = newPool(lim.PoolSize, makeSvc)
-	p.hot = newWarmPool(lim.PoolSize, makeHot)
+	p.initPools(makeSvc, makeHot)
 	probe, err := p.svc.get(context.Background())
 	if err != nil {
 		p.Close()
@@ -246,7 +245,10 @@ func (in *rawInstance) rawCall(ctx context.Context, fn api.Function, args ...uin
 			return nil, &Error{Status: StatusAborted, Message: fmt.Sprintf("plugin aborted with code %d", cs.abortCode), Trap: true}
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+			return nil, &Error{Status: StatusTimeout, Message: callStateOf(ctx).timeoutMessage(), Trap: true}
+		}
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			return nil, &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
 		}
 		return nil, &Error{Status: StatusError, Message: err.Error(), Trap: true}
 	}

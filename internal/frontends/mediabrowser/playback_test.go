@@ -53,6 +53,25 @@ func TestStreamCapacityResponseIncludesRetryDelay(t *testing.T) {
 	}
 }
 
+func TestStreamErrorPreparingQueuedDownloadNotMaskedAsNotFound(t *testing.T) {
+	err := &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: frontend.ErrDownloadQueued}}
+	if noCompatibleStream(err) {
+		t.Fatal("noCompatibleStream(preparing+queued) = true, want false")
+	}
+	for _, proto := range []frontend.Protocol{"jellyfin", "emby"} {
+		w := httptest.NewRecorder()
+		streamError(proto, w, err)
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "5" || w.Header().Get("X-Ether-Media-Error") != "preparing" {
+			t.Fatalf("%s streamError(preparing+queued) = %d %v %s", proto, w.Code, w.Header(), w.Body.String())
+		}
+		w2 := httptest.NewRecorder()
+		streamError(proto, w2, &frontend.PreparingError{RetryAfter: 5 * time.Second, Err: &frontend.UncachedError{Err: &frontend.DownloadQueuedError{Provider: "TorBox", ActiveDownloads: 3, Err: frontend.ErrDownloadQueued}}})
+		if w2.Code != http.StatusServiceUnavailable || !strings.Contains(w2.Body.String(), "queued at TorBox behind 3 active downloads") {
+			t.Fatalf("%s streamError(queued behind) = %d %s", proto, w2.Code, w2.Body.String())
+		}
+	}
+}
+
 func TestPlaybackInfoEstimatesAndOpens(t *testing.T) {
 	viewer := &frontend.Viewer{ID: 1}
 	var calls []string

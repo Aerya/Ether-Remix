@@ -63,14 +63,16 @@ const personMediaCap = 2000
 type resolvedPerson struct {
 	id         int64
 	tagKeyForm bool
+	plexTagKey string
+	plexThumb  string
 	person     frontend.Person
 	primary    personKind
 	thumbKey   frontend.RatingKey
 }
 
 // parsePersonID accepts the numeric TMDB id and Ether's tmdb-person-<id>
-// tagKey. Anything else (including a 24-hex plex.tv person id) is not a
-// person Ether can name.
+// tagKey. Real 24-hex plex://person tagKeys are resolved separately against
+// plexguid_person_map in resolvePerson.
 func parsePersonID(raw string) (id int64, tagKeyForm, ok bool) {
 	if rest, found := strings.CutPrefix(raw, "tmdb-person-"); found {
 		id, err := strconv.ParseInt(rest, 10, 64)
@@ -82,10 +84,34 @@ func parsePersonID(raw string) (id int64, tagKeyForm, ok bool) {
 
 func (s *Server) resolvePerson(w http.ResponseWriter, r *http.Request) (resolvedPerson, bool) {
 	var out resolvedPerson
-	id, tagKeyForm, ok := parsePersonID(chi.URLParam(r, "id"))
+	raw := strings.TrimSpace(chi.URLParam(r, "id"))
+	id, tagKeyForm, ok := parsePersonID(raw)
+	var plexTagKey, plexThumb string
+	if !ok {
+		lower := strings.ToLower(raw)
+		if frontend.IsLibraryPersonTagKey(lower) {
+			if pm, found := s.plexPersonByTagKey(r.Context(), lower); found {
+				id, tagKeyForm, ok = pm.PersonTMDB, true, true
+				plexTagKey, plexThumb = pm.TagKey, pm.Thumb
+			}
+		}
+	}
 	if !ok {
 		writeHTTPError(w, http.StatusNotFound)
 		return out, false
+	}
+	if frontend.IsPluginPersonID(id) {
+		rp, found := s.resolvePluginPerson(r.Context(), FromContext(r.Context()), id, tagKeyForm)
+		if !found {
+			writeHTTPError(w, http.StatusNotFound)
+			return out, false
+		}
+		return rp, true
+	}
+	if plexTagKey == "" {
+		if pm, found := s.plexPersonByTMDB(r.Context(), id); found {
+			plexTagKey, plexThumb = pm.TagKey, pm.Thumb
+		}
 	}
 	cat, ok := s.catalog().(personByIDCatalog)
 	if !ok {
@@ -101,7 +127,14 @@ func (s *Server) resolvePerson(w http.ResponseWriter, r *http.Request) (resolved
 		}
 		return out, false
 	}
-	out = resolvedPerson{id: id, tagKeyForm: tagKeyForm, person: person, thumbKey: thumbKey}
+	out = resolvedPerson{
+		id:         id,
+		tagKeyForm: tagKeyForm,
+		plexTagKey: plexTagKey,
+		plexThumb:  plexThumb,
+		person:     person,
+		thumbKey:   thumbKey,
+	}
 	for _, k := range personKinds {
 		if slices.Contains(kinds, k.credit) {
 			out.primary = k
@@ -127,15 +160,29 @@ func (s *Server) handleLibraryPerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idStr := strconv.FormatInt(rp.id, 10)
+	tagKey := "tmdb-person-" + idStr
+	if frontend.IsLibraryPersonTagKey(rp.plexTagKey) {
+		tagKey = rp.plexTagKey
+	}
 	attrs := []model.Attr{
 		model.A("id", rp.id),
 		model.A("filter", rp.primary.filter+"="+idStr),
 		model.A("tag", rp.person.Name),
 		model.A("tagType", rp.primary.tagType),
-		model.A("tagKey", "tmdb-person-"+idStr),
+		model.A("tagKey", tagKey),
 	}
-	if rp.person.ThumbPath != "" && rp.thumbKey != 0 && rp.primary.credit != "crew" {
+	if rp.person.ThumbPath != "" && rp.thumbKey != 0 {
 		attrs = append(attrs, model.A("thumb", "/library/metadata/"+rp.thumbKey.String()+"/person/"+rp.primary.filter+"/"+base64.RawURLEncoding.EncodeToString([]byte(rp.person.ThumbPath))))
+	} else if plexImageURL(rp.plexThumb) {
+		if rp.thumbKey != 0 {
+			if credits, ok := s.plexCreditsCached(r.Context(), rp.thumbKey); ok && credits.HasThumb(rp.plexThumb) {
+				attrs = append(attrs, model.A("thumb", "/library/metadata/"+rp.thumbKey.String()+"/person/"+rp.primary.filter+"/"+base64.RawURLEncoding.EncodeToString([]byte(rp.plexThumb))))
+			} else {
+				attrs = append(attrs, model.A("thumb", rp.plexThumb))
+			}
+		} else {
+			attrs = append(attrs, model.A("thumb", rp.plexThumb))
+		}
 	}
 	mc := peopleContainer()
 	mc.Directory = []model.Directory{{Extra: attrs}}
@@ -170,23 +217,27 @@ func (s *Server) handleLibraryPersonMedia(w http.ResponseWriter, r *http.Request
 	fetchPr.Size = personMediaCap
 	limit := 0
 	var all []frontend.Title
-	seenTypes := map[frontend.MediaType]bool{}
-	for _, sec := range s.userSections(pr.User) {
-		if seenTypes[sec.Type] {
-			continue
+	if frontend.IsPluginPersonID(rp.id) {
+		all = s.pluginPersonTitles(ctx, pr, rp.id, personMediaCap)
+	} else {
+		seenTypes := map[frontend.MediaType]bool{}
+		for _, sec := range s.userSections(pr.User) {
+			if seenTypes[sec.Type] {
+				continue
+			}
+			seenTypes[sec.Type] = true
+			br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q)
+			if limit == 0 {
+				limit = br.limit
+			}
+			br.q.Filter.Credits = append(br.q.Filter.Credits, credit)
+			items, _, _, err := s.browse(ctx, &fetchPr, br)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			all = append(all, items...)
 		}
-		seenTypes[sec.Type] = true
-		br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q)
-		if limit == 0 {
-			limit = br.limit
-		}
-		br.q.Filter.Credits = append(br.q.Filter.Credits, credit)
-		items, _, _, err := s.browse(ctx, &fetchPr, br)
-		if err != nil {
-			s.writeErr(w, r, err)
-			return
-		}
-		all = append(all, items...)
 	}
 
 	seenKeys := map[frontend.RatingKey]bool{}
@@ -290,6 +341,9 @@ func applyExcludedElements(rows []model.Metadata, excluded map[string]bool) {
 		}
 		if excluded["Role"] {
 			m.Role = nil
+		}
+		if excluded["Producer"] {
+			m.Producer = nil
 		}
 		if excluded["Guid"] {
 			m.Guid = nil

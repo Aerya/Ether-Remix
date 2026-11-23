@@ -189,15 +189,30 @@ func collectionRowID(row string) string {
 	return ""
 }
 
-// rowSections is where a collection of a media type can appear.
-func rowSections(mediaType string) []string {
-	switch mediaType {
-	case MediaMovie:
-		return []string{"home", "movies"}
-	case MediaShow:
-		return []string{"home", "shows"}
+// foldSurfaceSections lists the layout pages ("home" plus per-library pages)
+// where a collection of mediaType can appear.
+func foldSurfaceSections(pages []core.LayoutPage, mediaType string) []string {
+	secs := []string{"home"}
+	seen := map[string]bool{"home": true}
+	hasLib := false
+	for _, p := range pages {
+		sec := p.Section
+		if strings.HasPrefix(sec, "library:") && !seen[sec] {
+			seen[sec] = true
+			secs = append(secs, sec)
+			hasLib = true
+		}
 	}
-	return []string{"home", "movies", "shows"}
+	if hasLib {
+		return secs
+	}
+	if mediaType != MediaShow {
+		secs = append(secs, "movies")
+	}
+	if mediaType != MediaMovie {
+		secs = append(secs, "shows")
+	}
+	return secs
 }
 
 // foldLayoutSchedules computes the carry-over. Before, an exact Everyone
@@ -243,7 +258,7 @@ func foldLayoutSchedules(d core.HomeLayout, specs map[string]core.CollectionSpec
 		cur := sp.Targets.Schedule
 		var surfaces []*core.CollectionSchedule
 		governed := false
-		for _, sec := range rowSections(sp.MediaType) {
+		for _, sec := range foldSurfaceSections(d.Global, sp.MediaType) {
 			if p := exact(d.Global, sec, id); p != nil {
 				if p.Status == "off" {
 					continue

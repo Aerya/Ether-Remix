@@ -1,10 +1,12 @@
 package playback
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -280,35 +282,190 @@ func serveRepresentation(w http.ResponseWriter, r *http.Request, rep representat
 	return mw.Close()
 }
 
+// sourceMIME returns a MediaSource's declared MIME type when it implements
+// core.MIMESource and declares a specific (non-octet-stream) media type.
+func sourceMIME(src core.MediaSource) string {
+	ms, ok := src.(core.MIMESource)
+	if !ok || ms == nil {
+		return ""
+	}
+	return normalizeSpecificMIME(ms.MIME())
+}
+
+func normalizeSpecificMIME(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	mt, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		mt = strings.ToLower(strings.TrimSpace(strings.Split(raw, ";")[0]))
+	} else {
+		mt = strings.ToLower(strings.TrimSpace(mt))
+	}
+	if mt == "" || mt == "application/octet-stream" || !strings.Contains(mt, "/") {
+		return ""
+	}
+	return mt
+}
+
+// contentTypeForInfo picks a Content-Type from the probed MediaInfo (handling
+// audio-only MP4/WebM/Matroska accurately), file extension, and source MIME.
+func contentTypeForInfo(info core.MediaInfo, name, declaredMIME string) string {
+	audioOnly := info.Video() == nil && info.HasPlayableMedia()
+	if ct := contentTypeForContainer(info.Container, audioOnly); ct != "" {
+		return ct
+	}
+	if ct := contentTypeForExt(name); ct != "" {
+		return ct
+	}
+	if ct := normalizeSpecificMIME(declaredMIME); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
+}
+
 // contentTypeFor picks a MIME type from the container name or file extension.
 func contentTypeFor(container, name string) string {
-	switch strings.ToLower(container) {
+	if ct := contentTypeForContainer(container, false); ct != "" {
+		return ct
+	}
+	if ct := contentTypeForExt(name); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
+}
+
+func contentTypeForContainer(container string, audioOnly bool) string {
+	switch strings.ToLower(strings.TrimSpace(container)) {
 	case "mkv", "matroska":
+		if audioOnly {
+			return "audio/x-matroska"
+		}
 		return "video/x-matroska"
+	case "mka":
+		return "audio/x-matroska"
 	case "webm":
+		if audioOnly {
+			return "audio/webm"
+		}
 		return "video/webm"
-	case "mp4", "mov", "m4v":
+	case "weba":
+		return "audio/webm"
+	case "mp4", "mov":
+		if audioOnly {
+			return "audio/mp4"
+		}
 		return "video/mp4"
+	case "m4v":
+		return "video/mp4"
+	case "m4a", "m4b":
+		return "audio/mp4"
 	case "mpegts", "ts", "m2ts":
 		return "video/mp2t"
 	case "avi":
 		return "video/x-msvideo"
+	case "flac":
+		return "audio/flac"
+	case "mp3":
+		return "audio/mpeg"
+	case "aac", "adts":
+		return "audio/aac"
+	case "ogg", "oga", "opus":
+		return "audio/ogg"
+	case "wav":
+		return "audio/wav"
+	case "aif", "aiff":
+		return "audio/aiff"
+	case "wmv":
+		if audioOnly {
+			return "audio/x-ms-wma"
+		}
+		return "video/x-ms-wmv"
+	case "wma":
+		return "audio/x-ms-wma"
+	case "epub":
+		return "application/epub+zip"
+	case "pdf":
+		return "application/pdf"
+	case "cbz":
+		return "application/vnd.comicbook+zip"
 	}
+	return ""
+}
+
+func contentTypeForExt(name string) string {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".mkv":
 		return "video/x-matroska"
+	case ".mka":
+		return "audio/x-matroska"
 	case ".webm":
 		return "video/webm"
+	case ".weba":
+		return "audio/webm"
 	case ".mp4", ".m4v", ".mov":
 		return "video/mp4"
+	case ".m4a", ".m4b":
+		return "audio/mp4"
 	case ".ts", ".m2ts", ".mts":
 		return "video/mp2t"
 	case ".avi":
 		return "video/x-msvideo"
 	case ".mpg", ".mpeg":
 		return "video/mpeg"
+	case ".flac":
+		return "audio/flac"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".aac", ".adts":
+		return "audio/aac"
+	case ".ogg", ".oga", ".opus":
+		return "audio/ogg"
+	case ".wav":
+		return "audio/wav"
+	case ".aif", ".aiff":
+		return "audio/aiff"
+	case ".wma":
+		return "audio/x-ms-wma"
+	case ".epub":
+		return "application/epub+zip"
+	case ".pdf":
+		return "application/pdf"
+	case ".cbz":
+		return "application/vnd.comicbook+zip"
 	}
-	return "application/octet-stream"
+	return ""
+}
+
+// isNonAVDocumentSource reports whether src is a book or document (EPUB, PDF,
+// CBZ) that must never be passed to A/V container probing / ffprobe.
+func isNonAVDocumentSource(src core.MediaSource) bool {
+	if src == nil {
+		return false
+	}
+	sm := sourceMIME(src)
+	switch sm {
+	case "application/epub+zip", "application/pdf", "application/vnd.comicbook+zip", "application/x-cbz":
+		return true
+	}
+	extCT := contentTypeForExt(src.Name())
+	switch extCT {
+	case "application/epub+zip", "application/pdf", "application/vnd.comicbook+zip":
+		return true
+	}
+	if sm == "" && extCT == "" && src.Size() >= 5 {
+		var hdr [64]byte
+		n, _ := src.ReadAt(hdr[:], 0)
+		b := hdr[:n]
+		if bytes.HasPrefix(b, []byte("%PDF-")) {
+			return true
+		}
+		if bytes.HasPrefix(b, []byte("PK\x03\x04")) && bytes.Contains(b, []byte("application/epub+zip")) {
+			return true
+		}
+	}
+	return false
 }
 
 // spliceable reports whether a container tolerates a byte stream switching

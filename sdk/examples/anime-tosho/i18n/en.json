@@ -1,0 +1,13 @@
+{
+  "summary": "Search Anime Tosho NEW for public anime torrents and NZB mirrors.",
+  "release_types": "Release types",
+  "release_types_hint": "Include public torrents, Usenet NZB mirrors, or both; NZB downloads require a Usenet provider in Ether.",
+  "release_types_both": "Torrents and NZBs",
+  "release_types_torrents": "Torrents only",
+  "release_types_nzbs": "NZBs only",
+  "category": "Category filter",
+  "category_hint": "Optional Torznab and Newznab category filter applied to Anime Tosho NEW searches.",
+  "category_all": "All categories",
+  "category_anime": "Anime (5070)",
+  "category_movies": "Movies (2020)"
+}

@@ -117,7 +117,7 @@ func run() error {
 	}
 	defer cache.Close()
 	eng := stream.New(fetcher, cache, stream.OptionsFromConfig(cfg), log)
-	newznabOptions := newznab.Options{Logger: log, NZBDir: filepath.Join(dir, "nzb")}
+	newznabOptions := newznab.Options{Logger: log}
 	if *freshSearch {
 		newznabOptions.SearchCacheTTL = -1
 	}

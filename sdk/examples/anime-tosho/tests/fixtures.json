@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "name": "health returns ok",
+      "method": "GET",
+      "path": "/ether/health",
+      "wantStatus": 200,
+      "wantFields": {
+        "status": "ok"
+      }
+    },
+    {
+      "name": "configure accepts default empty settings",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {},
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {}
+      }
+    },
+    {
+      "name": "configure accepts torrents only and anime category",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "releaseTypes": "torrents",
+        "category": "5070"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {}
+      }
+    },
+    {
+      "name": "configure accepts nzbs only and movies category",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "releaseTypes": "nzbs",
+        "category": "2020"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {}
+      }
+    },
+    {
+      "name": "configure rejects invalid releaseTypes",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "releaseTypes": "ddl"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {
+          "/releaseTypes": "Choose torrents, NZBs, or both."
+        }
+      }
+    },
+    {
+      "name": "configure rejects invalid category",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "category": "anime!"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {
+          "/category": "Choose a valid Torznab or Newznab category."
+        }
+      }
+    },
+    {
+      "name": "unsupported media type returns empty streams offline",
+      "method": "GET",
+      "path": "/stream/channel/tt0012349.json",
+      "wantStatus": 200,
+      "wantFields": {
+        "streams": []
+      }
+    },
+    {
+      "name": "unsupported id prefix returns empty streams offline",
+      "method": "GET",
+      "path": "/stream/movie/unknown:123.json",
+      "wantStatus": 200,
+      "wantFields": {
+        "streams": []
+      }
+    },
+    {
+      "name": "malformed series id returns empty streams offline",
+      "method": "GET",
+      "path": "/stream/series/tmdb:209867:bad:1.json",
+      "wantStatus": 200,
+      "wantFields": {
+        "streams": []
+      }
+    }
+  ]
+}

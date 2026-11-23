@@ -7,5 +7,12 @@ func (a *App) simklAuth() simkl.AuthClient {
 	return simkl.AuthClient{ClientID: c.ClientID, ClientSecret: c.ClientSecret}
 }
 func (a *App) simklService() simkl.Service {
-	return simkl.Service{Auth: a.simklAuth(), Tokens: simkl.TokenStore{DB: a.db, Sealer: a.cfg}, State: a.state}
+	return simkl.Service{
+		Auth:   a.simklAuth(),
+		Tokens: simkl.TokenStore{DB: a.db, Sealer: a.cfg},
+		State:  a.state,
+		OnTokenExpired: func(userID int64, errMsg string) {
+			a.emitTokenExpired("simkl", "watch_sync", "", userID, errMsg)
+		},
+	}
 }

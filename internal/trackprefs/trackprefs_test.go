@@ -388,3 +388,15 @@ func TestForeignAudioSelectsForcedViewerSubtitle(t *testing.T) {
 		t.Fatalf("english audio stays off: %+v %v", sel, err)
 	}
 }
+
+func TestPickPenalizesCommentaryAndVisualImpaired(t *testing.T) {
+	tr := true
+	streams := []core.StreamInfo{
+		{Type: "audio", Language: "en", Default: true, Commentary: &tr},
+		{Type: "audio", Language: "en", VisualImpaired: &tr},
+		{Type: "audio", Language: "en"},
+	}
+	if got := pick(streams, "audio", []string{"en"}, "", false, nil, "en"); got != 2 {
+		t.Fatalf("pick = %d, want 2 (main track over default commentary/AD)", got)
+	}
+}

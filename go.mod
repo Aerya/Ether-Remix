@@ -18,6 +18,7 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/kardianos/service v1.3.0
+	github.com/klauspost/compress v1.20.4
 	github.com/mnightingale/rapidyenc v0.0.0-20261008131718-6657b7ca854e
 	github.com/nwaples/rardecode/v2 v2.4.5
 	github.com/pkg/sftp v1.13.12

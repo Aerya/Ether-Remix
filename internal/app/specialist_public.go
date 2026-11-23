@@ -46,6 +46,7 @@ func (a *App) runPublicRole(ctx context.Context) error {
 		front = newFrontDoor(a.tracker, a.log)
 		defer front.close()
 	}
+	a.front.Store(front)
 	if !front.bound() {
 		ln, err := a.listen(cfg)
 		if err != nil {
@@ -58,11 +59,13 @@ func (a *App) runPublicRole(ctx context.Context) error {
 	}
 	front.setProxies(a.cfg.TrustedProxyCIDRs)
 	front.setRemote(a.cfg.AllowRemoteConsole)
+	front.reconcileConsole(cfg.Server)
 	if a.frontends != nil {
 		a.frontends.start(ctx, front.ln.Addr())
 		defer a.frontends.stop()
+		a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
 	}
-	front.gate.Open(a.publicRoleHandler())
+	front.open(a.publicRoleHandler(), a.consoleHandler)
 	a.markPublicReady()
 	if a.cfg.Get().Server.NodeRoles.Has(config.RoleServer) {
 		a.startServerWorkers(ctx, &background)
@@ -87,7 +90,7 @@ func (a *App) runPublicRole(ctx context.Context) error {
 	a.drainPrivate()
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
-	front.gate.Close(shutdown)
+	front.closeGates(shutdown)
 	a.deployment.publicReady.Store(false)
 	a.deployment.ready.Store(false)
 	a.recordPrivateReadiness(privateReadinessSnapshot{reason: readinessPublic, errorClass: privateReadinessError(result)})
@@ -125,6 +128,8 @@ func (a *App) startServerWorkers(ctx context.Context, g *backgroundGroup) {
 	g.start(func() { a.cluster.RunAsLeader(ctx, "collection refresh", a.collections.Run) })
 	g.start(func() { a.trakt.Start(ctx) })
 	g.start(func() { a.cluster.RunAsLeader(ctx, "database maintenance", a.maintainDB) })
+	g.start(func() { a.runFlows(ctx) })
+	g.start(func() { a.runLiveEvents(ctx) })
 	if a.plexWatch != nil {
 		g.start(func() { a.plexWatch.Run(ctx) })
 		g.start(func() { a.cluster.RunAsLeader(ctx, "plex watch imports", a.plexWatch.RunImports) })
@@ -158,8 +163,12 @@ func (a *App) applyServerConfig(c config.Config) {
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)
 	a.subtitles.UpdateSubDL(c.SubDL)
+	a.subtitles.UpdateSubSource(c.SubSource)
 	a.subtitles.UpdateProviders(c.Subtitles.Providers)
 	a.publishLibrarySections()
+	if remote, ok := a.brokerPlayback.(interface{ SetPauseRetention(time.Duration) }); ok {
+		remote.SetPauseRetention(c.Server.PausedStreamRetention())
+	}
 	a.registrar.Trigger()
 	if a.frontends != nil {
 		a.frontends.reconcile(c)

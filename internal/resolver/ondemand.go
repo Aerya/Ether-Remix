@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -33,12 +34,28 @@ import (
 // It covers the stream probe's own deadline plus the health read.
 const onDemandBudget = 22 * time.Second
 
+// finalCandidateBudget gives a lone or final-wave foreground candidate with
+// no queued alternatives behind it enough time for a slow indexer NZB fetch
+// plus a congested Usenet health check (stream/health.go budgets up to 15s
+// when PAR2 repair is enabled), without slowing multi-candidate wave failover.
+const finalCandidateBudget = 16 * time.Second
+
 var errOnDemandForeground = fmt.Errorf("add-on streams open only for Play: %w", core.ErrForegroundOnly)
 
 // checkBudget is one candidate check's deadline.
 func checkBudget(rel core.Release) time.Duration {
 	if rel.OpensOnDemand() {
 		return onDemandBudget
+	}
+	return candidateBudget
+}
+
+func checkBudgetFor(ctx context.Context, rel core.Release, final bool) time.Duration {
+	if rel.OpensOnDemand() {
+		return onDemandBudget
+	}
+	if final && !core.IsSpeculative(ctx) && !core.IsBackgroundCheck(ctx) {
+		return finalCandidateBudget
 	}
 	return candidateBudget
 }

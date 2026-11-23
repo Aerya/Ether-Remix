@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
@@ -115,23 +116,32 @@ func (s *Service) fetchTheme(ctx context.Context, t core.Title, name string) err
 	if !ok {
 		return errors.New("theme resolver unavailable")
 	}
+	proxy, policyEnabled, bypass, err := extrasProxyFor("https://www.youtube.com")
+	if err != nil {
+		return err
+	}
 	// Use the owner's yt-dlp-compatible resolver and arguments, including its
 	// account/network settings. Ether supplies only a bounded search query.
 	query := "ytsearch1:" + name + " opening theme song"
 	args := c.ResolverArgs
-	if len(args) == 0 {
+	customArgs := len(args) > 0
+	if !customArgs {
 		args = []string{"-g", "-f", "bestaudio[ext=m4a]/bestaudio", "--no-playlist", "{url}"}
 	}
 	sub := strings.NewReplacer("{url}", query, "{site}", "youtube", "{key}", query, "{id}", query)
-	out := make([]string, len(args))
-	for n, a := range args {
-		out[n] = sub.Replace(a)
+	out := make([]string, 0, len(args)+2)
+	if proxy != nil && !customArgs {
+		out = append(out, "--proxy", proxy.String())
+	}
+	for _, a := range args {
+		out = append(out, sub.Replace(a))
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, c.ResolverTimeoutOr(20*time.Second))
+	resolveCtx = withRunnerProxy(resolveCtx, runnerProxyConfig{proxy: proxy, policyEnabled: policyEnabled, bypass: bypass})
 	raw, err := s.runner(resolveCtx, cmd, out)
 	cancel()
 	if err != nil {
-		return err
+		return scrubProxyErr(err, proxy)
 	}
 	if len(raw) > maxResolverOutput {
 		return errors.New("theme resolver output too large")
@@ -185,13 +195,10 @@ func (s *Service) fetchTheme(ctx context.Context, t core.Title, name string) err
 	for k, v := range resolved.Headers {
 		req.Header.Set(k, v)
 	}
-	client := s.cacheHTTP
-	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
-	}
+	client := s.httpClient(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return scrubProxyErr(err, egress.Current().Proxy)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 || resp.ContentLength > themeEntryLimit {
@@ -244,7 +251,11 @@ func (s *Service) fetchTheme(ctx context.Context, t core.Title, name string) err
 
 // Close cancels and joins any on-demand theme worker and its media subprocess.
 func (s *Service) Close() {
+	s.mu.Lock()
+	s.listClosed = true
 	s.themeCancel()
+	s.mu.Unlock()
+	s.listWG.Wait()
 	// Join barrier: the worker holds themeWork while it runs.
 	s.themeWork.Lock()
 	s.themeWork.Unlock() //nolint:staticcheck // SA2001: intentional join barrier

@@ -13,7 +13,11 @@ import (
 // Scope limits where a hide rule applies. Empty or "everywhere" hides the
 // title from browsing and search. "discovery" hides it only from browsing,
 // Home and hub rows, recommendations, New Releases, Trending and catalogue
-// collections; search, direct lookup and playback still reach it.
+// collections; search, direct lookup and playback still reach it. "library"
+// hides it only inside the built-in library that owns the rule (browse,
+// sections, hubs, facets, allLeaves and section-scoped search); other
+// libraries, collections, server-wide search, direct lookup and playback
+// still reach it.
 type LibraryExclusion struct {
 	// Name is optional. Clients label a rule from its conditions.
 	Name      string           `json:"name"`
@@ -21,14 +25,72 @@ type LibraryExclusion struct {
 	MediaType string           `json:"mediaType"`        // movie, show, mixed
 	Match     string           `json:"match"`            // all, any
 	Rules     []CollectionRule `json:"rules"`
-	Scope     string           `json:"scope,omitempty"` // everywhere, discovery; empty means everywhere
+	Scope     string           `json:"scope,omitempty"` // everywhere, discovery, library; empty means everywhere
 }
 
 // Visibility rule scopes.
 const (
 	VisibilityEverywhere = "everywhere"
 	VisibilityDiscovery  = "discovery"
+	VisibilityLibrary    = "library"
 )
+
+// IsBuiltinLibrary reports whether id is one of the canonical built-in
+// libraries (Movies or TV Shows).
+func IsBuiltinLibrary(id LibraryID) bool {
+	return id == LibraryMovies || id == LibraryShows
+}
+
+// HasLibraryScopedRules reports whether any rule in rules has scope "library".
+func HasLibraryScopedRules(rules []LibraryExclusion) bool {
+	for _, r := range rules {
+		if r.Scope == VisibilityLibrary {
+			return true
+		}
+	}
+	return false
+}
+
+// WithoutLibraryScopedRules returns rules with VisibilityLibrary entries
+// omitted, preserving slice order.
+func WithoutLibraryScopedRules(rules []LibraryExclusion) []LibraryExclusion {
+	if !HasLibraryScopedRules(rules) {
+		return rules
+	}
+	out := make([]LibraryExclusion, 0, len(rules))
+	for _, r := range rules {
+		if r.Scope != VisibilityLibrary {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// BuiltinLibraryExtraRules projects a built-in library's rules into the
+// library-only overlay applied on top of the canonical catalogue policy (with
+// fallback "show"). It preserves show rules that precede a library-scoped hide
+// rule so first-match ordering stays exact, omits canonical hide rules (which
+// the catalogue policy enforces globally and viewers may exempt), and drops
+// trailing show rules that cannot change a "show" fallback.
+func BuiltinLibraryExtraRules(rules []LibraryExclusion) []LibraryExclusion {
+	lastLib := -1
+	for i, r := range rules {
+		if r.Scope == VisibilityLibrary {
+			lastLib = i
+		}
+	}
+	if lastLib < 0 {
+		return nil
+	}
+	out := make([]LibraryExclusion, 0, lastLib+1)
+	for i := 0; i <= lastLib; i++ {
+		r := rules[i]
+		if r.Action == "show" || r.Scope == VisibilityLibrary {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 type explicitSearchKey struct{}
 
@@ -183,6 +245,48 @@ func SearchSummaryFacts(ctx context.Context) bool {
 		return false
 	}
 	v, _ := ctx.Value(searchSummaryFactsKey{}).(bool)
+	return v
+}
+
+type searchTypesKey struct{}
+
+// WithSearchTypes attaches the media types a search accepts to ctx, so sources
+// with a type-agnostic signature (such as PeopleTitles) restrict their lookup
+// to the caller's requested types.
+func WithSearchTypes(ctx context.Context, types []MediaType) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, searchTypesKey{}, types)
+}
+
+// SearchTypesFrom returns WithSearchTypes' media types, or nil.
+func SearchTypesFrom(ctx context.Context) []MediaType {
+	if ctx == nil {
+		return nil
+	}
+	t, _ := ctx.Value(searchTypesKey{}).([]MediaType)
+	return t
+}
+
+type exactPeopleOnlyKey struct{}
+
+// WithExactPeopleOnly marks a people-to-titles lookup where title matches
+// already fill the caller's window, so only exact or near-exact full-name
+// person matches (which rank right after exact title matches) can surface.
+func WithExactPeopleOnly(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, exactPeopleOnlyKey{}, true)
+}
+
+// ExactPeopleOnly reports WithExactPeopleOnly.
+func ExactPeopleOnly(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(exactPeopleOnlyKey{}).(bool)
 	return v
 }
 

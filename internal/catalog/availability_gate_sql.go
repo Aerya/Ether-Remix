@@ -272,7 +272,7 @@ func (c *Catalog) ScheduledGateCandidates(ctx context.Context, movieSince, epSin
 		out = append(out, movies...)
 	}
 	if !epSince.IsZero() {
-		eps, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND adult=0 AND release_known=1 AND released_ts>? AND released_ts<=? ORDER BY released_ts, key`, epSince.Unix(), epHorizon.Unix())
+		eps, err := c.queryPagedTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND adult=0 AND release_known=1 AND released_ts>? AND released_ts<=? ORDER BY released_ts, key`, epSince.Unix(), epHorizon.Unix())
 		if err != nil {
 			return nil, err
 		}

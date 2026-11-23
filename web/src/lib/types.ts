@@ -45,14 +45,14 @@ export interface Indexer {
    * empty or "newznab" for a Newznab/Torznab URL.
    */
   kind?: IndexerKind | "";
+  /** Keep a Stremio add-on's own result order instead of profile re-ranking. */
+  useAddonOrder?: boolean;
   /** Installed definition id of a built-in site. */
   definition?: string;
   /** A built-in site's setting values by name. */
   settings?: Record<string, string> | null;
   /** A built-in site's password settings; each set value is redacted to "••••". */
   secretSettings?: Record<string, string> | null;
-  /** Client identity preset overriding the global policy for this indexer. */
-  clientIdentity?: string;
   /**
    * The audio language of the releases this indexer returns, as a BCP 47
    * tag ("pt-BR"). It is evidence for a bare DUAL/MULTI whose name names no
@@ -62,25 +62,74 @@ export interface Indexer {
   language?: string;
 }
 
-/**
- * Input.clientIdentity: one preset per purpose and media, plus the owner's
- * own user agent and headers when a preset is "custom".
- */
-export interface ClientIdentityConfig {
-  tvSearch?: string;
-  movieSearch?: string;
-  tvGrab?: string;
-  movieGrab?: string;
-  userAgent?: string;
-  /** Header values are sealed server-side and arrive redacted to "••••". */
-  headers?: Record<string, string> | null;
+/** What an identity rule applies to. */
+export type IdentityTargetKind =
+  "all_searches" | "indexer" | "host" | "nzb_downloads" | "torrent_downloads";
+
+/** Optional search/download narrowing on an indexer or host rule. */
+export type IdentityScope = "" | "search" | "download";
+
+/** Optional media-type narrowing on an identity rule. Empty ("") matches any media type. */
+export type IdentityMediaType = "" | "movie" | "tv" | "music" | "books";
+
+/** One header or query-parameter override in an identity rule. */
+export interface KVOverride {
+  name: string;
+  value?: string;
+  remove?: boolean;
 }
 
-/** One selectable client identity, as the server reports it. */
-export interface IdentityPreset {
-  key: string;
-  userAgent: string;
-  headers?: Record<string, string> | null;
+/** One ordered request-identity rule (config.IdentityRule). */
+export interface IdentityRule {
+  id: string;
+  target: IdentityTargetKind;
+  indexerId?: string;
+  host?: string;
+  scope?: IdentityScope;
+  mediaType?: IdentityMediaType;
+  profile: string;
+  headers?: KVOverride[] | null;
+  params?: KVOverride[] | null;
+}
+
+/**
+ * Input.clientIdentity: ordered server-wide request identity rules.
+ * The implicit last rule is always honest Ether.
+ */
+export interface ClientIdentityConfig {
+  rules?: IdentityRule[] | null;
+}
+
+/** One masked HTTP request preview (search or download). */
+export interface RequestPreviewCall {
+  requestLine: string;
+  headers: { name: string; value: string }[];
+  profile?: string;
+  matchedRuleId?: string;
+}
+
+/** Masked sample requests from POST /indexer/preview. */
+export interface RequestPreview {
+  profile: string;
+  matchedRuleId?: string;
+  search: RequestPreviewCall;
+  download: RequestPreviewCall;
+  downloadKind: "nzb" | "torrent";
+  profiles: { id: string; userAgent: string }[];
+}
+
+/** Request payload for POST /indexer/preview. */
+export interface IndexerPreviewRequest {
+  rule?: IdentityRule;
+  rules?: IdentityRule[];
+  indexer?: Indexer;
+}
+
+/** Result from POST /test/indexer-identity. */
+export interface IdentityTestResult extends TestResult {
+  profile?: string;
+  ruleId?: string;
+  userAgent?: string;
 }
 
 export type IndexerProtocol = "usenet" | "torrent";
@@ -196,6 +245,35 @@ export interface DebridStatus {
   engine?: DebridEngineStatus;
 }
 
+/** One sibling Plex server sharing the owner's internet upload link. */
+export interface UploadBudgetExternalServer {
+  machineId?: string;
+  name: string;
+  source: string;
+  remoteStreams: number;
+  bandwidthKbps: number;
+  reachable: boolean;
+  lastChecked?: string;
+}
+
+/** GET /status/upload-budget. */
+export interface UploadBudgetStatus {
+  enabled: boolean;
+  source: "override" | "measured" | "learning";
+  overrideKbps: number;
+  measuredKbps: number;
+  measuredSamples: number;
+  effectiveKbps: number;
+  usableKbps: number;
+  etherRemoteKbps: number;
+  etherRemoteStreams: number;
+  budgetCappedStreams: number;
+  otherPmsKbps: number;
+  otherPmsStreams: number;
+  totalUsedKbps: number;
+  otherServers?: UploadBudgetExternalServer[];
+}
+
 /** Moving averages (EWMA) of one provider's timings; all 0 until `samples` > 0. */
 export interface DebridLatency {
   resolveMs?: number;
@@ -244,12 +322,17 @@ export interface DebridProviderStatus {
   slots?: number;
   /** The account-wide concurrent API call limit. */
   accountSlots?: number;
+  /** Active queued downloads tracked on this provider. */
+  queuedDownloads?: number;
+  /** Provider queue reason, e.g. "queued at TorBox behind 3 active downloads". */
+  queuedDetail?: string;
 }
 
 export interface PosterProviderConfig {
   assetFolder?: string;
   ownerEnabled?: boolean;
   version?: number;
+  generation?: number;
   accounts?: Record<string, PosterProviderConfig>;
   enabled: boolean;
   source: string;
@@ -259,10 +342,24 @@ export interface PosterProviderConfig {
   profile?: string;
 }
 
+export interface ConsoleListenerStatus {
+  configuredPort: number;
+  activePort: number;
+  mainPort: number;
+  onMainPort: boolean;
+  fallback?: boolean;
+  error?: string;
+}
+
 export interface EtherConfig {
   frontends?: Record<
     string,
-    { enabled: boolean; publicUrl?: string; settings?: Record<string, unknown> }
+    {
+      enabled: boolean;
+      publishedAddresses?: string[];
+      publicUrl?: string;
+      settings?: Record<string, unknown>;
+    }
   >;
   frontendPorts?: Record<string, number>;
   posters?: PosterProviderConfig;
@@ -270,8 +367,12 @@ export interface EtherConfig {
   server: {
     startupAnimation?: boolean;
     port: number;
+    consolePort?: number;
+    disableConsoleOnMainPort?: boolean;
     bindAddress: string;
     friendlyName: string;
+    resumeAfterSeconds?: number;
+    pausedStreamMinutes?: number;
     machineIdentifier: string;
     logLevel: string;
     defaultStreamLimit: number;
@@ -324,9 +425,11 @@ export interface EtherConfig {
     password?: string;
     indexers: boolean;
     stremio: boolean;
+    liveTV: boolean;
     debrid: boolean;
     usenet: boolean;
     metadata: boolean;
+    extras?: boolean;
     bypass?: string[] | null;
   };
   sharedCache?: EtherConfig["cache"];
@@ -357,6 +460,7 @@ export interface EtherConfig {
     inProgressPinMaxAge?: string;
     dir: string;
     budgetBytes: number;
+    libraryBudgetBytes?: number;
     prefetchNextEpisode: boolean;
     prefetchBytes: number;
     keepInProgressWarm: boolean;
@@ -412,13 +516,16 @@ export interface EtherConfig {
     sync?: QualitySync;
   };
   transcode: {
+    videoTranscoding?: "on" | "off";
     ffmpegPath: string;
     ffprobePath: string;
     hwAccel: string;
     vaapiDevice: string;
     tempDir: string;
     maxTranscodes: number;
+    throttleSeconds?: number;
     remoteMaxBitrateKbps: number;
+    remoteUploadBudgetKbps?: number;
     rtxVideo?: {
       mode: "off" | "auto" | "on";
       executablePath: string;
@@ -427,6 +534,16 @@ export interface EtherConfig {
       quality: number;
       maxConcurrent: number;
     };
+  };
+  clients?: {
+    overrides?: {
+      id?: string;
+      product?: string;
+      productMatch?: string;
+      platform?: string;
+      device?: string;
+      alwaysEncodeVideo?: boolean;
+    }[];
   };
   trakt: { enabled: boolean; clientId: string; clientSecret: string };
   simkl?: { enabled: boolean; clientId: string; clientSecret: string };
@@ -461,6 +578,10 @@ export interface EtherConfig {
     enabled: boolean;
     apiKey: string;
   };
+  subsource: {
+    enabled: boolean;
+    apiKey: string;
+  };
   llm: {
     enabled: boolean;
     provider: string;
@@ -489,6 +610,10 @@ export interface EtherConfig {
     diskBudgetBytes: number;
     expiry: string;
     maxHeight: number;
+    limitUnit?: string;
+    limitAmount?: number;
+    limitPeriod?: string;
+    noTranscode?: boolean;
   };
   personalize?: {
     postPlay: boolean;
@@ -498,7 +623,9 @@ export interface EtherConfig {
     clockFormat: string;
   };
   extras?: {
+    themeMusic?: boolean;
     enabled: boolean;
+    defaultOnMigrated?: boolean;
     resolverCommand?: string;
     resolverArgs?: string[] | null;
     resolverTimeout?: string;
@@ -562,9 +689,15 @@ export interface QualityProfile {
   /**
    * The profile's audio language, as in Radarr: "original" (or unset) is
    * each title's own language, "any" is every language, and any other
-   * value is the one language a release's audio must be in.
+   * value is a specific language whose strictness is set by audioLanguageMode.
    */
   language?: string | null;
+  /**
+   * How a specific profile language applies: "preferred" ranks matching
+   * releases first with fallback to viewer languages then original language;
+   * "required" (or unset on existing profiles) strictly rejects other audio.
+   */
+  audioLanguageMode?: "required" | "preferred" | null;
   allowCam: boolean;
   /** Imported profiles: the only source-resolution pairs allowed, e.g. "webdl-1080". */
   allowedQualities?: string[] | null;
@@ -855,6 +988,7 @@ export interface ClusterNode {
     roles?: string[] | null;
     diagnostics?: ClusterDiagnostics;
     transcode: boolean;
+    videoTranscoding?: string;
     hwAccel?: string;
     weight?: number;
     egressIp?: string;
@@ -1007,6 +1141,7 @@ export interface AvailabilityConfig {
   checkRequests: number;
   grabs: number;
   checks: number;
+  pluginUsenetChecks?: number;
   checkBytes: number;
   reservePercent: number;
 }

@@ -99,3 +99,59 @@ func TestLibraryBrowseBatchesFavoriteBeforePagination(t *testing.T) {
 		t.Fatalf("favorite page %+v calls=%d err=%v", page, calls, err)
 	}
 }
+
+func TestBatchTitlesPreservesOrderFiltersPolicyAndSkipsEnrich(t *testing.T) {
+	viewer := &core.User{ID: 1}
+	showKey := core.ShowKey(1396)
+	epKey := core.EpisodeKey(1396, 1, 1)
+	m1 := core.Title{Key: core.MovieKey(1), Type: core.TypeMovie, Title: "First"}
+	mHidden := core.Title{Key: core.MovieKey(2), Type: core.TypeMovie, Title: "Hidden", Adult: true}
+	m3 := core.Title{Key: core.MovieKey(3), Type: core.TypeMovie, Title: "Third"}
+	show := core.Title{Key: showKey, Type: core.TypeShow, Title: "Breaking Bad", Year: 2008}
+	ep := core.Title{Key: epKey, Type: core.TypeEpisode, ShowKey: showKey, Title: "Pilot"}
+	catalog := map[core.RatingKey]core.Title{
+		m1.Key: m1, mHidden.Key: mHidden, m3.Key: m3, show.Key: show, ep.Key: ep,
+	}
+	st := &countingBrowseState{}
+	enrichCalls := 0
+	s := &Service{d: ServiceDeps{
+		Active: func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		State:  st,
+		Visibility: Visibility{
+			SectionFor: func(mt core.MediaType) (int, bool) {
+				if mt == core.TypeMovie {
+					return 1, true
+				}
+				return 2, true
+			},
+		},
+		CachedGetMany: func(_ context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+			out := make(map[core.RatingKey]core.Title, len(keys))
+			for _, k := range keys {
+				if title, ok := catalog[k]; ok {
+					out[k] = title
+				}
+			}
+			return out, nil
+		},
+		Enrich: func(context.Context, *core.User, core.Device, *core.Title) (frontend.ItemDetail, error) {
+			enrichCalls++
+			return frontend.ItemDetail{}, nil
+		},
+	}}
+	got, err := s.BatchTitles(context.Background(), viewer, []core.RatingKey{
+		m3.Key, mHidden.Key, core.MovieKey(999), core.CollectionKey(5), ep.Key, m1.Key,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Key != m3.Key || got[1].Key != ep.Key || got[2].Key != m1.Key {
+		t.Fatalf("unexpected batch order/filter: %+v", got)
+	}
+	if got[1].ShowTitle != "Breaking Bad" || got[1].ShowYear != 2008 {
+		t.Fatalf("missing parent ShowTitle fill: %+v", got[1])
+	}
+	if enrichCalls != 0 || st.gets != 0 {
+		t.Fatalf("BatchTitles must skip per-item Enrich/State.Get: enrich=%d stateGets=%d", enrichCalls, st.gets)
+	}
+}

@@ -87,7 +87,7 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 		return 0, false, err
 	}
 	if f.Group != nil {
-		clause, vals, err := c.compileBrowseGroup(f.Group, "t", 0)
+		clause, vals, err := c.compileBrowseGroup(f.Group, "t", 0, core.TypeShow)
 		if err != nil {
 			return 0, false, err
 		}
@@ -106,15 +106,21 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 	if err != nil {
 		return 0, false, err
 	}
-	// Episodes subtracted below must pass the restriction too.
-	episodes, episodeArgs := where, args
+	// Episodes subtracted below must pass the restriction too. Probing each
+	// candidate episode's show by primary key (with OFFSET 0 so PostgreSQL
+	// never hashes catalog_titles t under generic parameters) keeps unaired
+	// and recent-gate subtractions seeking catalog_titles_episode_release,
+	// while keeping both t and e in scope for childVisibilityConds.
+	probeCond := `t.key=e.show_key AND ` + where
+	episodeArgs := append([]any{}, args...)
 	if len(vis) > 0 {
-		episodes = strings.Join(vis, " AND ") + " AND " + where
-		episodeArgs = append(append([]any{}, visArgs...), args...)
+		probeCond += ` AND ` + strings.Join(vis, " AND ")
+		episodeArgs = append(episodeArgs, visArgs...)
 	}
-	// Unaired episodes are few; the recent-episode index reads only them.
+	episodes := `EXISTS(SELECT 1 FROM catalog_titles t WHERE ` + probeCond + ` LIMIT 1 OFFSET 0)`
+	// Unaired episodes are few; catalog_titles_episode_release reads only them.
 	var unaired int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles e
 		WHERE e.type='episode' AND e.release_known=1 AND e.released_ts>? AND e.adult=0 AND e.show_key<>0 AND `+episodes,
 		append([]any{c.now().Unix()}, episodeArgs...)...).Scan(&unaired); err != nil {
 		return 0, false, err
@@ -127,7 +133,7 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 		}
 		vals = append(vals, c.now().Unix())
 		vals = append(vals, episodeArgs...)
-		q := `SELECT COUNT(*) FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key WHERE e.key IN (` + placeholders(len(childExclude)) + `) AND e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts<=? AND ` + episodes
+		q := `SELECT COUNT(*) FROM catalog_titles e WHERE e.key IN (` + placeholders(len(childExclude)) + `) AND e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts<=? AND e.show_key<>0 AND ` + episodes
 		if err := c.db.QueryRowContext(ctx, q, vals...).Scan(&hidden); err != nil {
 			return 0, false, err
 		}
@@ -135,10 +141,10 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 	if f.GatePolicy != "" && f.EpisodeGateCutoff != 0 {
 		gNow := gateNowTS(f, c.now().Unix())
 		vals := []any{f.EpisodeGateCutoff, gNow, f.GatePolicy, c.now().Unix()}
-		q := `SELECT COUNT(*) FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key
+		q := `SELECT COUNT(*) FROM catalog_titles e
 		WHERE e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts>? AND e.released_ts<=?
 		AND NOT EXISTS (SELECT 1 FROM availability_gate ag WHERE ag.policy=? AND ag.rating_key=e.key LIMIT 1 OFFSET 0)
-		AND e.released_ts<=? AND ` + episodes
+		AND e.released_ts<=? AND e.show_key<>0 AND ` + episodes
 		vals = append(vals, episodeArgs...)
 		for _, keys := range [][]core.RatingKey{f.AvailabilityKeepKeys, childExclude} {
 			if len(keys) == 0 {
@@ -159,8 +165,8 @@ func (c *Catalog) countStoredEpisodesBySeries(ctx context.Context, f core.Filter
 		// Aired episodes of admitted series in the published hidden set,
 		// less those kept and those already excluded above.
 		vals := []any{f.HiddenEpisodeSeq, f.HiddenEpisodeSeq, c.now().Unix()}
-		q := `SELECT COUNT(*) FROM availability_hidden ah JOIN catalog_titles e ON e.key=ah.rating_key JOIN catalog_titles t ON t.key=e.show_key
-		WHERE ah.kind='episode' AND ah.from_seq<=? AND ah.to_seq>? AND e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts<=? AND ` + episodes
+		q := `SELECT COUNT(*) FROM availability_hidden ah JOIN catalog_titles e ON e.key=ah.rating_key
+		WHERE ah.kind='episode' AND ah.from_seq<=? AND ah.to_seq>? AND e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts<=? AND e.show_key<>0 AND ` + episodes
 		vals = append(vals, episodeArgs...)
 		for _, keys := range [][]core.RatingKey{f.AvailabilityKeepKeys, childExclude} {
 			if len(keys) == 0 {

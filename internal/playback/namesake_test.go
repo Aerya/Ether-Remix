@@ -14,11 +14,25 @@ type namesakeCatalog struct {
 	*fakeCatalog
 	namesakes map[core.RatingKey]bool
 	asked     int
+	updated   map[core.RatingKey]time.Duration
 }
 
 func (c *namesakeCatalog) Namesakes(_ context.Context, key core.RatingKey) (bool, error) {
 	c.asked++
 	return c.namesakes[key], nil
+}
+
+func (c *namesakeCatalog) UpdateRuntime(_ context.Context, key core.RatingKey, runtime time.Duration) error {
+	if c.updated == nil {
+		c.updated = map[core.RatingKey]time.Duration{}
+	}
+	c.updated[key] = runtime
+	if t := c.titles[key]; t != nil {
+		cp := *t
+		cp.Runtime = runtime
+		c.titles[key] = &cp
+	}
+	return nil
 }
 
 // withReleaseIDs stamps the reported identifiers the resolver would attach
@@ -133,4 +147,129 @@ func TestNamesakeDurationTolerance(t *testing.T) {
 			t.Errorf("%s: mismatch = %v, want %v", c.name, got, c.mismatch)
 		}
 	}
+}
+
+type rejectCollector struct {
+	core.Resolver
+	rejected []string
+}
+
+func (r *rejectCollector) RejectRelease(_ context.Context, _ core.RatingKey, rel core.Release) error {
+	r.rejected = append(r.rejected, rel.ID)
+	return nil
+}
+
+// TestRuntimeConsensusOverridesStaleCatalogueMetadata verifies that when
+// upstream catalogue metadata has the wrong runtime (e.g. "The Runner" 2026:
+// 1h26m in catalogue vs 1h37m56s in every actual release), three independent
+// releases agreeing on the probed duration establish consensus, play without
+// permanently rejecting earlier candidates, and persist the corrected runtime.
+func TestRuntimeConsensusOverridesStaleCatalogueMetadata(t *testing.T) {
+	catalogue := 86 * time.Minute
+	actual := 97*time.Minute + 56*time.Second
+	h := newHarness(t, []*fakeRelease{
+		mkv("r1", 100_000, actual),
+		mkv("r2", 100_000, actual+2*time.Second),
+		mkv("r3", 100_000, actual-1*time.Second),
+	}, []string{"r1", "r2", "r3"})
+	h.catalog.titles[movieKey] = &core.Title{Key: movieKey, Type: core.TypeMovie, Title: "The Runner", Year: 2026, Runtime: catalogue}
+	cat := &namesakeCatalog{fakeCatalog: h.catalog, namesakes: map[core.RatingKey]bool{movieKey: true}}
+	h.m.deps.Catalog = cat
+	rec := &rejectCollector{Resolver: h.resolver}
+	h.m.deps.Resolver = rec
+
+	ps := h.prepare(owner, movieKey, "c1")
+	if !durationsAgree(ps.Info.Duration, actual) {
+		t.Fatalf("played duration = %v, want ~%v", ps.Info.Duration, actual)
+	}
+	if len(rec.rejected) != 0 {
+		t.Fatalf("good releases were rejected despite consensus: %v", rec.rejected)
+	}
+	if got := cat.updated[movieKey]; !durationsAgree(got, actual) {
+		t.Fatalf("stored runtime updated to %v, want ~%v", got, actual)
+	}
+}
+
+// TestRuntimeConsensusTwoCandidateFallback verifies that when only two
+// independent candidates exist and both agree on the true duration, exhausting
+// candidates adopts the held fallback rather than failing playback.
+func TestRuntimeConsensusTwoCandidateFallback(t *testing.T) {
+	catalogue := 86 * time.Minute
+	actual := 97*time.Minute + 56*time.Second
+	h := newHarness(t, []*fakeRelease{
+		mkv("r1", 100_000, actual),
+		mkv("r2", 100_000, actual),
+	}, []string{"r1", "r2"})
+	h.catalog.titles[movieKey] = &core.Title{Key: movieKey, Type: core.TypeMovie, Title: "The Runner", Year: 2026, Runtime: catalogue}
+	cat := &namesakeCatalog{fakeCatalog: h.catalog, namesakes: map[core.RatingKey]bool{movieKey: true}}
+	h.m.deps.Catalog = cat
+	rec := &rejectCollector{Resolver: h.resolver}
+	h.m.deps.Resolver = rec
+
+	ps := h.prepare(owner, movieKey, "c1")
+	if ps.Info.Duration != actual {
+		t.Fatalf("played duration = %v, want %v", ps.Info.Duration, actual)
+	}
+	if len(rec.rejected) != 0 {
+		t.Fatalf("unexpected rejections: %v", rec.rejected)
+	}
+	if got := cat.updated[movieKey]; got != actual {
+		t.Fatalf("stored runtime = %v, want %v", got, actual)
+	}
+}
+
+// TestRuntimeConsensusIgnoresRepostsAndTrailers ensures that reposts of one
+// wrong file and short trailers/samples can never manufacture consensus.
+func TestRuntimeConsensusIgnoresRepostsAndTrailers(t *testing.T) {
+	t.Run("reposts of one wrong file cannot form consensus", func(t *testing.T) {
+		catalogue := 98 * time.Minute
+		wrong := 85 * time.Minute
+		h := newHarness(t, []*fakeRelease{
+			mkv("rep1", 100_000, wrong),
+			mkv("rep2", 100_000, wrong),
+			mkv("rep3", 100_000, wrong),
+			mkv("right", 100_000, catalogue),
+		}, []string{"rep1", "rep2", "rep3", "right"})
+		for i := 0; i < 3; i++ {
+			h.resolver.candidates[i].InfoHash = "deadbeef01"
+		}
+		h.catalog.titles[movieKey] = &core.Title{Key: movieKey, Type: core.TypeMovie, Title: "Runner", Year: 2026, Runtime: catalogue}
+		cat := &namesakeCatalog{fakeCatalog: h.catalog, namesakes: map[core.RatingKey]bool{movieKey: true}}
+		h.m.deps.Catalog = cat
+		rec := &rejectCollector{Resolver: h.resolver}
+		h.m.deps.Resolver = rec
+
+		ps := h.prepare(owner, movieKey, "c1")
+		if ps.Info.Duration != catalogue {
+			t.Fatalf("played duration = %v, want %v", ps.Info.Duration, catalogue)
+		}
+		if len(rec.rejected) != 3 {
+			t.Fatalf("rejected = %v, want all 3 wrong reposts", rec.rejected)
+		}
+		if _, ok := cat.updated[movieKey]; ok {
+			t.Fatalf("repost unexpectedly overwrote catalogue runtime: %v", cat.updated[movieKey])
+		}
+	})
+
+	t.Run("trailers never form consensus", func(t *testing.T) {
+		catalogue := 86 * time.Minute
+		trailer := 2 * time.Minute
+		h := newHarness(t, []*fakeRelease{
+			mkv("t1", 100_000, trailer),
+			mkv("t2", 100_000, trailer),
+			mkv("t3", 100_000, trailer),
+			mkv("real", 100_000, catalogue),
+		}, []string{"t1", "t2", "t3", "real"})
+		h.catalog.titles[movieKey] = &core.Title{Key: movieKey, Type: core.TypeMovie, Title: "The Runner", Year: 2026, Runtime: catalogue}
+		cat := &namesakeCatalog{fakeCatalog: h.catalog, namesakes: map[core.RatingKey]bool{movieKey: true}}
+		h.m.deps.Catalog = cat
+
+		ps := h.prepare(owner, movieKey, "c1")
+		if ps.Info.Duration != catalogue {
+			t.Fatalf("played duration = %v, want %v", ps.Info.Duration, catalogue)
+		}
+		if _, ok := cat.updated[movieKey]; ok {
+			t.Fatalf("trailers unexpectedly overwrote catalogue runtime: %v", cat.updated[movieKey])
+		}
+	})
 }

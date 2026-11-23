@@ -38,6 +38,17 @@ type CollectionStudio interface {
 	Artwork(ctx context.Context, id string, w int) ([]byte, string, time.Time, error)
 }
 
+// AddonCatalogImporter backs /ether/api/collections/addon-imports* (bulk
+// Stremio catalogue import and manifest-following sync). Implemented by
+// internal/plugins/adapters.CatalogImporter.
+type AddonCatalogImporter interface {
+	List(ctx context.Context) (*core.AddonCatalogImportList, error)
+	Preview(ctx context.Context, req core.AddonCatalogPreviewRequest) (*core.AddonCatalogPreview, error)
+	Apply(ctx context.Context, req core.AddonCatalogImportRequest) (*core.AddonCatalogImportResult, error)
+	SyncAddon(ctx context.Context, addonID string) (*core.AddonCatalogImportResult, error)
+	DeleteSubscription(ctx context.Context, addonID string, deleteCollections bool) error
+}
+
 // collectionRoutes registers the Collection Studio and catalogue helper
 // endpoints. Artwork and the image proxy are public: browsers load them
 // with <img> tags, which cannot send the owner token.
@@ -49,6 +60,11 @@ func (h *Handler) collectionRoutes(mux *http.ServeMux, api func(string, http.Han
 	api("GET /api/collections/template-bundles", h.handleCollectionTemplateBundles)
 	api("POST /api/collections/template-bundles/{id}/preview", h.handlePreviewTemplateBundle)
 	api("POST /api/collections/template-bundles/{id}/apply", h.handleApplyTemplateBundle)
+	api("GET /api/collections/addon-imports", h.handleListAddonImports)
+	api("POST /api/collections/addon-imports/preview", h.handlePreviewAddonImport)
+	api("POST /api/collections/addon-imports", h.handleApplyAddonImport)
+	api("POST /api/collections/addon-imports/{id}/sync", h.handleSyncAddonImport)
+	api("DELETE /api/collections/addon-imports/{id}", h.handleDeleteAddonImport)
 	api("GET /api/collections/{id}", h.handleGetCollection)
 	api("PUT /api/collections/{id}", h.handleUpdateCollection)
 	api("DELETE /api/collections/{id}", h.handleDeleteCollection)
@@ -354,6 +370,89 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		h.log.Warn("admin: collections API", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 	}
+}
+
+func (h *Handler) handleListAddonImports(w http.ResponseWriter, r *http.Request) {
+	if h.deps.AddonCatalogImports == nil {
+		writeJSON(w, http.StatusOK, core.AddonCatalogImportList{
+			Imports:         []core.AddonCatalogSubscription{},
+			AvailableAddons: []core.AddonCatalogAvailable{},
+		})
+		return
+	}
+	res, err := h.deps.AddonCatalogImports.List(r.Context())
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) handlePreviewAddonImport(w http.ResponseWriter, r *http.Request) {
+	if h.deps.AddonCatalogImports == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "Stremio add-on imports are not available")
+		return
+	}
+	var req core.AddonCatalogPreviewRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	res, err := h.deps.AddonCatalogImports.Preview(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) handleApplyAddonImport(w http.ResponseWriter, r *http.Request) {
+	if h.deps.AddonCatalogImports == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "Stremio add-on imports are not available")
+		return
+	}
+	var req core.AddonCatalogImportRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	res, err := h.deps.AddonCatalogImports.Apply(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	h.invalidateOwnerRows()
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) handleSyncAddonImport(w http.ResponseWriter, r *http.Request) {
+	if h.deps.AddonCatalogImports == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "Stremio add-on imports are not available")
+		return
+	}
+	res, err := h.deps.AddonCatalogImports.SyncAddon(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	h.invalidateOwnerRows()
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) handleDeleteAddonImport(w http.ResponseWriter, r *http.Request) {
+	if h.deps.AddonCatalogImports == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "Stremio add-on imports are not available")
+		return
+	}
+	deleteCollections := r.URL.Query().Get("deleteCollections") == "true" || r.URL.Query().Get("deleteCollections") == "1"
+	if err := h.deps.AddonCatalogImports.DeleteSubscription(r.Context(), r.PathValue("id"), deleteCollections); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if deleteCollections {
+		h.invalidateOwnerRows()
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleTierMigration pauses or resumes the library-tier migration:

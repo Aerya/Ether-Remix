@@ -2,6 +2,7 @@ package experience
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -31,8 +34,11 @@ type PeopleRead struct {
 	// PortraitTitles reads fresh policy facts and only the requested credits.
 	// Partial titles are used only inside WithPersonCredits; never cached.
 	PortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
-	Finish         func(context.Context) error
-	Close          func()
+	// RecheckPortraitTitles may omit portrait metadata, but must read fresh
+	// visibility facts and named-credit membership.
+	RecheckPortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	Finish                func(context.Context) error
+	Close                 func()
 }
 
 func (s *Service) readPeople(ctx context.Context, viewer *core.User, read func(*Service) error) error {
@@ -71,6 +77,7 @@ func (s *Service) readPeople(ctx context.Context, viewer *core.User, read func(*
 	snapshot.d.CachedGetMany = access.Titles
 	snapshot.d.peopleVisibleTitles = access.VisibleTitles
 	snapshot.d.peoplePortraitTitles = access.PortraitTitles
+	snapshot.d.peopleRecheckPortraitTitles = access.RecheckPortraitTitles
 	if err := read(&snapshot); err != nil {
 		return err
 	}
@@ -98,6 +105,9 @@ func (s *Service) Person(ctx context.Context, viewer *core.Viewer, device core.D
 	err = s.readPeople(ctx, viewer, func(snapshot *Service) error {
 		var readErr error
 		result, readErr = snapshot.person(ctx, viewer, device, id, options)
+		if readErr == nil {
+			result, readErr = snapshot.enrichPersonDetail(ctx, viewer, result, options.Prefetch)
+		}
 		return readErr
 	})
 	if err != nil {
@@ -148,7 +158,7 @@ func (s *Service) peopleVisibility(ctx context.Context, titles map[core.RatingKe
 	parents := []core.RatingKey{}
 	seen := map[core.RatingKey]bool{}
 	for _, title := range titles {
-		if title.ShowKey != 0 && !seen[title.ShowKey] {
+		if title.ShowKey != 0 && !title.ShowKey.IsPluginKey() && !seen[title.ShowKey] {
 			seen[title.ShowKey] = true
 			parents = append(parents, title.ShowKey)
 		}
@@ -185,6 +195,18 @@ func peopleTitleVisible(ctx context.Context, v *core.Viewer, title *core.Title, 
 }
 func (s *Service) peopleTitle(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (*core.Title, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
+	if key.IsPluginKey() {
+		v, err := s.viewer(ctx, viewer)
+		if err != nil {
+			return nil, err
+		}
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
+		if err != nil {
+			return nil, err
+		}
+		t := piv.Title
+		return &t, nil
+	}
 	if s.d.CachedGetMany == nil {
 		return nil, core.ErrNotAvailable
 	}
@@ -313,10 +335,41 @@ func mergeVisiblePerson(old visiblePerson, person core.Person, item core.RatingK
 func peopleWords(value string) []string {
 	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 }
+
+func peopleFoldedWords(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range norm.NFD.String(strings.ToLower(value)) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		switch r {
+		case 'ł':
+			b.WriteByte('l')
+		case 'ø':
+			b.WriteByte('o')
+		case 'đ':
+			b.WriteByte('d')
+		case 'ß':
+			b.WriteString("ss")
+		case 'æ':
+			b.WriteString("ae")
+		case 'œ':
+			b.WriteString("oe")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.FieldsFunc(b.String(), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+}
+
 func peopleTerms(value string) []string {
 	seen := map[string]bool{}
 	terms := []string{}
-	for _, word := range peopleWords(value) {
+	for _, word := range peopleFoldedWords(value) {
 		if !seen[word] {
 			seen[word] = true
 			terms = append(terms, word)
@@ -328,7 +381,7 @@ func peopleTerms(value string) []string {
 	return terms
 }
 func personMatches(name string, terms []string) bool {
-	words := peopleWords(name)
+	words := peopleFoldedWords(name)
 	for _, term := range terms {
 		found := false
 		for _, word := range words {
@@ -344,12 +397,16 @@ func personMatches(name string, terms []string) bool {
 	return true
 }
 func personBefore(a, b frontend.PersonDetail, exact string) bool {
-	left, right := strings.Join(peopleWords(a.Name), " "), strings.Join(peopleWords(b.Name), " ")
+	left, right := strings.Join(peopleFoldedWords(a.Name), " "), strings.Join(peopleFoldedWords(b.Name), " ")
 	if (left == exact) != (right == exact) {
 		return left == exact
 	}
 	if left != right {
 		return left < right
+	}
+	rawLeft, rawRight := strings.Join(peopleWords(a.Name), " "), strings.Join(peopleWords(b.Name), " ")
+	if rawLeft != rawRight {
+		return rawLeft < rawRight
 	}
 	return a.ID < b.ID
 }
@@ -393,59 +450,76 @@ func (s *Service) people(ctx context.Context, viewer *core.Viewer, device core.D
 	if q.Limit == 0 {
 		q.Limit = 20
 	}
+	if _, err := peopleTypes(q.Scope); err != nil {
+		return nil, err
+	}
 	terms := peopleTerms(q.Query)
-	exact := strings.Join(peopleWords(q.Query), " ")
+	exact := strings.Join(peopleFoldedWords(q.Query), " ")
+
+	pluginMatches, pluginErr := s.pluginPeopleForScope(ctx, viewer, q)
+	if pluginErr != nil {
+		return nil, pluginErr
+	}
+
+	var result []frontend.PersonDetail
+	var err error
 	if len(terms) > 0 && s.d.PeopleIndex != nil && s.d.PersonCreditsMany != nil && s.d.peopleVisibleTitles != nil {
-		return s.pagedPeople(ctx, viewer, q, terms, exact)
-	}
-	// A query with no name lists the most credited people the viewer can
-	// see, from the same index, instead of walking every credited title.
-	if (len(terms) > 0 || strings.TrimSpace(q.Query) == "") && s.d.PeopleIndex != nil && s.d.PersonCredits != nil {
-		return s.indexedPeople(ctx, viewer, q, terms, exact)
-	}
-	// Keep only the requested best people while scanning authorized credits.
-	// No persistent/global mapping or unbounded result set is accumulated here.
-	best := make(map[string]visiblePerson, q.Limit)
-	err := s.visitPeople(ctx, viewer, device, q.Scope, false, func(person core.Person, item core.RatingKey) error {
-		if !personMatches(person.Name, terms) {
+		result, err = s.pagedPeople(ctx, viewer, q, terms, exact)
+	} else if (len(terms) > 0 || strings.TrimSpace(q.Query) == "") && s.d.PeopleIndex != nil && s.d.PersonCredits != nil {
+		// A query with no name lists the most credited people the viewer can
+		// see, from the same index, instead of walking every credited title.
+		result, err = s.indexedPeople(ctx, viewer, q, terms, exact)
+	} else {
+		// Keep only the requested best people while scanning authorized credits.
+		// No persistent/global mapping or unbounded result set is accumulated here.
+		best := make(map[string]visiblePerson, q.Limit)
+		err = s.visitPeople(ctx, viewer, device, q.Scope, false, func(person core.Person, item core.RatingKey) error {
+			if !personMatches(person.Name, terms) {
+				return nil
+			}
+			id := facetID("person", strconv.FormatInt(person.TMDB, 10))
+			candidate, mErr := mergeVisiblePerson(best[id], person, item)
+			if mErr != nil {
+				return mErr
+			}
+			if _, exists := best[id]; exists || len(best) < q.Limit {
+				best[id] = candidate
+				return nil
+			}
+			worst := ""
+			for key, value := range best {
+				if worst == "" || personBefore(best[worst].detail, value.detail, exact) {
+					worst = key
+				}
+			}
+			if personBefore(candidate.detail, best[worst].detail, exact) {
+				delete(best, worst)
+				best[id] = candidate
+			}
 			return nil
-		}
-		id := facetID("person", strconv.FormatInt(person.TMDB, 10))
-		candidate, err := mergeVisiblePerson(best[id], person, item)
-		if err != nil {
-			return err
-		}
-		if _, exists := best[id]; exists || len(best) < q.Limit {
-			best[id] = candidate
-			return nil
-		}
-		worst := ""
-		for key, value := range best {
-			if worst == "" || personBefore(best[worst].detail, value.detail, exact) {
-				worst = key
+		})
+		if err == nil {
+			result = make([]frontend.PersonDetail, 0, len(best))
+			for _, person := range best {
+				current, cErr := s.currentPerson(ctx, viewer, person.detail)
+				if cErr != nil {
+					return nil, cErr
+				}
+				if personMatches(current.Name, terms) {
+					result = append(result, current)
+				}
+			}
+			sort.Slice(result, func(a, b int) bool { return personBefore(result[a], result[b], exact) })
+		} else if errors.Is(err, core.ErrNotAvailable) && s.d.CreditItems == nil && s.d.PeopleIndex == nil && s.d.PluginLibraries != nil {
+			if _, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok {
+				err = nil
 			}
 		}
-		if personBefore(candidate.detail, best[worst].detail, exact) {
-			delete(best, worst)
-			best[id] = candidate
-		}
-		return nil
-	})
+	}
 	if err != nil {
 		return nil, err
 	}
-	result := make([]frontend.PersonDetail, 0, len(best))
-	for _, person := range best {
-		current, err := s.currentPerson(ctx, viewer, person.detail)
-		if err != nil {
-			return nil, err
-		}
-		if personMatches(current.Name, terms) {
-			result = append(result, current)
-		}
-	}
-	sort.Slice(result, func(a, b int) bool { return personBefore(result[a], result[b], exact) })
-	return result, nil
+	return mergePeopleLists(result, pluginMatches, exact, q.Limit), nil
 }
 
 // PersonCandidate is a credited person whose name a people search matched.
@@ -480,7 +554,11 @@ func (s *Service) indexedPeople(ctx context.Context, viewer *core.Viewer, q fron
 	if s.d.CachedGetMany == nil {
 		return nil, core.ErrNotAvailable
 	}
-	found, err := s.d.PeopleIndex(ctx, terms, peopleCandidateLimit)
+	candidateCap := peopleCandidateLimit
+	if len(terms) > 0 {
+		candidateCap = min(max(q.Limit*8, 64), 256)
+	}
+	found, err := s.d.PeopleIndex(ctx, terms, candidateCap)
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +627,8 @@ func (s *Service) pagedPeople(ctx context.Context, viewer *core.Viewer, q fronte
 	if err != nil {
 		return nil, err
 	}
-	found, err := s.d.PeopleIndex(ctx, terms, peopleCandidateLimit)
+	candidateCap := min(max(q.Limit*8, 64), 256)
+	found, err := s.d.PeopleIndex(ctx, terms, candidateCap)
 	if err != nil {
 		return nil, err
 	}
@@ -704,12 +783,15 @@ func (s *Service) person(ctx context.Context, viewer *core.Viewer, device core.D
 	if id == "" || len(id) > 128 {
 		return frontend.PersonDetail{}, core.ErrNotFound
 	}
+	tmdb, known, err := s.personFacetTMDB(ctx, id)
+	if err != nil {
+		return frontend.PersonDetail{}, err
+	}
+	if known && core.IsPluginPersonID(tmdb) {
+		return s.pluginPerson(ctx, viewer, tmdb)
+	}
 	if s.d.PersonCredits != nil && s.d.CachedGetMany != nil {
-		tmdb, ok, err := s.personFacetTMDB(ctx, id)
-		if err != nil {
-			return frontend.PersonDetail{}, err
-		}
-		if ok {
+		if known {
 			return s.indexedPerson(ctx, viewer, tmdb)
 		}
 		if s.d.PersonByFacetID != nil {
@@ -717,7 +799,7 @@ func (s *Service) person(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 	}
 	var found visiblePerson
-	err := s.visitPeople(ctx, viewer, device, frontend.PeopleAll, true, func(person core.Person, item core.RatingKey) error {
+	err = s.visitPeople(ctx, viewer, device, frontend.PeopleAll, true, func(person core.Person, item core.RatingKey) error {
 		if facetID("person", strconv.FormatInt(person.TMDB, 10)) != id {
 			return nil
 		}
@@ -726,9 +808,17 @@ func (s *Service) person(ctx context.Context, viewer *core.Viewer, device core.D
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, core.ErrNotAvailable) && s.d.CreditItems == nil {
+			if pid, ok, pErr := s.pluginPersonByFacetID(ctx, id); pErr == nil && ok {
+				return s.pluginPerson(ctx, viewer, pid)
+			}
+		}
 		return frontend.PersonDetail{}, err
 	}
 	if found.detail.ID == "" {
+		if pid, ok, pErr := s.pluginPersonByFacetID(ctx, id); pErr == nil && ok {
+			return s.pluginPerson(ctx, viewer, pid)
+		}
 		return frontend.PersonDetail{}, core.ErrNotFound
 	}
 	return s.currentPerson(ctx, viewer, found.detail)
@@ -916,31 +1006,66 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 		if err != nil {
 			return err
 		}
-		resolve := func() (map[core.RatingKey]core.Title, Visibility, error) {
-			keys := make([]core.RatingKey, 0, len(refs))
+		resolve := func(recheck bool) (map[core.RatingKey]core.Title, Visibility, error) {
+			catKeys := make([]core.RatingKey, 0, len(refs))
+			catRefs := make([]PersonCreditRef, 0, len(refs))
+			pluginKeys := make([]core.RatingKey, 0)
 			seen := map[core.RatingKey]bool{}
 			for _, r := range refs {
+				if r.Item.IsPluginKey() {
+					if !seen[r.Item] {
+						seen[r.Item] = true
+						pluginKeys = append(pluginKeys, r.Item)
+					}
+					continue
+				}
+				catRefs = append(catRefs, r)
 				if !seen[r.Item] {
 					seen[r.Item] = true
-					keys = append(keys, r.Item)
+					catKeys = append(catKeys, r.Item)
 				}
 			}
-			var titles map[core.RatingKey]core.Title
-			var err error
-			if snapshot.d.peoplePortraitTitles != nil {
-				titles, err = snapshot.d.peoplePortraitTitles(ctx, refs)
-			} else {
-				titles, err = snapshot.d.CachedGetMany(ctx, keys)
+			titles := make(map[core.RatingKey]core.Title, len(seen))
+			var visibility Visibility
+			if len(catKeys) > 0 {
+				var catTitles map[core.RatingKey]core.Title
+				if recheck && snapshot.d.peopleRecheckPortraitTitles != nil {
+					catTitles, err = snapshot.d.peopleRecheckPortraitTitles(ctx, catRefs)
+				} else if snapshot.d.peoplePortraitTitles != nil {
+					catTitles, err = snapshot.d.peoplePortraitTitles(ctx, catRefs)
+				} else {
+					catTitles, err = snapshot.d.CachedGetMany(ctx, catKeys)
+				}
+				if err != nil {
+					return nil, Visibility{}, err
+				}
+				visibility, err = snapshot.peopleVisibility(ctx, catTitles)
+				if err != nil {
+					return nil, Visibility{}, err
+				}
+				for k, t := range catTitles {
+					titles[k] = t
+				}
 			}
-			if err != nil {
-				return nil, Visibility{}, err
+			if len(pluginKeys) > 0 && snapshot.d.PluginLibraries != nil {
+				views, err := snapshot.d.PluginLibraries.ItemsMany(ctx, pluginKeys)
+				if err != nil {
+					return nil, Visibility{}, err
+				}
+				for k, piv := range views {
+					if snapshot.pluginItemAllowed(ctx, current, piv) {
+						titles[k] = piv.Title
+					}
+				}
 			}
-			visibility, err := snapshot.peopleVisibility(ctx, titles)
-			return titles, visibility, err
+			return titles, visibility, nil
 		}
 		credit := func(titles map[core.RatingKey]core.Title, visibility Visibility, r PersonCreditRef) (frontend.PersonDetail, core.Title, bool, error) {
 			title, ok := titles[r.Item]
-			if !ok || title.Key != r.Item || r.TMDB <= 0 || !peopleTitleVisible(ctx, current, &title, visibility) {
+			if !ok || title.Key != r.Item || r.TMDB <= 0 {
+				return frontend.PersonDetail{}, core.Title{}, false, nil
+			}
+			if !r.Item.IsPluginKey() && !peopleTitleVisible(ctx, current, &title, visibility) {
 				return frontend.PersonDetail{}, core.Title{}, false, nil
 			}
 			var best visiblePerson
@@ -958,7 +1083,7 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 			}
 			return best.detail, title, true, nil
 		}
-		titles, visibility, err := resolve()
+		titles, visibility, err := resolve(false)
 		if err != nil {
 			return err
 		}
@@ -978,7 +1103,7 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 			}
 		}
 		// The recheck: every credit read is still current.
-		titles, visibility, err = resolve()
+		titles, visibility, err = resolve(true)
 		if err != nil {
 			return err
 		}

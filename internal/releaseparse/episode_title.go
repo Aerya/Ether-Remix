@@ -81,7 +81,12 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 	if absolute, start, end := seasonAbsoluteAnnotation(name); absolute > 0 {
 		name = name[:start] + " " + name[end:]
 	}
-	spaced := spacify(normalizeSpanishCapRange(name))
+	normName := normalizeSpanishCapRange(name)
+	spacedRaw := spacify(normName)
+	if ad, ok := parseAirDate(normName, spacedRaw); ok {
+		normName = normName[:ad.stemStart] + " " + normName[ad.stemEnd:]
+	}
+	spaced := spacify(normName)
 	usedMiniseriesPart := false
 	loc := reSE.FindStringIndex(spaced)
 	if loc == nil {
@@ -92,6 +97,9 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 	}
 	if loc == nil {
 		loc = reBareEpisode.FindStringIndex(spaced)
+	}
+	if loc == nil {
+		loc = reKoreanEpisode.FindStringIndex(spaced)
 	}
 	if loc == nil {
 		loc = spanishEpisodeIndexWithRaw(name, spaced)
@@ -151,9 +159,19 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 	}
 	got := normalizeEpisodeTitle(strings.Join(words, " "))
 	expected := normalizeEpisodeTitle(want)
+	// A hyphenated catalogue word ("Expo-tations") is sometimes written
+	// joined in a release name ("Expotations"); keep that form as an
+	// alternative spelling of the same title.
+	expectedJoined := ""
+	if strings.Contains(want, "-") {
+		expectedJoined = normalizeEpisodeTitle(strings.ReplaceAll(want, "-", ""))
+	}
 	if requireEvidence {
 		got = joinEpisodePossessives(got)
 		expected = joinEpisodePossessives(expected)
+		if expectedJoined != "" {
+			expectedJoined = joinEpisodePossessives(expectedJoined)
+		}
 	}
 	if got == "" || got == "the" || got == "a" || got == "an" {
 		return !requireEvidence
@@ -176,7 +194,30 @@ func episodeTitleMatches(name, want string, requireEvidence bool) bool {
 			return true
 		}
 	}
-	return got == expected || (!requireEvidence && strings.HasPrefix(expected, got+" "))
+	if got == expected || (expectedJoined != "" && got == expectedJoined) || (!requireEvidence && strings.HasPrefix(expected, got+" ")) {
+		return true
+	}
+	// A combined release ("S01E01-E02.First.Title.Second.Title") carries
+	// every covered episode's title in the tail, so the wanted title
+	// appears there as one whole phrase among the others.
+	if !multiEpisodeName(spaced) {
+		return false
+	}
+	return strings.Contains(" "+got+" ", " "+expected+" ") ||
+		(expectedJoined != "" && strings.Contains(" "+got+" ", " "+expectedJoined+" "))
+}
+
+// multiEpisodeName reports whether the spaced name's episode marker covers
+// more than one episode (a chained "S01E01E02", a range "S01E01-E02", or
+// the NxM equivalents).
+func multiEpisodeName(spaced string) bool {
+	if _, episodes, _, ok := parseSEEpisode(spaced); ok {
+		return len(episodes) > 1
+	}
+	if _, episodes, _, _, ok := parseXEpisode(spaced); ok {
+		return len(episodes) > 1
+	}
+	return false
 }
 
 // Catalogue and scene names express multipart suffixes differently:
@@ -208,22 +249,34 @@ func normalizeEpisodeTitle(title string) string {
 }
 
 // EpisodeSeriesYear reads only the series portion of a TV name. A year in
-// an episode title or after a season/episode boundary must not be mistaken
-// for the show's premiere year.
+// an episode title or after a season/episode/air-date boundary must not be
+// mistaken for the show's premiere year.
 func EpisodeSeriesYear(name string, parsedYear int) int {
-	spaced := spacify(normalizeSpanishCapRange(name))
+	normName := normalizeSpanishCapRange(name)
+	spaced := spacify(normName)
 	cut := -1
 	consider := func(loc []int) {
 		if loc != nil && loc[0] >= 0 && (cut < 0 || loc[0] < cut) {
 			cut = loc[0]
 		}
 	}
+	if ad, ok := parseAirDate(normName, spaced); ok {
+		consider([]int{ad.spacedStart, ad.spacedEnd})
+	}
 	consider(reSE.FindStringIndex(spaced))
 	consider(reSeasonAndEp.FindStringIndex(spaced))
+	consider(reSeasonCourDashEp.FindStringIndex(spaced))
+	consider(reSeasonDashEp.FindStringIndex(spaced))
+	consider(reSeasonShortDashEp.FindStringIndex(spaced))
+	consider(reOrdinalSeasonEp.FindStringIndex(spaced))
 	consider(reXEpisode.FindStringIndex(spaced))
+	consider(reBareEpisode.FindStringIndex(spaced))
+	consider(reKoreanSeason.FindStringIndex(spaced))
+	consider(reKoreanEpisode.FindStringIndex(spaced))
 	consider(spanishEpisodeIndexWithRaw(name, spaced))
 	consider(reSeasonOnly.FindStringIndex(spaced))
 	consider(reSeasonWord.FindStringIndex(spaced))
+	consider(reOrdinalSeasonWord.FindStringIndex(spaced))
 	consider(reMiniseriesPart.FindStringIndex(spaced))
 	consider(reRussianSeason.FindStringIndex(spaced))
 	consider(reRussianSeasonSuffix.FindStringIndex(spaced))

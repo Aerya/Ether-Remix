@@ -17,8 +17,39 @@ type RatingKey = core.RatingKey
 type ItemRef = core.ItemRef
 type Playlist = core.Playlist
 type MediaType = core.MediaType
+type MediaClass = core.MediaClass
+type MediaRole = core.MediaRole
+type TitleParent = core.TitleParent
+type MediaCredit = core.MediaCredit
+type TitleReading = core.TitleReading
+type TitleFact = core.TitleFact
+
+const (
+	MediaClassVideo     = core.MediaClassVideo
+	MediaClassMusic     = core.MediaClassMusic
+	MediaClassAudiobook = core.MediaClassAudiobook
+	MediaClassBook      = core.MediaClassBook
+	MediaClassPodcast   = core.MediaClassPodcast
+	MediaClassPhoto     = core.MediaClassPhoto
+)
+
+const (
+	MediaRoleItem       = core.MediaRoleItem
+	MediaRoleArtist     = core.MediaRoleArtist
+	MediaRoleAlbum      = core.MediaRoleAlbum
+	MediaRoleTrack      = core.MediaRoleTrack
+	MediaRoleSeries     = core.MediaRoleSeries
+	MediaRoleBook       = core.MediaRoleBook
+	MediaRoleAudiobook  = core.MediaRoleAudiobook
+	MediaRolePart       = core.MediaRolePart
+	MediaRoleShow       = core.MediaRoleShow
+	MediaRoleEpisode    = core.MediaRoleEpisode
+	MediaRoleCollection = core.MediaRoleCollection
+)
+
 type Page = core.Page
 type WatchStatus = core.WatchStatus
+type ReadingProgress = core.ReadingProgress
 type StreamInfo = core.StreamInfo
 type MediaInfo = core.MediaInfo
 type DecideOptions = core.DecideOptions
@@ -50,12 +81,29 @@ type DecisionKind = core.DecisionKind
 type DecisionCandidate = core.DecisionCandidate
 type DecisionTrace = core.DecisionTrace
 type ReleaseVariant = core.ReleaseVariant
+type VersionAvailability = core.VersionAvailability
+type VersionProfile = core.VersionProfile
+type ViewerChoiceSummary = core.ViewerChoiceSummary
+
+const (
+	VersionInstant     = core.VersionInstant
+	VersionCached      = core.VersionCached
+	VersionFetch       = core.VersionFetch
+	VersionUnavailable = core.VersionUnavailable
+)
 
 const (
 	DecisionDirectPlay = core.DecisionDirectPlay
 	DecisionRemux      = core.DecisionRemux
 	DecisionTranscode  = core.DecisionTranscode
 )
+
+func IsLastViewedSort(raw string) bool { return core.IsLastViewedSort(raw) }
+func TitleSortKey(s string) string     { return core.TitleSortKey(s) }
+func FoldSortTitle(s string) string    { return core.FoldSortTitle(s) }
+func EffectiveSortTitle(title, explicit string) string {
+	return core.EffectiveSortTitle(title, explicit)
+}
 
 func IsSurroundAudioCodec(c string) bool { return core.IsSurroundAudioCodec(c) }
 
@@ -67,6 +115,10 @@ type ReleaseInfo = core.ReleaseInfo
 type ResolveRequest = core.ResolveRequest
 
 const MaxVariants = core.MaxVariants
+
+const VersionSelectorPrefix = core.VersionSelectorPrefix
+
+const KindAutoVersionID = core.KindAutoVersionID
 
 func ResolutionTier(w, h int) int { return core.ResolutionTier(w, h) }
 
@@ -92,9 +144,11 @@ const (
 	SortDuration   = core.SortDuration
 	SortPopularity = core.SortPopularity
 	SortPlayed     = core.SortPlayed
+	SortLastViewed = core.SortLastViewed
 	SortRating     = core.SortRating
 	SortReleased   = core.SortReleased
 	SortTitle      = core.SortTitle
+	SortIndex      = core.SortIndex
 	SortUpdated    = core.SortUpdated
 	SortYear       = core.SortYear
 )
@@ -110,20 +164,34 @@ const (
 
 func ShowKey(tmdb int64) RatingKey { return core.ShowKey(tmdb) }
 
+func PluginKey(seq int64) RatingKey { return core.PluginKey(seq) }
+
 func SeasonKey(show int64, season int) RatingKey {
 	return core.SeasonKey(show, season)
 }
 
 // Protocol integration contracts remain implemented by the host.
 type Presentations = core.Presentations
+type VelaPresentation = core.VelaPresentation
+type MediaBrowserPresentation = core.MediaBrowserPresentation
+type StremioPresentation = core.StremioPresentation
+type XtreamPresentation = core.XtreamPresentation
+type SiloPresentation = core.SiloPresentation
 type SessionPolicy = core.SessionPolicy
 type FrontendHostPolicy = core.FrontendHostPolicy
 type DeliveryPolicy = core.DeliveryPolicy
 type RangeResponse = core.RangeResponse
 type RangeRepresentation = core.RangeRepresentation
 
+// Direct delivery crosses the same seam: a playback that can name the provider URL
+// a session's file may be fetched from, and the link it names. A playback without
+// the capability (a remote cluster, a fixture) simply relays.
+type DirectSourceLink = core.DirectSourceLink
+type DirectDeliverer = core.DirectDeliverer
+
 var WithRangeResponse = core.WithRangeResponse
 var IsGrantCredential = core.IsGrantCredential
+var IsAPIKeyCredential = core.IsAPIKeyCredential
 
 // HLS output evidence is shared with adapters without exposing the encoder.
 type HLSRung = core.HLSRung

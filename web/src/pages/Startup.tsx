@@ -19,6 +19,7 @@ import { ServerProgress, StartFailure, useServerReconnect } from "../components/
 import { t, tx } from "../i18n";
 import { LanguagePicker } from "../i18n/react";
 import { ApiError } from "../lib/api";
+import { usePageTitle } from "../lib/document-title";
 import { formatBytes, formatDateTime, relativeTime } from "../lib/format";
 import {
   isEncryptedBackup,
@@ -48,6 +49,7 @@ export default function Startup({ onReady }: { onReady: () => void }) {
   }, [state.step, onReady]);
 
   const failed = state.step === "failed";
+  usePageTitle([failed ? t("Couldn't start") : t("Starting")]);
   const headline = !status
     ? t("Connecting to Ether…")
     : state.step === "done"

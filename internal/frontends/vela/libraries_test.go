@@ -12,6 +12,68 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 )
 
+func TestProjectLibrary(t *testing.T) {
+	cases := []struct {
+		name       string
+		present    frontend.Presentations
+		wantType   frontend.MediaType
+		wantNative string
+		wantOK     bool
+	}{
+		{
+			name:    "absent vela is unpublished",
+			present: frontend.Presentations{},
+		},
+		{
+			name: "plex and mediabrowser alone do not publish to vela",
+			present: frontend.Presentations{
+				Plex:         &core.PlexPresentation{Base: "movie"},
+				MediaBrowser: &frontend.MediaBrowserPresentation{CollectionType: "tvshows"},
+			},
+		},
+		{
+			name: "vela movies",
+			present: frontend.Presentations{
+				Vela: &frontend.VelaPresentation{Type: "movies"},
+			},
+			wantType:   frontend.TypeMovie,
+			wantNative: "movies",
+			wantOK:     true,
+		},
+		{
+			name: "vela shows",
+			present: frontend.Presentations{
+				Vela: &frontend.VelaPresentation{Type: "shows"},
+			},
+			wantType:   frontend.TypeShow,
+			wantNative: "shows",
+			wantOK:     true,
+		},
+		{
+			name: "adapterOnly hides vela",
+			present: frontend.Presentations{
+				AdapterOnly: true,
+				Vela:        &frontend.VelaPresentation{Type: "movies"},
+			},
+		},
+		{
+			name: "unknown vela type is ignored",
+			present: frontend.Presentations{
+				Vela: &frontend.VelaPresentation{Type: "music"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, gotNative, gotOK := ProjectLibrary(tc.present, frontend.TypeMovie)
+			if gotType != tc.wantType || gotNative != tc.wantNative || gotOK != tc.wantOK {
+				t.Fatalf("ProjectLibrary(%+v) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.present, gotType, gotNative, gotOK, tc.wantType, tc.wantNative, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestVelaLibrariesPolicyAndPaging(t *testing.T) {
 	views := []frontend.View{{ID: "23", Name: "Owner filter", Type: frontend.TypeMovie, Revision: "one"}, {ID: "71", Name: "Plugin shows", Type: frontend.TypeShow, PluginID: "plugin", KindKey: "series"}}
 	calls := 0

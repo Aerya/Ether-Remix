@@ -162,5 +162,5 @@ export function createMaintenance() {
     return null;
   }
 
-  return { handle };
+  return { handle, channels };
 }

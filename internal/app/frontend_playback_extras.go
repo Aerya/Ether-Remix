@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 
@@ -37,6 +38,9 @@ func (s extraSurface) Open(ctx context.Context, key core.RatingKey) (string, str
 	if err != nil {
 		return "", "", nil, err
 	}
+	if resolved.AudioURL != "" {
+		return "", "", nil, extras.ErrCacheDisabled
+	}
 	return resolved.Container, resolved.URL, resolved.Headers, nil
 }
 
@@ -54,6 +58,7 @@ func toExtraClip(e extras.Extra) frontend.ExtraClip {
 		ExtraType:   e.ExtraType,
 		Site:        e.Site,
 		SiteKey:     e.SiteKey,
+		DiscoverKey: e.DiscoverKey,
 		Language:    e.Language,
 		Official:    e.Official,
 		PublishedAt: e.PublishedAt,
@@ -108,6 +113,7 @@ func (s extraSurface) Resolve(ctx context.Context, e frontend.ExtraClip) (fronte
 			ExtraType:   e.ExtraType,
 			Site:        e.Site,
 			SiteKey:     e.SiteKey,
+			DiscoverKey: e.DiscoverKey,
 			Language:    e.Language,
 			Official:    e.Official,
 			PublishedAt: e.PublishedAt,
@@ -116,16 +122,21 @@ func (s extraSurface) Resolve(ctx context.Context, e frontend.ExtraClip) (fronte
 			Source:      e.Source,
 		}
 	}
-	resolved, err := s.extras.Resolve(ctx, clip)
+	cached, err := s.extras.CacheExtra(ctx, clip)
+	if errors.Is(err, extras.ErrCacheUnsupported) || errors.Is(err, extras.ErrCacheDisabled) {
+		r, resolveErr := s.extras.Resolve(ctx, clip)
+		if resolveErr != nil {
+			return frontend.ResolvedExtra{}, resolveErr
+		}
+		if r.AudioURL != "" {
+			return frontend.ResolvedExtra{}, err
+		}
+		return frontend.ResolvedExtra{URL: r.URL, Container: r.Container, Headers: r.Headers, Expires: r.Expires}, nil
+	}
 	if err != nil {
 		return frontend.ResolvedExtra{}, err
 	}
-	return frontend.ResolvedExtra{
-		URL:       resolved.URL,
-		Headers:   resolved.Headers,
-		Expires:   resolved.Expires,
-		Container: resolved.Container,
-	}, nil
+	return frontend.ResolvedExtra{LocalPath: cached.Path, Container: "mp4"}, nil
 }
 
 func (s extraSurface) PrewarmBytes() int64 {
@@ -145,6 +156,12 @@ type cinemaSurface struct {
 
 func (s cinemaSurface) Trailers(ctx context.Context, viewer *core.Viewer, device core.Device, feature core.RatingKey, limit int) ([]frontend.Extra, error) {
 	if s.exp == nil || s.extras == nil || !s.extras.Enabled() || limit <= 0 {
+		return nil, nil
+	}
+	// A plugin library item (an adult scene, a sports event, an audiobook) has
+	// no related catalogue films; the fallback picked popular movie trailers to
+	// play before it.
+	if feature.IsPluginKey() {
 		return nil, nil
 	}
 	detail, err := s.exp.Item(ctx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: feature})
@@ -315,10 +332,13 @@ func (s extraSurface) OpenCachedExtra(ctx context.Context, key core.RatingKey) (
 		return nil, "", core.ErrNotAvailable
 	}
 	clip, ok := s.extras.Lookup(key)
-	if !ok || !clip.IsTrailer() {
+	if !ok {
 		return nil, "", core.ErrNotAvailable
 	}
-	cached, err := s.extras.CacheTrailer(ctx, clip)
+	cached, err := s.extras.CacheExtra(ctx, clip)
+	if errors.Is(err, extras.ErrCacheUnsupported) || errors.Is(err, extras.ErrCacheDisabled) {
+		return nil, "", core.ErrNotAvailable
+	}
 	if err != nil {
 		return nil, "", err
 	}

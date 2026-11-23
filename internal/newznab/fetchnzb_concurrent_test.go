@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,34 +13,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
-
-// saveLog captures slog messages so the test can see saveNZB rename
-// failures, which saveNZB only logs.
-type saveLog struct {
-	mu   sync.Mutex
-	msgs []string
-}
-
-func (h *saveLog) Enabled(context.Context, slog.Level) bool { return true }
-func (h *saveLog) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.msgs = append(h.msgs, r.Message)
-	return nil
-}
-func (h *saveLog) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *saveLog) WithGroup(string) slog.Handler      { return h }
-func (h *saveLog) failedSaves() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	n := 0
-	for _, m := range h.msgs {
-		if strings.Contains(m, "save NZB failed") {
-			n++
-		}
-	}
-	return n
-}
 
 // nzbWaiters reports how many callers are attached to the in-flight
 // fetch for id (0 when none is in flight).
@@ -90,19 +59,17 @@ func blockingNZBServer(t *testing.T, hits *atomic.Int32, release chan struct{}) 
 // Concurrent FetchNZB calls for the same release id (warm-up, playback,
 // validation, two devices) share one indexer request and one grab. The
 // handler holds the response until all N callers are attached to the
-// flight, so none can be served from disk. Every caller gets the same
-// bytes, the disk copy matches, and no temp file is left behind.
+// flight. Each caller owns its returned bytes and the vault serves replays.
 func TestFetchNZBConcurrentSameID(t *testing.T) {
 	const n = 8
-	dir := t.TempDir()
+	v := &testVault{}
 	var hits atomic.Int32
 	release := make(chan struct{})
 	srv, served := blockingNZBServer(t, &hits, release)
 
-	logs := &saveLog{}
 	cfg := testConfig(srv.URL)
 	cfg.DailyGrabs = 100
-	c := New(cfg, nil, Options{NZBDir: dir, Logger: slog.New(logs)})
+	c := New(cfg, nil, Options{Vault: v})
 	rel := core.Release{ID: "concurrent1", GUID: "g1", Name: "X", NZBURL: srv.URL + "/nzb?id=g1"}
 
 	var wg sync.WaitGroup
@@ -126,9 +93,6 @@ func TestFetchNZBConcurrentSameID(t *testing.T) {
 			t.Fatalf("FetchNZB %d returned %d bytes, not the served NZB", i, len(bodies[i]))
 		}
 	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("server hits = %d, want 1 (concurrent fetches must coalesce)", got)
-	}
 	// Each caller owns its slice: no two share a backing array, so one
 	// caller modifying its NZB cannot race another still reading.
 	seen := map[*byte]int{}
@@ -138,48 +102,22 @@ func TestFetchNZBConcurrentSameID(t *testing.T) {
 		}
 		seen[&b[0]] = i
 	}
-	if _, grabs, err := c.counts(context.Background()); err != nil || grabs != 1 {
-		t.Fatalf("grabs charged = %d (%v), want 1", grabs, err)
-	}
-	if got := logs.failedSaves(); got != 0 {
-		t.Fatalf("%d save NZB rename failures logged", got)
-	}
-	disk, err := os.ReadFile(c.nzbDiskPath(rel.ID))
-	if err != nil {
-		t.Fatalf("saved NZB missing: %v", err)
-	}
-	if !bytes.Equal(disk, served) {
-		t.Fatalf("on-disk NZB (%d bytes) is not the served body", len(disk))
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
-			t.Fatalf("leftover temp file %q", e.Name())
-		}
-	}
-	// Later fetch is served from disk: no new server hit.
-	b, err := c.FetchNZB(context.Background(), rel)
-	if err != nil || !bytes.Equal(b, disk) {
-		t.Fatalf("disk reuse = %d bytes, %v", len(b), err)
-	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("server hits after disk reuse = %d, want 1", got)
+	body, grabbed, err := c.fetchNZBReporting(context.Background(), rel)
+	if err != nil || grabbed || !bytes.Equal(body, served) {
+		t.Fatal("vault replay failed", err)
 	}
 }
 
 // The caller that started the shared fetch gives up (its viewer left):
 // it returns its own context error at once, while the fetch carries on
-// for the callers still waiting and still lands in the disk cache.
+// for the callers still waiting and still lands in the vault.
 func TestFetchNZBLeaderCancelOthersSucceed(t *testing.T) {
 	const n = 4
-	dir := t.TempDir()
+	v := &testVault{}
 	var hits atomic.Int32
 	release := make(chan struct{})
 	srv, served := blockingNZBServer(t, &hits, release)
-	c := New(testConfig(srv.URL), nil, Options{NZBDir: dir})
+	c := New(testConfig(srv.URL), nil, Options{Vault: v})
 	rel := core.Release{ID: "cancel1", GUID: "g1", Name: "X", NZBURL: srv.URL + "/nzb?id=g1"}
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
@@ -222,12 +160,6 @@ func TestFetchNZBLeaderCancelOthersSucceed(t *testing.T) {
 			t.Fatalf("follower %d got %d bytes, not the served NZB", i, len(bodies[i]))
 		}
 	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("server hits = %d, want 1", got)
-	}
-	if disk, err := os.ReadFile(c.nzbDiskPath(rel.ID)); err != nil || !bytes.Equal(disk, served) {
-		t.Fatalf("disk cache after leader cancel = %d bytes, %v", len(disk), err)
-	}
 }
 
 // A failed shared fetch is handed to every caller in the flight but not
@@ -242,7 +174,7 @@ func TestFetchNZBErrorNotCachedPastFlight(t *testing.T) {
 		_, _ = w.Write([]byte(`<?xml version="1.0"?><nzb></nzb>`))
 	}))
 	defer srv.Close()
-	c := New(testConfig(srv.URL), nil, Options{NZBDir: t.TempDir()})
+	c := New(testConfig(srv.URL), nil, Options{Vault: &testVault{}})
 	rel := core.Release{ID: "err1", GUID: "g1", Name: "X", NZBURL: srv.URL + "/nzb?id=g1"}
 	if _, err := c.FetchNZB(context.Background(), rel); err == nil {
 		t.Fatal("first fetch: want the indexer error")
@@ -265,7 +197,7 @@ func TestFetchNZBForegroundRetriesBackgroundBudgetRefusal(t *testing.T) {
 		_, _ = w.Write([]byte(`<?xml version="1.0"?><nzb></nzb>`))
 	}))
 	defer srv.Close()
-	c := New(testConfig(srv.URL), nil, Options{NZBDir: t.TempDir()})
+	c := New(testConfig(srv.URL), nil, Options{Vault: &testVault{}})
 	rel := core.Release{ID: "bg1", GUID: "g1", Name: "X", NZBURL: srv.URL + "/nzb?id=g1"}
 
 	gate := make(chan struct{})

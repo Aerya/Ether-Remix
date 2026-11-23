@@ -11,8 +11,11 @@ import {
 import {
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   EyeOff,
+  Folder,
   Globe2,
   Layers,
   LayoutGrid,
@@ -20,6 +23,7 @@ import {
   LayoutTemplate,
   Pencil,
   Plus,
+  Puzzle,
   RefreshCw,
   Search,
   Sparkles,
@@ -42,11 +46,23 @@ import { useAsync } from "../../lib/hooks";
 import { normalizeSpec } from "../../lib/rules";
 import { CollectionDetail } from "./CollectionDetail";
 import { DescribeDialog } from "./DescribeDialog";
-import { newCollectionHref } from "./links";
+import { StremioImportDrawer } from "./StremioImportDrawer";
+import { isBlankCollectionSpec, newCollectionHref } from "./links";
 import { bundleDescription, bundleTitle } from "../setup/StarterBundlesCard";
 
 type Tab = "mine" | "rows" | "templates" | "builtin";
 type Filter = "all" | "live" | "draft";
+
+function loadUnsavedNewDrafts() {
+  return listDrafts<CollectionSpec>("collection").filter((d) => {
+    if (!d.id.startsWith("new-")) return false;
+    if (isBlankCollectionSpec(d.draft.value)) {
+      clearDraft(draftKey("collection", d.id));
+      return false;
+    }
+    return true;
+  });
+}
 
 export default function CollectionsGallery({
   browseSearch,
@@ -64,6 +80,10 @@ export default function CollectionsGallery({
   const [filter, setFilter] = useState<Filter>("all");
   const [category, setCategory] = useState("all");
   const [describe, setDescribe] = useState(false);
+  const [importDrawer, setImportDrawer] = useState<{ open: boolean; addonId?: string }>({
+    open: false,
+  });
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [bundleBusy, setBundleBusy] = useState<string | null>(null);
   const [bundlePreview, setBundlePreview] = useState<CollectionTemplateBundlePreview | null>(null);
@@ -71,14 +91,26 @@ export default function CollectionsGallery({
   const collections = useAsync(() => api.collections(), []);
   const templates = useAsync(() => api.templates(), []);
   const bundles = useAsync(() => api.templateBundles(), []);
-  const [drafts, setDrafts] = useState(() =>
-    listDrafts<CollectionSpec>("collection").filter((d) => d.id.startsWith("new-")),
-  );
+  const [drafts, setDrafts] = useState(loadUnsavedNewDrafts);
+  const importAddonParam = params.get("importAddon");
+  useEffect(() => {
+    if (importAddonParam) {
+      setImportDrawer({ open: true, addonId: importAddonParam });
+    }
+  }, [importAddonParam]);
+  const closeImportDrawer = () => {
+    setImportDrawer({ open: false });
+    if (params.has("importAddon")) {
+      const p = new URLSearchParams(params);
+      p.delete("importAddon");
+      setParams(p, { replace: true });
+    }
+  };
   const wasActive = useRef(active);
   useEffect(() => {
     if (active && !wasActive.current) {
       void collections.reload();
-      setDrafts(listDrafts<CollectionSpec>("collection").filter((d) => d.id.startsWith("new-")));
+      setDrafts(loadUnsavedNewDrafts());
     }
     wasActive.current = active;
   }, [active, collections.reload]);
@@ -88,8 +120,8 @@ export default function CollectionsGallery({
   );
   const builtIn = (collections.data ?? []).filter((c) => c.builtIn);
   const needle = q.trim().toLowerCase();
-  const match = (s: { name: string; description?: string }) =>
-    !needle || `${s.name} ${s.description ?? ""}`.toLowerCase().includes(needle);
+  const match = (s: { name: string; description?: string; folder?: string }) =>
+    !needle || `${s.name} ${s.description ?? ""} ${s.folder ?? ""}`.toLowerCase().includes(needle);
   const items = (tab === "builtin" ? builtIn : tab === "rows" ? rowSources : mine).filter(
     (c) => match(c) && (tab !== "mine" || filter === "all" || c.enabled === (filter === "live")),
   );
@@ -143,6 +175,7 @@ export default function CollectionsGallery({
           ...c,
           id: undefined,
           builtIn: undefined,
+          addonSync: undefined,
           name: t("{name} (copy)", { name: c.name }),
           enabled: false,
         },
@@ -269,6 +302,9 @@ export default function CollectionsGallery({
                 </Button>
               </div>
             ) : null}
+            <Button variant="outline" size="sm" onClick={() => setImportDrawer({ open: true })}>
+              <Puzzle size={14} /> {t("Import from Stremio")}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setDescribe(true)}>
               <Sparkles size={14} /> {t("Describe it")}
             </Button>
@@ -540,43 +576,21 @@ export default function CollectionsGallery({
                     <span>{tab === "builtin" ? t("Managed by Ether") : t("Your library")}</span>
                     <span>{tn(items.length, "{count} collection", "{count} collections")}</span>
                   </div>
-                  <ul className="space-y-1">
-                    {items.map((c) => (
-                      <li key={c.id}>
-                        <button
-                          type="button"
-                          onClick={() => select("collection", c.id!)}
-                          aria-label={t("Preview {name}", { name: c.name })}
-                          aria-current={selected?.id === c.id ? "true" : undefined}
-                          className={cn(ROW, selected?.id === c.id ? ACTIVE : INACTIVE)}
-                        >
-                          <Artwork
-                            src={c.id ? api.artworkUrl(c.id, 120, c.updatedAt) : undefined}
-                            alt=""
-                            title={c.name}
-                            className="aspect-[2/3] w-10 shrink-0 rounded shadow-sm ring-1 ring-border"
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium">{c.name}</span>
-                            <span className="mt-1 block text-[11px] text-fg-muted">
-                              {c.itemCount === undefined
-                                ? t("Not built yet")
-                                : tn(c.itemCount, "{count} title", "{count} titles")}{" "}
-                              · {mediaLabel(c)}
-                            </span>
-                          </span>
-                          <span
-                            className={cn(
-                              "size-1.5 shrink-0 rounded-full",
-                              c.enabled ? "bg-success" : "bg-fg-subtle",
-                            )}
-                            aria-hidden
-                          />
-                          <span className="sr-only">{c.enabled ? t("Published") : t("Draft")}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <CollectionList
+                    items={items}
+                    selectedId={selected?.id}
+                    collapsedFolders={collapsedFolders}
+                    onToggleFolder={(folder) =>
+                      setCollapsedFolders((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(folder)) next.delete(folder);
+                        else next.add(folder);
+                        return next;
+                      })
+                    }
+                    onSelect={(id) => select("collection", id)}
+                    onManageAddon={(addonId) => setImportDrawer({ open: true, addonId })}
+                  />
                   {!items.length ? <ListEmpty /> : null}
                 </>
               )}
@@ -784,6 +798,12 @@ export default function CollectionsGallery({
         onApply={(spec) => navigate(newCollectionHref(), { state: { spec } })}
         onSaved={(saved) => navigate(`/collections/${encodeURIComponent(saved.id!)}`)}
       />
+      <StremioImportDrawer
+        open={importDrawer.open}
+        initialAddonId={importDrawer.addonId}
+        onClose={closeImportDrawer}
+        onImported={() => void collections.reload()}
+      />
     </>
   );
 }
@@ -792,6 +812,185 @@ const ROW =
   "flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
 const ACTIVE = "bg-primary-subtle text-fg ring-1 ring-inset ring-primary/30";
 const INACTIVE = "text-fg hover:bg-surface-hover";
+
+function CollectionList({
+  items,
+  selectedId,
+  collapsedFolders,
+  onToggleFolder,
+  onSelect,
+  onManageAddon,
+}: {
+  items: CollectionSpec[];
+  selectedId?: string;
+  collapsedFolders: Set<string>;
+  onToggleFolder: (folder: string) => void;
+  onSelect: (id: string) => void;
+  onManageAddon: (addonId: string) => void;
+}) {
+  const hasFolders = items.some((c) => Boolean(c.folder?.trim()));
+  if (!hasFolders) {
+    return (
+      <ul className="space-y-1">
+        {items.map((c) => (
+          <CollectionRow
+            key={c.id}
+            collection={c}
+            selected={selectedId === c.id}
+            onSelect={onSelect}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  // Group items by folder in first-appearance order while keeping ungrouped items inline.
+  type Group =
+    | { kind: "item"; item: CollectionSpec }
+    | { kind: "folder"; name: string; items: CollectionSpec[]; addonId?: string };
+  const groups: Group[] = [];
+  const folderMap = new Map<string, Extract<Group, { kind: "folder" }>>();
+  for (const c of items) {
+    const folder = c.folder?.trim();
+    if (!folder) {
+      groups.push({ kind: "item", item: c });
+      continue;
+    }
+    const key = folder.toLowerCase();
+    let group = folderMap.get(key);
+    if (!group) {
+      group = { kind: "folder", name: folder, items: [] };
+      folderMap.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(c);
+    if (!group.addonId && c.addonSync?.addonId) group.addonId = c.addonSync.addonId;
+  }
+
+  return (
+    <div className="space-y-2">
+      {groups.map((g, idx) => {
+        if (g.kind === "item") {
+          return (
+            <ul key={g.item.id ?? `item-${idx}`} className="space-y-1">
+              <CollectionRow
+                collection={g.item}
+                selected={selectedId === g.item.id}
+                onSelect={onSelect}
+              />
+            </ul>
+          );
+        }
+        const collapsed = collapsedFolders.has(g.name);
+        const removedCount = g.items.filter((x) => x.addonSync?.removed).length;
+        return (
+          <section
+            key={`folder-${g.name}`}
+            aria-label={g.name}
+            className="rounded-lg border border-border/70 bg-bg-subtle/40 p-1"
+          >
+            <div className="flex items-center gap-1 px-1 py-1">
+              <button
+                type="button"
+                onClick={() => onToggleFolder(g.name)}
+                aria-expanded={!collapsed}
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs font-semibold text-fg hover:bg-surface-hover"
+              >
+                {collapsed ? (
+                  <ChevronRight size={13} aria-hidden className="shrink-0 text-fg-subtle" />
+                ) : (
+                  <ChevronDown size={13} aria-hidden className="shrink-0 text-fg-subtle" />
+                )}
+                <Folder size={13} aria-hidden className="shrink-0 text-fg-muted" />
+                <span className="truncate">{g.name}</span>
+                <span className="shrink-0 tabular-nums text-[11px] font-normal text-fg-subtle">
+                  {g.items.length}
+                </span>
+                {removedCount > 0 ? (
+                  <Badge variant="warning" className="ml-auto shrink-0 text-[10px]">
+                    {tn(removedCount, "{count} removed", "{count} removed")}
+                  </Badge>
+                ) : null}
+              </button>
+              {g.addonId ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 shrink-0"
+                  aria-label={t("Manage {folder} import", { folder: g.name })}
+                  onClick={() => onManageAddon(g.addonId!)}
+                >
+                  <RefreshCw size={12} />
+                </Button>
+              ) : null}
+            </div>
+            {!collapsed ? (
+              <ul className="mt-1 space-y-1">
+                {g.items.map((c) => (
+                  <CollectionRow
+                    key={c.id}
+                    collection={c}
+                    selected={selectedId === c.id}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function CollectionRow({
+  collection: c,
+  selected,
+  onSelect,
+}: {
+  collection: CollectionSpec;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const removed = Boolean(c.addonSync?.removed);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onSelect(c.id!)}
+        aria-label={t("Preview {name}", { name: c.name })}
+        aria-current={selected ? "true" : undefined}
+        className={cn(ROW, selected ? ACTIVE : INACTIVE)}
+      >
+        <Artwork
+          src={c.id ? api.artworkUrl(c.id, 120, c.updatedAt) : undefined}
+          alt=""
+          title={c.name}
+          className="aspect-[2/3] w-10 shrink-0 rounded shadow-sm ring-1 ring-border"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{c.name}</span>
+          <span className="mt-1 block text-[11px] text-fg-muted">
+            {c.itemCount === undefined
+              ? t("Not built yet")
+              : tn(c.itemCount, "{count} title", "{count} titles")}{" "}
+            · {mediaLabel(c)}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            removed ? "bg-warning" : c.enabled ? "bg-success" : "bg-fg-subtle",
+          )}
+          aria-hidden
+        />
+        <span className="sr-only">
+          {removed ? t("Removed from add-on") : c.enabled ? t("Published") : t("Draft")}
+        </span>
+      </button>
+    </li>
+  );
+}
 function mediaLabel(c: CollectionSpec) {
   return c.mediaType === "show"
     ? t("TV shows")

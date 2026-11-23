@@ -96,7 +96,7 @@ func checkAISearch(t *testing.T) {
 	}
 	wait := func(id string) {
 		t.Helper()
-		deadline := time.Now().Add(time.Second)
+		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			i.aiMu.Lock()
 			state := i.aiJobs[id].status
@@ -183,6 +183,19 @@ func checkAISearch(t *testing.T) {
 	}
 	if got := request(`{"query":"title","mode":"fast"}`, "", "device", i.search); got.Code != 200 {
 		t.Fatal("model failure affected fast lane")
+	}
+	var attempts atomic.Int32
+	source.refine = func(context.Context) (frontend.SearchPage, error) {
+		if attempts.Add(1) == 1 {
+			return frontend.SearchPage{Descriptive: &frontend.DescriptiveSearchStatus{State: frontend.DescriptiveBusy, RetryAfterSeconds: 1}}, nil
+		}
+		return frontend.SearchPage{Descriptive: &frontend.DescriptiveSearchStatus{State: frontend.DescriptiveReady}}, nil
+	}
+	w = request(`{"query":"contention","generation":9}`, "", "device", i.startAISearch)
+	id = decode(w)["id"].(string)
+	wait(id)
+	if got := decode(request(`{}`, id, "device", i.pollAISearch)); got["status"] != "complete" || attempts.Load() != 2 {
+		t.Fatalf("temporary contention became terminal: %v", got)
 	}
 	source.refine = func(ctx context.Context) (frontend.SearchPage, error) {
 		<-ctx.Done()

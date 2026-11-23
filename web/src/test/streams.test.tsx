@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import type { FakeServer } from "../mock/server";
 import { calls, renderApp } from "./harness";
@@ -28,7 +28,14 @@ function extraRoutes(route: Route) {
   };
 }
 
-it("opens an empty installation with nullable language lists and saves the defaults", async () => {
+async function pickLanguage(pickerLabel: string, languageName: string) {
+  fireEvent.click(screen.getByRole("button", { name: pickerLabel }));
+  const search = await screen.findByRole("textbox", { name: "Search…" }, WAIT);
+  fireEvent.change(search, { target: { value: languageName } });
+  fireEvent.click(await screen.findByRole("option", { name: languageName }, WAIT));
+}
+
+it("opens an empty installation with nullable language lists and saves ordered language picks", async () => {
   let saved: Record<string, unknown> | undefined;
   const { fake } = renderApp(
     "/playback/subtitles",
@@ -47,10 +54,17 @@ it("opens an empty installation with nullable language lists and saves the defau
       };
     }),
   );
-  const audio = await screen.findByLabelText("Audio languages", {}, WAIT);
+  const audio = await screen.findByRole("button", { name: "Audio languages" }, WAIT);
   await waitFor(() => expect(audio).toBeEnabled());
-  expect(audio).toHaveValue("");
-  fireEvent.change(audio, { target: { value: "en, FR" } });
+  expect(audio).toHaveTextContent("Any language");
+  expect(screen.queryByRole("list", { name: "Audio languages order" })).toBeNull();
+
+  await pickLanguage("Audio languages", "French");
+  await pickLanguage("Audio languages", "English");
+  const orderList = screen.getByRole("list", { name: "Audio languages order" });
+  expect(within(orderList).getAllByRole("listitem")).toHaveLength(2);
+  fireEvent.click(within(orderList).getByRole("button", { name: "Move English earlier" }));
+
   fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
   await waitFor(() => expect(saved?.audioLanguages).toEqual(["en", "fr"]), WAIT);
   expect(saved?.subtitleLanguages).toEqual([]);
@@ -89,18 +103,28 @@ it("loads a viewer's override and restores both language fields from the default
       return undefined;
     }),
   );
-  const audio = await screen.findByLabelText("Audio languages", {}, WAIT);
-  const subtitles = screen.getByLabelText("Subtitle languages");
-  expect(audio).toHaveValue("ja");
-  expect(subtitles).toHaveValue("en");
+  const audioOrder = await screen.findByRole("list", { name: "Audio languages order" }, WAIT);
+  const subtitleOrder = screen.getByRole("list", { name: "Subtitle languages order" });
+  expect(audioOrder).toHaveTextContent("Japanese");
+  expect(subtitleOrder).toHaveTextContent("English");
   expect(screen.getByText("Custom for this viewer")).toBeInTheDocument();
   expect(screen.getByText("Slow Horses")).toBeInTheDocument();
+  // Show override uses human-readable language name rather than raw ISO code.
+  expect(screen.getByText(/English · SDH/)).toBeInTheDocument();
 
-  fireEvent.change(audio, { target: { value: "de" } });
+  await pickLanguage("Audio languages", "German");
   fireEvent.click(screen.getByRole("button", { name: /Use default/ }));
   await waitFor(() => expect(calls(fake, "DELETE", "/stream-preferences/2")).toHaveLength(1), WAIT);
-  await waitFor(() => expect(screen.getByLabelText("Audio languages")).toHaveValue("en"), WAIT);
-  expect(screen.getByLabelText("Subtitle languages")).toHaveValue("fr");
+  await waitFor(
+    () =>
+      expect(screen.getByRole("list", { name: "Audio languages order" })).toHaveTextContent(
+        "English",
+      ),
+    WAIT,
+  );
+  expect(screen.getByRole("list", { name: "Subtitle languages order" })).toHaveTextContent(
+    "French",
+  );
   expect(screen.getByText("Uses default")).toBeInTheDocument();
   expect(await screen.findByText("Now using the defaults", {}, WAIT)).toBeInTheDocument();
   expect(calls(fake, "PUT", "/stream-preferences/2")).toHaveLength(0);
@@ -130,7 +154,7 @@ it("saves a custom override for one viewer", async () => {
   expect(screen.getByRole("button", { name: "Show subtitles" })).toHaveTextContent(
     "Off unless I turn them on",
   );
-  fireEvent.change(screen.getByLabelText("Subtitle languages"), { target: { value: "es" } });
+  await pickLanguage("Subtitle languages", "Spanish");
   fireEvent.click(screen.getByRole("button", { name: "Show subtitles" }));
   fireEvent.click(await screen.findByRole("option", { name: "Only for foreign audio" }));
   fireEvent.click(screen.getByRole("button", { name: "More options: Subtitle appearance" }));

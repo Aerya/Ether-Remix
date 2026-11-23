@@ -32,9 +32,13 @@ func (a *App) prepareArtworkPage(ctx context.Context, user *core.User, titles []
 	if len(shows) == 0 {
 		return ctx
 	}
-	episodes, err := a.catalog.RecentEpisodesMany(ctx, shows, time.Now().Add(-30*24*time.Hour))
+	byShow, err := a.catalog.RecentEpisodesMany(ctx, shows, time.Now().Add(-30*24*time.Hour))
 	if err != nil {
 		return ctx
+	}
+	var episodes []core.Title
+	for _, group := range byShow {
+		episodes = append(episodes, group...)
 	}
 	keys := make([]core.RatingKey, 0, len(episodes))
 	for _, ep := range episodes {

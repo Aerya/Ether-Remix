@@ -15,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
@@ -28,6 +29,9 @@ type CertifiedApp struct {
 }
 
 type Descriptor struct {
+	// Auth declares the authentication mode; none_lan requires an owner-selected viewer.
+	Auth           string         `json:"auth,omitempty"`
+	PathPrefix     string         `json:"pathPrefix,omitempty"`
 	ID             Protocol       `json:"id"`
 	Name           string         `json:"name"`
 	Logo           string         `json:"logo,omitempty"`
@@ -46,25 +50,30 @@ type ListenerSpec struct {
 	Shared bool `json:"shared,omitempty"`
 }
 type Status struct {
-	WebPlayerReady   bool      `json:"webPlayerReady,omitempty"`
-	Mounted          bool      `json:"mounted"`
-	Addresses        []string  `json:"addresses"`
-	ConnectURLs      []string  `json:"connectUrls,omitempty"`
-	LAN              string    `json:"lan"`
-	LANReason        string    `json:"lanReason,omitempty"`
-	LANCheckedAt     time.Time `json:"lanCheckedAt,omitzero"`
-	WAN              string    `json:"wan"`
-	WANReason        string    `json:"wanReason,omitempty"`
-	WANAddress       string    `json:"wanAddress,omitempty"`
-	WANCheckedAt     time.Time `json:"wanCheckedAt,omitzero"`
-	Clients24h       int       `json:"clients24h"`
-	Clients24hKnown  bool      `json:"clients24hKnown"`
-	LiveStreams      int       `json:"liveStreams"`
-	LiveStreamsKnown bool      `json:"liveStreamsKnown"`
-	TargetVersion    string    `json:"targetVersion"`
-	Conformance      string    `json:"conformance"`
-	Error            string    `json:"error,omitempty"`
-	Warnings         []string  `json:"warnings,omitempty"`
+	WebPlayerReady     bool      `json:"webPlayerReady,omitempty"`
+	Mounted            bool      `json:"mounted"`
+	Addresses          []string  `json:"addresses"`
+	ConnectURLs        []string  `json:"connectUrls,omitempty"`
+	ObservedAddresses  []string  `json:"observedAddresses,omitempty"`
+	PublishedAddresses []string  `json:"publishedAddresses,omitempty"`
+	LAN                string    `json:"lan"`
+	LANReason          string    `json:"lanReason,omitempty"`
+	LANCheckedAt       time.Time `json:"lanCheckedAt,omitzero"`
+	WAN                string    `json:"wan"`
+	WANReason          string    `json:"wanReason,omitempty"`
+	WANAddress         string    `json:"wanAddress,omitempty"`
+	WANCheckedAt       time.Time `json:"wanCheckedAt,omitzero"`
+	Clients24h         int       `json:"clients24h"`
+	Clients24hKnown    bool      `json:"clients24hKnown"`
+	LiveStreams        int       `json:"liveStreams"`
+	LiveStreamsKnown   bool      `json:"liveStreamsKnown"`
+	TargetVersion      string    `json:"targetVersion"`
+	Conformance        string    `json:"conformance"`
+	BusyPort           int       `json:"busyPort,omitempty"`
+	ActualPort         int       `json:"actualPort,omitempty"`
+	BusyPortHolder     string    `json:"busyPortHolder,omitempty"`
+	Error              string    `json:"error,omitempty"`
+	Warnings           []string  `json:"warnings,omitempty"`
 }
 type Announcer interface {
 	Start(context.Context) error
@@ -148,6 +157,7 @@ type SurfaceIdentity interface {
 	ViewerTimes(context.Context, string, int64) (ViewerTimes, error)
 	PublicViewers(context.Context) ([]PublicViewer, error)
 	SignIn(context.Context, string, string, core.Device) (string, error)
+	SignInWithPlex(context.Context, string, core.Device) (string, error)
 	IssueRefresh(context.Context, string, core.Device) (string, error)
 	Refresh(context.Context, string, core.Device) (string, string, error)
 	QuickConnectInitiate(context.Context, core.Device) (code, secret string, err error)
@@ -207,6 +217,31 @@ func ClientIP(ctx context.Context) (netip.Addr, bool) {
 	return ip, ok && ip.IsValid()
 }
 
+type mountPrefixKey struct{}
+
+type mountPrefixBinding struct {
+	id     Protocol
+	prefix string
+}
+
+// WithMountPrefix records the shared-listener path prefix (or "" for root /
+// dedicated listeners) matched before the frontend handler stripped it.
+func WithMountPrefix(ctx context.Context, id Protocol, prefix string) context.Context {
+	return context.WithValue(ctx, mountPrefixKey{}, mountPrefixBinding{id: id, prefix: prefix})
+}
+
+// MountPrefix returns the matched mount prefix recorded for id by WithMountPrefix.
+func MountPrefix(ctx context.Context, id Protocol) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	b, ok := ctx.Value(mountPrefixKey{}).(mountPrefixBinding)
+	if !ok || b.id != id {
+		return "", false
+	}
+	return b.prefix, true
+}
+
 // BindIdentity prevents a frontend from choosing a different authentication surface.
 func BindIdentity(resolver core.Identity, surface Protocol) SurfaceIdentity {
 	return boundIdentity{resolver: resolver, surface: surface}
@@ -244,12 +279,21 @@ var ErrRateLimited = errors.New("frontend identity rate limited")
 // ErrQuickConnectPending means the code has not yet been approved.
 var ErrQuickConnectPending = errors.New("frontend quick connect pending")
 
+// ErrQuickConnectExpired means the code was real and its approval window closed.
+var ErrQuickConnectExpired = errors.New("frontend quick connect expired")
+
+// ErrQuickConnectUsed means the code was already approved or redeemed.
+var ErrQuickConnectUsed = errors.New("frontend quick connect already used")
+
 // BindIdentity alone binds resolution; app-hosted implementations additionally
 // provide credential issuance and Quick Connect operations.
 func (boundIdentity) PublicViewers(context.Context) ([]PublicViewer, error) {
 	return nil, ErrIdentityUnavailable
 }
 func (boundIdentity) SignIn(context.Context, string, string, core.Device) (string, error) {
+	return "", ErrIdentityUnavailable
+}
+func (boundIdentity) SignInWithPlex(context.Context, string, core.Device) (string, error) {
 	return "", ErrIdentityUnavailable
 }
 func (boundIdentity) QuickConnectInitiate(context.Context, core.Device) (string, string, error) {
@@ -358,6 +402,26 @@ func (b boundAuth) Users(ctx context.Context) ([]core.User, error) {
 	return b.auth.Users(ctx)
 }
 
+func (b boundAuth) User(ctx context.Context, id int64) (*core.User, error) {
+	if b.auth == nil {
+		return nil, core.ErrNotFound
+	}
+	if src, ok := b.auth.(UserLookupSource); ok {
+		return src.User(ctx, id)
+	}
+	return nil, core.ErrNotFound
+}
+
+func (b boundAuth) KnownUsers(ctx context.Context) ([]core.User, error) {
+	if b.auth == nil {
+		return nil, nil
+	}
+	if src, ok := b.auth.(KnownUsersSource); ok {
+		return src.KnownUsers(ctx)
+	}
+	return b.auth.Users(ctx)
+}
+
 func (boundAuth) ViewerTimes(context.Context, string, int64) (ViewerTimes, error) {
 	return ViewerTimes{}, ErrIdentityUnavailable
 }
@@ -365,6 +429,9 @@ func (boundAuth) PublicViewers(context.Context) ([]PublicViewer, error) {
 	return nil, ErrIdentityUnavailable
 }
 func (boundAuth) SignIn(context.Context, string, string, core.Device) (string, error) {
+	return "", ErrIdentityUnavailable
+}
+func (boundAuth) SignInWithPlex(context.Context, string, core.Device) (string, error) {
 	return "", ErrIdentityUnavailable
 }
 func (boundAuth) IssueRefresh(context.Context, string, core.Device) (string, error) {
@@ -420,10 +487,16 @@ type Host struct {
 	Experience         Experience
 	ViewerCapabilities ViewerCapabilitiesFunc
 	ViewerPolicy       ViewerPolicy
+	ViewerAdmin        ViewerAdmin
 	Capabilities       Capabilities
 	Preferences        Preferences
 	TrackPreferences   TrackPreferenceService
 	LiveTV             LiveTV
+	LiveEventLink      LiveEventLinker
+	LiveEventTicker    LiveEventTicker
+	LibraryLive        LibraryLive
+	LiveEvents         LiveEvents
+	Screens            Screens
 	VirtualPaths       VirtualPaths
 	Sessions           Sessions
 	LastPlayedSource   LastPlayedSourceReader
@@ -447,9 +520,13 @@ type Host struct {
 	HomeInvalidation HomeInvalidationSubscriber
 	Tickets          Tickets
 	// WatchParty is the shared Silo and Jellyfin room. Nil leaves both off.
-	WatchParty  WatchParty
-	Images      Images
-	ImageGrants ImageGrants
+	WatchParty WatchParty
+	Images     Images
+	// RemoteUploadCap computes the dynamic remote upload budget bitrate cap
+	// (kbps) for a newly starting stream. LAN streams (remote == false) pass
+	// through untouched; nil disables the shared upload budget.
+	RemoteUploadCap func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
+	ImageGrants     ImageGrants
 	// Artwork serves the same composited poster bytes the other frontends
 	// grant. DLNA has no credential, so it reads this after LANViewer.
 	Artwork Artwork
@@ -487,6 +564,9 @@ type Host struct {
 	// MetadataLanguage is the catalog language (config catalog.language).
 	// Empty skips that step of the no-list audio chain.
 	MetadataLanguage func() string
+	// CatalogRegion is the server's configured country (config catalog.region,
+	// ISO 3166-1 alpha-2). Empty falls back to US.
+	CatalogRegion func() string
 	// AudioOrder is the shared no-choice language chain. Frontends call it
 	// instead of importing the track-preference package. Nil keeps the
 	// caller's own fallback.
@@ -517,6 +597,9 @@ type Host struct {
 	RemoteClientSeen func(address string)
 	// ClientIP resolves the transport peer using the configured trusted proxies.
 	ClientIP func(*http.Request) (netip.Addr, bool)
+	// RequestOrigin derives the client-visible scheme, host and optional
+	// X-Forwarded-Prefix from r, honouring forwarding headers only from trusted proxies.
+	RequestOrigin func(*http.Request) (clientnet.RequestOrigin, bool)
 	// PageFreshness invalidates cached browse bodies. Nil disables the cache.
 	PageFreshness func() PageFreshness
 	// CacheDir is a node-local directory this frontend alone may fill with
@@ -533,6 +616,16 @@ type Host struct {
 	PersonalHomes PersonalHomeStore
 }
 
+// Origin derives the client-visible scheme, host, and optional trusted-proxy
+// prefix for r, falling back to loopback-only proxy trust when RequestOrigin
+// was not wired (e.g. in standalone frontend tests).
+func (h Host) Origin(r *http.Request) (clientnet.RequestOrigin, bool) {
+	if h.RequestOrigin != nil {
+		return h.RequestOrigin(r)
+	}
+	return clientnet.Origin(r)
+}
+
 // PersonalHomeStore persists one viewer's personalized library list.
 // The body is an opaque JSON document owned by the Media Browser frontend.
 type PersonalHomeStore interface {
@@ -542,10 +635,9 @@ type PersonalHomeStore interface {
 }
 
 // PageFreshness is every input of a cached browse response. A change drops
-// the cached body. ArtBucket rotates image grants before they expire.
+// the cached body.
 type PageFreshness struct {
-	Catalog, Config, Layout, Watch, Favorite, Hidden, Listed, Images, Grants, Accounts, Safety, Libraries, KindSync uint64
-	ArtBucket                                                                                                       int64
+	Catalog, Config, Layout, Watch, Favorite, Hidden, Listed, Images, Grants, Accounts, Safety, Libraries, KindSync, Screens uint64
 }
 
 var ErrNotRegistered = errors.New("frontend not registered")

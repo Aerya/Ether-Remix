@@ -35,17 +35,41 @@ func ImportTitlesTx(ctx context.Context, tx *sql.Tx, id, userID int64, name stri
 		}
 	}
 	ks := []string{}
+	var memberKeys []core.RatingKey
+	seen := make(map[core.RatingKey]struct{}, len(keys))
 	for _, k := range keys {
 		if !k.Valid() {
 			return 0, errors.New("invalid collection item")
 		}
 		ks = append(ks, k.String())
+		if _, dup := seen[k]; !dup {
+			seen[k] = struct{}{}
+			memberKeys = append(memberKeys, k)
+		}
 	}
 	sp := core.CollectionSpec{Name: name, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "titles", Keys: ks}}, Match: "all", Sort: "source", Refresh: "live", Enabled: true, OwnerUserID: userID, Targets: core.CollectionTargets{CollectionsTab: true, Users: core.UserTargets{IDs: []int64{userID}}}}
 	raw, err := json.Marshal(sp)
 	if err != nil {
 		return 0, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO collections_specs(id,owner_user_id,spec_json,enabled,created_at,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT(id) DO UPDATE SET spec_json=excluded.spec_json,updated_at=excluded.updated_at`, id, userID, string(raw), now, now)
-	return id, err
+	hash := buildHash(sp, memberKeys, nil)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO collections_specs(id,owner_user_id,spec_json,enabled,created_at,updated_at,last_built_at,item_count,build_hash,changed_at) VALUES(?,?,?,1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET spec_json=excluded.spec_json,updated_at=excluded.updated_at,last_built_at=excluded.last_built_at,item_count=excluded.item_count,build_hash=excluded.build_hash,changed_at=excluded.changed_at`, id, userID, string(raw), now, now, now, len(memberKeys), hash, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id=?`, id); err != nil {
+		return 0, err
+	}
+	if len(memberKeys) > 0 {
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO collections_members(spec_id,pos,key,shared) VALUES(?,?,?,1)`)
+		if err != nil {
+			return 0, err
+		}
+		defer stmt.Close()
+		for i, k := range memberKeys {
+			if _, err := stmt.ExecContext(ctx, id, i, int64(k)); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return id, nil
 }

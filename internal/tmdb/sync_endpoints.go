@@ -13,19 +13,18 @@ import (
 // bypass the response cache: a sync reads each answer once, and caching
 // a million of them would only evict what interactive reads need.
 
-// MovieSummary is /movie/{id} without append_to_response: the fields a
-// /discover result has, plus runtime, status and the IMDb id, in about
-// 1.5 KB instead of the 130 KB a full detail fetch can be.
+// MovieSummary fetches summary fields plus title translations and aliases,
+// without the heavy credits, images and recommendations of full details.
 func (c *Client) MovieSummary(ctx context.Context, id int64) (*MovieDetails, error) {
 	var out MovieDetails
-	err := c.getUncachedJSON(ctx, fmt.Sprintf("/movie/%d", id), url.Values{}, &out)
+	err := c.getUncachedJSON(ctx, fmt.Sprintf("/movie/%d", id), values("append_to_response", "translations,alternative_titles"), &out)
 	return &out, err
 }
 
-// TVSummary is /tv/{id} without append_to_response.
+// TVSummary fetches lean series metadata plus translations and aliases.
 func (c *Client) TVSummary(ctx context.Context, id int64) (*TVDetails, error) {
 	var out TVDetails
-	err := c.getUncachedJSON(ctx, fmt.Sprintf("/tv/%d", id), url.Values{}, &out)
+	err := c.getUncachedJSON(ctx, fmt.Sprintf("/tv/%d", id), values("append_to_response", "translations,alternative_titles"), &out)
 	return &out, err
 }
 

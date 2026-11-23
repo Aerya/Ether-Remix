@@ -32,6 +32,7 @@ var (
 	retiredTables  = map[string]bool{}
 	localTables    = map[string]bool{}
 	retiredColumns = map[string]map[string]bool{}
+	localColumns   = map[string]map[string]bool{}
 )
 
 // RegisterRetiredTable records a table dropped or dialect-only in a way the
@@ -67,6 +68,21 @@ func RegisterRetiredColumn(table, column string) {
 		retiredColumns[table] = map[string]bool{}
 	}
 	retiredColumns[table][column] = true
+}
+
+// RegisterLocalColumn records a column that exists on only one engine (a
+// PostgreSQL tsvector a SQLite server indexes with FTS5 instead, say). A dump
+// from that engine still carries it, and a restore onto a server without the
+// column skips it instead of refusing the backup; a server that has the
+// column loads it as usual.
+func RegisterLocalColumn(table, column string) {
+	retiredMu.Lock()
+	defer retiredMu.Unlock()
+	table, column = strings.ToLower(table), strings.ToLower(column)
+	if localColumns[table] == nil {
+		localColumns[table] = map[string]bool{}
+	}
+	localColumns[table][column] = true
 }
 
 func migrationHistory() schemaHistory {
@@ -107,6 +123,13 @@ func migrationHistory() schemaHistory {
 		h.tables[t] = true
 	}
 	for t, cs := range retiredColumns {
+		for c := range cs {
+			drop(t, c)
+		}
+	}
+	// column() prefers a column the server has, so an engine-local column
+	// is skipped only where it is missing.
+	for t, cs := range localColumns {
 		for c := range cs {
 			drop(t, c)
 		}

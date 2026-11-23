@@ -9,18 +9,44 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
+
+func (i *instance) pathPrefix(r *http.Request) string {
+	mountPrefix := ""
+	if r.Context().Value(sharedPrefix{}) != nil {
+		mountPrefix = "/silo"
+	}
+	fwdPrefix := ""
+	if origin, ok := i.host.Origin(r); ok {
+		fwdPrefix = origin.Prefix
+	}
+	return clientnet.JoinPrefix(fwdPrefix, mountPrefix)
+}
 
 func (i *instance) systemInfo(w http.ResponseWriter, r *http.Request) {
 	doc := i.openAPIDocument()
 	sum := sha256.Sum256(doc)
 	data := map[string]any{"server_version": "Ether", "api_major": 2, "contract_digest": hex.EncodeToString(sum[:]), "links": map[string]any{"openapi": "/api/v2/openapi.json", "capabilities": "/api/v2/capabilities", "identity": "/api/v2/system/identity"}}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	mountPrefix := ""
+	if r.Context().Value(sharedPrefix{}) != nil {
+		mountPrefix = "/silo"
 	}
-	if origin, err := url.Parse(scheme + "://" + r.Host); err == nil && origin.Host != "" && origin.User == nil && origin.Path == "" && origin.RawQuery == "" && origin.Fragment == "" {
-		data["request_origin"] = origin.String()
+	base := ""
+	if i.host.SurfaceURL != nil {
+		if resolved, err := i.host.SurfaceURL(r.Context(), r); err == nil && resolved != "" {
+			base = resolved
+		}
+	}
+	if base == "" {
+		if origin, ok := i.host.Origin(r); ok {
+			base = origin.BaseURL(mountPrefix)
+		}
+	}
+	if base != "" {
+		if u, err := url.Parse(base); err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+			data["request_origin"] = u.String()
+		}
 	}
 	reply(w, 200, data)
 }

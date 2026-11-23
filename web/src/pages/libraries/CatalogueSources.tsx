@@ -99,17 +99,27 @@ export function catalogueGroups(sources: CatalogueSource[]) {
   }
   return [...groups.values()].map((entries) => {
     const first = entries[0]!;
+    const failed = entries.filter(
+      (s) => s.health === "error" || s.health === "attention" || Boolean(s.lastError),
+    );
+    const perListError =
+      entries.length > 1 && failed.length > 0
+        ? failed.map((s) => `${sourceName(s)}: ${s.lastError || t("Needs attention")}`).join("; ")
+        : failed.find((s) => s.lastError)?.lastError;
     return {
       ...first,
       id: first.pluginId ?? first.id,
       name: first.owner,
       entries,
-      health: entries.some((s) => s.health === "error" || s.health === "attention")
-        ? "error"
-        : entries.every((s) => s.health === "unknown")
-          ? "unknown"
-          : "ok",
-      lastError: entries.find((s) => s.lastError)?.lastError,
+      health:
+        failed.length > 0
+          ? failed.length < entries.length
+            ? "attention"
+            : "error"
+          : entries.every((s) => s.health === "unknown")
+            ? "unknown"
+            : "ok",
+      lastError: perListError,
       libraries: [
         ...new Map(entries.flatMap((s) => s.libraries).map((lib) => [lib.id, lib])).values(),
       ],

@@ -10,6 +10,9 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/flows"
 )
 
 // ParseManifest decodes manifest JSON. Unknown fields are ignored (SPEC
@@ -40,11 +43,17 @@ func (m *Manifest) UnmarshalJSON(b []byte) error {
 }
 
 var (
-	idRe       = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
-	keyRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
-	toolNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
-	hostRe     = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-	bannedRe   = regexp.MustCompile(`(?i)\b(simply|easily|just)\b`)
+	idRe             = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
+	keyRe            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+	posterBadgeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	liveFeedIDRe     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	pluginEventKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,2}$`)
+	flowActionKeyRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	eventFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+	flowParamKeyRe   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	toolNameRe       = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
+	hostRe           = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	bannedRe         = regexp.MustCompile(`(?i)\b(simply|easily|just)\b`)
 	// dockerImageRe accepts registry/name:tag or name@sha256:digest, with no
 	// spaces or shell metacharacters.
 	dockerImageRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$`)
@@ -101,7 +110,8 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapListSource:      {KindIntegration: true, KindExtension: true},
 	CapPluginDirectory: {KindIntegration: true, KindExtension: true, KindSource: true},
 	CapMetadata:        {KindIntegration: true, KindExtension: true, KindSource: true},
-	CapLiveTV:          {KindLiveTVSource: true},
+	CapPosterBadges:    {KindIntegration: true, KindExtension: true, KindSource: true, KindContent: true},
+	CapLiveTV:          {KindLiveTVSource: true, KindContent: true},
 	CapSubtitles:       {KindIntegration: true, KindExtension: true},
 	CapMarkers:         {KindIntegration: true, KindExtension: true},
 	CapNotify:          {KindNotificationChannel: true},
@@ -111,7 +121,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapTools: nil, CapUI: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
 }
 
 var knownKinds = map[Kind]bool{
@@ -259,19 +269,28 @@ func (m Manifest) Validate() error {
 		add("ether.runtime.kind", "must be hosted, remote or data")
 	}
 	if l := e.Runtime.Limits; l != nil {
-		if e.Runtime.Kind != "hosted" {
-			add("ether.runtime.limits", "only hosted plugins can request runtime limits")
+		switch e.Runtime.Kind {
+		case "hosted":
+		case "remote":
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 || l.PoolSize > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline, unitBudget or poolSize")
+			}
+		default:
+			add("ether.runtime.limits", "data packages cannot request runtime limits")
 		}
 		if l.Deadline != "" {
 			if d, err := time.ParseDuration(l.Deadline); err != nil || d <= 0 {
 				add("ether.runtime.limits.deadline", "must be a positive duration such as 120s")
 			}
 		}
-		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 {
+		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 || l.MaxItems < 0 {
 			add("ether.runtime.limits", "data ceilings must not be negative")
 		}
 		if l.UnitBudget < 0 {
 			add("ether.runtime.limits.unitBudget", "must not be negative")
+		}
+		if l.PoolSize < 0 {
+			add("ether.runtime.limits.poolSize", "must not be negative")
 		}
 	}
 	validateSidecar(e, add)
@@ -314,7 +333,7 @@ func (m Manifest) Validate() error {
 }
 
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapTools || c == CapUI
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
 }
 
 func unsafePath(p string) bool {
@@ -359,8 +378,8 @@ func isHTTPSURL(s string) bool {
 
 func validatePermissions(p Permissions, add func(string, string)) {
 	for i, h := range p.Network {
-		if !hostRe.MatchString(strings.ToLower(h)) || strings.Contains(h, "://") {
-			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, with a wildcard only as *.example.com")
+		if !isValidManifestNetworkEntry(h) {
+			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, \"operator\", or a wildcard only as *.example.com")
 		}
 	}
 	level := func(field, v string, allowed ...string) {
@@ -374,7 +393,9 @@ func validatePermissions(p Permissions, add func(string, string)) {
 	level("ether.permissions.catalog", normLevel(p.Catalog), "none", "read")
 	level("ether.permissions.collections", normLevel(p.Collections), "none", "write")
 	level("ether.permissions.folders", normLevel(p.Folders), "none", "read")
-	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "acquire")
+	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "search+check", "acquire", "acquire+check")
+	level("ether.permissions.ai", normLevel(p.AI), "none", "complete", "complete+search")
+	level("ether.permissions.media", normLevel(p.Media), "none", "probe")
 	level("ether.permissions.viewers.identity", normLevel(p.Viewers.Identity), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.watch_history", normLevel(p.Viewers.WatchHistory), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.write_watch_state", normLevel(p.Viewers.WriteWatchState), "none", "granted_viewers")
@@ -480,6 +501,41 @@ func contributesUseT(c Contributes) bool {
 	for _, x := range c.RuleConditions {
 		check(x.Label)
 	}
+	for _, x := range c.PosterBadges {
+		check(x.Label)
+		check(x.Description)
+	}
+	if c.Events != nil {
+		for _, pe := range c.Events.Publish {
+			check(pe.Label)
+			check(pe.Description)
+			for _, fld := range pe.Fields {
+				check(fld.Label)
+				check(fld.Description)
+				for _, opt := range fld.Enum {
+					check(opt.Label)
+				}
+			}
+		}
+	}
+	for _, fa := range c.FlowActions {
+		check(fa.Label)
+		check(fa.Description)
+		for _, p := range fa.Params {
+			check(p.Label)
+			check(p.Description)
+			for _, opt := range p.Enum {
+				check(opt.Label)
+			}
+		}
+		for _, out := range fa.Outputs {
+			check(out.Label)
+			check(out.Description)
+			for _, opt := range out.Enum {
+				check(opt.Label)
+			}
+		}
+	}
 	for _, x := range c.Tools {
 		check(x.Title)
 	}
@@ -500,6 +556,13 @@ func contributesUseT(c Contributes) bool {
 	for _, k := range c.MediaKinds {
 		check(k.Label)
 		check(k.Library.Name)
+		for _, t := range k.Library.Tabs {
+			check(t.Label)
+			check(t.SearchPlaceholder)
+		}
+		for _, sh := range k.Library.Shelves {
+			check(sh.Label)
+		}
 		for _, lv := range k.Levels {
 			check(lv.Label)
 		}
@@ -513,10 +576,19 @@ func contributesUseT(c Contributes) bool {
 	for _, a := range c.FrontendAdapters {
 		check(a.Label)
 	}
+	for _, lf := range c.LiveFeeds {
+		check(lf.Title)
+	}
 	if c.Setup != nil {
 		for _, s := range c.Setup.Steps {
 			check(s.Label)
 			check(s.Hint)
+		}
+	}
+	for _, sc := range c.Screens {
+		check(sc.Title)
+		for _, sec := range sc.Sections {
+			check(sec.Title)
 		}
 	}
 	return any
@@ -598,16 +670,149 @@ func validateContributes(m Manifest, add func(string, string)) {
 			add("ether.contributes.notification", "is required for notify, with sendTest set")
 		}
 	}
-	if m.HasCapability(CapEvents) {
-		if c.Events == nil || len(c.Events.Subscribe) == 0 {
-			add("ether.contributes.events.subscribe", "is required for events")
-		} else {
-			for _, n := range c.Events.Subscribe {
-				if !KnownEvents[n] {
-					add("ether.contributes.events.subscribe", "unknown event "+strconv.Quote(n))
+	optDesc := func(field, s string, max int) {
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "$t:") {
+			if !keyRe.MatchString(strings.TrimPrefix(s, "$t:")) {
+				add(field, "must name a string key after $t:")
+			}
+			return
+		}
+		if msg := LintCopy(s, max); msg != "" && !e.Stremio {
+			add(field, msg)
+		}
+	}
+	validateEventFields := func(prefix string, fields []EventFieldMeta) {
+		if len(fields) > MaxEventFields {
+			add(prefix, fmt.Sprintf("must declare at most %d fields", MaxEventFields))
+		}
+		seenFields := map[string]bool{}
+		for j, fld := range fields {
+			fbase := fmt.Sprintf("%s[%d]", prefix, j)
+			if !eventFieldNameRe.MatchString(fld.Name) || seenFields[fld.Name] {
+				add(fbase+".name", "must be a unique field name")
+			}
+			seenFields[fld.Name] = true
+			ft := events.FieldType(fld.Type)
+			if !ft.Valid() {
+				add(fbase+".type", "unknown field type "+strconv.Quote(fld.Type))
+			}
+			label(fbase+".label", fld.Label, 60)
+			optDesc(fbase+".description", fld.Description, 200)
+			if ft == events.FieldEnum {
+				if len(fld.Enum) == 0 {
+					add(fbase+".enum", "is required for enum fields")
 				}
 			}
+			seenEnum := map[string]bool{}
+			for k, opt := range fld.Enum {
+				ebase := fmt.Sprintf("%s.enum[%d]", fbase, k)
+				if strings.TrimSpace(opt.Value) == "" || seenEnum[opt.Value] {
+					add(ebase+".value", "must be a unique non-empty enum value")
+				}
+				seenEnum[opt.Value] = true
+				optDesc(ebase+".label", opt.Label, 60)
+			}
 		}
+	}
+	if m.HasCapability(CapEvents) {
+		if c.Events == nil || (len(c.Events.Subscribe) == 0 && len(c.Events.Publish) == 0) {
+			add("ether.contributes.events", "must declare subscribe or publish for events")
+		}
+	}
+	if c.Events != nil {
+		if !m.HasCapability(CapEvents) && (len(c.Events.Subscribe) > 0 || len(c.Events.Publish) > 0) {
+			add("ether.capabilities", "events is required for contributes.events")
+		}
+		for _, n := range c.Events.Subscribe {
+			if !IsSubscribableEvent(n) {
+				add("ether.contributes.events.subscribe", "unknown event "+strconv.Quote(n))
+			}
+		}
+		if len(c.Events.Publish) > MaxPluginPublishedEvents {
+			add("ether.contributes.events.publish", fmt.Sprintf("must declare at most %d published events", MaxPluginPublishedEvents))
+		}
+		seenPublished := map[string]bool{}
+		for i, pe := range c.Events.Publish {
+			base := fmt.Sprintf("ether.contributes.events.publish[%d]", i)
+			if !pluginEventKeyRe.MatchString(pe.Key) || seenPublished[pe.Key] {
+				add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$")
+			} else if len(events.PluginEventType(m.ID, pe.Key)) > 128 {
+				add(base+".key", "event type exceeds 128 characters")
+			}
+			seenPublished[pe.Key] = true
+			label(base+".label", pe.Label, 60)
+			optDesc(base+".description", pe.Description, 200)
+			if pe.Version < 0 {
+				add(base+".version", "must be >= 1")
+			}
+			validateEventFields(base+".fields", pe.Fields)
+		}
+	}
+	if m.HasCapability(CapFlowActions) && len(c.FlowActions) == 0 {
+		add("ether.contributes.flowActions", "is required for flow_actions")
+	}
+	if len(c.FlowActions) > 0 && !m.HasCapability(CapFlowActions) {
+		add("ether.capabilities", "flow_actions is required for flowActions")
+	}
+	if len(c.FlowActions) > MaxPluginFlowActions {
+		add("ether.contributes.flowActions", fmt.Sprintf("must declare at most %d flow actions", MaxPluginFlowActions))
+	}
+	seenActions := map[string]bool{}
+	for i, fa := range c.FlowActions {
+		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
+		if !flowActionKeyRe.MatchString(fa.Key) || seenActions[fa.Key] {
+			add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]{0,63}$")
+		} else if len(flows.PluginActionType(m.ID, fa.Key)) > 128 {
+			add(base+".key", "action type exceeds 128 characters")
+		}
+		seenActions[fa.Key] = true
+		label(base+".label", fa.Label, 60)
+		optDesc(base+".description", fa.Description, 200)
+		if !strings.HasPrefix(fa.Route, "/ether/") || !isSafePluginRoute(fa.Route) {
+			add(base+".route", "must be a safe plugin route under /ether/")
+		}
+		if fa.Timeout != "" {
+			d, err := time.ParseDuration(fa.Timeout)
+			if err != nil || d <= 0 || d > MaxPluginFlowActionTimeout {
+				add(base+".timeout", fmt.Sprintf("must be a positive duration of at most %s", MaxPluginFlowActionTimeout))
+			}
+		}
+		if len(fa.Params) > MaxFlowActionParams {
+			add(base+".params", fmt.Sprintf("must declare at most %d params", MaxFlowActionParams))
+		}
+		seenParams := map[string]bool{}
+		for j, p := range fa.Params {
+			pbase := fmt.Sprintf("%s.params[%d]", base, j)
+			if !flowParamKeyRe.MatchString(p.Key) || seenParams[p.Key] {
+				add(pbase+".key", "must be a unique param key")
+			}
+			seenParams[p.Key] = true
+			pt := events.FieldType(p.Type)
+			if !pt.Valid() {
+				add(pbase+".type", "unknown param type "+strconv.Quote(p.Type))
+			}
+			label(pbase+".label", p.Label, 60)
+			optDesc(pbase+".description", p.Description, 200)
+			if pt == events.FieldEnum && len(p.Enum) == 0 {
+				add(pbase+".enum", "is required for enum params")
+			}
+			seenEnum := map[string]bool{}
+			for k, opt := range p.Enum {
+				ebase := fmt.Sprintf("%s.enum[%d]", pbase, k)
+				if strings.TrimSpace(opt.Value) == "" || seenEnum[opt.Value] {
+					add(ebase+".value", "must be a unique non-empty enum value")
+				}
+				seenEnum[opt.Value] = true
+				optDesc(ebase+".label", opt.Label, 60)
+			}
+			if !flows.ValidPicker(p.Picker) {
+				add(pbase+".picker", "unknown picker "+strconv.Quote(p.Picker))
+			}
+		}
+		validateEventFields(base+".outputs", fa.Outputs)
 	}
 	if m.HasCapability(CapListSource) && len(c.ListSources) == 0 {
 		add("ether.contributes.listSources", "is required for list_source")
@@ -659,6 +864,33 @@ func validateContributes(m Manifest, add func(string, string)) {
 			add(base+".key", "must be a simple key")
 		}
 		label(base+".label", rc.Label, 40)
+	}
+	if m.HasCapability(CapPosterBadges) && len(c.PosterBadges) == 0 {
+		add("ether.contributes.posterBadges", "is required for poster_badges")
+	}
+	if len(c.PosterBadges) > 0 && !m.HasCapability(CapPosterBadges) {
+		add("ether.capabilities", "poster_badges is required for posterBadges")
+	}
+	if len(c.PosterBadges) > MaxPosterBadgeSets {
+		add("ether.contributes.posterBadges", fmt.Sprintf("must declare at most %d badge sets", MaxPosterBadgeSets))
+	}
+	seenBadgeSets := map[string]bool{}
+	for i, pb := range c.PosterBadges {
+		base := fmt.Sprintf("ether.contributes.posterBadges[%d]", i)
+		if !posterBadgeKeyRe.MatchString(pb.Key) || seenBadgeSets[pb.Key] {
+			add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]{0,31}$")
+		}
+		seenBadgeSets[pb.Key] = true
+		label(base+".label", pb.Label, 40)
+		if pb.Description != "" {
+			if strings.HasPrefix(pb.Description, "$t:") {
+				if !keyRe.MatchString(strings.TrimPrefix(pb.Description, "$t:")) {
+					add(base+".description", "must name a string key after $t:")
+				}
+			} else if msg := LintCopy(pb.Description, 120); msg != "" && !e.Stremio {
+				add(base+".description", msg)
+			}
+		}
 	}
 	if m.HasCapability(CapTools) && len(c.Tools) == 0 {
 		add("ether.contributes.tools", "is required for tools")
@@ -727,7 +959,9 @@ func validateContributes(m Manifest, add func(string, string)) {
 	}
 	validateMediaKinds(m, add, label)
 	validateFrontendAdapters(m, add, label)
+	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
+	validateScreens(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -753,6 +987,35 @@ var knownSlots = map[string]bool{
 	"dashboard.panel": true, "actionMenu.title": true,
 	"actionMenu.viewer": true, "actionMenu.collection": true,
 	"actionMenu.release": true, "command": true,
+}
+
+func validateLiveFeeds(m Manifest, add func(string, string), label func(string, string, int)) {
+	feeds := m.Ether.Contributes.LiveFeeds
+	if m.HasCapability(CapLiveEvents) && len(feeds) == 0 {
+		add("ether.contributes.liveFeeds", "is required for live_events")
+	}
+	if !m.HasCapability(CapLiveEvents) && len(feeds) > 0 {
+		add("ether.capabilities", "live_events is required for liveFeeds")
+	}
+	seenID := map[string]bool{}
+	for i, lf := range feeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		if !liveFeedIDRe.MatchString(lf.ID) || seenID[lf.ID] {
+			add(base+".id", "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+		}
+		seenID[lf.ID] = true
+		label(base+".title", lf.Title, 60)
+		if lf.MinIntervalSec < MinLiveFeedIntervalSec {
+			add(base+".minIntervalSec", fmt.Sprintf("must be at least %d", MinLiveFeedIntervalSec))
+		}
+		seenKind := map[string]bool{}
+		for j, ek := range lf.EntityKinds {
+			if !liveFeedIDRe.MatchString(ek) || seenKind[ek] {
+				add(fmt.Sprintf("%s.entityKinds[%d]", base, j), "must be a unique lower case key matching ^[a-z][a-z0-9_-]{0,31}$")
+			}
+			seenKind[ek] = true
+		}
+	}
 }
 
 // ParseSemVer parses a plain major.minor.patch version.

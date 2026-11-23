@@ -1,12 +1,14 @@
 package resolver
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -16,8 +18,8 @@ import (
 //
 //	gates       Only-play fallback tier, accepted audio language, fits the connection
 //	standard    quality position, revision, custom format score, preferred
-//	            protocol, indexer priority, seeders and peers (torrents) or age
-//	            (Usenet), size
+//	            protocol, soft source-delivery hint, indexer priority, seeders
+//	            and peers (torrents) or age (Usenet), size
 //	tie-breaks  played fine recently, indexer reliability, a single episode
 //	            over a season pack
 //
@@ -31,6 +33,8 @@ import (
 
 // rankKeys are a candidate's standard comparer keys.
 type rankKeys struct {
+	sourceBand  int     // priority band when any Stremio add-on keeps its own order: lower first
+	addonOrder  int     // 1-based position in the add-on's response when UseAddonOrder is on; 0 otherwise
 	position    int     // place in the quality order: higher is better, 0 unlisted
 	height      int     // graded height (a starved or upscaled release one step down)
 	revision    int     // Proper/Repack, when the profile prefers revisions
@@ -53,6 +57,11 @@ func compareCandidates(a, b candidate) bool {
 	// Shared names never outrank evidence identifying the requested show.
 	if a.identityWeak != b.identityWeak {
 		return !a.identityWeak
+	}
+	// Releases with confirmed required audio languages always precede releases
+	// whose audio tracks still require media-probe verification.
+	if a.audioUnverified != b.audioUnverified {
+		return !a.audioUnverified
 	}
 	// Soft profile preferences precede the ordinary quality comparer.
 	if a.belowScore != b.belowScore {
@@ -84,8 +93,20 @@ func compareCandidates(a, b candidate) bool {
 	if a.bandwidth != b.bandwidth {
 		return a.bandwidth > b.bandwidth
 	}
-	// Radarr/Sonarr.
+	// Source bands and add-on order (when any Stremio add-on keeps its own
+	// result order, each such add-on forms its own priority band and keeps its
+	// response order inside that band).
 	x, y := a.keys, b.keys
+	if x.sourceBand != y.sourceBand {
+		return x.sourceBand < y.sourceBand
+	}
+	if x.addonOrder > 0 && y.addonOrder > 0 {
+		if x.addonOrder != y.addonOrder {
+			return x.addonOrder < y.addonOrder
+		}
+		return !x.pack && y.pack
+	}
+	// Radarr/Sonarr.
 	if x.position != y.position {
 		return x.position > y.position
 	}
@@ -110,6 +131,9 @@ func compareCandidates(a, b candidate) bool {
 	}
 	if x.family != y.family {
 		return x.family < y.family
+	}
+	if a.langRank == b.langRank && a.delivery != b.delivery {
+		return a.delivery > b.delivery
 	}
 	if x.priority != y.priority {
 		return x.priority < y.priority
@@ -147,16 +171,89 @@ func compareCandidates(a, b candidate) bool {
 
 // rankContext is what the keys read besides the release.
 type rankContext struct {
-	profile        core.QualityProfile
-	title          *core.Title
-	now            time.Time
-	preferSource   string // the owner's source preference: PreferUsenet, PreferDebrid or "" for none
-	preferRevision bool
-	priority       map[string]int // indexer id → priority
-	families       []string
-	familyOf       map[string]string   // indexer id → stremio, usenet or torrent
-	contentOrder   map[string][]string // movie, show or anime → indexer ids
-	reliability    func(indexer string) float64
+	families          []string
+	familyOf          map[string]string
+	contentOrder      map[string][]string
+	profile           core.QualityProfile
+	title             *core.Title
+	now               time.Time
+	preferSource      string // the owner's source preference: PreferUsenet, PreferDebrid or "" for none
+	preferRevision    bool
+	priority          map[string]int  // indexer id → priority
+	addonOrder        map[string]bool // indexer id → keep add-on result order
+	sourceBand        map[string]int  // indexer id → priority band (nil when no source uses add-on order)
+	defaultSourceBand int             // band for sources outside cfg.Indexers (e.g. plugin add-ons)
+	reliability       func(indexer string) float64
+}
+
+// computeSourceBands partitions enabled indexers into priority bands whenever
+// at least one enabled Stremio add-on keeps its own result order.
+//
+// Walking enabled indexers in ascending Priority order (ties keep config slice
+// order): each Stremio add-on with UseAddonOrder gets its own band, while
+// contiguous profile-ranked sources share a band so they still compete by
+// quality profile. When no enabled Stremio add-on uses UseAddonOrder, every
+// band is 0 and ranking is unchanged.
+func computeSourceBands(indexers []config.Indexer) (addonOrder map[string]bool, bands map[string]int, defaultBand int) {
+	type entry struct {
+		id         string
+		priority   int
+		idx        int
+		addonOrder bool
+	}
+	var enabled []entry
+	anyAddonOrder := false
+	for i, ix := range indexers {
+		if !ix.Enabled || ix.ID == "" {
+			continue
+		}
+		ao := ix.IsStremio() && ix.UseAddonOrder
+		if ao {
+			anyAddonOrder = true
+		}
+		enabled = append(enabled, entry{
+			id:         ix.ID,
+			priority:   ix.Priority,
+			idx:        i,
+			addonOrder: ao,
+		})
+	}
+	if !anyAddonOrder {
+		return nil, nil, 0
+	}
+	slices.SortFunc(enabled, func(a, b entry) int {
+		if c := cmp.Compare(a.priority, b.priority); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.idx, b.idx)
+	})
+	addonOrder = make(map[string]bool)
+	bands = make(map[string]int, len(enabled))
+	band := -1
+	lastWasProfile := false
+	for _, e := range enabled {
+		if e.addonOrder {
+			band++
+			addonOrder[e.id] = true
+			bands[e.id] = band
+			lastWasProfile = false
+		} else {
+			if !lastWasProfile {
+				band++
+				lastWasProfile = true
+			}
+			bands[e.id] = band
+		}
+	}
+	// Sources not in cfg.Indexers (such as plugin-contributed add-on rows
+	// appended at priority 1<<20) join the trailing profile band, or sit in a
+	// band after the last add-on-ordered source.
+	if lastWasProfile {
+		defaultBand = band
+	} else {
+		defaultBand = band + 1
+	}
+	return addonOrder, bands, defaultBand
 }
 
 // contentKind classifies a title for the owner's per-content source order.
@@ -194,6 +291,16 @@ func (rc rankContext) familyRank(rel core.Release) int {
 func keysFor(rel core.Release, starved bool, rc rankContext) rankKeys {
 	info := rel.Info
 	k := rankKeys{height: gradedHeight(info.Height, starved)}
+	if rc.sourceBand != nil {
+		if b, ok := rc.sourceBand[rel.IndexerID]; ok {
+			k.sourceBand = b
+		} else {
+			k.sourceBand = rc.defaultSourceBand
+		}
+	}
+	if rc.addonOrder[rel.IndexerID] {
+		k.addonOrder = rel.SourceOrder
+	}
 	k.position = qualityPosition(rc.profile.QualityOrder, info, k.height)
 	if rc.preferRevision {
 		k.revision = revisionRank(info)
@@ -327,7 +434,7 @@ func preferredSource(mode string) string {
 }
 
 func samePreferenceTier(a, b candidate) bool {
-	return a.belowScore == b.belowScore && a.fallback == b.fallback &&
+	return a.audioUnverified == b.audioUnverified && a.belowScore == b.belowScore && a.fallback == b.fallback &&
 		(!a.belowScore || a.counted == b.counted) && (!a.fallback || a.keys.height == b.keys.height)
 }
 

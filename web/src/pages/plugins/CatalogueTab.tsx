@@ -7,12 +7,15 @@ import {
   EmptyState,
   Input,
   Switch,
+  buttonVariants,
 } from "@braedonsaunders/appkit-ui";
 import {
+  ArrowUpCircle,
   CheckCircle2,
   Download,
   ExternalLink,
   Plus,
+  RefreshCw,
   Search,
   ShieldCheck,
   Store,
@@ -25,6 +28,7 @@ import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { invalidateRegistry } from "../../lib/extend";
+import { useStreamEvent } from "../../lib/stream";
 import { PermissionSheet, RuntimeLimitsCard } from "./PermissionSheet";
 import {
   categoryLabel,
@@ -35,23 +39,31 @@ import {
   type PluginSummary,
 } from "./types";
 
-const KIND_FILTERS: { value: string; label: () => string }[] = [
-  { value: "all", label: () => t("All kinds") },
-  { value: "source", label: () => t("Source") },
-  { value: "integration", label: () => t("Integration") },
-  { value: "webhook", label: () => t("Webhook") },
-  { value: "folder", label: () => t("Folder") },
-  { value: "composite", label: () => t("Composite") },
-];
+const SUBMIT_PLUGIN_URL = "https://github.com/braedonsaunders/ether-plugins#submit-a-plugin";
+
+const KIND_FILTERS = [
+  "all",
+  "source",
+  "integration",
+  "notification_channel",
+  "livetv_source",
+  "extension",
+  "content",
+] as const;
+
+interface CatalogueResponse {
+  entries?: CatalogueEntry[];
+  configured?: boolean;
+  fetchedAt?: number;
+  lastError?: string;
+}
 
 export function CatalogueTab({
-  installedIds,
   onInstalled,
   onSelectInstalled,
   onOpenInstall,
   onBrowseDirectories,
 }: {
-  installedIds: Set<string>;
   onInstalled: (pluginId: string) => void;
   onSelectInstalled: (pluginId: string) => void;
   onOpenInstall: () => void;
@@ -60,7 +72,10 @@ export function CatalogueTab({
   const { locale } = useLocale();
   const [entries, setEntries] = useState<CatalogueEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [unavailable, setUnavailable] = useState(false);
+  const [configured, setConfigured] = useState(true);
+  const [fetchFailed, setFetchFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshErr, setRefreshErr] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
@@ -70,28 +85,55 @@ export function CatalogueTab({
   const [preview, setPreview] = useState<InstallPreview | null>(null);
   const [viewers, setViewers] = useState<number[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
+  const [operatorHosts, setOperatorHosts] = useState<string[]>([]);
   const [shadow, setShadow] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installErr, setInstallErr] = useState<string | null>(null);
 
-  const loadCatalogue = useCallback(async () => {
-    setLoading(true);
+  const loadCatalogue = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
-      const res = await apiFetch<{ entries?: CatalogueEntry[] }>("/plugins/catalogue");
+      const res = await apiFetch<CatalogueResponse>("/plugins/catalogue");
       const list = Array.isArray(res?.entries) ? res.entries : [];
+      const isConfigured = res?.configured !== false;
+      const failedInitialFetch =
+        isConfigured && list.length === 0 && !res?.fetchedAt && Boolean(res?.lastError);
       setEntries(list);
-      setUnavailable(list.length === 0);
+      setConfigured(isConfigured);
+      setFetchFailed(failedInitialFetch);
+      setSelected((prev) => (prev ? (list.find((e) => e.id === prev.id) ?? prev) : null));
     } catch {
       setEntries([]);
-      setUnavailable(true);
+      setConfigured(true);
+      setFetchFailed(true);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadCatalogue();
   }, [loadCatalogue]);
+
+  useStreamEvent("plugins.changed", () => {
+    void loadCatalogue(true);
+  });
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshErr(null);
+    try {
+      await apiFetch<CatalogueResponse>("/plugins/catalogue/refresh", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      await loadCatalogue(true);
+    } catch (e) {
+      setRefreshErr(errorMessage(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const categories = useMemo(() => {
     const seen = new Set<string>();
@@ -111,6 +153,8 @@ export function CatalogueTab({
         entry.name.toLowerCase().includes(q) ||
         entry.summary.toLowerCase().includes(q) ||
         entry.id.toLowerCase().includes(q) ||
+        (entry.description && entry.description.toLowerCase().includes(q)) ||
+        (entry.author && entry.author.toLowerCase().includes(q)) ||
         (entry.category && categoryLabel(entry.category).toLowerCase().includes(q))
       );
     });
@@ -119,10 +163,10 @@ export function CatalogueTab({
   useEffect(() => {
     let active = true;
     setPreview(null);
-    if (selected && !installedIds.has(selected.id)) {
+    if (selected && !selected.installed) {
       apiFetch<InstallPreview>("/plugins/install/preview", {
         method: "POST",
-        body: JSON.stringify({ url: selected.url }),
+        body: JSON.stringify({ kind: "catalogue", id: selected.id }),
       })
         .then((result) => {
           if (active) setPreview(result);
@@ -134,12 +178,13 @@ export function CatalogueTab({
     return () => {
       active = false;
     };
-  }, [selected, installedIds]);
+  }, [selected]);
 
   const openEntry = (entry: CatalogueEntry) => {
     setSelected(entry);
     setViewers([]);
     setFolders([]);
+    setOperatorHosts([]);
     setShadow(false);
     setInstallErr(null);
   };
@@ -152,10 +197,12 @@ export function CatalogueTab({
       const installed = await apiFetch<PluginSummary>("/plugins/install", {
         method: "POST",
         body: JSON.stringify({
-          url: selected.url,
+          kind: "catalogue",
+          id: selected.id,
           grants: {
             viewers: preview.needsViewers ? viewers : undefined,
             folders: preview.needsFolders ? folders : undefined,
+            operatorHosts: preview.needsOperatorHosts ? operatorHosts : undefined,
           },
           shadow,
           acceptAddedPermissions: !!preview.addedPermissions?.length,
@@ -171,25 +218,78 @@ export function CatalogueTab({
     }
   };
 
+  const headerActions = (
+    <>
+      <a
+        href={SUBMIT_PLUGIN_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-fg-muted transition-colors hover:text-fg"
+      >
+        {t("Submit a plugin")} <ExternalLink size={12} aria-hidden />
+      </a>
+      {configured ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void handleRefresh()}
+          disabled={refreshing || loading}
+        >
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : undefined} aria-hidden />{" "}
+          {t("Refresh")}
+        </Button>
+      ) : null}
+    </>
+  );
+
   if (loading) {
     return (
-      <Section title={t("Catalogue")}>
-        <p className="text-xs text-fg-muted">{t("Loading catalogue…")}</p>
+      <Section title={t("Marketplace")} actions={headerActions}>
+        <p className="text-xs text-fg-muted">{t("Loading marketplace…")}</p>
       </Section>
     );
   }
 
-  if (unavailable) {
+  if (!configured || fetchFailed) {
     return (
-      <Section title={t("Catalogue")}>
+      <Section title={t("Marketplace")} actions={headerActions}>
+        {refreshErr ? (
+          <Alert variant="destructive">
+            <AlertTitle>{t("Could not refresh marketplace")}</AlertTitle>
+            <AlertDescription>{refreshErr}</AlertDescription>
+          </Alert>
+        ) : null}
         <EmptyState
           icon={<Store size={18} />}
-          title={t("The catalogue is not available yet")}
-          description={t(
-            "You can still install plugins directly from a manifest link, a GitHub repository, or a package file.",
-          )}
+          title={
+            !configured ? t("No marketplace configured") : t("Could not reach the marketplace")
+          }
+          description={
+            !configured
+              ? t(
+                  "You can still install plugins directly from a manifest link, a GitHub repository, or a package file.",
+                )
+              : t(
+                  "Check this server's internet connection and refresh, or install a plugin directly from a link or package file.",
+                )
+          }
           action={
             <div className="flex flex-wrap justify-center gap-2">
+              {configured ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleRefresh()}
+                  disabled={refreshing}
+                >
+                  <RefreshCw
+                    size={14}
+                    className={refreshing ? "animate-spin" : undefined}
+                    aria-hidden
+                  />{" "}
+                  {t("Refresh")}
+                </Button>
+              ) : null}
               {onBrowseDirectories ? (
                 <Button size="sm" variant="outline" onClick={onBrowseDirectories}>
                   {t("Browse plugin directories")}
@@ -205,16 +305,59 @@ export function CatalogueTab({
     );
   }
 
-  const isSelectedInstalled = selected ? installedIds.has(selected.id) : false;
+  if (entries.length === 0) {
+    return (
+      <Section
+        title={t("Marketplace")}
+        description={t(
+          "Reviewed plugins for sources, subtitles, notifications and household tools.",
+        )}
+        actions={headerActions}
+      >
+        {refreshErr ? (
+          <Alert variant="destructive">
+            <AlertTitle>{t("Could not refresh marketplace")}</AlertTitle>
+            <AlertDescription>{refreshErr}</AlertDescription>
+          </Alert>
+        ) : null}
+        <EmptyState
+          icon={<Store size={18} />}
+          title={t("No plugins in the marketplace yet")}
+          description={t("Reviewed community plugins appear here once published.")}
+          action={
+            <a
+              href={SUBMIT_PLUGIN_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              {t("Submit a plugin")} <ExternalLink size={13} aria-hidden />
+            </a>
+          }
+        />
+      </Section>
+    );
+  }
+
+  const isSelectedInstalled = Boolean(selected?.installed);
+  const selectedIcon = selected?.icon || preview?.icon;
 
   return (
     <div className="space-y-6">
       <Section
-        title={t("Catalogue")}
+        title={t("Marketplace")}
         description={t(
           "Reviewed plugins for sources, subtitles, notifications and household tools.",
         )}
+        actions={headerActions}
       >
+        {refreshErr ? (
+          <Alert variant="destructive">
+            <AlertTitle>{t("Could not refresh marketplace")}</AlertTitle>
+            <AlertDescription>{refreshErr}</AlertDescription>
+          </Alert>
+        ) : null}
+
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="relative min-w-[240px] flex-1">
@@ -236,19 +379,19 @@ export function CatalogueTab({
               role="group"
               aria-label={t("Filter by kind")}
             >
-              {KIND_FILTERS.map((f) => (
+              {KIND_FILTERS.map((kind) => (
                 <button
-                  key={f.value}
+                  key={kind}
                   type="button"
-                  onClick={() => setKindFilter(f.value)}
-                  aria-pressed={kindFilter === f.value}
+                  onClick={() => setKindFilter(kind)}
+                  aria-pressed={kindFilter === kind}
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    kindFilter === f.value
+                    kindFilter === kind
                       ? "border-accent bg-accent-subtle text-accent"
                       : "border-border bg-surface text-fg-muted hover:bg-surface-hover hover:text-fg"
                   }`}
                 >
-                  {f.label()}
+                  {kind === "all" ? t("All kinds") : kindLabel(kind)}
                 </button>
               ))}
             </div>
@@ -314,50 +457,65 @@ export function CatalogueTab({
           </div>
         ) : (
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {filtered.map((entry) => {
-              const installed = installedIds.has(entry.id);
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => openEntry(entry)}
-                  className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-hover"
-                >
-                  <div className="flex items-start gap-3.5">
+            {filtered.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => openEntry(entry)}
+                className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-hover"
+              >
+                <div className="flex items-start gap-3.5">
+                  {entry.icon ? (
                     <Artwork
                       src={entry.icon}
                       alt={entry.name}
-                      className="h-11 w-11 shrink-0 rounded-lg"
-                      icon={kindIcon(entry.kind, 18)}
+                      title=""
+                      className="size-11 shrink-0 rounded-lg bg-bg-subtle"
+                      imgClassName="object-contain"
+                      icon={kindIcon(entry.kind, 20)}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="truncate text-sm font-semibold text-fg">{entry.name}</span>
-                        {entry.verified ? (
-                          <Badge variant="success">
-                            <ShieldCheck size={11} aria-hidden /> {t("Verified")}
-                          </Badge>
-                        ) : null}
-                        {installed ? (
-                          <Badge variant="info">
-                            <CheckCircle2 size={11} aria-hidden /> {t("Installed")}
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-fg-muted">{entry.summary}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-[11px] text-fg-subtle">
+                  ) : (
+                    <span
+                      aria-hidden
+                      className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                    >
+                      {kindIcon(entry.kind, 22)}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <Badge>{kindLabel(entry.kind)}</Badge>
-                      {entry.category ? <Badge>{categoryLabel(entry.category)}</Badge> : null}
+                      <span className="truncate text-sm font-semibold text-fg">{entry.name}</span>
+                      <Badge variant="success">
+                        <ShieldCheck size={11} aria-hidden /> {t("Reviewed")}
+                      </Badge>
+                      {entry.installed ? (
+                        <Badge variant="info">
+                          <CheckCircle2 size={11} aria-hidden /> {t("Installed")}
+                        </Badge>
+                      ) : null}
+                      {entry.updateAvailable ? (
+                        <Badge variant="warning">
+                          <ArrowUpCircle size={11} aria-hidden /> {t("Update available")}
+                        </Badge>
+                      ) : null}
                     </div>
-                    <span className="font-mono">v{entry.version}</span>
+                    <p className="mt-1 line-clamp-2 text-xs text-fg-muted">{entry.summary}</p>
                   </div>
-                </button>
-              );
-            })}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-[11px] text-fg-subtle">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge>{kindLabel(entry.kind)}</Badge>
+                    {entry.category && categoryLabel(entry.category) !== kindLabel(entry.kind) ? (
+                      <Badge>{categoryLabel(entry.category)}</Badge>
+                    ) : null}
+                  </div>
+                  {entry.latestVersion ? (
+                    <span className="font-mono">v{entry.latestVersion}</span>
+                  ) : null}
+                </div>
+              </button>
+            ))}
           </div>
         )}
       </Section>
@@ -366,7 +524,13 @@ export function CatalogueTab({
         open={selected !== null}
         onClose={() => setSelected(null)}
         title={selected?.name ?? t("Plugin")}
-        description={selected ? `${selected.id} (v${selected.version})` : undefined}
+        description={
+          selected
+            ? selected.latestVersion
+              ? `${selected.id} (v${selected.latestVersion})`
+              : selected.id
+            : undefined
+        }
         size="lg"
         footer={
           selected ? (
@@ -403,27 +567,69 @@ export function CatalogueTab({
             ) : null}
 
             <div className="flex items-start gap-3.5 rounded-xl border border-border bg-bg-subtle p-4">
-              <Artwork
-                src={selected.icon}
-                alt={selected.name}
-                className="h-12 w-12 shrink-0 rounded-lg"
-                icon={kindIcon(selected.kind, 20)}
-              />
+              {selectedIcon ? (
+                <Artwork
+                  src={selectedIcon}
+                  alt={selected.name}
+                  title=""
+                  className="size-12 shrink-0 rounded-lg bg-bg-subtle"
+                  imgClassName="object-contain"
+                  icon={kindIcon(selected.kind, 20)}
+                />
+              ) : (
+                <span
+                  aria-hidden
+                  className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                >
+                  {kindIcon(selected.kind, 22)}
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-semibold text-fg">{selected.name}</h3>
+                  <Badge variant="success">
+                    <ShieldCheck size={11} aria-hidden /> {t("Reviewed")}
+                  </Badge>
+                  {selected.installed ? (
+                    <Badge variant="info">
+                      <CheckCircle2 size={11} aria-hidden /> {t("Installed")}
+                    </Badge>
+                  ) : null}
+                  {selected.updateAvailable ? (
+                    <Badge variant="warning">
+                      <ArrowUpCircle size={11} aria-hidden /> {t("Update available")}
+                    </Badge>
+                  ) : null}
                   <Badge>{kindLabel(selected.kind)}</Badge>
-                  {selected.category ? <Badge>{categoryLabel(selected.category)}</Badge> : null}
-                  <span className="font-mono text-xs text-fg-subtle">v{selected.version}</span>
+                  {selected.category &&
+                  categoryLabel(selected.category) !== kindLabel(selected.kind) ? (
+                    <Badge>{categoryLabel(selected.category)}</Badge>
+                  ) : null}
+                  {selected.latestVersion ? (
+                    <span className="font-mono text-xs text-fg-subtle">
+                      v{selected.latestVersion}
+                    </span>
+                  ) : null}
                 </div>
                 <p className="mt-1 text-xs text-fg-muted">{selected.summary}</p>
                 {selected.description ? (
                   <p className="mt-2 text-xs text-fg">{selected.description}</p>
                 ) : null}
-                {selected.author?.name || selected.repo ? (
+                {selected.author || selected.license || selected.homepage || selected.repo ? (
                   <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs text-fg-muted">
-                    {selected.author?.name ? (
-                      <span>{t("By {author}", { author: selected.author.name })}</span>
+                    {selected.author ? (
+                      <span>{t("By {author}", { author: selected.author })}</span>
+                    ) : null}
+                    {selected.license ? <span>{selected.license}</span> : null}
+                    {selected.homepage ? (
+                      <a
+                        href={selected.homepage}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-accent hover:underline"
+                      >
+                        {t("Homepage")} <ExternalLink size={12} aria-hidden />
+                      </a>
                     ) : null}
                     {selected.repo ? (
                       <a
@@ -458,19 +664,6 @@ export function CatalogueTab({
               </div>
             ) : null}
 
-            {selected.limits && selected.limits.length > 0 ? (
-              <div className="rounded-xl border border-border bg-surface p-4">
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-fg-muted">
-                  {t("Known limits")}
-                </h4>
-                <ul className="list-disc space-y-1 pl-4 text-xs text-fg-muted">
-                  {selected.limits.map((lim) => (
-                    <li key={lim}>{t(lim)}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
             {preview ? (
               <>
                 <RuntimeLimitsCard
@@ -482,12 +675,26 @@ export function CatalogueTab({
                   verified={preview.verified}
                   needsViewers={preview.needsViewers}
                   needsFolders={preview.needsFolders}
+                  needsOperatorHosts={preview.needsOperatorHosts}
                   viewers={viewers}
                   onChangeViewers={setViewers}
                   folders={folders}
                   onChangeFolders={setFolders}
+                  operatorHosts={operatorHosts}
+                  pendingOperatorHosts={preview.pendingOperatorHosts}
+                  onChangeOperatorHosts={setOperatorHosts}
+                  addedPermissions={preview.addedPermissions}
                 />
               </>
+            ) : isSelectedInstalled && selected.permissionLines ? (
+              <PermissionSheet
+                permissions={selected.permissionLines}
+                verified
+                viewers={viewers}
+                onChangeViewers={setViewers}
+                folders={folders}
+                onChangeFolders={setFolders}
+              />
             ) : null}
 
             {!isSelectedInstalled ? (

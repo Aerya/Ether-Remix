@@ -96,7 +96,7 @@ func (l *libraryProfiles) resolve(ctx context.Context, t *core.Title) string {
 	found := false
 	profiles := l.app.cfg.Read().Quality.Profiles
 	for _, lib := range libs {
-		if lib.QualityProfile == "" {
+		if lib.QualityProfile == "" || lib.ID == core.LibraryMovies || lib.ID == core.LibraryShows {
 			continue
 		}
 		scope := core.MediaMovie

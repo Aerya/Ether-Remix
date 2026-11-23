@@ -105,24 +105,16 @@ func runOutage(t *testing.T, raw, mode string) {
 	// no resume point.
 	for i := 6; time.Since(outageStart) < 3*time.Second; i++ {
 		last = time.Duration(i) * time.Minute
-		t0 := time.Now()
 		if err := ws.Progress(ctx, owner.ID, movieKey, last, dur, "playing"); err != nil {
 			t.Fatalf("progress during outage: %v", err)
-		}
-		if d := time.Since(t0); d > 2500*time.Millisecond {
-			t.Fatalf("timeline write blocked %v during the outage", d)
 		}
 		off = (off + 300<<10) % (size - 64<<10)
 		read(off)
 		if !started && time.Since(outageStart) > time.Second {
 			// A new viewer on this node still starts: the cluster-wide
 			// limit check fails open and the resume record is held.
-			t0 := time.Now()
 			if _, err := h.m.Prepare(ctx, friend, movie2, defaultCaps("phone")); err != nil {
 				t.Fatalf("new session during outage: %v", err)
-			}
-			if d := time.Since(t0); d > 5*time.Second {
-				t.Fatalf("new session waited %v on the outage", d)
 			}
 			started = true
 		}

@@ -528,7 +528,7 @@ func (e *continuousEncoder) startOrdinaryChild(startSeq, startTick, tsOffsetTick
 	if e.forceCPU {
 		accel = core.HWAccel{Name: AccelNone}
 	}
-	_, hardware := videoEncoder(e.req.Decision.VideoCodec, accel, e.m.feat)
+	enc, hardware := videoEncoder(e.req.Decision.VideoCodec, accel, e.m.feat)
 	args := e.m.continuousEncodeArgsAt(e.req, sockets, e.store.url(), startSeq, tsOffsetTick, accel)
 	p, err := e.m.startContinuous(e.ctx, args, e.dir, false, sockets, e.stream, nil, e.speedObserver)
 	if err != nil {
@@ -537,10 +537,24 @@ func (e *continuousEncoder) startOrdinaryChild(startSeq, startTick, tsOffsetTick
 		}
 		if hardware && !e.forceCPU && e.ctx.Err() == nil {
 			e.forceCPU = true
-			e.m.log.Warn("continuous hardware encoder failed to start; falling back to software", "session", e.req.SessionID, "err", err)
+			if e.m != nil && e.m.log != nil {
+				e.m.log.Warn("continuous hardware encoder failed to start; falling back to software",
+					"session", e.req.SessionID,
+					"hwaccel", accel.Name,
+					"encoder", enc,
+					"err", err)
+			}
 			return e.startOrdinaryChild(startSeq, startTick, tsOffsetTick)
 		}
 		return nil, err
+	}
+	if e.m != nil && e.m.log != nil {
+		e.m.log.Debug("continuous encoder started",
+			"session", e.req.SessionID,
+			"hwaccel", accel.Name,
+			"encoder", enc,
+			"hardware", hardware,
+			"seq", startSeq)
 	}
 	rtxDone := make(chan struct{})
 	close(rtxDone)

@@ -122,7 +122,7 @@ function PluginStateBadge({ plugin }: { plugin?: PluginRecord }) {
 
 async function testPluginSource(
   pluginId: string,
-): Promise<{ ok: boolean; error?: string; durationMs: number }> {
+): Promise<{ ok: boolean; message?: string; error?: string; durationMs: number }> {
   const started = Date.now();
   const res = await apiFetch<{
     ok?: boolean;
@@ -135,6 +135,7 @@ async function testPluginSource(
   });
   return {
     ok: res?.ok ?? true,
+    message: res?.message,
     error: res?.error ?? res?.message,
     durationMs: res?.durationMs ?? res?.latencyMs ?? Date.now() - started,
   };
@@ -253,7 +254,7 @@ export function PluginSourceCards({
             const testState = tests[d.owner];
             const tested =
               testState?.status === "ok"
-                ? { ok: true, message: undefined }
+                ? { ok: true, message: testState.message }
                 : testState?.status === "fail"
                   ? { ok: false, message: testState.message }
                   : undefined;
@@ -276,7 +277,10 @@ export function PluginSourceCards({
                 name={label}
                 position={i + 1}
                 description={details}
-                problem={lastError ?? null}
+                notice={tested?.ok ? (tested.message ?? null) : null}
+                problem={
+                  tested && !tested.ok && tested.message ? tested.message : (lastError ?? null)
+                }
                 logo={<Puzzle size={18} />}
                 meta={
                   <>
@@ -315,7 +319,7 @@ export function PluginSourceCards({
         description={classBadgeLabel(activeClass)}
         footer={
           active ? (
-            <div className="flex w-full items-center justify-between gap-2">
+            <div className="flex w-full flex-wrap items-center justify-between gap-2">
               <TestButton
                 state={tests[active.owner] ?? { status: "idle" }}
                 onTest={() => runTest(active.owner, () => testPluginSource(active.owner))}

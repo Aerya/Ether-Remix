@@ -5,7 +5,14 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
 import { errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { artUrl, librariesApi, type KindItem, type Library, type MatchRecord } from "./api";
+import {
+  artUrl,
+  formatItemDate,
+  librariesApi,
+  type KindItem,
+  type Library,
+  type MatchRecord,
+} from "./api";
 
 /** Seconds as m:ss or h:mm:ss for fields a plugin declares as durations. */
 function durationText(v: unknown): string {
@@ -82,7 +89,9 @@ export function PluginItemDrawer({
             <div>
               <p className="text-sm text-fg-muted">
                 {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
-                {item.year ? ` · ${item.year}` : ""}
+                {formatItemDate(item, kind?.library.dateDisplay)
+                  ? ` · ${formatItemDate(item, kind?.library.dateDisplay)}`
+                  : ""}
                 {item.playable && !item.unavailable ? ` · ${t("Playable")}` : ""}
               </p>
               {item.unavailable ? (

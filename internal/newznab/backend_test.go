@@ -3,7 +3,7 @@ package newznab
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/config"
@@ -43,9 +43,9 @@ func (f *fakeBackend) ResolveTorrent(ctx context.Context, r core.Release, reserv
 func TestBuiltinBackendSharesBudgetsCacheAndRouting(t *testing.T) {
 	ctx := context.Background()
 	fb := &fakeBackend{}
-	dir := t.TempDir()
+	v := &testVault{}
 	cfg := config.Indexer{ID: "site", Name: "Site", URL: "https://site.invalid", Kind: config.IndexerKindCardigann, Definition: "fake", Enabled: true, DailyLimit: 1, DailyGrabs: 1}
-	m := NewManager(nil, []config.Indexer{cfg}, Options{NZBDir: dir, Backend: func(c config.Indexer) (Backend, error) {
+	m := NewManager(nil, []config.Indexer{cfg}, Options{Vault: v, Backend: func(c config.Indexer) (Backend, error) {
 		fb.cfg = c
 		return fb, nil
 	}})
@@ -68,11 +68,8 @@ func TestBuiltinBackendSharesBudgetsCacheAndRouting(t *testing.T) {
 	if err != nil || string(body) != "<nzb></nzb>" {
 		t.Fatalf("fetch: %q %v", body, err)
 	}
-	if _, err := os.Stat(m.Clients()[0].nzbDiskPath(r.ID)); err != nil {
-		t.Fatalf("NZB not kept on disk: %v", err)
-	}
 	// The stored NZB is reused without spending the (exhausted) grab budget.
-	if _, err := m.FetchNZB(ctx, r); err != nil || fb.fetches != 1 {
+	if _, err := m.FetchNZB(ctx, r); err != nil {
 		t.Fatalf("refetch: %d %v", fb.fetches, err)
 	}
 	torrent := core.Release{Indexer: "Site", Name: "T", Protocol: core.ProtocolTorrent, NZBURL: "https://site.invalid/t/1"}
@@ -86,6 +83,36 @@ func TestBuiltinWithoutBackendFails(t *testing.T) {
 	c := New(cfg, nil, Options{})
 	if _, err := c.Search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "x"}); err == nil {
 		t.Fatal("built-in indexer searched without a backend")
+	}
+}
+
+func TestBuiltinMissingDefinitionReportedInRemainingAndUsage(t *testing.T) {
+	ctx := context.Background()
+	installed := map[string]bool{"ok-def": true}
+	m := NewManager(nil, []config.Indexer{
+		{ID: "missing", Name: "Missing Site", Kind: config.IndexerKindCardigann, Definition: "gone", Protocol: "torrent", Enabled: true},
+		{ID: "present", Name: "Present Site", Kind: config.IndexerKindCardigann, Definition: "ok-def", Protocol: "torrent", Enabled: true},
+	}, Options{
+		Backend: func(c config.Indexer) (Backend, error) {
+			if !installed[c.Definition] {
+				return nil, fmt.Errorf("missing %q: %w", c.Definition, ErrMissingDefinition)
+			}
+			return &fakeBackend{}, nil
+		},
+	})
+	rem, err := m.Remaining(ctx)
+	if err != nil || len(rem) != 2 {
+		t.Fatalf("Remaining: %v %v", rem, err)
+	}
+	if !rem[0].MissingDefinition || rem[1].MissingDefinition {
+		t.Fatalf("unexpected MissingDefinition in Remaining: %+v", rem)
+	}
+	usage, err := m.Usage(ctx)
+	if err != nil || len(usage.Indexers) != 2 {
+		t.Fatalf("Usage: %v %v", usage, err)
+	}
+	if !usage.Indexers[0].MissingDefinition || usage.Indexers[1].MissingDefinition {
+		t.Fatalf("unexpected MissingDefinition in Usage: %+v", usage.Indexers)
 	}
 }
 
@@ -123,7 +150,7 @@ func (alkoBackend) Search(ctx context.Context, req core.SearchRequest, reserve f
 
 func TestBackendStampKeepsVerifiedFileLabel(t *testing.T) {
 	cfg := config.Indexer{ID: "sfr", Name: "StreamFusion Reborn (base)", URL: "https://site.invalid", Kind: config.IndexerKindCardigann, Definition: "fake", Enabled: true}
-	m := NewManager(nil, []config.Indexer{cfg}, Options{NZBDir: t.TempDir(), Backend: func(config.Indexer) (Backend, error) { return &alkoBackend{}, nil }})
+	m := NewManager(nil, []config.Indexer{cfg}, Options{Vault: &testVault{}, Backend: func(config.Indexer) (Backend, error) { return &alkoBackend{}, nil }})
 	rels, err := m.Search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Film", Year: 2020})
 	if err != nil || len(rels) != 2 {
 		t.Fatalf("search: %v %v", rels, err)

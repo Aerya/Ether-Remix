@@ -3,8 +3,10 @@ package sessions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -231,6 +234,39 @@ func TestLazyStreamCapabilityReusesSessionAndRevalidatesGrant(t *testing.T) {
 	grants.mu.Lock()
 	grants.revoked = false
 	grants.mu.Unlock()
+	unstartedReq := req
+	unstartedReq.Device.ID = "not-yet-playing"
+	unstartedPath, err := lazy.Issue(ctx, "account-credential-secret", unstartedReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPlanLookup := b.deps.Lookup
+	originalMediaLookup := b.deps.MediaLookup
+	b.deps.CurrentMediaLookup = originalMediaLookup
+	deleted := func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error) {
+		return nil, core.ErrNotFound
+	}
+	b.deps.Lookup, b.deps.MediaLookup = deleted, deleted
+	if _, err := lazy.Issue(ctx, "account-credential-secret", req); err == nil {
+		t.Fatal("deleted membership issued lazy capability")
+	}
+	replay := httptest.NewRecorder()
+	lazy.ServeHTTP(replay, httptest.NewRequest(http.MethodGet, unstartedPath, nil))
+	if replay.Code != http.StatusNotFound {
+		t.Fatalf("unstarted capability replay admitted: %d", replay.Code)
+	}
+	running := httptest.NewRecorder()
+	lazy.ServeHTTP(running, httptest.NewRequest(http.MethodGet, path, nil))
+	if running.Code != http.StatusOK {
+		t.Fatalf("running lazy stream interrupted: %d", running.Code)
+	}
+	runningAuth := httptest.NewRecorder()
+	lazy.(frontend.AuthenticatedLazyStreams).ServeAuthenticated(runningAuth, httptest.NewRequest(http.MethodGet, "/dav/movie.mkv", nil), "account-credential-secret", authenticated)
+	if runningAuth.Code != http.StatusOK {
+		t.Fatalf("running authenticated stream interrupted: %d", runningAuth.Code)
+	}
+	b.deps.Lookup, b.deps.MediaLookup = originalPlanLookup, originalMediaLookup
+	b.deps.CurrentMediaLookup = nil
 	mediaHidden = true
 	hiddenRange := httptest.NewRecorder()
 	lazy.(frontend.AuthenticatedLazyStreams).ServeAuthenticated(hiddenRange, httptest.NewRequest(http.MethodGet, "/dav/movie.mkv", nil), "account-credential-secret", authenticated)
@@ -448,5 +484,110 @@ func TestLazyRenewalRespectsGrantAndDatabase(t *testing.T) {
 	}
 	if err := streams.renewActive(ctx, lazyHash("hash"), "grant-reference", 1, "session"); err == nil {
 		t.Fatal("renewed during database failure")
+	}
+}
+
+func TestLazyStreamLocalityFollowsLiveSourceIP(t *testing.T) {
+	restore := clientnet.OverrideHostPrefixes([]netip.Prefix{
+		netip.MustParsePrefix("2001:db8:abcd:1::/64"),
+	})
+	t.Cleanup(restore)
+
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Now().Truncate(time.Second)
+	active := func(_ context.Context, id int64) (*core.Viewer, error) {
+		return &core.Viewer{ID: id, Username: "sam"}, nil
+	}
+	events := NewEventBus(nil, active)
+	defer events.Close()
+	pb := &fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 3}
+	b, err := NewBroker(BrokerDeps{
+		SurfacePolicy: testSessionPolicy,
+		Events:        events,
+		Playback:      pb,
+		Transcoder:    fakeBrokerTranscoder{},
+		Progress:      &fakeProgress{},
+		ActiveViewer:  active,
+		CanPlay:       func(*core.Viewer, bool, time.Time) bool { return true },
+		BitrateLimit:  func(*core.Viewer) int { return 0 },
+		OnTimeline:    func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {},
+		Lookup: func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error) {
+			return &core.Title{Key: core.MovieKey(1)}, nil
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.deps.MediaLookup = func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error) {
+		return &core.Title{Key: core.MovieKey(1)}, nil
+	}
+	defer b.Close(ctx)
+
+	trusted := clientnet.ProxyPrefixes([]string{"172.16.50.5"})
+	resolveIP := func(r *http.Request) (netip.Addr, bool) {
+		ip, _ := clientnet.ClientNet(r, trusted...)
+		return ip, ip.IsValid()
+	}
+	grants := &fakeLazyGrants{}
+	lazy, err := NewLazyStreams(db, b, "stremio", grants, time.Hour, func(r *http.Request) bool {
+		ip, ok := resolveIP(r)
+		return !ok || !clientnet.LAN(ip)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy.(*lazyStreams).SetClientIP(resolveIP)
+
+	// Issue a stream URL while the client appears remote.
+	req := frontend.PlanRequest{
+		Viewer:   &core.Viewer{ID: 1},
+		Device:   core.Device{ID: "stremio-dev"},
+		Caps:     core.ClientCaps{Remote: true, ClientIP: "203.0.113.10"},
+		Protocol: "stremio",
+		Item:     core.MovieKey(1),
+		Intent:   frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true}},
+	}
+	path, err := lazy.Issue(ctx, "account-credential-secret", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Redeem from a global IPv6 LAN client inside host /64 behind trusted proxy -> local.
+	rLocal := httptest.NewRequest(http.MethodGet, path, nil)
+	rLocal.RemoteAddr = "172.16.50.5:41000"
+	rLocal.Header.Set("X-Forwarded-For", "2001:db8:abcd:1::42")
+	wLocal := httptest.NewRecorder()
+	lazy.ServeHTTP(wLocal, rLocal)
+	if wLocal.Code != http.StatusOK {
+		t.Fatalf("local IPv6 status = %d", wLocal.Code)
+	}
+	if len(pb.Sessions()) != 1 || pb.Sessions()[0].Client.Remote || pb.Sessions()[0].Client.ClientIP != "2001:db8:abcd:1::42" {
+		t.Fatalf("local redeem kept remote or stale IP: %+v", pb.Sessions())
+	}
+
+	// Redeem the same capability from a public IP -> restarts as remote with public ClientIP.
+	rRemote := httptest.NewRequest(http.MethodGet, path, nil)
+	rRemote.RemoteAddr = "172.16.50.5:41001"
+	rRemote.Header.Set("X-Forwarded-For", "203.0.113.88")
+	wRemote := httptest.NewRecorder()
+	lazy.ServeHTTP(wRemote, rRemote)
+	if wRemote.Code != http.StatusOK {
+		t.Fatalf("remote status = %d", wRemote.Code)
+	}
+	if len(pb.Sessions()) != 1 || !pb.Sessions()[0].Client.Remote || pb.Sessions()[0].Client.ClientIP != "203.0.113.88" {
+		t.Fatalf("remote redeem kept local or stale IP: %+v", pb.Sessions())
+	}
+}
+
+func TestLazyWritePlaybackErrorRequiredAudioLanguage(t *testing.T) {
+	langErr := &core.RequiredAudioLanguageError{Language: "English"}
+	ls := &lazyStreams{protocol: "stremio"}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/sessions/lazy/test", nil)
+	ls.writePlaybackError(w, r, fmt.Errorf("plan: %w", langErr))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), langErr.Error()) {
+		t.Fatalf("writePlaybackError(RequiredAudioLanguageError) = %d %q, want 422 with %q", w.Code, w.Body.String(), langErr.Error())
 	}
 }

@@ -37,7 +37,7 @@ func TestMediaBrowserImageFormats(t *testing.T) {
 					s := ImageGrantService{surface: surface, artwork: formatArtwork{data: encoded.Bytes()}}
 					r := httptest.NewRequest("GET", "/?format="+format+"&maxWidth=4&quality=80&tag=v1", nil)
 					w := httptest.NewRecorder()
-					s.writeGrantedImage(w, r, nil, frontend.ArtworkRequest{}.Device, 0, "", frontend.Image{Kind: kind, Path: "/logo.png"}, "", "", "")
+					s.writeGrantedImage(w, r, nil, frontend.ArtworkRequest{}.Device, 0, "", frontend.Image{Kind: kind, Path: "/logo.png"})
 					if w.Code != 200 {
 						t.Fatalf("status %d: %s", w.Code, w.Body.String())
 					}

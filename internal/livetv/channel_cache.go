@@ -16,10 +16,11 @@ import (
 // The channel snapshot keeps every request path off a full table decode.
 // A large IPTV lineup is tens of thousands of channels, and every Plex
 // lineup, grid, hub and tune request needs the channel list. Requests share
-// one decoded, sorted snapshot that is rebuilt only when livetv_channels
-// changes. Triggers bump livetv_channel_epoch on every write to the table,
-// from any writer and any cluster node, so one indexed read per request
-// decides whether the snapshot is current.
+// one decoded, sorted snapshot that is rebuilt only when livetv_channels or
+// livetv_owner_groups changes. Triggers bump livetv_channel_epoch on every
+// write to either table, from any writer and any cluster node, so one indexed
+// read per request decides whether both the channel snapshot and compiled
+// owner-group rules are current.
 
 const channelEpochSchema = `CREATE TABLE livetv_channel_epoch (id INTEGER PRIMARY KEY CHECK(id=1), generation BIGINT NOT NULL); INSERT INTO livetv_channel_epoch(id,generation) VALUES(1,1);`
 
@@ -68,28 +69,45 @@ func (s *Service) allChannels(ctx context.Context) ([]Channel, error) {
 }
 
 func (s *Service) channelSnapshot(ctx context.Context) ([]Channel, *channelSnapshot, error) {
+	prevGroupRev, prevGroupIdx := s.getOwnerGroupCacheState()
 	var gen int64
-	if err := s.o.DB.QueryRowContext(ctx, `SELECT generation FROM livetv_channel_epoch WHERE id=1`).Scan(&gen); err != nil {
+	var rawGroups string
+	if err := s.o.DB.QueryRowContext(ctx,
+		`SELECT generation, CASE WHEN generation=? THEN '' ELSE COALESCE((SELECT data FROM livetv_owner_groups WHERE id=1),'[]') END FROM livetv_channel_epoch WHERE id=1`,
+		prevGroupRev,
+	).Scan(&gen, &rawGroups); err != nil {
 		return nil, nil, err
 	}
 	c := &s.chanSnap
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var list []Channel
 	if c.list != nil && c.generation == gen {
-		return c.list, c, nil
+		list = c.list
+		c.mu.Unlock()
+	} else {
+		// The epoch is read before the rows: a write in between leaves an older
+		// generation on a newer list, which the next request rebuilds.
+		loaded, err := channels(ctx, s.o.DB)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, nil, err
+		}
+		c.generation, c.list = gen, loaded
+		c.byID = make(map[string]int, len(loaded))
+		c.bySource = map[string][]int{}
+		for i, ch := range loaded {
+			c.byID[ch.ID] = i
+			c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
+		}
+		list = loaded
+		c.mu.Unlock()
 	}
-	// The epoch is read before the rows: a write in between leaves an older
-	// generation on a newer list, which the next request rebuilds.
-	list, err := channels(ctx, s.o.DB)
-	if err != nil {
-		return nil, nil, err
-	}
-	c.generation, c.list = gen, list
-	c.byID = make(map[string]int, len(list))
-	c.bySource = map[string][]int{}
-	for i, ch := range list {
-		c.byID[ch.ID] = i
-		c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
+	if prevGroupIdx == nil || gen != prevGroupRev {
+		idx, err := s.loadOwnerGroupIndex(ctx, gen, rawGroups)
+		if err != nil {
+			return nil, nil, err
+		}
+		s.setOwnerGroupCacheState(gen, idx)
 	}
 	return list, c, nil
 }

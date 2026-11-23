@@ -15,5 +15,5 @@ func init() {
 func consolePositiveEvidence(f core.Filter) bool {
 	// Unknown evidence is a broad complement, so it must retain the planner's
 	// ordered path. Positive evidence supplies an indexed, selective key set.
-	return f.Playable == "yes" || f.DebridCached == "yes" || len(f.Qualities) > 0
+	return f.Playable == "yes" || f.DebridCached == "yes" || len(f.Qualities) > 0 || len(f.EvidenceResolutions) > 0 || len(f.EvidenceHDR) > 0 || len(f.EvidenceAudioLanguages) > 0
 }

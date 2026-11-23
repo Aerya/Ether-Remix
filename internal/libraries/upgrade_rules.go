@@ -58,16 +58,26 @@ func (s *Service) convertPredicates(ctx context.Context) error {
 	}
 	for _, u := range pending {
 		var f core.Filter
-		if err := json.Unmarshal([]byte(u.predicate), &f); err != nil {
-			return fmt.Errorf("library %d predicate: %w", u.id, err)
+		var damaged []core.LibraryExclusion
+		broken := func(raw string) core.LibraryExclusion {
+			value, _ := json.Marshal(raw)
+			return core.LibraryExclusion{MediaType: "mixed", Match: "all", Rules: []core.CollectionRule{{Field: "invalid", Op: "is", Value: value}}}
 		}
+		if err := json.Unmarshal([]byte(u.predicate), &f); err != nil {
+			s.log.Warn("broken saved library predicate", "library_id", u.id, "err", err)
+			f = core.Filter{}
+			damaged = append(damaged, broken(u.predicate))
+		}
+		f.Type = core.MediaType(core.NormalizeRuleMediaType(string(f.Type)))
 		if f.Type == "" {
 			f.Type = core.TypeMovie
 		}
 		var rules []core.LibraryExclusion
 		if err := json.Unmarshal([]byte(u.rules), &rules); err != nil {
-			return err
+			s.log.Warn("broken saved library rules", "library_id", u.id, "err", err)
+			rules = []core.LibraryExclusion{broken(u.rules)}
 		}
+		rules = append(rules, damaged...)
 		conditions := core.LibraryPredicateConditions(f)
 		fallback := u.fallback
 		if fallback != "hide" {
@@ -85,8 +95,9 @@ func (s *Service) convertPredicates(ctx context.Context) error {
 			}
 			fallback = "hide"
 		}
+		rules = core.NormalizeLibraryRules(rules)
 		if _, err := libraryfilter.CompilePolicy(rules, fallback); err != nil {
-			return fmt.Errorf("library %d rules: %w", u.id, err)
+			s.log.Warn("broken saved library rules; retaining for owner repair", "library_id", u.id, "err", err)
 		}
 		data, err := json.Marshal(rules)
 		if err != nil {

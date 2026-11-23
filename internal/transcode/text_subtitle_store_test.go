@@ -100,9 +100,10 @@ func TestPlaybackTextSubtitleTee(t *testing.T) {
 		session.mu.Lock()
 		dir := session.textSubtitleDir(index)
 		session.mu.Unlock()
-		if entries, err := os.ReadDir(dir); err != nil || len(entries) == 0 {
-			t.Fatalf("missing persisted windows %s: %v", dir, err)
-		}
+		waitFor(t, "persisted windows", func() bool {
+			entries, err := os.ReadDir(dir)
+			return err == nil && len(entries) > 0
+		})
 	}
 	e.m.Stop("tee")
 	request.SessionID = "tee-replay"

@@ -15,21 +15,50 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
-// Plex for Apple TV draws guide channel logos only from URLs that Plex's
-// cloud image service can fetch: it never loads them from the server
-// itself, so a logo on a LAN address never appears (#391, proven on the
-// device: a public HTTPS logo rendered, the same channel's LAN URL did not,
-// and the server saw no image request at all). Whatever is published there
-// leaves the network, so it must never carry a viewer's token.
+// Plex's Bedrock guide (Apple TV, iOS/iPadOS, and Android) draws guide channel
+// logos only from URLs that Plex's cloud image service can fetch: it never
+// loads them from the server itself, so a logo on a LAN address never appears
+// (#391, proven on Apple TV and reproduced on Plex for Android Mobile 2026.23.0:
+// logos rendered remotely over WAN, drew blank on LAN, and the server saw no
+// image request at all). Whatever is published there leaves the network, so it
+// must never carry a viewer's token.
 
 // signedLogoPrefix serves a channel's logo without a Plex token, to a URL
 // signed by this server.
 const signedLogoPrefix = "/livetv/logos/"
 
 func cloudGuideLogoClient(pr *Request) bool {
-	return pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV"))
+	// Plex's own Apple TV, iOS/iPadOS, and Android apps share the Bedrock
+	// guide and fetch channel logos through Plex's cloud. Third-party apps on
+	// the same platforms (Plezy sends Platform iOS/tvOS/Android) and Plex Web
+	// load logos from this server directly or through /photo/:/transcode and
+	// need its ordinary logo URL.
+	if pr == nil || strings.EqualFold(pr.Product, "Plex Web") {
+		return false
+	}
+	if strings.EqualFold(pr.Product, "Plex for Apple TV") || strings.EqualFold(pr.Product, "Plex for iOS") || plexAndroidClient(pr) {
+		return true
+	}
+	cloud := strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS") || strings.EqualFold(pr.Platform, "Android")
+	return cloud && (pr.Product == "" || strings.HasPrefix(strings.ToLower(pr.Product), "plex"))
+}
+
+// applyGuideChannelThumb rewrites an airing's channelThumb to the same
+// cloud-fetchable logo URL as the lineup when the client's guide fetches
+// channel logos through Plex's cloud.
+func (s *Server) applyGuideChannelThumb(r *http.Request, md *model.Metadata, c frontend.LiveTVChannel) {
+	if c.ID == "" || !cloudGuideLogoClient(FromContext(r.Context())) || len(md.Media) == 0 {
+		return
+	}
+	logo := s.liveGuideLogo(r, c)
+	for i, a := range md.Media[0].Extra {
+		if a.Name == "channelThumb" {
+			md.Media[0].Extra[i].Value = logo
+		}
+	}
 }
 
 // cloudGuideLogo is the logo URL for a client whose guide fetches logos
@@ -110,9 +139,18 @@ func (s *Server) liveLogoSignature(id string) string {
 // viewer: the signature was minted for a viewer allowed that channel, and a
 // logo reveals nothing beyond what the guide that carried it did.
 func (s *Server) handleSignedLiveLogo(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "channel")
 	sig, ok := strings.CutSuffix(chi.URLParam(r, "signature"), ".png")
-	if !ok || !s.liveTVEnabled() || !hmac.Equal([]byte(sig), []byte(s.liveLogoSignature(id))) {
+	if !ok {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	s.serveSignedLiveLogo(w, r, chi.URLParam(r, "channel"), sig)
+}
+
+// serveSignedLiveLogo serves one channel's logo when sig is this server's
+// signature for it.
+func (s *Server) serveSignedLiveLogo(w http.ResponseWriter, r *http.Request, id, sig string) {
+	if !s.liveTVEnabled() || !hmac.Equal([]byte(sig), []byte(s.liveLogoSignature(id))) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}

@@ -1,13 +1,19 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -109,6 +115,16 @@ func TestSurfaceIdentityLoginQuickConnectAndRevoke(t *testing.T) {
 	}
 	if err := jf.QuickConnectApprove(ctx, viewer, code); err != nil {
 		t.Fatal(err)
+	}
+	// Re-approving an already approved code maps to frontend.ErrQuickConnectUsed.
+	if err := jf.QuickConnectApprove(ctx, viewer, code); !errors.Is(err, frontend.ErrQuickConnectUsed) {
+		t.Fatalf("expected ErrQuickConnectUsed on duplicate approve, got %v", err)
+	}
+	// Delegated viewers cannot approve quick-connect codes.
+	delegated := *viewer
+	delegated.Delegated = true
+	if err := jf.QuickConnectApprove(ctx, &delegated, code); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized for delegated viewer, got %v", err)
 	}
 	if details, err := jf.QuickConnectDetails(ctx, secret); err != nil || !details.Approved || details.Code != code {
 		t.Fatal("approved details", details, err)
@@ -457,7 +473,11 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil)
+	sealer, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil, sealer)
 	resolver, _ := identity.NewResolver(map[string]identity.Authenticator{"plex": a.users}, grants)
 	limiter, _ := identity.NewLoginLimiter(a.db, time.Minute, 3, 3, nil)
 	surface := surfaceIdentity{surface: "xtream", resolver: resolver, grants: grants, login: limiter}
@@ -472,13 +492,73 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 			t.Fatal("normal startup locked out", err)
 		}
 	}
+	shortUser, shortPass, credential, err := grants.IssueXtream(ctx, owner.ID, core.Device{ID: "xtream-short"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shortUser) > 12 || len(shortPass) != 12 {
+		t.Fatal("invalid short pair shape")
+	}
+	var sealed string
+	if err := a.db.QueryRowContext(ctx, `SELECT xtream_password FROM identity_grants WHERE xtream_username=?`, shortUser).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	if !config.IsSealed(sealed) || strings.Contains(sealed, shortPass) {
+		t.Fatal("password not encrypted")
+	}
+	hash := sha256.Sum256([]byte(credential))
+	revealedUser, revealedPass, available, err := grants.RevealXtream(ctx, owner.ID, hex.EncodeToString(hash[:]))
+	if err != nil || !available || revealedUser != shortUser || revealedPass != shortPass {
+		t.Fatal("encrypted reveal failed", err)
+	}
+	oldHash := sha256.Sum256([]byte(password))
+	if _, _, available, err := grants.RevealXtream(ctx, owner.ID, hex.EncodeToString(oldHash[:])); err != nil || available {
+		t.Fatal("old login unexpectedly revealable", err)
+	}
+	otherUser, _, _, err := grants.IssueXtream(ctx, owner.ID, core.Device{ID: "xtream-other"})
+	if err != nil || otherUser == shortUser {
+		t.Fatal("username not unique", err)
+	}
+	for _, spelling := range []string{shortPass, strings.ReplaceAll(shortPass, "-", ""), strings.ToUpper(shortPass)} {
+		got, ok := frontend.XtreamGrantCredential(shortUser, spelling)
+		if !ok || got != credential {
+			t.Fatal("spellings do not share one grant")
+		}
+		for n := 0; n < 20; n++ {
+			v, err := surface.AuthenticateAppPassword(ctx, shortUser, spelling)
+			if err != nil || v == nil || v.ID != owner.ID {
+				t.Fatal("short login failed", err)
+			}
+		}
+	}
+	var stored string
+	if err := a.db.QueryRowContext(ctx, `SELECT hash FROM identity_grants WHERE xtream_username=?`, shortUser).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(credential))
+	if stored != hex.EncodeToString(sum[:]) {
+		t.Fatal("short login must store only the grant hash")
+	}
 	for n := 0; n < 3; n++ {
-		if _, err := surface.AuthenticateAppPassword(ctx, "owner", "main-password"); !errors.Is(err, core.ErrUnauthorized) {
+		if _, err := surface.AuthenticateAppPassword(ctx, shortUser, "zzzz-zzzz-zz"); !errors.Is(err, core.ErrUnauthorized) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := surface.AuthenticateAppPassword(ctx, "owner", "main-password"); !errors.Is(err, frontend.ErrRateLimited) {
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, "zzzz-zzzz-zz"); !errors.Is(err, frontend.ErrRateLimited) {
 		t.Fatal("brute force not limited", err)
+	}
+	// Failed attempts cannot interrupt valid API/Range requests for either form.
+	if _, err := surface.AuthenticateAppPassword(ctx, username, password); err != nil {
+		t.Fatal("old login stopped working", err)
+	}
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, shortPass); err != nil {
+		t.Fatal("valid short login locked out", err)
+	}
+	if err := surface.Revoke(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, shortPass); err == nil {
+		t.Fatal("revoked short login accepted")
 	}
 	if err := surface.Revoke(ctx, password); err != nil {
 		t.Fatal(err)
@@ -490,5 +570,77 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 	wrong.surface = "jellyfin"
 	if _, err := wrong.AuthenticateAppPassword(ctx, username, password); !errors.Is(err, core.ErrUnauthorized) {
 		t.Fatal("cross-surface grant accepted")
+	}
+}
+
+func TestSignInSuccessResetsIdentityBucketAndLockoutLogsOnceAtWarn(t *testing.T) {
+	a := setupTestApp(t, true)
+	var logBuf bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 77, Username: "owner"}, "owner-token"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := a.users.Owner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := identity.NewLocal(a.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := local.Create(ctx, owner.ID, "alice", "correct-password-12"); err != nil {
+		t.Fatal(err)
+	}
+	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil)
+	now := time.Unix(5000, 0)
+	login, err := identity.NewLoginLimiter(a.db, 15*time.Minute, 5, 2, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wireIdentityLimiter(login, "login")
+	jf := surfaceIdentity{app: a, surface: "jellyfin", local: local, grants: grants, login: login}
+	ctx = frontend.WithClientIP(ctx, netip.MustParseAddr("198.51.100.44"))
+	dev := core.Device{ID: "firetv-1", Product: "Jellyfin Android TV"}
+
+	// One failure then one success resets (alice, IP) while leaving the IP bucket at 2/5.
+	if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("expected unauthorized, got %v", err)
+	}
+	if _, err := jf.SignIn(ctx, "alice", "correct-password-12", dev); err != nil {
+		t.Fatalf("valid sign-in failed: %v", err)
+	}
+	// Two more failures for alice succeed admission (IP=4/5, alice=2/2) because alice's bucket was reset.
+	for i := 0; i < 2; i++ {
+		if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, core.ErrUnauthorized) {
+			t.Fatalf("failure %d after reset: got %v", i, err)
+		}
+	}
+	// Next attempt hits alice+IP limit (IP=5/5, alice=3/2) and logs WARN once.
+	if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	// Another failed attempt for bob from the same IP hits the IP-wide limit (IP=6/5),
+	// proving alice's earlier success did not reset the IP-wide bucket.
+	if _, err := jf.SignIn(ctx, "bob", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+		t.Fatalf("expected IP-wide rate limit for bob, got %v", err)
+	}
+	// Repeated retries during lockout must not emit duplicate WARN lines.
+	for i := 0; i < 3; i++ {
+		if _, err := jf.SignIn(ctx, "alice", "wrong-password-12", dev); !errors.Is(err, frontend.ErrRateLimited) {
+			t.Fatalf("repeat %d: got %v", i, err)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	// Exactly two WARN lines: one when alice+IP locked out, one when the IP-wide bucket locked out.
+	if len(lines) != 2 {
+		t.Fatalf("got %d WARN lines, want 2:\n%s", len(lines), logBuf.String())
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, `app="Jellyfin Android TV"`) || !strings.Contains(line, "remaining=15m0s") {
+			t.Fatalf("unexpected WARN log line: %s", line)
+		}
 	}
 }

@@ -57,7 +57,7 @@ to its admin token in your shell and run:
 ./ether plugin dev ./my-plugin --server http://localhost:32400 --once
 ```
 
-Alternatively open Plugins → Add plugin and upload `my-plugin.etherpkg`. Review
+Alternatively open Plugins → Add and upload `my-plugin.etherpkg`. Review
 requested permissions and enable it. Do not use a production server for iteration.
 `check --json` is the structured report for agents. `dev` installs hosted
 packages; remote Python/Go sidecars must run separately and be connected by
@@ -65,6 +65,15 @@ manifest URL or tunnel. `test` also runs recorded
 fixtures; ETHER_BIN enables its headless integration check, ETHER_PLUGIN_URL tests
 an already running remote sidecar. `pack` compiles TypeScript and checks the
 package. No separate npm install is needed for generated hosted templates.
+
+Ether reads the official signed marketplace (`https://github.com/braedonsaunders/ether-plugins`,
+served at `https://braedonsaunders.github.io/ether-plugins/index.json`) by default
+under Plugins → Marketplace. To publish a plugin there, upload `<id>-<version>.etherpkg`
+to a GitHub release, run `./ether plugin publish --url <release-asset-url> ./my-plugin`
+to pack the archive and print a validated `plugins/<id>.yaml` entry with its SHA-256
+digest, and open a pull request against `https://github.com/braedonsaunders/ether-plugins`.
+Marketplace CI verifies the artifact digest and runs `ether plugin check` before
+signing the updated index.
 
 ## Manifest decisions
 
@@ -78,10 +87,10 @@ package. No separate npm install is needed for generated hosted templates.
 | ether.capabilities | Only implemented capabilities; the validator checks allowed kinds |
 | ether.summary | ≤80 characters, or `$t:summary` with English fallback |
 | ether.runtime | Hosted: `{kind:"hosted",entry:"src/index.ts"}` (or WASM `module`); remote: `{kind:"remote"}` |
-| ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
+| ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`, ai `complete`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds; see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 50 `library.tabs` of `recommended\|library\|collections\|people\|view\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `layout` `grid\|list\|timeline`, `sort` (including `lastViewed`), `direction`, `search`/`searchPlaceholder`, and `filters` on `view` tabs supporting declared indexed fields and per-viewer state rules, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets?, levels?, ttlHours?}` for on-demand facet/person slice expansion and container-on-open expansion (`levels` names `container: true` levels)); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -91,36 +100,266 @@ package. No separate npm install is needed for generated hosted templates.
 
 Copy rules apply to contribution labels too: sentence case, no exclamation marks,
 no em/en dashes, no “simply”, “just”, or “easily”. Setting secrets are sealed by
-Ether; read with SecretGet only where needed, never echo them into views/logs.
+Ether; read with `SecretGet` only where needed, never echo them into views/logs.
+To store a plugin-derived credential (for example a session cookie or short-lived
+token) without writing plaintext into resolution or candidate caches, declare its
+name in `permissions.secrets` (not as a `settings.schema.json` secret field),
+store it with `ether.secret.set(name, value, ttlSec?)` (or `SecretWriteHost` /
+`PUT /ether/plugin-host/secrets/{name}` from remote plugins; empty value or
+`ether.secret.delete(name)` removes it), and reference it as `{secret:<name>}` in
+playable source headers and `http.hash`. Owner-configured settings secrets can never
+be overwritten or deleted by a plugin.
 
 ## Capability → routes → host services
 
 | Capability | Plugin surface | Host services commonly needed |
 |---|---|---|
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
-| catalog_provider | mediaKinds; paged browse/changes or push | KindUpsert/Delete/Items, KV |
-| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
+| poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
+| catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
+| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
-| notify / events | notify send/test; event subscription + acknowledgement | HTTPFetch, SecretGet, KV for deduplication |
+| notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
+| flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
 | ui / tools | ViewSpec page/action or declared tool | Settings, KV; grant only data the action needs |
-| livetv_channels | channels, guide, stream | HTTPFetch, KV |
+| livetv_channels | channels, guide, stream (kind livetv_source, or a content plugin that also has live channels) | HTTPFetch, KV |
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL for own items; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
-ArchiveList/Open read plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
-Returned chunks are at most 1 MiB. Solid ranges restart at the block beginning
+ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
+Per-call byte reads (`cache.read`, `archive.open`, and summed `archive.read` lengths) scale with
+the plugin's memory grant: `readBytes = clamp(memoryBytes/4, 8 MiB, 512 MiB)` (default 32 MiB → 8 MiB;
+1 GiB → 256 MiB), exposed at runtime via `runtime.limits` (`ether.runtime.limits()` / `BlobHost.RuntimeLimits`).
+Use `archive.open` when reading one member or stepping through one large file in ranges. Use
+`archive.read(blob, reads)` (1..4096 `{member, offset, length}` items summing to `<= readBytes`) when
+parsing many small or medium members from one archive in batches. Hosted QuickJS provides native UTF-8
+`TextDecoder` and `TextEncoder` globals (`__ether_text_decode` / `__ether_text_encode`, or `decodeText` /
+`encodeText` from `@ether/plugin-sdk`) so decoding `Uint8Array` slices into strings runs in native Go rather
+than a per-byte JavaScript loop. Big media never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive members
+directly (`internal/plugins/frontend_blob.go`, `frontend.streamURL`); these calls are only for bytes
+the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])`
+streams an uncompressed member into the plugin's library blob cache in one pass and returns
+{ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
-metadata, dictionaries and decoding. Split archives, encryption, unsafe names
-and special files are refused. Other 7z coder chains are unsupported.
+metadata, dictionaries and decoding. Split archives, encryption,
+and special files are refused; `archive.list` flags unsafe member names as
+informational warnings while by-index reads and extracts accept any
+non-directory member. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
+Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed. For user-hosted services whose hostname comes from plugin settings, declare `"operator"` in `permissions.network` (never `"*"`); Ether prompts the owner to approve each server address per plugin before requests or stream resolvers admit it.
 Host calls enforce permissions again on every request; revocation is immediate.
+
+## Owner language model (`ether.ai.complete`)
+
+A plugin that wants text or structured JSON completions from the owner's
+configured language model (Settings -> Integrations -> Language model) declares
+`ether.permissions.ai: "complete"` (or `"complete+search"` to also opt in to
+interactive search) instead of asking the owner for a second API key. Call
+`ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs?, searchQuery? })`
+(hosted) or `POST /ether/plugin-host/ai/complete` (`ctx.ether.ai.complete` in TS/Python,
+`ctx.AIComplete` in Go). When `schema` (a JSON Schema object; external `$ref` URLs
+are rejected) is provided, Ether extracts JSON, validates it against `schema`,
+and returns `{ text, json }` (or throws `invalid_output` on mismatch).
+
+`ai.complete` is **blocked on viewer/client request paths** (`/stream/*`,
+non-search `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
+`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|items|live`,
+non-search `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
+`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). With
+`"complete"`, call it only from actions (`/ether/action/*`), jobs (`/ether/job/*`),
+Flow actions, tools, event handlers, setup/test routes, background kind/Live TV
+sync, or declared `ether.schedule` routes, and cache results in `ether.kv` for
+viewer paths.
+
+With `ether.permissions.ai: "complete+search"` (shown on the install sheet with
+its own line and independently revocable as `ai.search`), Ether permits the same
+bounded descriptive-search exception it uses for its own AI search on three
+search routes only: Stremio catalog search with a non-empty `search` query
+(`/catalog/{type}/{id}/search=….json`), kinds search (`/ether/v1/kinds/{kind}/search`
+with a non-empty query), and frontend adapter search routes
+(`/ether/v1/frontend/{key}/…`, matching `frontendAdapters[].searchPaths` or
+conventional `/search`, `/search2`, `/search3` subpaths when `searchPaths` is
+omitted). Pass `searchQuery` on adapter endpoints that do not carry a query in
+the URL (such as GraphQL POST routes); remote SDKs forward `X-Ether-Viewer-Token`
+automatically so the host enforces the active route and live grant.
+
+Safe per-plugin bounds apply automatically: 1..20 messages (`<=32 KiB` total, at
+least one `user`), `<=32 KiB` schema, `maxTokens` default 1024 (max 4096),
+`temperature` in `[0, 2]`, `<=64 KiB` output. Background/action routes allow 20
+calls/minute per plugin and `timeoutMs <= 30 s`. Interactive search routes
+(`complete+search`) enforce a hard `timeoutMs <= 20 s` bound (matching Ether's
+descriptive search bound; always catch `timeout`/`deadline` and answer without
+AI), cache results per normalized query (10 min TTL, 256 entries/plugin, with
+in-flight dedup) so repeated searches do not re-ask, and enforce a separate
+per-viewer rate limit (10 uncached calls/minute per viewer). Always handle
+`err.code === "not_configured"` (`HostError.Code == "not_configured"` in Go) so
+the plugin falls back cleanly when no language model is configured. No provider
+credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
+
+## Container duration verification & `ether.media.probe`
+
+- **Verify on open:** set both `durationSec` and `durationToleranceSec` (> 0)
+  on any `PlayableSource` returned by `/resolve` to verify the container's
+  observed running time on open (reusing Ether's durable `release_probes`
+  cache, bounded at 10 s). If the observed duration differs from `durationSec`
+  by more than `durationToleranceSec`, Ether rejects the source as wrong
+  content (`core.ErrWrongContent` / `ErrPluginAnswer`), tries the next
+  candidate, and declines to cache the fallback resolution. Without
+  `durationToleranceSec`, `durationSec` remains estimated metadata only.
+- **Probe in jobs/actions (`media.probe`):** declare `ether.permissions.media:
+  "probe"` and call `ether.media.probe(source)` (hosted), `ctx.ether.media.probe`
+  (TS/Python), or `ctx.MediaProbe` (Go; `POST /ether/plugin-host/media/probe`).
+  Takes the same `PlayableSource` shape `/resolve` returns, returns
+  `{ durationSec, container, width, height, sizeBytes }`, reuses
+  `release_probes`, enforces a 10 s per-probe bound and 60/min per-plugin rate
+  limit, runs release sources cached-only, and is **blocked on all viewer and
+  client request paths** (including `/resolve`, `/search`, `/catalog/*`,
+  `/stream/*`, `/meta/*`, and remote requests carrying `X-Ether-Viewer-Token`).
+
+## Indexer search controls, streaming, and listing (`sources.resolve`)
+
+With `kind_resolver` and `permissions.sources: "search"` (or `"acquire"`, plus
+`"+check"` — `"search+check"` / `"acquire+check"` — to allow background
+`usenet_check` in jobs and schedules), `sources.resolve` (use
+`resolveSourcesWithResult` / `ResolveSourcesWithResult` /
+`resolve_sources_with_result` to read the full response envelope) supports:
+
+- **Deadline-aware default & stalled-indexer backoff (`kind: "indexer_search"`):**
+  under any viewer/request deadline (such as `/resolve`'s 5 s budget), Ether
+  automatically caps the wait to remaining time minus `max(1.5 s, 35%)` (so a
+  fresh 5 s `/resolve` waits at most 3.25 s, leaving 1.75 s reserve) and returns
+  arrived results while stragglers finish into Ether's search cache in the
+  background as `status: "pending"` (unbounded/background jobs still wait up to
+  the 30 s ceiling unchanged). Indexers that time out or fail 3 times in a row
+  enter Ether's shared circuit-breaker backoff (2 min..30 min) and are skipped
+  immediately with `status: "skipped"` and `reason: "paused_backoff"`.
+- **Controlled fan-out (`kind: "indexer_search"`):** optional `firstResults`,
+  `settleMs` (default 250 ms, `0` = immediate), `minResults`, `timeoutMs`
+  (up to the 30 s ceiling and clamped to the deadline-aware reserve on viewer
+  routes), and case-insensitive `skipIndexers` / `onlyIndexers`
+  filters. Early returns keep slower indexers filling Ether's search cache in
+  the background (bounded at 30 s and coalesced), reporting them as
+  `status: "pending"` and in top-level `pending: [{indexerId, indexer}]`;
+  `status: "timed_out"` is reserved for indexers that hit the ceiling.
+- **Streaming arrivals:** pass `stream: true` on `indexer_search` to get an
+  immediate `{searchId, pending, done, indexers}` handle, poll new arrivals
+  with `kind: "indexer_search_results"` (`{searchId, waitMs?}`, `waitMs` capped
+  at 10 s), and cancel unfinished indexers with `kind: "indexer_search_cancel"`
+  (`{searchId}`). Handles are scoped to the calling plugin (foreign or expired
+  handles return `not_found`), capped at 4 live searches per plugin, dropped
+  after 15 s with no polls, and expire 3 min after the last poll.
+- **Enabled indexer listing (`kind: "indexers"`):** returns the owner's enabled
+  indexers in `indexers: [{indexerId, indexer, kind, medianMs?, lastMs?, lastError?}]`
+  (`kind`: `newznab`, `torznab`, `builtin`, `stremio`, `zilean`, `addon`), with
+  sanitized error codes and no API keys, URLs, or cookies.
+- **Usenet article availability (`kind: "usenet_check"`):** pass `candidate` or
+  `nzbUrl` for a bounded (32-article) background-priority NNTP check sharing
+  Ether's per-NZB verdict cache (good 15 min, bad 30 min; reused at Play and
+  populated by Ether's own availability/playback checks). On-demand viewer calls
+  require `"search"` or `"acquire"` and never consume the daily background
+  allowance (20/min burst limit). Background jobs, schedules, sync, and expand
+  calls require `"search+check"` or `"acquire+check"` (independently revocable
+  as `sources.check`) and count uncached checks against a per-plugin daily
+  allowance (default 20/UTC day, editable under Sources › Indexers › Daily
+  budgets); once spent, Ether returns `rate_limited` (HTTP 429) with
+  `retryAfterSec`, `retryAt`, and `Retry-After`.
+
+## Poster badges
+
+A plugin with capability `poster_badges` declares up to 4 badge sets in
+`ether.contributes.posterBadges: [{key, label, description?}]`, where `key`
+matches `^[a-z][a-z0-9_]{0,31}$`. Typical sets include a `"dub languages"` set
+for an anime plugin (`{"key":"dub_languages","label":"Dub languages"}`) and an
+`"editions"` set (`{"key":"editions","label":"Editions"}`).
+
+Push or remove stored badge labels from an action, event, or scheduled run:
+
+```ts
+ether.badges.set("dub_languages", [
+  { title: { type: "show", tmdb: 37854 }, labels: ["EN DUB", "JA"] },
+]);
+ether.badges.set("editions", [
+  { title: { type: "movie", imdb: "tt0083658" }, labels: ["FINAL CUT"] },
+]);
+const usage = ether.badges.usage(); // { titles, quotaTitles }
+// ether.badges.clear("editions");
+```
+
+`ether.badges.set(setKey, entries)` accepts up to 500 entries per call. Each
+entry targets a `"movie"` or `"show"` by `tmdb` and/or `imdb` ID and supplies at
+most 3 labels per title per set; an empty `labels` array deletes that title's
+badges in the set. Each label is 1 to 16 characters from `[A-Z0-9 +&'./-]`;
+lowercase input is uppercased, and any other character or length is rejected.
+Each plugin may badge up to 200,000 titles (`ether.badges.usage()` reports
+`{titles, quotaTitles}`). Ether draws the badges itself using the owner's poster
+overlay style, the owner can switch each set off in Metadata -> Artwork
+(`overlays.Settings.disabledBadgeSets` entries formatted as `"<pluginId>:<setKey>"`),
+and no plugin call happens while rendering posters.
+
+## Flows: custom events and actions
+
+Plugins participate in Ether Flows in two additive ways (see `sdk/examples/smart-lights/`):
+
+1. **Publish custom events** (`capabilities: ["events"]` + `ether.contributes.events.publish`):
+   Declare typed event schemas (`key`, `version`, `label`, `fields`) alongside or instead of `events.subscribe` (which accepts both the 12 legacy EPP/1 names and canonical Flows event names). Published events are namespaced as `plugin:<pluginId>/<key>` on Ether's event bus and appear in the Flows trigger picker. Call `ether.events.publish(key, payload[, correlation])` in hosted plugins or `POST /ether/plugin-host/events/publish` from remote sidecars (`ctx.PublishEvent` in Go, `ctx.ether.events.publish` in TypeScript/Python). Payloads are schema-validated (max 64 KiB) and rate-limited to 30 events/minute per plugin (`rate_limited` / HTTP 429). Events emitted from inside a Flow action automatically inherit incremented `flowDepth` and `originRunId` for loop protection.
+2. **Contribute Flow actions** (`capabilities: ["flow_actions"]` + `ether.contributes.flowActions`):
+   Declare actions (`key`, `label`, `route` under `/ether/`, optional `timeout` up to `60s`, `idempotent`, `sideEffect`, `params`, `outputs`). Actions are registered atomically as `plugin:<pluginId>/<key>` on install, update, enable/disable, grant change, and uninstall. Ether invokes the route via `POST` with `X-Ether-Idempotency-Key` and JSON body `{flowId, runId, nodeId, idempotencyKey, dryRun, params}` and expects `{output: {...}, branch?}`. Always respect `dryRun` and deduplicate side effects using `X-Ether-Idempotency-Key` in KV. In shadow mode, both `PublishEvent` and Flow action executions are journaled without external side effects.
+
+## Per-route call limits and owner ceilings
+
+Ether enforces the same deadline it advertises in `X-Ether-Deadline`. On viewer
+paths, a hosted call's governance unit budget scales directly with that route's
+deadline (`1 unit = 100 µs` of guest wall time, or `10,000 units/s`, plus priced
+host calls; time spent inside a host call is bounded by the call deadline rather
+than billed as guest wall time):
+
+| Route group | Effective deadline | Effective unit budget |
+|---|---|---|
+| `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
+| `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
+| `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
+| `/ether/options/*`, `/ether/view/*` | 2 s | Owner-granted ceiling |
+| `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
+| `/ether/test` | 15 s | Owner-granted ceiling |
+| Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/flow-actions/*` | Declared action `timeout` (default 30 s, max 60 s) | Owner-granted ceiling |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/kinds/*/expand`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
+
+Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
+SDK) inside a hosted handler returns the **effective** `deadline` and
+`unitBudget` for the current call after route and owner clamps, alongside
+`memoryBytes`, `readBytes`, `poolSize`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
+call spends its whole budget, the error names the route and limit (for example
+`used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
+
+Plugins request higher memory, time, instance pool (`poolSize`, default 2, default owner ceiling 4, raisable up to 16),
+download or archive limits in `ether.runtime.limits` in `manifest.json`. With
+`poolSize >= 3`, at least one instance is reserved exclusively for playback resolves
+(`/ether/v1/kinds/*/resolve`, `/match`, `/ether/open*`, `/stream/*`) and background
+jobs/sync calls hold at most `poolSize - 2` instances; with `poolSize == 2`,
+background jobs and frontend-adapter requests (`/ether/v1/frontend/*`) share at most
+one instance so playback resolves and health checks retain a free instance. Queued
+playback resolves take priority ahead of non-resolve waiters and start their execution
+deadline once an instance is acquired (with a bounded wait limit); waiting for a busy
+instance returns a retryable busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
+ceilings in **Plugins → Settings**, or override them for a single plugin in that
+plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
+and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
+A per-plugin override can raise a trusted plugin above the global ceiling (up to
+4 GiB WASM memory, 16 pool instances, and one year for background work). Viewer routes stay capped at
+their route deadlines so browsing and playback remain responsive; offload multi-step
+or long-running work to `/ether/job/*` (including `{pending: true, retryInMs, job}`
+from kind `/resolve` and `/match`).
 
 ## Ten recipes
 
@@ -149,8 +388,11 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 ./ether plugin check sdk/examples/my-library
 ```
 
-Edit mediaKinds levels, fields and presentation, then the browse/changes/resolve
-handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
+Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`), `library.dateDisplay` (`year|date`),
+`library.tabs` (up to 50 tabs of `recommended|library|collections|people|view|live`, such as `{key:"live",label:"Live",kind:"live",card:"landscape",searchPlaceholder:"Search live streams"}`, `{key:"topics",label:"Topics",kind:"collections",facet:"topic",order:"name",searchPlaceholder:"Search topics"}`, `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`, or a Smart View History tab `{key:"history",label:"History",kind:"view",layout:"timeline",sort:"lastViewed",direction:"desc",filters:{match:"all",rules:[{field:"viewer",op:"is",value:{history:true}}]}}`),
+optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
+and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["tournaments","voiceCast"],levels:["artist","album"],ttlHours:168}` for on-demand `/ether/v1/kinds/{kind}/expand` facet slices and container-on-open expansion), then the browse/changes/expand/live/resolve
+handlers in `src/plugin.ts` (`onLive` / `OnLive` / `on_live` for live tabs). Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
 
 ### 3. Resolver / playable source
@@ -192,9 +434,16 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 ```
 
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
-and a handler for that path. Store a cursor/etag in KV and process a bounded batch per
-run. Do not create timers in plugin code. Cache external results; keep the job
-unconfigured until the owner needs it. Settings changes must be read each run.
+and a handler for that path. The first run happens right after install (within one
+scheduler tick once enabled); later runs keep their cadence across server restarts,
+including failed attempts. Scheduled calls run off the scheduler pass, never overlap
+for the same entry, and may return `{job:"/ether/job/import"}` to hand multi-step
+work (for example importing platform game catalogues) to a lowered-priority
+continuation job with progress and cancel. Store a cursor/etag in KV (`ether.kv.usage()`
+reports `{bytes, keys, quotaBytes, quotaKeys}` including the 256-byte charge per key)
+and process a bounded batch per run. Do not create timers in plugin code. Cache
+external results; keep the job unconfigured until the owner needs it. Settings
+changes must be read each run.
 
 ### 7. Settings and setup steps
 
@@ -269,3 +518,242 @@ conformance, package, and check the visible result on your own development serve
 Never claim offline conformance proves playback on a real client. New host
 services belong in the generated reference source list and this service map;
 regenerate the reference instead of duplicating contracts in prose.
+
+## Slow resolution and remote verification
+
+Kind `/resolve` and `/match` handlers may return `{pending:true,retryInMs:1000}`.
+Ether retries after 250–5000 ms (clamped), for at most 25 seconds per Play;
+each invocation still has a five-second cap. Pending does not damage health.
+If a call is still `pending` after the 25-second wait budget, Ether answers
+`503` with `code: "preparing"` and `Retry-After` (from `retryInMs`, or `5` s by
+default) on `kind-media`, Vela, Jellyfin and Plex API routes without caching a
+negative resolution; only a real empty `sources: []` / `404` answer becomes `409`
+`no_source`. For slow searches, also return `job:"/ether/job/prepare"`. Ether
+deduplicates running jobs per plugin, kind, item, `partIndex`, and `source`, passes the
+original request body, and uses the existing promoted job deadline and
+continuation protocol. A completed
+job wakes the resolver before the retry timer. Persist results in KV; never do
+work ahead of an actual request. Owner/scheduled jobs (up to 2) and playback
+resolver jobs (up to 4) have separate limits per plugin; if all four resolver
+slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
+
+`ether.http.fetch({url,timeoutMs:1200})` and
+`ether.http.fetchToCache({url,libraryKey,name,timeoutMs:1200,resume:true})` bound a slow
+remote request (including streaming into cache) by the remaining call deadline.
+`http.fetchToCache` defaults to 10 minutes (also the ceiling on viewer and
+interactive request paths); inside a job (`/ether/job/*`), schedule, or
+background context (`kind` / Live TV sync, `/ether/event`), `timeoutMs` may
+extend up to the calling job's remaining deadline. Pass `resume: true` to
+continue an incomplete partial blob with `Range: bytes=<cached>-` when the
+server supports ranges and strong `ETag` or `Last-Modified` validators still
+match (restarting cleanly from byte 0 if they do not or the server returns
+`200`/`416`); partial bytes count against the library cache quota and disk
+safety floor and only become a readable cache blob once complete.
+Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
+request context/timeout.
+
+`ether.http.fetchMany(requests, {concurrency?})` runs up to 64 outbound HTTP
+requests concurrently on the host while the hosted guest waits synchronously,
+overlapping independent provider or candidate-detail fetches instead of summing
+their latencies. Per-call concurrency defaults to and clamps at 8 (fixed host
+cap, no owner setting), per-origin politeness limits cap concurrent fetches to
+6 per origin across Ether (with origin-interleaved scheduling so one saturated
+host does not head-of-line block others), total buffered response bodies across
+the batch are bounded at 10 MiB (`MaxFetchManyBytes`), and governance charges
+100 units per request (identical to individual `http.fetch` calls). Answers
+return in input order: each item has either `{status, headers, body, bodyBase64?}`
+(including non-2xx HTTP status codes) or `{error: {code, message}}` on per-item
+timeout, permission, redirect, size, or transport failure. Canceling the parent
+request or exceeding its deadline aborts all in-flight batch fetches promptly
+without consuming extra WASM pool lanes.
+
+Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
+playable `range`/`download`/`direct`/`container` sources), redirects recheck
+live network permissions on every hop and keep credentials/caller headers only
+on the same origin, a strict same-site subdomain (verified via the Public Suffix
+List with no port change or HTTPS→HTTP downgrade), or an explicit
+`keepHeadersOnRedirect: ["cdn.example.net", "*.storage.example.org"]` host
+pattern within granted network permissions (never `*`, never a public suffix,
+never across HTTPS→HTTP downgrades, and sticky once any hop leaves trusted hosts).
+
+`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"},keepHeadersOnRedirect:["*.storage.example.org"]})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize`,
+`headers`, and `keepHeadersOnRedirect` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
+on the host, without a blob or guest bytes, through the same network permissions
+and safe fetch rules as fetch. Optional `headers` expand `{secret:<name>}`
+placeholders using the plugin's `permissions.secrets` grant (including derived
+secrets stored via `secret.set`), reject hop-by-hop/framing headers (`Connection`,
+`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), follow
+the same redirect credential policy (stripped on untrusted redirects), are never logged, and are
+not part of the hash cache key. It starts only when called. One worker per plugin and
+two globally run below playback priority and yield during playback contention.
+Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
+UTC day (including unsuccessful reads), 12 hours per task. The daily cap logs
+at Info. Cached digests share one read across algorithms, are private to the
+plugin and URL, and include response validators and size. A hit returns
+immediately for five minutes; later calls return pending while the host
+conditionally revalidates ETag/Last-Modified or streams a new digest. Up to
+2048 entries are kept per plugin. Failed tasks may be retried after 30 seconds.
+Remote Go uses `RemoteHostClient.Hash`; TypeScript/Python use `http.hash`.
+
+```js
+// The manifest must declare the upstream in permissions.network.
+function resolve(req) {
+  const result = ether.http.hash({url:req.item.hints.url, algo:"sha256"});
+  if (result.pending) return {status:200, body:result};
+  if (result.sha256 !== req.item.hints.sha256)
+    return {status:404, body:{sources:[]}};
+  return {status:200, body:{sources:[{pattern:"http",url:req.item.hints.url}]}};
+}
+// A slow search instead returns pending with job:"/ether/job/prepare";
+// that handler writes a KV result and returns {done:true}, or checkpoints with
+// {continueInMs:1000,continuation:{cursor:"next"}}. Resolve reads that KV result.
+```
+
+## Frontend adapter downloads
+
+Hosted adapters can return a redirect to a host-minted item stream URL, a
+specific zero-based part when an item declares `hints.parts`, and/or a specific
+resolver `PlayableSource.id`:
+
+```js
+// Whole item (concatenated sequence for multi-part items):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
+// Single part (resolves with KindResolveRequest.partIndex = partIndex):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
+// Specific resolver source (and optional partIndex) with no failover:
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
+```
+
+In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamPartURL(itemRef, partIndex)` (Go), or
+`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
+declared `parts` field) so Ether resolves and caches each part with its
+zero-based `KindResolveRequest.partIndex`; playable items with no declared parts
+reject any `partIndex` with `404 item_not_found`. When `source` is set on the
+ticket grant, Ether passes `KindResolveRequest.source` to `/resolve` and opens
+only the matching `PlayableSource.id` without failing over to other sources (a
+plugin that ignores `source` still works because Ether selects the matching id
+or returns `409 no_source` if absent).
+
+Only root-relative local redirect URLs are forwarded. External URLs, authority
+changes, control characters, backslashes and known account credential query
+parameters are refused. Use the scoped host media ticket, never a login token.
+
+For a cached file or verified archive member, return a blob descriptor instead
+of `body` (status 200). The bytes never pass through guest memory:
+
+```js
+return {status:200, blob:{
+  libraryKey:"pk-my-plugin-firmware", ref:cachedBlobRef, memberIndex:member.index
+}};
+```
+
+Use the canonical library key returned for your declared media kind. Omit
+`memberIndex` to serve the whole blob. The host rechecks enabled state, frontend
+capability, ownership, current viewer visibility and the adapter's library list
+on every request. It opens only that library's cache namespace and applies the
+existing archive safety and runtime limits. The plugin must verify expected
+hashes before selecting a cached member; delivery does not assert hash validity.
+When trusted metadata provides SHA-1 or MD5 rather than CRC32, call
+`ether.archive.extract(cachedBlobRef, member.index)` to stream the member into the
+library cache and verify `sha1`/`md5` before serving `{libraryKey, ref: extracted.ref}`.
+
+GET and HEAD are supported. A single GET byte range receives 206; malformed,
+multiple or unsatisfiable ranges receive 416. HEAD ignores Range. Downloads use
+`application/octet-stream`, a fixed safe attachment filename, no-store and
+nosniff; plugin response headers do not override these. Archive range offsets
+may require bounded decompression from the start, so do not use this path for
+unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
+HTTP plugins should stream bytes through their existing HTTP response instead;
+this descriptor is for the hosted JSON response envelope.
+
+## Recipe: Frontend adapter respecting library Rules
+
+`kinds.items` reads a plugin's raw kind items without evaluating the library's
+Rules or viewer visibility. A `frontend_adapter` serving its own protocol
+(OPDS, Subsonic, WebDAV, custom clients) must filter through Ether's policy so
+items hidden by Rules, hidden libraries, viewer library grants, or viewer
+content-safety restrictions never leak to the adapter's clients.
+
+Ether exposes two viewer-scoped host calls that run the exact same
+`LibraryPolicy` + `libraryfilter` + viewer-safety checks as the console and
+built-in protocol projectors:
+
+- `kinds.browse(kind, query)` — browse or search a kind page with policy already
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, query?, total?}`).
+  `total` defaults to `"cheap"` (returns `total` only when O(1) from tallies/cache/single page, omitting it otherwise); pass `"none"` to skip totals or `"exact"` when a caller needs an exact filtered count.
+  Prefer this when your adapter lists or searches pages directly from Ether's library.
+- `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
+  return only the IDs visible to the requesting viewer, preserving caller order
+  and dropping unknown or hidden IDs. Use this when your adapter builds a custom
+  list or keeps its own index and needs to prune hidden items before returning them.
+
+**Security guard:** Only viewer-authenticated frontend adapter requests
+(`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
+`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+views, actions, unauthenticated requests) receives a permission error. The
+viewer identity always comes from Ether's authenticated request context (and the
+host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin
+callbacks) — never from guest-supplied parameters.
+
+Hosted QuickJS (`plugin.js`):
+
+```js
+// Browse/search with Rules and viewer policy already applied:
+const page = ether.kinds.browse("comic", { level: "series", limit: 50, query: q });
+
+// Or filter your own candidate IDs in chunks of at most 500:
+const allowedIds = ether.kinds.visible("comic", candidateIds.slice(0, 500));
+const allowed = new Set(allowedIds);
+const visible = candidates.filter((it) => allowed.has(it.id));
+```
+
+TypeScript SDK (`@ether/plugin-sdk`, hosted or sidecar):
+
+```ts
+import { kindsBrowse, kindsVisible } from "@ether/plugin-sdk";
+
+app.onFrontend("opds", {
+  async handle(method, path, _headers, _body, ctx) {
+    if (!ctx) return { status: 500, body: "" };
+    const page = await kindsBrowse(ctx, "comic", { limit: 50 });
+    const visibleIds = await kindsVisible(ctx, "comic", page.items.map((it) => it.id));
+    return { status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(visibleIds) };
+  },
+});
+```
+
+Go SDK (`sdk/go`):
+
+```go
+func (a *adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    pctx, ok := etherplugin.FrontendContext(r.Context())
+    if !ok {
+        http.Error(w, "missing context", http.StatusForbidden)
+        return
+    }
+    page, err := pctx.KindBrowse("comic", etherplugin.KindBrowseQuery{Limit: 50})
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusForbidden)
+        return
+    }
+    visibleIDs, err := pctx.KindVisible("comic", candidateIDs) // <= 500 IDs per call
+    _ = page
+    _ = visibleIDs
+}
+```
+
+Python SDK (`sdk/python`):
+
+```python
+class Adapter:
+    def handle(self, method, path, headers, body, ctx):
+        page = ctx.kinds_browse("comic", {"limit": 50})
+        visible_ids = ctx.kinds_visible("comic", candidate_ids[:500])
+        return 200, {"Content-Type": "application/json"}, json.dumps({"ids": visible_ids, "count": len(page["items"])})
+```
+

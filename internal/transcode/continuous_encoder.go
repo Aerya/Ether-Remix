@@ -38,6 +38,11 @@ type continuousEncoder struct {
 	stream        *continuousFanout
 	store         *continuousStore
 	m             *Manager
+	slot          *transcodeSlot
+}
+
+func (e *continuousEncoder) SetSlotGroup(multiviewGroup string) {
+	e.m.setSlotGroup(e.slot, multiviewGroup)
 }
 
 func (e *continuousEncoder) setChild(c *continuousChild) {
@@ -95,8 +100,15 @@ func (e *continuousEncoder) recoverFromEncoderFailure(child **continuousChild, t
 		e.forceCPU = true
 	}
 	if e.m != nil && e.m.log != nil {
+		accel := e.m.hw
+		if e.forceCPU && !old.hardware {
+			accel = core.HWAccel{Name: AccelNone}
+		}
+		enc, _ := videoEncoder(e.req.Decision.VideoCodec, accel, e.m.feat)
 		e.m.log.Warn(message,
 			"session", e.req.SessionID,
+			"hwaccel", accel.Name,
+			"encoder", enc,
 			"tick", tick,
 			"err", err)
 	}
@@ -105,7 +117,9 @@ func (e *continuousEncoder) recoverFromEncoderFailure(child **continuousChild, t
 	e.index.refresh()
 
 	resumeSeq := e.index.nextSeq()
-	tsOffsetTick, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, resumeSeq)
+	baseStart, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, e.req.StartSeq)
+	resumeStart, _ := continuousSegmentFrames(e.req.Source, e.req.SegmentDuration, e.req.LiveSource, resumeSeq)
+	tsOffsetTick := resumeStart - baseStart
 	replacement, startErr := e.startOrdinaryChild(resumeSeq, tick, tsOffsetTick)
 	if startErr != nil {
 		return startErr
@@ -125,7 +139,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 	if r.SegmentDuration == 0 {
 		r.SegmentDuration = 4 * time.Second
 	}
-	if (r.SegmentDuration != 4*time.Second && r.SegmentDuration != 2*time.Second) || r.DVRWindow < 0 {
+	if (r.SegmentDuration != 4*time.Second && r.SegmentDuration != 2*time.Second && r.SegmentDuration != time.Second) || r.DVRWindow < 0 {
 		return nil, errors.New("transcode: invalid segment or DVR duration")
 	}
 	if r.Decision.VideoCodec != "" && r.Decision.VideoCodec != "h264" && r.Decision.VideoCodec != "hevc" {
@@ -135,7 +149,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		return nil, errors.New("transcode: continuous output requires AAC")
 	}
 	startSchedulerWatch(m.log)
-	ctx, release, e := m.AcquireTranscodeSlot(ctx, SlotViewer)
+	ctx, slot, release, e := m.acquirePrioritySlotForGroup(ctx, SlotViewer, false, r.ClientCaps.MultiviewGroup)
 	if e != nil {
 		return nil, e
 	}
@@ -155,6 +169,9 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 			os.RemoveAll(dir)
 		}
 	}()
+	if r.StartSeq < 0 {
+		r.StartSeq = 0
+	}
 	if r.SessionID == "" {
 		r.SessionID = randomHex(12)
 	}
@@ -167,6 +184,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		writeMu:           make(chan struct{}, 1),
 		stream:            newContinuousFanout(),
 		m:                 m,
+		slot:              slot,
 	}
 	enc.index = newContinuousSegmentIndex(enc)
 	// Keep about 30 s of each container in memory: the live window clients
@@ -184,7 +202,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 		}
 	}()
 
-	child, e := enc.startGeneration(0, 0, 0)
+	child, e := enc.startGeneration(r.StartSeq, 0, 0)
 	if e != nil {
 		return nil, e
 	}
@@ -199,6 +217,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 	go enc.index.watch()
 
 	g, startup, steady := continuousLadder(r.Source, r.SegmentDuration, r.LiveSource)
+	baseStart, _ := continuousSegmentFrames(r.Source, r.SegmentDuration, r.LiveSource, r.StartSeq)
 	enc.workers.Add(1)
 	go func() {
 		defer enc.workers.Done()
@@ -266,8 +285,9 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 				}
 			}
 
-			if tick >= steady && (tick-steady)%g == 0 && enc.wantBoundarySwap(child) {
-				seq := int64(len(startup)) + (tick-steady)/g
+			absTick := baseStart + tick
+			if tick > 0 && absTick >= steady && (absTick-steady)%g == 0 && enc.wantBoundarySwap(child) {
+				seq := int64(len(startup)) + (absTick-steady)/g
 				child.drainInputsAndWait(enc, seq)
 				next, swapErr := enc.startGeneration(seq, tick, tick)
 				if swapErr != nil {
@@ -350,8 +370,16 @@ func (m *Manager) continuousEncodeArgsAt(r EncoderRequest, s []*rawSocket, base 
 	rate := fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen)
 	args := []string{"-hide_banner", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2", "-nostdin", "-y", "-filter_threads", "1"}
 	enc, _ := videoEncoder(r.Decision.VideoCodec, accel, m.feat)
+	isVAAPI := strings.HasSuffix(enc, "_vaapi")
 	if strings.HasSuffix(enc, "_qsv") && accel.Device != "" {
 		args = append(args, "-qsv_device", accel.Device)
+	}
+	if isVAAPI {
+		dev := accel.Device
+		if dev == "" {
+			dev = DefaultVAAPIDevice
+		}
+		args = append(args, "-vaapi_device", dev)
 	}
 	for i := range 2 {
 		args = append(args, "-thread_queue_size", "8", "-probesize", "32", "-analyzeduration", "0")
@@ -367,15 +395,20 @@ func (m *Manager) continuousEncodeArgsAt(r EncoderRequest, s []*rawSocket, base 
 		codec = "h264"
 	}
 	w, h := outputSize(f.Width, f.Height, r.Decision.MaxHeight)
-	vf := fmt.Sprintf("scale=%d:%d,setsar=1,format=yuv420p", w, h)
-	if strings.HasSuffix(enc, "_videotoolbox") || strings.HasSuffix(enc, "_qsv") {
-		vf = fmt.Sprintf("scale=%d:%d,setsar=1,format=nv12", w, h)
+	var vfParts []string
+	if f.Width != w || f.Height != h {
+		vfParts = append(vfParts, fmt.Sprintf("scale=%d:%d", w, h))
 	}
-	vf += ",fps=" + rate
-	if strings.HasSuffix(enc, "_vaapi") {
-		args = append(args, "-vaapi_device", accel.Device)
-		vf += ",format=nv12,hwupload"
+	vfParts = append(vfParts, "setsar=1")
+	switch {
+	case isVAAPI:
+		vfParts = append(vfParts, "fps="+rate, "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", "format=nv12", "hwupload")
+	case strings.HasSuffix(enc, "_videotoolbox"), strings.HasSuffix(enc, "_qsv"):
+		vfParts = append(vfParts, "format=nv12", "fps="+rate)
+	default:
+		vfParts = append(vfParts, "format=yuv420p", "fps="+rate)
 	}
+	vf := strings.Join(vfParts, ",")
 	args = append(args, "-map", "0:v:0", "-map", "1:a:0", "-vf", vf)
 	spec := runSpec{Decision: r.Decision, Accel: accel, Features: m.feat}
 	spec.Decision.VideoCodec = codec
@@ -394,7 +427,7 @@ func (m *Manager) continuousEncodeArgsAt(r EncoderRequest, s []*rawSocket, base 
 		spec.Rate = rateControl{TargetKbps: budget, MaxrateKbps: budget, BufsizeKbps: budget * max(1, segment)}
 	}
 
-	args = append(args, planEncodeArgs(spec, picturePlan{w: w, h: h, outRange: rangeSDR}, enc, codec, false)...)
+	args = append(args, planEncodeArgs(spec, picturePlan{w: w, h: h, outRange: rangeSDR}, enc, codec, isVAAPI)...)
 	if strings.HasSuffix(enc, "_videotoolbox") {
 		args = append(args, "-realtime", "1")
 	}
@@ -409,18 +442,18 @@ func (m *Manager) continuousEncodeArgsAt(r EncoderRequest, s []*rawSocket, base 
 		args = append(args, "-x264-params", fmt.Sprintf("vbv-init=0.1:rc-lookahead=%d:sync-lookahead=0:aq-mode=2:aq-strength=0.8:psy-rd=1.0,0.15", lookahead))
 	}
 	g := int((int64(r.SegmentDuration)*int64(f.FPSNum) + int64(time.Second*time.Duration(f.FPSDen))/2) / int64(time.Second*time.Duration(f.FPSDen)))
-	pix := "yuv420p"
-	if strings.HasSuffix(enc, "_vaapi") {
-		pix = "vaapi"
-	}
-	if strings.HasSuffix(enc, "_qsv") || strings.HasSuffix(enc, "_videotoolbox") {
-		pix = "nv12"
-	}
 	keyExpr := continuousKeyframeExpr(f, r.SegmentDuration, r.LiveSource)
 	if startSeq > 0 {
 		keyExpr = continuousKeyframeExprAt(f, r.SegmentDuration, r.LiveSource, startSeq)
 	}
-	args = append(args, "-pix_fmt", pix, "-bf", "0", "-g", strconv.Itoa(g), "-keyint_min", strconv.Itoa(g/4), "-sc_threshold", "0", "-force_key_frames", keyExpr, "-flags", "+global_header+cgop", "-c:a", "aac", "-b:a", fmt.Sprintf("%dk", max(r.Decision.AudioBitrateKbps, 128)), "-ar", "48000", "-ac", "2")
+	if !isVAAPI {
+		pix := "yuv420p"
+		if strings.HasSuffix(enc, "_qsv") || strings.HasSuffix(enc, "_videotoolbox") {
+			pix = "nv12"
+		}
+		args = append(args, "-pix_fmt", pix)
+	}
+	args = append(args, "-bf", "0", "-g", strconv.Itoa(g), "-keyint_min", strconv.Itoa(g/4), "-sc_threshold", "0", "-force_key_frames", keyExpr, "-flags", "+global_header+cgop", "-c:a", "aac", "-b:a", fmt.Sprintf("%dk", max(r.Decision.AudioBitrateKbps, 128)), "-ar", "48000", "-ac", "2")
 	return append(args, continuousTeeArgs(r, base, startSeq, tsOffsetTick)...)
 }
 

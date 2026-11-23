@@ -291,3 +291,78 @@ func TestUpdateConfigKeepsProviderState(t *testing.T) {
 		t.Fatal("disable")
 	}
 }
+
+func TestServiceCheckCachedByAndKnownCachedBy(t *testing.T) {
+	h := newHarness(t, 1<<20, "torbox", "premiumize", "realdebrid")
+	for _, p := range h.provs {
+		p.bulk = true
+	}
+	// Give the second provider a custom account name and reverse priorities so
+	// priority order differs from config slice order.
+	cfg := h.svc.Config()
+	cfg.Providers[0].Priority = 20 // torbox-0 -> default display name "TorBox"
+	cfg.Providers[0].Name = ""
+	cfg.Providers[1].Priority = 10 // premiumize-1 -> custom display name
+	cfg.Providers[1].Name = "Family PM"
+	cfg.Providers[2].Priority = 30 // realdebrid-2 -> bulk unsupported
+	cfg.Providers[2].Name = ""
+	h.svc.UpdateConfig(cfg)
+	h.provs["realdebrid-2"].bulk = false
+
+	both := testHash
+	onlyTorBox := strings.Repeat("12", 20)
+	uncached := strings.Repeat("ef", 20)
+	h.provs["premiumize-1"].cached[both] = true
+	h.provs["torbox-0"].cached[both] = true
+	h.provs["torbox-0"].cached[onlyTorBox] = true
+
+	by, definitive := h.svc.CheckCachedBy(context.Background(), []string{both, onlyTorBox, uncached})
+	if definitive {
+		t.Fatal("expected definitive=false when realdebrid does not support bulk checks")
+	}
+	// Acquisition order is priority 10 (Family PM) then priority 20 (TorBox).
+	wantBoth := []core.DebridServiceRef{
+		{ID: "premiumize-1", Name: "Family PM"},
+		{ID: "torbox-0", Name: "TorBox"},
+	}
+	if len(by[both]) != len(wantBoth) || by[both][0] != wantBoth[0] || by[both][1] != wantBoth[1] {
+		t.Fatalf("both cachedBy = %+v, want %+v", by[both], wantBoth)
+	}
+	if len(by[onlyTorBox]) != 1 || by[onlyTorBox][0] != (core.DebridServiceRef{ID: "torbox-0", Name: "TorBox"}) {
+		t.Fatalf("onlyTorBox cachedBy = %+v", by[onlyTorBox])
+	}
+	if _, present := by[uncached]; present {
+		t.Fatalf("uncached hash should be omitted, got %+v", by[uncached])
+	}
+
+	// Second call served from memory cache keeps the same services and priority order.
+	calls := h.provs["torbox-0"].callCount("check")
+	by2, _ := h.svc.CheckCachedBy(context.Background(), []string{both, uncached})
+	if h.provs["torbox-0"].callCount("check") != calls {
+		t.Fatal("expected warm cache hit without second provider call")
+	}
+	if len(by2[both]) != 2 || by2[both][0] != wantBoth[0] || by2[both][1] != wantBoth[1] {
+		t.Fatalf("warm cachedBy = %+v, want %+v", by2[both], wantBoth)
+	}
+
+	// KnownCachedBy reflects verified cache entries and lets verified negative verdicts
+	// override stale addon hints while falling back to hints for unchecked providers.
+	gotKnown := h.svc.KnownCachedBy(onlyTorBox, []string{"premiumize", "realdebrid"})
+	wantKnown := []core.DebridServiceRef{
+		{ID: "torbox-0", Name: "TorBox"},
+		{ID: "realdebrid-2", Name: "Real-Debrid"},
+	}
+	if len(gotKnown) != len(wantKnown) || gotKnown[0] != wantKnown[0] || gotKnown[1] != wantKnown[1] {
+		t.Fatalf("KnownCachedBy = %+v, want %+v", gotKnown, wantKnown)
+	}
+
+	// ServiceRef resolves configured display name and falls back to kind label if removed.
+	ref, ok := h.svc.ServiceRef("premiumize-1", "premiumize")
+	if !ok || ref != (core.DebridServiceRef{ID: "premiumize-1", Name: "Family PM"}) {
+		t.Fatalf("ServiceRef configured = %+v %v", ref, ok)
+	}
+	ref, ok = h.svc.ServiceRef("gone-id", "torbox")
+	if !ok || ref != (core.DebridServiceRef{ID: "gone-id", Name: "TorBox"}) {
+		t.Fatalf("ServiceRef fallback = %+v %v", ref, ok)
+	}
+}

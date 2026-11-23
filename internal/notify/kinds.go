@@ -169,7 +169,7 @@ func BuiltinChannelKinds() []ChannelKind {
 			Fields:     httpFields(endpoint, extend.Text{}),
 			SendTest:   true,
 			Selectable: true,
-			Formats:    []string{"text"},
+			Formats:    []string{"text", "embed"},
 			MaxLength:  1900,
 			Validate:   validateEndpoint,
 			Deliver:    deliverDiscord,
@@ -180,7 +180,7 @@ func BuiltinChannelKinds() []ChannelKind {
 			Fields:     httpFields(endpoint, extend.Text{}),
 			SendTest:   true,
 			Selectable: true,
-			Formats:    []string{"text"},
+			Formats:    []string{"text", "embed"},
 			MaxLength:  3900,
 			Validate:   validateEndpoint,
 			Deliver:    deliverSlack,
@@ -246,6 +246,46 @@ func BuiltinChannelKinds() []ChannelKind {
 			Validate:   validateEndpoint,
 			Deliver:    deliverGotify,
 		},
+		{
+			ID: "pushover", Owner: extend.Builtin, Label: extend.T("Pushover"), Icon: "smartphone", Order: 80,
+			Hint: extend.T("Create an application in Pushover and enter its API token along with your user or group key."),
+			Fields: []extend.SettingsField{
+				{Key: "token", Kind: extend.FieldSecret, Label: extend.T("Application token"), Required: true, Secret: true},
+				{Key: "user", Kind: extend.FieldSecret, Label: extend.T("User or group key"), Required: true, Secret: true},
+				{Key: "device", Kind: extend.FieldText, Label: extend.T("Device name")},
+				{Key: "sound", Kind: extend.FieldText, Label: extend.T("Notification sound")},
+			},
+			SendTest:   true,
+			Selectable: true,
+			Formats:    []string{"text"},
+			MaxLength:  1024,
+			Validate:   validatePushover,
+			Deliver:    deliverPushover,
+		},
+		{
+			ID: "mqtt", Owner: extend.Builtin, Label: extend.T("MQTT broker"), Icon: "radio", Order: 90,
+			Hint: extend.T("Connect an MQTT 3.1.1 broker for notifications and Home Assistant or lighting automations in Flows."),
+			Fields: []extend.SettingsField{
+				{Key: "endpoint", Kind: extend.FieldText, Label: extend.T("Broker host:port"), Required: true, Secret: true, Wide: true},
+				{Key: "tlsMode", Kind: extend.FieldSelect, Label: extend.T("Connection security"), Default: "none", Options: []extend.FieldOption{
+					{Value: "none", Label: extend.T("Plain TCP (usually 1883)")},
+					{Value: "tls", Label: extend.T("TLS (usually 8883)")},
+				}},
+				{Key: "username", Kind: extend.FieldText, Label: extend.T("Username"), Secret: true},
+				{Key: "password", Kind: extend.FieldSecret, Label: extend.T("Password"), Secret: true},
+				{Key: "topic", Kind: extend.FieldText, Label: extend.T("Default topic"), Default: "ether/notifications", Required: true},
+				{Key: "clientId", Kind: extend.FieldText, Label: extend.T("Client ID")},
+				{Key: "qos", Kind: extend.FieldSelect, Label: extend.T("QoS"), Default: "0", Options: []extend.FieldOption{
+					{Value: "0", Label: extend.T("At most once (0)")},
+					{Value: "1", Label: extend.T("At least once (1)")},
+				}},
+			},
+			SendTest:   true,
+			Selectable: true,
+			Formats:    []string{"text", "json"},
+			Validate:   validateMQTTChannel,
+			Deliver:    deliverMQTT,
+		},
 	}
 }
 
@@ -260,6 +300,18 @@ func ChannelKindDescriptors() []extend.Descriptor {
 		out = append(out, k.Descriptor())
 	}
 	return out
+}
+
+func validatePushover(c Channel) error {
+	tok := strings.TrimSpace(c.Secret("token"))
+	usr := strings.TrimSpace(c.Secret("user"))
+	if tok == "" || usr == "" || strings.ContainsAny(tok+usr, " \t\r\n/?#") {
+		return errors.New("Pushover application token and user key required")
+	}
+	if strings.ContainsAny(c.Setting("device")+c.Setting("sound"), "\r\n\x00") {
+		return errors.New("invalid Pushover device or sound")
+	}
+	return nil
 }
 
 func validateEndpoint(c Channel) error {

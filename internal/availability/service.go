@@ -47,6 +47,7 @@ type Deps struct {
 	Seal       func(string) (string, error)
 	Open       func(string) (string, error)
 	CacheCheck func(context.Context, []string) (map[string]bool, bool)
+	PackFiles  func(context.Context, core.Release) (func(*core.ReleaseTarget) bool, bool)
 	// Search is a budgeted id search across indexers and configured addons.
 	Search           func(context.Context, core.SearchRequest) ([]core.Release, error)
 	Watchlist        func(context.Context) (map[core.RatingKey]bool, error)
@@ -65,36 +66,42 @@ type Deps struct {
 }
 
 type Service struct {
-	verdictMu          sync.Mutex
-	verdictQueue       verdictQueue // guarded by verdictMu
-	visibilityMu       sync.Mutex
-	visibilityRevision uint64
-	visibilityCache    map[string]visibilityEntry
-	bgCtx              context.Context
-	bgStop             context.CancelFunc
-	bg                 sync.WaitGroup
-	closed             bool // guarded by visibilityMu
-	db                 *sql.DB
-	cfg                func() config.Config
-	d                  Deps
-	now                func() time.Time
-	log                *slog.Logger
-	runMu              sync.Mutex
-	cacheSeeded        bool
-	hasGateTable       bool
-	gateRev            atomic.Uint64
-	seededMu           sync.RWMutex
-	seededPolicies     map[string]bool
-	lastPrune          time.Time
-	lastVerifyPolicy   string
-	checksSeeded       bool
-	checksCatalogGen   uint64
-	checksCatalogPtr   any
-	checksPolicy       string
-	snapMu             sync.RWMutex
-	snap               discoverySnap
-	paceMu             sync.Mutex
-	paced              map[string]time.Time // indexer -> next free slot (wall clock)
+	verdictMu            sync.Mutex
+	verdictQueue         verdictQueue // guarded by verdictMu
+	visibilityMu         sync.Mutex
+	visibilityRevision   uint64
+	visibilityCache      map[string]visibilityEntry
+	bgCtx                context.Context
+	bgStop               context.CancelFunc
+	bg                   sync.WaitGroup
+	closed               bool // guarded by visibilityMu
+	db                   *sql.DB
+	cfg                  func() config.Config
+	d                    Deps
+	now                  func() time.Time
+	log                  *slog.Logger
+	runMu                sync.Mutex
+	cacheSeeded          bool
+	hasGateTable         bool
+	hasSeasonRevealTable bool
+	revealMu             sync.Mutex
+	revealInFlight       map[core.RatingKey]bool
+	revealChecked        map[core.RatingKey]time.Time
+	revealRuns           []time.Time
+	gateRev              atomic.Uint64
+	seedRunMu            sync.Mutex
+	seededMu             sync.RWMutex
+	seededPolicies       map[string]bool
+	lastPrune            time.Time
+	lastVerifyPolicy     string
+	checksSeeded         bool
+	checksCatalogGen     uint64
+	checksCatalogPtr     any
+	checksPolicy         string
+	snapMu               sync.RWMutex
+	snap                 discoverySnap
+	paceMu               sync.Mutex
+	paced                map[string]time.Time // indexer -> next free slot (wall clock)
 }
 
 // discoverySnap is the policy hash and availability settings for one config
@@ -129,6 +136,10 @@ func New(d Deps) (*Service, error) {
 	if rows, err := d.DB.Query(`SELECT 1 FROM availability_gate LIMIT 0`); err == nil {
 		rows.Close()
 		s.hasGateTable = true
+	}
+	if rows, err := d.DB.Query(`SELECT 1 FROM availability_season_reveal LIMIT 0`); err == nil {
+		rows.Close()
+		s.hasSeasonRevealTable = true
 	}
 	if c, ok := d.Catalog.(interface{ SetConsoleAvailabilityPolicy(func() string) }); ok {
 		c.SetConsoleAvailabilityPolicy(s.policy)
@@ -669,6 +680,11 @@ func (s *Service) Observe(ctx context.Context, t *core.Title, r core.Release) {
 	if t == nil || t.Adult || (!t.IsReleased(s.now()) && t.Type != core.TypeEpisode) {
 		return
 	}
+	if t.Type == core.TypeEpisode {
+		if season := cmp.Or(t.Season, t.Key.Season()); season > 0 && t.Key.TMDB() > 0 {
+			s.RevealSeason(ctx, core.SeasonKey(t.Key.TMDB(), season))
+		}
+	}
 	if r.Info.Title == "" && r.Name != "" {
 		r.Info = releaseparse.Parse(r.Name)
 	}
@@ -722,7 +738,7 @@ func (s *Service) Candidates(ctx context.Context, t *core.Title) []core.Release 
 		if rows.Scan(&id, &gen, &raw) != nil {
 			continue
 		}
-		if current[id] != gen {
+		if !(id == "probe" && gen == "probe") && current[id] != gen {
 			continue
 		}
 		if r, e := s.decode(raw); e == nil {

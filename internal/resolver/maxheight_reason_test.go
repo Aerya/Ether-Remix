@@ -259,6 +259,9 @@ func TestHistoryFromDatabaseExposesCeilings(t *testing.T) {
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: caps}); err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	legacyAt := time.Now().Add(time.Hour).Unix()
 	for _, row := range []struct{ profile, trace string }{
 		{"legacy", `{"profile":"legacy"}`},

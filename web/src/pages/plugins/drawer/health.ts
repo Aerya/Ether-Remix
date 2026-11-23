@@ -1,7 +1,7 @@
 import { t, tn } from "../../../i18n";
 import type { HealthLevel } from "../../../lib/health";
-import { formatNumber, relativeTime } from "../../../lib/format";
-import { pluginHealthLevel, type PluginDetail } from "../types";
+import { formatNumber, parseTime, relativeTime, unit } from "../../../lib/format";
+import { pluginHealthLevel, type PluginDetail, type PluginFeedOverview } from "../types";
 
 /**
  * One reading of a plugin's health for every place the drawer shows it:
@@ -16,7 +16,21 @@ export interface HealthSummary {
   /** The tile's second line. */
   tile: string;
   /** Present only when the owner should look. */
-  card?: { title: string; line: string; retry: boolean };
+  card?: { title: string; line: string; meta?: string; retry: boolean };
+}
+
+/** Compact poll interval ("15s", "2m", "1h") for feed health and metadata. */
+export function formatPollInterval(seconds?: number): string {
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "";
+  const s = Math.round(seconds);
+  if (s < 60) return unit(s, "second");
+  if (s < 3600) return unit(Math.round(s / 60), "minute");
+  return unit(Math.round(s / 3600), "hour");
+}
+
+function cleanFeedError(raw?: string): string {
+  if (!raw) return "";
+  return raw.replace(/^liveevents:\s*/i, "").trim();
 }
 
 /**
@@ -54,7 +68,10 @@ export function healthHeadline(p: {
   return { level, word, slow };
 }
 
-export function healthSummary(detail: PluginDetail): HealthSummary {
+export function healthSummary(
+  detail: PluginDetail,
+  liveFeeds?: PluginFeedOverview[],
+): HealthSummary {
   const h = detail.healthDetail;
   const im = detail.impact;
   const { level, word, slow } = healthHeadline({
@@ -71,6 +88,49 @@ export function healthSummary(detail: PluginDetail): HealthSummary {
   });
   if (level === "off") {
     return { level, word, tile: t("Turned off") };
+  }
+  const failingFeeds = (liveFeeds ?? [])
+    .filter((f) => f.health.consecutiveErrors > 0 || Boolean(f.health.lastError))
+    .sort((a, b) => b.health.consecutiveErrors - a.health.consecutiveErrors);
+  if (failingFeeds.length > 0) {
+    const worst = failingFeeds[0]!;
+    const fh = worst.health;
+    const feedLevel: HealthLevel =
+      level === "error" || fh.consecutiveErrors >= 3 ? "error" : "warn";
+    const metaParts: string[] = [];
+    if (fh.lastPollAt && parseTime(fh.lastPollAt)) {
+      metaParts.push(t("Last poll {when}", { when: relativeTime(fh.lastPollAt) }));
+    }
+    if (fh.consecutiveErrors > 0) {
+      metaParts.push(tn(fh.consecutiveErrors, "{count} error", "{count} errors"));
+    }
+    if (fh.nextPollSec && fh.nextPollSec > 0) {
+      metaParts.push(
+        t("Next poll in {interval}", { interval: formatPollInterval(fh.nextPollSec) }),
+      );
+    }
+    const errLine = cleanFeedError(fh.lastError) || t("Recent polls failed.");
+    return {
+      level: feedLevel,
+      word: feedLevel === "error" ? t("Not answering") : t("Needs attention"),
+      tile:
+        fh.consecutiveErrors > 0
+          ? tn(fh.consecutiveErrors, "{count} feed error", "{count} feed errors")
+          : t("Feed failing"),
+      card: {
+        title:
+          failingFeeds.length === 1
+            ? t("Live event feed “{feed}” is failing", { feed: worst.title || worst.id })
+            : tn(
+                failingFeeds.length,
+                "{count} live event feed is failing",
+                "{count} live event feeds are failing",
+              ),
+        line: errLine,
+        meta: metaParts.length > 0 ? metaParts.join(" · ") : undefined,
+        retry: true,
+      },
+    };
   }
   if (level === "ok" || level === "unknown") {
     return {

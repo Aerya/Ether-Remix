@@ -1,0 +1,1614 @@
+{
+  "uid": "s:20~l:28~g:9",
+  "id": "9",
+  "name": "National Football League",
+  "abbreviation": "NFL",
+  "children": [
+    {
+      "id": "8",
+      "name": "American Football Conference",
+      "abbreviation": "AFC",
+      "standings": {
+        "id": "0",
+        "name": "overall",
+        "entries": [
+          {
+            "team": {
+              "id": "2",
+              "uid": "s:20~l:28~t:2",
+              "location": "Buffalo",
+              "name": "Bills",
+              "abbreviation": "BUF",
+              "displayName": "Buffalo Bills",
+              "shortDisplayName": "Bills",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/buf.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:45Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/buf.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:45Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 88.0,
+                "displayValue": "+88"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 0.0,
+                "displayValue": "-"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 88.0,
+                "displayValue": "+88"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 199.0,
+                "displayValue": "199"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 287.0,
+                "displayValue": "287"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 5.0,
+                "displayValue": "W5"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.8888889,
+                "displayValue": ".889"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "8-1"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "12",
+              "uid": "s:20~l:28~t:12",
+              "location": "Kansas City",
+              "name": "Chiefs",
+              "abbreviation": "KC",
+              "displayName": "Kansas City Chiefs",
+              "shortDisplayName": "Chiefs",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:51Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/kc.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:51Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 81.0,
+                "displayValue": "+81"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 81.0,
+                "displayValue": "+81"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 156.0,
+                "displayValue": "156"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 237.0,
+                "displayValue": "237"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 2.0,
+                "displayValue": "W2"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.7777778,
+                "displayValue": ".778"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "7-2"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "30",
+              "uid": "s:20~l:28~t:30",
+              "location": "Jacksonville",
+              "name": "Jaguars",
+              "abbreviation": "JAX",
+              "displayName": "Jacksonville Jaguars",
+              "shortDisplayName": "Jaguars",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/jax.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:50Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/jax.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:50Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 125.0,
+                "displayValue": "+125"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 125.0,
+                "displayValue": "+125"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 144.0,
+                "displayValue": "144"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 269.0,
+                "displayValue": "269"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 3.0,
+                "displayValue": "W3"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.7777778,
+                "displayValue": ".778"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "7-2"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "24",
+              "uid": "s:20~l:28~t:24",
+              "location": "Los Angeles",
+              "name": "Chargers",
+              "abbreviation": "LAC",
+              "displayName": "Los Angeles Chargers",
+              "shortDisplayName": "Chargers",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/lac.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:52Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/lac.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:52Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -95.0,
+                "displayValue": "-95"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -95.0,
+                "displayValue": "-95"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 239.0,
+                "displayValue": "239"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 144.0,
+                "displayValue": "144"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.11111111,
+                "displayValue": ".111"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "1-8"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "15",
+              "uid": "s:20~l:28~t:15",
+              "location": "Miami",
+              "name": "Dolphins",
+              "abbreviation": "MIA",
+              "displayName": "Miami Dolphins",
+              "shortDisplayName": "Dolphins",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/mia.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:53Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/mia.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:53Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -76.0,
+                "displayValue": "-76"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -76.0,
+                "displayValue": "-76"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 224.0,
+                "displayValue": "224"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 148.0,
+                "displayValue": "148"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -3.0,
+                "displayValue": "L3"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.11111111,
+                "displayValue": ".111"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "1-8"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "10",
+              "uid": "s:20~l:28~t:10",
+              "location": "Tennessee",
+              "name": "Titans",
+              "abbreviation": "TEN",
+              "displayName": "Tennessee Titans",
+              "shortDisplayName": "Titans",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ten.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2026-03-20T19:56Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/ten.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2026-03-20T19:56Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -72.0,
+                "displayValue": "-72"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -72.0,
+                "displayValue": "-72"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 239.0,
+                "displayValue": "239"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 167.0,
+                "displayValue": "167"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -3.0,
+                "displayValue": "L3"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.11111111,
+                "displayValue": ".111"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "1-8"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "7",
+      "name": "National Football Conference",
+      "abbreviation": "NFC",
+      "standings": {
+        "id": "0",
+        "name": "overall",
+        "entries": [
+          {
+            "team": {
+              "id": "25",
+              "uid": "s:20~l:28~t:25",
+              "location": "San Francisco",
+              "name": "49ers",
+              "abbreviation": "SF",
+              "displayName": "San Francisco 49ers",
+              "shortDisplayName": "49ers",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/sf.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:56Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/sf.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:57Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 85.0,
+                "displayValue": "+85"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 0.0,
+                "displayValue": "-"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 85.0,
+                "displayValue": "+85"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 196.0,
+                "displayValue": "196"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 281.0,
+                "displayValue": "281"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 2.0,
+                "displayValue": "W2"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.8888889,
+                "displayValue": ".889"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 8.0,
+                "displayValue": "8"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "8-1"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "8",
+              "uid": "s:20~l:28~t:8",
+              "location": "Detroit",
+              "name": "Lions",
+              "abbreviation": "DET",
+              "displayName": "Detroit Lions",
+              "shortDisplayName": "Lions",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/det.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:48Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/det.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:48Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 58.0,
+                "displayValue": "+58"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 58.0,
+                "displayValue": "+58"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 199.0,
+                "displayValue": "199"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 257.0,
+                "displayValue": "257"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 5.0,
+                "displayValue": "W5"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.7777778,
+                "displayValue": ".778"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "7-2"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "16",
+              "uid": "s:20~l:28~t:16",
+              "location": "Minnesota",
+              "name": "Vikings",
+              "abbreviation": "MIN",
+              "displayName": "Minnesota Vikings",
+              "shortDisplayName": "Vikings",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/min.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2023-08-24T19:26Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/min.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:53Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 50.0,
+                "displayValue": "+50"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 1.0,
+                "displayValue": "1"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 5.0,
+                "displayValue": "5"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": 50.0,
+                "displayValue": "+50"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 126.0,
+                "displayValue": "126"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 176.0,
+                "displayValue": "176"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": 1.0,
+                "displayValue": "W1"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.7777778,
+                "displayValue": ".778"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "7-2"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "1",
+              "uid": "s:20~l:28~t:1",
+              "location": "Atlanta",
+              "name": "Falcons",
+              "abbreviation": "ATL",
+              "displayName": "Atlanta Falcons",
+              "shortDisplayName": "Falcons",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/atl.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:44Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/atl.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:44Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -57.0,
+                "displayValue": "-57"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 5.5,
+                "displayValue": "5.5"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 14.0,
+                "displayValue": "14"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -57.0,
+                "displayValue": "-57"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 258.0,
+                "displayValue": "258"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 201.0,
+                "displayValue": "201"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -3.0,
+                "displayValue": "L3"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.3,
+                "displayValue": ".300"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "3-7"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "22",
+              "uid": "s:20~l:28~t:22",
+              "location": "Arizona",
+              "name": "Cardinals",
+              "abbreviation": "ARI",
+              "displayName": "Arizona Cardinals",
+              "shortDisplayName": "Cardinals",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ari.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:43Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/ari.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:43Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -105.0,
+                "displayValue": "-105"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 5.5,
+                "displayValue": "5.5"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 15.0,
+                "displayValue": "15"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -105.0,
+                "displayValue": "-105"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 289.0,
+                "displayValue": "289"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 184.0,
+                "displayValue": "184"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -2.0,
+                "displayValue": "L2"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.3,
+                "displayValue": ".300"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 3.0,
+                "displayValue": "3"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "3-7"
+              }
+            ]
+          },
+          {
+            "team": {
+              "id": "21",
+              "uid": "s:20~l:28~t:21",
+              "location": "Philadelphia",
+              "name": "Eagles",
+              "abbreviation": "PHI",
+              "displayName": "Philadelphia Eagles",
+              "shortDisplayName": "Eagles",
+              "logos": [
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500/phi.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "default"
+                  ],
+                  "lastUpdated": "2024-06-25T18:55Z"
+                },
+                {
+                  "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/phi.png",
+                  "width": 500,
+                  "height": 500,
+                  "alt": "",
+                  "rel": [
+                    "full",
+                    "scoreboard",
+                    "dark"
+                  ],
+                  "lastUpdated": "2024-06-25T18:56Z"
+                }
+              ],
+              "isActive": true
+            },
+            "stats": [
+              {
+                "name": "differential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -73.0,
+                "displayValue": "-73"
+              },
+              {
+                "name": "gamesBehind",
+                "displayName": "Games Back",
+                "shortDisplayName": "GB",
+                "abbreviation": "GB",
+                "value": 6.0,
+                "displayValue": "6"
+              },
+              {
+                "name": "losses",
+                "displayName": "Losses",
+                "shortDisplayName": "L",
+                "abbreviation": "L",
+                "value": 7.0,
+                "displayValue": "7"
+              },
+              {
+                "name": "playoffSeed",
+                "displayName": "Position",
+                "shortDisplayName": "POS",
+                "abbreviation": "SEED",
+                "value": 16.0,
+                "displayValue": "16"
+              },
+              {
+                "name": "pointDifferential",
+                "displayName": "Point Differential",
+                "shortDisplayName": "DIFF",
+                "abbreviation": "DIFF",
+                "value": -73.0,
+                "displayValue": "-73"
+              },
+              {
+                "name": "pointsAgainst",
+                "displayName": "Points Against",
+                "shortDisplayName": "PA",
+                "abbreviation": "PA",
+                "value": 221.0,
+                "displayValue": "221"
+              },
+              {
+                "name": "pointsFor",
+                "displayName": "Points For",
+                "shortDisplayName": "PF",
+                "abbreviation": "PF",
+                "value": 148.0,
+                "displayValue": "148"
+              },
+              {
+                "name": "streak",
+                "displayName": "Streak",
+                "shortDisplayName": "STRK",
+                "abbreviation": "STRK",
+                "value": -7.0,
+                "displayValue": "L7"
+              },
+              {
+                "name": "ties",
+                "displayName": "Ties",
+                "shortDisplayName": "T",
+                "abbreviation": "T",
+                "value": 0.0,
+                "displayValue": "0"
+              },
+              {
+                "name": "winPercent",
+                "displayName": "Win Percentage",
+                "shortDisplayName": "PCT",
+                "abbreviation": "PCT",
+                "value": 0.22222222,
+                "displayValue": ".222"
+              },
+              {
+                "name": "wins",
+                "displayName": "Wins",
+                "shortDisplayName": "W",
+                "abbreviation": "W",
+                "value": 2.0,
+                "displayValue": "2"
+              },
+              {
+                "name": "overall",
+                "abbreviation": "Any",
+                "displayValue": "2-7"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

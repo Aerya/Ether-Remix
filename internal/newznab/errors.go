@@ -3,8 +3,10 @@
 package newznab
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -86,3 +88,36 @@ type RateLimitError struct {
 func (e *RateLimitError) Error() string { return e.Err.Error() }
 
 func (e *RateLimitError) Unwrap() []error { return []error{e.Err, core.ErrBudgetExhausted} }
+
+type partialRateLimitKey struct{}
+
+type partialRateLimit struct {
+	mu sync.Mutex
+	rl *RateLimitError
+}
+
+func (p *partialRateLimit) set(rl *RateLimitError) {
+	p.mu.Lock()
+	if p.rl == nil {
+		p.rl = rl
+	}
+	p.mu.Unlock()
+}
+
+func (p *partialRateLimit) get() *RateLimitError {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.rl
+}
+
+// NoteBackendRateLimit records a rate-limit response observed after an earlier
+// lookup in the same backend search succeeded, so the Client still pauses the
+// indexer while returning the partial results.
+func NoteBackendRateLimit(ctx context.Context, rl *RateLimitError) {
+	if rl == nil {
+		return
+	}
+	if p, ok := ctx.Value(partialRateLimitKey{}).(*partialRateLimit); ok && p != nil {
+		p.set(rl)
+	}
+}

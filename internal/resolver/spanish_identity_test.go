@@ -8,6 +8,33 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
+func TestSpanishReleaseIdentityReportedIDs(t *testing.T) {
+	title := &core.Title{Type: core.TypeEpisode, ShowTitle: "Los Simpson", ShowOriginalTitle: "The Simpsons", ShowYear: 1989,
+		ShowIDs: core.IDs{TMDB: 456, IMDB: "tt0096697"}, Title: "Episodio", Season: 7, Episode: 3, Language: "en"}
+	const name = "Los Simpsons - Temporada 7 [HDTV][Cap.703][Castellano][www.PCTRELOAD.COM]"
+	for _, tc := range []struct {
+		label, name string
+		ids         core.IDs
+		want        string
+	}{
+		{"matching TMDB", name, core.IDs{TMDB: 456}, ""},
+		{"matching IMDb", name, core.IDs{IMDB: "tt0096697"}, ""},
+		{"missing result IDs", name, core.IDs{}, `title mismatch (parsed "Los Simpsons"; expected "Los Simpson" or "The Simpsons")`},
+		{"conflicting TMDB", name, core.IDs{TMDB: 999}, "indexer title identifier mismatch"},
+		{"conflict beats matching IMDb", name, core.IDs{TMDB: 999, IMDB: "tt0096697"}, "indexer title identifier mismatch"},
+		{"wrong episode", "Los Simpsons - Temporada 7 [HDTV][Cap.704][Castellano]", core.IDs{TMDB: 456}, "season/episode mismatch"},
+		{"wrong season", "Los Simpsons - Temporada 8 [HDTV][Cap.803][Castellano]", core.IDs{IMDB: "tt0096697"}, "season/episode mismatch"},
+		{"wrong year", "Los Simpsons 2024 S07E03 HDTV Castellano", core.IDs{TMDB: 456}, "series year mismatch"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			r := core.Release{Name: tc.name, Info: releaseparse.Parse(tc.name), Protocol: core.ProtocolTorrent, TitleIDs: tc.ids}
+			if got := rejectIdentity(r, title, searchRequestFor(title), "es-ES"); got != tc.want {
+				t.Fatalf("rejection = %q, want %q (parsed %+v)", got, tc.want, r.Info)
+			}
+		})
+	}
+}
+
 func TestSpanishReleaseIdentityFromMateriaOscuraTrace(t *testing.T) {
 	title := &core.Title{Type: core.TypeEpisode, ShowTitle: "Materia oscura", ShowOriginalTitle: "Dark Matter", ShowYear: 2024,
 		Title: "Ama y sé amado", Year: 2026, Season: 2, Episode: 5, Language: "en"}
@@ -79,7 +106,7 @@ func TestSpanishNewPCTChapterPacksAndTrailingYears(t *testing.T) {
 		if got := rejectIdentity(r, tc.title, searchRequestFor(tc.title), "es-ES"); got != "" {
 			t.Fatalf("%q rejected: %q (parsed %+v)", tc.name, got, r.Info)
 		}
-		if !audioAcceptable(r.Info, []string{"es-ES"}) {
+		if !audioAcceptable(r.Info, "", []string{"es-ES"}, nil) {
 			t.Fatalf("%q Spanish audio not acceptable: %+v", tc.name, r.Info.Languages)
 		}
 	}

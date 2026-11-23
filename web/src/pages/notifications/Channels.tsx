@@ -1,9 +1,10 @@
 import { t } from "../../i18n";
 import { Badge, Button, EmptyState, confirmDialog, toast } from "@braedonsaunders/appkit-ui";
-import { BellRing, Pencil, Plus, Send, Smartphone, Trash2 } from "lucide-react";
+import { BellRing, Pencil, Plus, Send, Smartphone, Trash2, Workflow } from "lucide-react";
 import { useState } from "react";
 import { Section } from "../../components/layout";
 import { apiFetch, errorMessage } from "../../lib/api";
+import { flowsApi } from "../../lib/flowsApi";
 import { useRegistry } from "../../lib/extend";
 import { BrowserPush } from "./BrowserPush";
 import { ChannelDrawer } from "./ChannelDrawer";
@@ -21,9 +22,12 @@ import {
 export function Channels({
   data,
   onChanged,
+  onFlowCreated,
 }: {
   data: NotificationsData;
   onChanged: () => Promise<void>;
+  /** Opens a flow materialized from a channel ("Customize as Flow"). */
+  onFlowCreated?: (flowId: string) => void;
 }) {
   const { descriptors } = useRegistry("channelKind", "eventKind");
   const [editing, setEditing] = useState<{ channel: Channel; isNew: boolean } | null>(null);
@@ -76,6 +80,42 @@ export function Channels({
         description: t("Check your inbox or device. The result is saved in Delivery history."),
       });
     });
+
+  /**
+   * Atomically materialize this channel's legacy event rules as an editable
+   * Flow via the server, removing the migrated rules from the channel so
+   * alerts never arrive twice (while keeping out-of-process crash alerts).
+   */
+  const customizeAsFlow = async (c: Channel) => {
+    const name = channelName(c, descriptors);
+    const ok = await confirmDialog({
+      title: t("Customize as Flow?"),
+      message: t(
+        "“{channel}” becomes its own flow you can extend — add conditions like “only after 3 failures in 10 minutes”. Its alerts move to the flow, so they won't arrive twice.",
+        { channel: name },
+      ),
+      confirmLabel: t("Create the flow"),
+    });
+    if (!ok) return;
+    setBusy(c.id);
+    try {
+      const res = await flowsApi.customizeNotification({
+        channelId: c.id,
+        enabled: c.enabled,
+        removeLegacyRule: true,
+      });
+      toast.success(t("Flow created — “{channel}” now alerts through it", { channel: name }), {
+        description: res.notes?.length ? res.notes.join(" ") : undefined,
+      });
+      if (onFlowCreated) onFlowCreated(res.flow.id);
+      else await onChanged();
+    } catch (e) {
+      toast.error(errorMessage(e));
+      await onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const remove = async (c: Channel) => {
     const ok = await confirmDialog({
@@ -157,6 +197,14 @@ export function Channels({
                       <Send size={14} /> {t("Send test")}
                     </Button>
                   ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy === c.id || c.events.length === 0}
+                    onClick={() => void customizeAsFlow(c)}
+                  >
+                    <Workflow size={14} /> {t("Customize as Flow")}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => edit(c)}>
                     <Pencil size={14} /> {t("Edit")}
                   </Button>

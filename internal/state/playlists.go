@@ -93,33 +93,41 @@ func loadPlaylistFrom(ctx context.Context, db playlistQuerier, userID, id int64)
 
 // List returns the user's playlists (with items), most recently updated first.
 func (s *State) List(ctx context.Context, userID int64) ([]core.Playlist, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM state_playlists WHERE user_id=? ORDER BY updated_at DESC, id DESC`, userID)
-	if err != nil {
-		return nil, err
+	out, err := s.ListHeaders(ctx, userID)
+	if err != nil || len(out) == 0 {
+		return out, err
 	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
+	byID := make(map[int64]int, len(out))
+	args := make([]any, 0, len(out))
+	for i := range out {
+		out[i].Items = []core.RatingKey{}
+		id := out[i].Key.TMDB()
+		byID[id] = i
+		args = append(args, id)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := make([]core.Playlist, 0, len(ids))
-	for _, id := range ids {
-		p, err := s.loadPlaylist(ctx, userID, id)
-		if errors.Is(err, core.ErrNotFound) {
-			continue
-		}
+	for chunk := range store.Chunks(args, 400) {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT playlist_id, rating_key, item_id FROM state_playlist_items WHERE playlist_id IN (`+store.Placeholders(len(chunk))+`) ORDER BY playlist_id, position`,
+			chunk...)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, *p)
+		for rows.Next() {
+			var pid, k, itemID int64
+			if err := rows.Scan(&pid, &k, &itemID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if idx, ok := byID[pid]; ok {
+				out[idx].Items = append(out[idx].Items, core.RatingKey(k))
+				out[idx].ItemIDs = append(out[idx].ItemIDs, itemID)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -160,6 +168,90 @@ func (s *State) GetPlaylist(ctx context.Context, userID int64, key core.RatingKe
 		return nil, err
 	}
 	return s.loadPlaylist(ctx, userID, id)
+}
+
+// GetPlaylistHeader returns one playlist header without reading its items, or
+// core.ErrNotFound.
+func (s *State) GetPlaylistHeader(ctx context.Context, userID int64, key core.RatingKey) (*core.Playlist, error) {
+	id, err := playlistID(key)
+	if err != nil {
+		return nil, err
+	}
+	var p core.Playlist
+	var smart int
+	var upd, added int64
+	err = s.db.QueryRowContext(ctx, `SELECT title, smart, updated_at, smart_uri, guid, summary, added_at FROM state_playlists WHERE id=? AND user_id=?`, id, userID).
+		Scan(&p.Title, &smart, &upd, &p.SmartURI, &p.GUID, &p.Summary, &added)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, core.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Key, p.UserID, p.Smart = core.PlaylistKey(id), userID, smart != 0
+	p.AddedAt = time.Unix(0, added).UTC()
+	if p.GUID == "" {
+		p.GUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("ether:playlist:%d", id))).String()
+	}
+	if upd > 0 {
+		p.UpdatedAt = time.Unix(0, upd).UTC()
+	}
+	return &p, nil
+}
+
+// GetPlaylistHeaders returns headers for the requested playlists owned by the
+// user in one query per chunk, without reading state_playlist_items.
+func (s *State) GetPlaylistHeaders(ctx context.Context, userID int64, keys []core.RatingKey) (map[core.RatingKey]core.Playlist, error) {
+	out := make(map[core.RatingKey]core.Playlist, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	ids := make([]any, 0, len(keys))
+	seen := make(map[int64]bool, len(keys))
+	for _, key := range keys {
+		id, err := playlistID(key)
+		if err != nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	for chunk := range store.Chunks(ids, 400) {
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, userID)
+		args = append(args, chunk...)
+		rows, err := s.db.QueryContext(ctx, `SELECT id, title, smart, updated_at, smart_uri, guid, summary, added_at FROM state_playlists WHERE user_id=? AND id IN (`+store.Placeholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id, upd, added int64
+			var smart int
+			var p core.Playlist
+			if err := rows.Scan(&id, &p.Title, &smart, &upd, &p.SmartURI, &p.GUID, &p.Summary, &added); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			p.Key, p.UserID, p.Smart = core.PlaylistKey(id), userID, smart != 0
+			p.AddedAt = time.Unix(0, added).UTC()
+			if p.GUID == "" {
+				p.GUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("ether:playlist:%d", id))).String()
+			}
+			if upd > 0 {
+				p.UpdatedAt = time.Unix(0, upd).UTC()
+			}
+			out[p.Key] = p
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Create makes a playlist with the given items in order.
@@ -336,6 +428,12 @@ func (v playlistsView) List(ctx context.Context, userID int64) ([]core.Playlist,
 }
 func (v playlistsView) ListHeaders(ctx context.Context, userID int64) ([]core.Playlist, error) {
 	return v.s.ListHeaders(ctx, userID)
+}
+func (v playlistsView) GetHeader(ctx context.Context, userID int64, key core.RatingKey) (*core.Playlist, error) {
+	return v.s.GetPlaylistHeader(ctx, userID, key)
+}
+func (v playlistsView) GetHeaders(ctx context.Context, userID int64, keys []core.RatingKey) (map[core.RatingKey]core.Playlist, error) {
+	return v.s.GetPlaylistHeaders(ctx, userID, keys)
 }
 func (v playlistsView) Get(ctx context.Context, userID int64, key core.RatingKey) (*core.Playlist, error) {
 	return v.s.GetPlaylist(ctx, userID, key)

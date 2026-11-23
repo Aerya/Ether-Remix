@@ -51,8 +51,10 @@ async function traktSection(): Promise<HTMLElement> {
 
 describe("Viewer Trakt linking", () => {
   it("disables Connect and links to Integrations › Trakt when Trakt is not configured", async () => {
-    renderApp("/viewers/4/limits");
+    renderApp("/viewers/4/sign-in?signin=sync");
     const section = await traktSection();
+    expect(within(section).getAllByText("Trakt")).toHaveLength(1);
+    expect(within(section).getByText("Connection")).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "Connect" })).toBeDisabled();
     const link = within(section).getByRole("link", { name: "Integrations › Trakt" });
     expect(link).toHaveAttribute("href", "/services/trakt");
@@ -62,7 +64,7 @@ describe("Viewer Trakt linking", () => {
     let polls = 0;
     let connected = false;
     const { fake } = renderApp(
-      "/viewers/4/limits",
+      "/viewers/4/sign-in?signin=sync",
       {},
       withTraktRoutes(true, (method, path) => {
         if (method === "GET" && path === "/viewers/4/trakt") {
@@ -125,6 +127,8 @@ describe("Viewer Trakt linking", () => {
     );
 
     const section = await traktSection();
+    expect(within(section).getAllByText("Trakt")).toHaveLength(1);
+    expect(within(section).getByText("Connection")).toBeInTheDocument();
     expect(within(section).getByText("Not connected")).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Connect" }));
 
@@ -150,7 +154,7 @@ describe("Viewer Trakt linking", () => {
   it("surfaces expired and denied codes in the drawer and lets the owner request a new code", async () => {
     let outcome: "expired" | "denied" = "expired";
     renderApp(
-      "/viewers/4/limits",
+      "/viewers/4/sign-in?signin=sync",
       {},
       withTraktRoutes(true, (method, path) => {
         if (method === "GET" && path === "/viewers/4/trakt") {
@@ -198,16 +202,16 @@ describe("Viewer Trakt linking", () => {
     ).toBeInTheDocument();
   });
 
-  it("links Integrations › Trakt directly to the viewer Limits tab and mentions /ether/me", async () => {
+  it("links Integrations › Trakt directly to the viewer Sign-in & devices tab and mentions /ether/me", async () => {
     renderApp("/services/trakt", {}, withTraktRoutes(true));
     const link = await screen.findByRole(
       "link",
       {
-        name: "Connect Trakt under each viewer's Limits tab, or let viewers connect at /ether/me.",
+        name: "Connect Trakt under each viewer's Sign-in & devices tab, or let viewers connect at /ether/me.",
       },
       WAIT,
     );
-    expect(link).toHaveAttribute("href", "/viewers/1/limits");
+    expect(link).toHaveAttribute("href", "/viewers/1/sign-in?signin=sync");
   });
 
   it("lets a signed-in viewer connect and disconnect Trakt on /ether/me", async () => {

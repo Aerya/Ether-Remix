@@ -432,6 +432,69 @@ func (i *instance) addImageMetadata(dto map[string]any, kind, tag string, img fr
 	}
 	byTag[tag] = img.BlurHash
 }
+func (i *instance) userImage(w http.ResponseWriter, r *http.Request) {
+	if i.host.ImageGrants == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	if raw := r.PathValue("index"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n != 0 {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	tags := route.Query(r.URL.Query(), "tag")
+	if len(tags) > 1 {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	if len(tags) == 1 && tags[0] != "" && i.serveImageTag(w, r, tags[0]) {
+		return
+	}
+	v, token, err := i.authenticate(r)
+	if err != nil || v == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{viewer: v, token: token}))
+	if v, token, err = i.viewer(r); err != nil || v == nil {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	target := r.PathValue("userId")
+	if target == "" {
+		if qs := route.Query(r.URL.Query(), "userId"); len(qs) == 1 {
+			target = qs[0]
+		} else if len(qs) > 1 {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	if target != "" {
+		uid, err := ids.ParseGUID(ids.User, target)
+		if err != nil || uid != v.ID {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+	}
+	img, ok := frontend.ViewerAvatarImage(v)
+	if !ok {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+		Credential: token,
+		Device:     device(r),
+		Image:      img,
+	})
+	if err != nil || grant == "" {
+		mediaBrowserError(w, r, http.StatusNotFound)
+		return
+	}
+	i.host.ImageGrants.Serve(w, r, grant)
+}
+
 func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 	if i.host.ImageGrants == nil {
 		mediaBrowserError(w, r, http.StatusNotFound)
@@ -439,8 +502,7 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 	}
 	r = pseImageSize(r) // PSE-HOOK: taille demandée par l'application — voir docs/pse/FORK.fr.md
 	tags := route.Query(r.URL.Query(), "tag")
-	if len(tags) == 1 && tags[0] != "" {
-		i.host.ImageGrants.Serve(w, r, tags[0])
+	if len(tags) == 1 && tags[0] != "" && i.serveImageTag(w, r, tags[0]) {
 		return
 	}
 	if len(tags) > 1 {
@@ -470,9 +532,9 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 //     anyone — and every unresolvable id — stays the same 404, so the
 //     anonymous path is not an oracle for restricted titles.
 //
-// A tag that is present but invalid never reaches here: it goes to
-// Serve and 404s there, so a forged tag cannot fall through to either
-// tag-less path.
+// A tag that is expired, invalid or forged falls back here once Serve
+// declines it. The tag carries no authority of its own, so the request is
+// authorized exactly as the same URL without a tag would be.
 func (i *instance) serveTaglessImage(w http.ResponseWriter, r *http.Request) {
 	wireID, imageType := r.PathValue("itemId"), r.PathValue("imageType")
 	index := 0
@@ -486,6 +548,10 @@ func (i *instance) serveTaglessImage(w http.ResponseWriter, r *http.Request) {
 	}
 	v, token, err := i.authenticate(r)
 	if err != nil || v == nil {
+		i.servePublicImage(w, r, wireID, imageType, index)
+		return
+	}
+	if frontend.IsAPIKeyCredential(token) {
 		i.servePublicImage(w, r, wireID, imageType, index)
 		return
 	}
@@ -591,7 +657,7 @@ func (i *instance) imageTarget(r *http.Request, v *frontend.Viewer, wireID strin
 	if i.host.Experience == nil {
 		return 0, nil, false, frontend.ErrNotFound
 	}
-	detail, e := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	detail, e := i.host.Experience.Item(frontend.WithNoContainerExpand(i.identityContext(r)), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if e != nil || !detail.ImagesAuthoritative {
 		return 0, nil, false, frontend.ErrNotFound
 	}
@@ -646,6 +712,12 @@ func taglessImage(images []frontend.Image, imageType string, index int) (fronten
 		kinds = []string{frontend.ImageThumb, frontend.ImageStill}
 	case "banner":
 		kinds = []string{frontend.ImageBanner}
+	case "chapter":
+		// Ether has no per-chapter stills. Every chapter of an item shows the
+		// item's own cover, so apps that only list chapters with an image
+		// (Jellyfin Web) still list them.
+		kinds = []string{frontend.ImagePoster, "primary", frontend.ImageStill, frontend.ImageThumb}
+		index = 0
 	default:
 		return frontend.Image{}, false
 	}
@@ -695,7 +767,7 @@ func (i *instance) itemImages(w http.ResponseWriter, r *http.Request) {
 		mediaBrowserError(w, r, 503)
 		return
 	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithNoContainerExpand(i.identityContext(r)), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if err != nil {
 		mediaBrowserError(w, r, 404)
 		return
@@ -721,3 +793,46 @@ func (i *instance) itemImages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(images)
 }
+
+// serveImageTag serves a tagged image request through its grant and reports
+// whether the grant answered. Jellyfin treats tag as a cache-buster: clients
+// cache item rows (and their tags) for hours, so an expired, invalid or
+// forged tag is not a refusal. The caller then authorizes the request as
+// the tag-less URL.
+func (i *instance) serveImageTag(w http.ResponseWriter, r *http.Request, tag string) bool {
+	miss := &grantMissWriter{ResponseWriter: w}
+	i.host.ImageGrants.Serve(miss, r, tag)
+	if !miss.missed {
+		return true
+	}
+	for _, key := range []string{"Content-Type", "Content-Length", "X-Content-Type-Options", "Cache-Control"} {
+		w.Header().Del(key)
+	}
+	return false
+}
+
+// grantMissWriter passes a grant's response through unless the grant answers
+// 404, which it swallows so the caller can fall back.
+type grantMissWriter struct {
+	http.ResponseWriter
+	missed, wrote bool
+}
+
+func (w *grantMissWriter) WriteHeader(code int) {
+	if !w.wrote && code == http.StatusNotFound {
+		w.missed = true
+		return
+	}
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *grantMissWriter) Write(b []byte) (int, error) {
+	if w.missed {
+		return len(b), nil
+	}
+	w.wrote = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *grantMissWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

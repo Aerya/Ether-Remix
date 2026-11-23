@@ -2,6 +2,8 @@ package availability
 
 import (
 	"context"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
@@ -218,4 +220,66 @@ func (s *Service) refund(ctx context.Context, kind string, n int64) {
 // per-indexer allowances and reserved foreground capacity as title probes.
 func (s *Service) ChannelCheckContext(ctx context.Context) context.Context {
 	return s.budgetContext(ctx, channelSearch)
+}
+
+// PluginUsenetCheckBucket returns the availability_budget resource name for
+// one plugin's daily background Usenet check allowance.
+func PluginUsenetCheckBucket(pluginID string) string {
+	return "plugin_usenet_checks:" + strings.TrimSpace(pluginID)
+}
+
+// NextBudgetReset returns the next UTC midnight when daily availability
+// allowances reset.
+func (s *Service) NextBudgetReset() time.Time {
+	now := time.Now().UTC()
+	if s != nil {
+		now = s.now().UTC()
+	}
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// AdmitPluginUsenetCheck reserves one background Usenet candidate check for
+// pluginID against config.Availability.PluginUsenetChecks in availability_budget
+// and returns a background-budgeted context, an idempotent refund callback,
+// and the next UTC midnight reset time. Returns core.ErrBudgetExhausted when
+// the plugin's daily allowance is exhausted or set to 0.
+func (s *Service) AdmitPluginUsenetCheck(ctx context.Context, pluginID string) (outCtx context.Context, refund func(), resetAt time.Time, err error) {
+	resetAt = s.NextBudgetReset()
+	if s == nil || s.db == nil {
+		return ctx, func() {}, resetAt, nil
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return nil, nil, resetAt, core.ErrBudgetExhausted
+	}
+	cfg := s.cfg().Availability
+	limit := int64(cfg.PluginUsenetChecks)
+	if limit <= 0 {
+		return nil, nil, resetAt, core.ErrBudgetExhausted
+	}
+	bucket := PluginUsenetCheckBucket(pluginID)
+	if err := s.spend(ctx, bucket, 1, limit); err != nil {
+		return nil, nil, resetAt, err
+	}
+	var refunded atomic.Bool
+	refundFn := func() {
+		if refunded.CompareAndSwap(false, true) {
+			s.refund(context.Background(), bucket, 1)
+		}
+	}
+	// Run plugin background NZB fetches and NNTP article checks at background
+	// priority while preserving Ether's foreground indexer reserve and daily
+	// verification byte ceiling. Plugin background checks are explicitly opted
+	// into via manifest permission and PluginUsenetChecks, so they do not
+	// require availability.Verify (which governs Ether's own title checks).
+	outCtx = core.WithIndexerPurpose(ctx, core.IndexerPurposeAvailability)
+	outCtx = core.WithForegroundReserve(outCtx, cfg.ReservePercent)
+	outCtx = core.WithBackgroundBudget(outCtx, func(ctx context.Context, resource, _ string, n int64) error {
+		live := s.cfg().Availability
+		if resource == "bytes" && live.CheckBytes > 0 {
+			return s.spend(ctx, "bytes", n, live.CheckBytes)
+		}
+		return nil
+	})
+	return outCtx, refundFn, resetAt, nil
 }
