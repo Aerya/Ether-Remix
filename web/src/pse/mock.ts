@@ -79,8 +79,8 @@ const demoFeatures = [
       }),
       demoField(
         "PSE_PREDB_FEEDS",
-        "Autres sites (flux RSS ou API) — facultatif",
-        "Other sites (RSS feeds or API) — optional",
+        "Flux privés (RSS, API...)",
+        "Private feeds (RSS, API...)",
         "feeds",
         {
           help: text(
@@ -91,8 +91,8 @@ const demoFeatures = [
       ),
       demoField(
         "PSE_PREDB_PROXY_TYPE",
-        "Proxy pour les flux publics",
-        "Proxy for public feeds",
+        "Proxy pour les appels PRE",
+        "Proxy for PRE calls",
         "select",
         {
           options: [

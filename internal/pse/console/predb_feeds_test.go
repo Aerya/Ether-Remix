@@ -31,7 +31,7 @@ func TestFeedsListValidateMaskAndRestoreKeys(t *testing.T) {
 	if len(list) != 3 || list[0].Key != "cle-secrete-a" || list[2].Key != "nouvelle-cle" || list[1].Key != "" {
 		t.Fatalf("%+v", list)
 	}
-	// Une adresse changée ne récupère pas l'ancienne clé : il faut la ressaisir.
+	// Un autre site ne récupère pas l'ancienne clé : il faut la ressaisir.
 	changed := restore(fd, `[{"url":"https://autre.example/rss","key":"`+mask+`"}]`, norm)
 	if _, err := validate(fd, changed, nil); err == nil || !strings.Contains(err.Error(), "ressaisissez") {
 		t.Fatalf("clé non restituée à une autre adresse : %v", err)
@@ -128,4 +128,22 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestFeedsKeyKeptWhenOnlyPathChanges(t *testing.T) {
+	fd := fieldByKey["PSE_PREDB_FEEDS"]
+	norm, err := validate(fd, `[{"name":"Mon site","url":"https://api.exemple.net","key":"cle-secrete"}]`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back := restore(fd, `[{"name":"Mon site","url":"https://api.exemple.net/api/v1/releases","key":"`+mask+`"}]`, norm)
+	final, err := validate(fd, back, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []feedEntry
+	_ = json.Unmarshal([]byte(final), &list)
+	if len(list) != 1 || list[0].Key != "cle-secrete" || list[0].URL != "https://api.exemple.net/api/v1/releases" {
+		t.Fatalf("%+v", list)
+	}
 }

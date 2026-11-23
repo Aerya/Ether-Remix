@@ -27,7 +27,7 @@ func MediaFlowRequest(req *http.Request, relayURL, password string) (*http.Reque
 	data := map[string]any{"d": req.URL.String(), "exp": time.Now().Add(5 * time.Minute).Unix(), "h_accept-encoding": "identity"}
 	for name, values := range req.Header {
 		switch strings.ToLower(name) {
-		case "user-agent", "accept":
+		case "user-agent", "accept", "x-api-key":
 			data["h_"+strings.ToLower(name)] = strings.Join(values, ", ")
 		}
 	}

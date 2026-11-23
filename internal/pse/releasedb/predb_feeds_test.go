@@ -86,8 +86,8 @@ func TestParsePreFeedReadsPredbAPIJSONWithUnixTime(t *testing.T) {
 	}
 }
 
-// Un proxy HTTP reçoit la requête avec les identifiants du proxy, et seuls les flux publics y passent.
-func TestFetchPreThroughProxyUsesCredentialsAndOnlyForPublicFeeds(t *testing.T) {
+// Un proxy HTTP reçoit la requête avec les identifiants du proxy, et les flux publics comme privés y passent.
+func TestFetchPreThroughProxyUsesCredentialsAndAlsoForPrivateFeeds(t *testing.T) {
 	var proxyAuth, proxied string
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Proxy-Authorization") == "" {
@@ -122,10 +122,11 @@ func TestFetchPreThroughProxyUsesCredentialsAndOnlyForPublicFeeds(t *testing.T) 
 	if _, err := fetchPre(context.Background(), preFeed{url: "http://pre.example/feed", public: true}, cfg); err == nil || !strings.Contains(err.Error(), "407") {
 		t.Fatalf("407 attendu : %v", err)
 	}
-	// Un flux personnel ne passe jamais par le proxy.
+	// Un flux privé passe aussi par le proxy.
+	cfg.Proxy.Auth = "bob:pa ss"
 	proxied = ""
-	if _, err := fetchPre(context.Background(), preFeed{url: direct.URL + "/feed", key: testKey}, cfg); err != nil || proxied != "" {
-		t.Fatalf("flux personnel : %v, proxy %q", err, proxied)
+	if _, err := fetchPre(context.Background(), preFeed{url: "http://prive.example/feed", key: testKey}, cfg); err != nil || proxied != "http://prive.example/feed" {
+		t.Fatalf("flux privé : %v, proxy %q", err, proxied)
 	}
 	// Proxy injoignable.
 	cfg.Proxy = PreProxy{Type: "proxy", URL: "http://127.0.0.1:1"}
@@ -155,7 +156,7 @@ func decryptMediaFlowToken(t *testing.T, token, password string) map[string]any 
 
 // Le relais MediaFlow reçoit l'adresse du flux dans un jeton chiffré et le mot de passe en en-tête.
 func TestFetchPreThroughMediaFlowRelay(t *testing.T) {
-	var gotPath, gotTarget, gotPassword string
+	var gotPath, gotTarget, gotPassword, gotKey string
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("api_password") != "s3cret" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -164,6 +165,7 @@ func TestFetchPreThroughMediaFlowRelay(t *testing.T) {
 		data := decryptMediaFlowToken(t, r.URL.Query().Get("token"), "s3cret")
 		gotPath, gotPassword = r.URL.Path, r.Header.Get("api_password")
 		gotTarget, _ = data["d"].(string)
+		gotKey, _ = data["h_x-api-key"].(string)
 		w.Write([]byte(rssSample))
 	}))
 	defer relay.Close()
@@ -182,6 +184,10 @@ func TestFetchPreThroughMediaFlowRelay(t *testing.T) {
 	// Les API (api.…) passent par /proxy/forward, comme pour AllDebrid.
 	if _, err := fetchPre(context.Background(), preFeed{url: "https://api.predb.net/?type=section&q=ANiME", public: true}, cfg); err != nil || gotPath != "/proxy/forward" {
 		t.Fatalf("API : %v %q", err, gotPath)
+	}
+	// Un flux privé passe par le relais, avec sa clé transmise dans le jeton.
+	if _, err := fetchPre(context.Background(), preFeed{url: "https://api.exemple.net/api/v1/releases", key: testKey}, cfg); err != nil || gotKey != testKey || gotTarget != "https://api.exemple.net/api/v1/releases" {
+		t.Fatalf("flux privé via MediaFlow : %v clé %q cible %q", err, gotKey, gotTarget)
 	}
 	cfg.Proxy.Auth = "mauvais"
 	if _, err := fetchPre(context.Background(), preFeed{url: "https://predb.me/?cats=tv&rss=1", public: true}, cfg); err == nil || err.Error() != "relais refusé (401)" {

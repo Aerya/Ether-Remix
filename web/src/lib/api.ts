@@ -242,15 +242,24 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     }
   }
   if (!res.ok) {
-    const err = (
-      data as {
-        error?: { code?: string; message?: string; fields?: FieldError[]; phase?: string };
-      } | null
-    )?.error;
+    const body = data as {
+      error?: string | { code?: string; message?: string; fields?: FieldError[]; phase?: string };
+      fields?: unknown;
+    } | null;
+    const err = typeof body?.error === "object" ? body.error : undefined;
+    // Les réglages Remix répondent { error: "texte", fields: { CLÉ: "message" } } :
+    // on affiche le message du premier champ refusé plutôt qu'un simple code.
+    let flat: string | undefined;
+    if (body?.fields && typeof body.fields === "object" && !Array.isArray(body.fields)) {
+      flat = Object.values(body.fields).find((v): v is string => typeof v === "string");
+    }
     const error = new ApiError(
       res.status,
       err?.code ?? "http",
-      err?.message ?? t("Request failed ({status})", { status: res.status }),
+      err?.message ??
+        flat ??
+        (typeof body?.error === "string" ? body.error : undefined) ??
+        t("Request failed ({status})", { status: res.status }),
       err?.fields,
     );
     error.phase = err?.phase;
