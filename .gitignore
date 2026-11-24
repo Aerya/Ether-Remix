@@ -57,3 +57,6 @@ __pycache__/
 # Inventaire public des fonctionnalités déplacé depuis les README.
 !/docs/pse/FEATURES.fr.md
 !/docs/pse/FEATURES.en.md
+
+!/docs/pse/DOCKER-MIGRATION.fr.md
+!/docs/pse/DOCKER-MIGRATION.en.md
