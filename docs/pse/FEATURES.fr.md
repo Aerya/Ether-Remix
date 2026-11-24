@@ -138,6 +138,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 - **Importez par lien** depuis Deezer, Spotify ou ListenBrainz, ou à partir d’un fichier CSV/XSPF.
 - Vérifiez l’aperçu, choisissez le spectateur destinataire et suivez les titres retrouvés ou manquants. Les imports créent des copies personnelles sans remplacer vos autres playlists.
 - Synchronisez les profils Deezer publics, Last.fm et ListenBrainz ; gérez vos playlists personnelles depuis les clients Subsonic.
+- **Playlists programmées** : mixes personnels renouvelés et suivi Deezer/Spotify/ListenBrainz par spectateur ; cadence, actualisation manuelle, suspension et diagnostic des titres manquants. AudioMuse facultatif pour les titres locaux déjà analysés. [Guide et limites](MUSIC-FLOWS.fr.md).
 - **Playlists iBroadcast** : activez leur import pour chaque compte connecté ; ordre des titres et répétitions conservés, actualisation sans doublons, sans modification chez iBroadcast.
 - Explorez les **tops par pays, écoutes récentes, titres les plus écoutés et nouveautés des artistes suivis**. Genres, artistes similaires, radios et mix sont proposés selon le client.
 

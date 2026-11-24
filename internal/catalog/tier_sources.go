@@ -167,6 +167,7 @@ var tierTouchSources = []touchSource{
 // the titles behind them would keep every title an Xtream client ever
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
+	"pse_music_flows",        // Musical schedules reference tracks, not film/series catalogue titles.
 	"pse_reference_backfill", // Automatic reference recovery, no viewer intent.
 	"pse_release_library",    // Automatically observed source references; no viewer intent.
 	"pse_local_destinations", // Folder routing marker only; memberships carry title references.

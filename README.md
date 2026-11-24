@@ -41,6 +41,8 @@ Les **sources facultatives** complètent le debrid et Usenet : client torrent, X
 
 Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos comptes iBroadcast dans Plexamp, les clients Jellyfin ou les applications Subsonic. Les sources musicales et les comptes debrid activés assurent la lecture ; les playlists se parcourent, s’importent et se gèrent par utilisateur. Dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif. iBroadcast privilégie la qualité originale (Premium) et se replie automatiquement sur le MP3 128 kb/s si l’original est refusé.
 
+**Playlists programmées** : mixes personnels renouvelés, suivi de playlists Deezer/Spotify/ListenBrainz et recommandations AudioMuse facultatives, avec cadence par spectateur et conservation du dernier contenu en cas d’échec. [Configuration et limites](docs/pse/MUSIC-FLOWS.fr.md).
+
 Ether-Remix a son propre groupe **Remix** dans le menu de gauche, au-dessus de **Bibliothèque**. Il s’ouvre en **mode Simple** pour les débutants : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. L’assistant en quatre étapes se lance au premier lancement sans source, et le **Diagnostic** explique pourquoi rien ne se lance. L’interrupteur **Expert** du groupe ajoute toutes les autres pages, sans rien retirer. [Guide](docs/pse/GUIDE.fr.md#nav-demarrage-rapide).
 
 La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.

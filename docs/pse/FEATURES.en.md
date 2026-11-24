@@ -133,6 +133,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 - **Import by URL** from Deezer, Spotify or ListenBrainz, or from CSV/XSPF files.
 - Review the preview, choose the destination viewer and track matched or missing tracks. Imports create personal copies without replacing other playlists.
 - Synchronize public Deezer profiles, Last.fm and ListenBrainz; manage personal playlists through Subsonic clients.
+- **Scheduled playlists**: rotating personal mixes and followed Deezer/Spotify/ListenBrainz playlists per viewer; intervals, manual refresh, pause and missing-track counts. Optional AudioMuse for already analysed local tracks. [Guide and limits](MUSIC-FLOWS.en.md).
 - **iBroadcast playlists**: enable import for each connected account; track order and repetitions are preserved, with updates without duplicates and no changes sent to iBroadcast.
 - Explore **country charts, recent plays, most-played tracks and new releases from followed artists**. Genres, similar artists, radios and mixes depend on the client.
 
