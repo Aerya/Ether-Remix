@@ -649,7 +649,6 @@ function Shell() {
                   </Button>
                 ) : null}
               </div>
-              <RemixRepositoryLinks />
               <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2">
                 <PseVersionLink
                   version={version}
@@ -660,28 +659,31 @@ function Shell() {
                   <RemixAppearance />
                 </div>
               </div>
+              <RemixRepositoryLinks />
             </div>
           )
         }
         sidebarFooter={
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <PseVersionLink
+                version={version}
+                className="min-w-0 truncate px-1 text-xs text-fg-subtle"
+              />
+              <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
+            </div>
             <RemixRepositoryLinks />
-            <PseVersionLink
-              version={version}
-              className="min-w-0 truncate px-1 text-xs text-fg-subtle"
-            />
-            <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
           </div>
         }
         sidebarCollapsedFooter={
           <div className="flex flex-col items-center gap-2">
             <LanguagePicker iconOnly className="h-7 px-1.5" />
             <EtherMark size={20} />
-            <RemixRepositoryLinks />
             <PseVersionLink
               version={version}
               className="max-w-full truncate text-center text-[10px] leading-tight text-fg-subtle"
             />
+            <RemixRepositoryLinks />
           </div>
         }
         moreLabel={t("More")}
