@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -142,6 +143,9 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
 			if ix.ID == sfrSearchID {
 				return sfrBackend{}, nil
+			}
+			if ix.ID == "remix-amule" || ix.ID == "remix-slskd" {
+				return peerBackend{a, strings.TrimPrefix(ix.ID, "remix-")}, nil
 			}
 			if ix.ID == xdccSourceID { // PSE-HOOK: source XDCC — voir docs/pse/FORK.fr.md
 				return xdccBackend{a}, nil

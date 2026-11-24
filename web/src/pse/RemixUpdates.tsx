@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-23-upstream-0320",
+    id: "2026-11-24-amule-slskd",
     version: "current",
+    date: "2026-11-24",
+    title: ["Connecteurs aMule et Soulseek", "aMule and Soulseek connectors"],
+    items: [
+      [
+        "Sources → aMule et Soulseek (slskd), en mode Expert : recherche de films, épisodes et musique, téléchargement à la lecture, lecture des fichiers terminés et commandes manuelles. Désactivés par défaut ; services externes compatibles et dossier partagé requis.",
+        "Sources → aMule and Soulseek (slskd), in Expert mode: movie, episode and music searches, downloads on playback, completed-file playback and manual controls. Disabled by default; compatible external services and a shared directory required.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-23-upstream-0320",
+    version: "0.2.37-remix.133.1",
     date: "2026-11-23",
     title: [
       "Synchronisation Ether et compatibilité Remix",

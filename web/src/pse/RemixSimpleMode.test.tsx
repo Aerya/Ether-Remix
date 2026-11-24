@@ -301,7 +301,7 @@ it("place chaque fonction Remix dans un seul onglet, sans orpheline", async () =
   const { readFileSync, readdirSync } = await import("node:fs");
   const { resolve } = await import("node:path");
   const dir = resolve(process.cwd(), "../internal/pse/console");
-  const declared = new Set<string>(["torrent2", "torrent3"]);
+  const declared = new Set<string>(["torrent2", "torrent3", "amule", "slskd"]);
   for (const file of readdirSync(dir).filter(
     (f) => /^fields.*\.go$/.test(f) && !f.endsWith("_test.go"),
   ))

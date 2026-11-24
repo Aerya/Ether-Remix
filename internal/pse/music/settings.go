@@ -3,6 +3,7 @@ package music
 import (
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/pse/peerclient"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 )
 
@@ -24,6 +25,7 @@ type Settings struct {
 	DMM        bool // Catalogue DMM, compte Real-Debrid existant.
 	TorBox     bool
 	// Torrent : client BitTorrent de Remix (PSE_TORRENT et PSE_TORRENT_MUSIC).
+	Peers   bool
 	Torrent bool
 	Audius  string // off, first or last; public MP3 fallback
 	// OpenDeezer : lecture directe avec la session Deezer (ARL) du
@@ -39,14 +41,14 @@ const TorrentSource = "torrent"
 
 // Enabled indique si l'API Subsonic doit être montée.
 func (s Settings) Enabled() bool {
-	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM || s.Torrent) || s.audiusEnabled() || s.openDeezerEnabled()
+	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM || s.Torrent || s.Peers) || s.audiusEnabled() || s.openDeezerEnabled()
 }
 
 // Mode renvoie la source utilisée : "eclipse", "alldebrid",
 // "eclipse+alldebrid", "debrid", "audius" (éventuellement combiné), "hifi" ou "".
 func (s Settings) Mode() string {
 	switch {
-	case s.RealDebrid || s.TorBox || s.DMM || s.Torrent:
+	case s.RealDebrid || s.TorBox || s.DMM || s.Torrent || s.Peers:
 		return "debrid"
 	case s.audiusEnabled():
 		return "audius"
@@ -67,6 +69,7 @@ func (s Settings) Mode() string {
 // LoadSettings lit l'environnement.
 func LoadSettings() Settings {
 	s := Settings{
+		Peers:           peerclient.Load("amule").Enabled || peerclient.Load("slskd").Enabled,
 		EclipseURLs:     strings.Join(ParseEclipseURLs(pseenv.Get("PSE_MUSIC_ECLIPSE_URL")), " "),
 		HiFiURL:         strings.TrimSpace(pseenv.Get("PSE_MUSIC_HIFI_URL")),
 		Quality:         strings.ToUpper(strings.TrimSpace(pseenv.Get("PSE_MUSIC_QUALITY"))),
@@ -176,6 +179,8 @@ func (s Settings) DebridEnabled(kind string) bool {
 		return s.RealDebrid
 	case "torbox":
 		return s.TorBox
+	case "amule", "slskd":
+		return s.Peers
 	case TorrentSource:
 		return s.Torrent
 	}

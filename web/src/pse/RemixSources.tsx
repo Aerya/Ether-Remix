@@ -27,6 +27,8 @@ const CATEGORIES = [
   ["debrid", "Debrid", "Debrid"],
   ["torrent", "Clients BitTorrent", "BitTorrent clients"],
   ["xdcc", "XDCC", "XDCC"],
+  ["amule", "aMule", "aMule"],
+  ["slskd", "Soulseek (slskd)", "Soulseek (slskd)"],
   ["ftp", "FTP / SFTP", "FTP / SFTP"],
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
@@ -37,18 +39,20 @@ const GROUPS = [
   {
     fr: "Films, séries et animés",
     en: "Movies, shows and anime",
-    ids: ["stremio", "debrid", "usenet", "indexeurs", "torrent", "xdcc", "ftp"],
+    ids: ["stremio", "debrid", "usenet", "indexeurs", "torrent", "xdcc", "ftp", "amule", "slskd"],
   },
   { fr: "Musique", en: "Music", ids: ["musique"] },
   { fr: "Fichiers et télévision", en: "Files and TV", ids: ["local", "iptv"] },
 ] as const;
-const EXPERT_ONLY = new Set(["indexeurs", "torrent", "xdcc", "ftp"]);
+const EXPERT_ONLY = new Set(["indexeurs", "torrent", "xdcc", "ftp", "amule", "slskd"]);
 
 export function RemixSources({
   simple = false,
   music,
   stremio,
   torrent,
+  amule,
+  slskd,
   xdcc,
   ftp,
 }: {
@@ -56,6 +60,8 @@ export function RemixSources({
   music: ReactNode;
   stremio?: ReactNode;
   torrent?: ReactNode;
+  amule?: ReactNode;
+  slskd?: ReactNode;
   xdcc?: ReactNode;
   ftp?: ReactNode;
 }) {
@@ -177,7 +183,7 @@ export function RemixSources({
               ? [L("Musique", "Music")]
               : category === "iptv"
                 ? [L("Télévision en direct", "Live TV")]
-                : category === "xdcc" || category === "ftp"
+                : ["xdcc", "ftp", "amule", "slskd"].includes(category)
                   ? [L("Films", "Movies"), L("Séries (épisodes SxxEyy)", "Shows (SxxEyy episodes)")]
                   : [
                       L("Films", "Movies"),
@@ -325,6 +331,8 @@ export function RemixSources({
           </CollapsibleBlock>
         ) : null}
         {category === "torrent" ? torrent : null}
+        {category === "amule" ? amule : null}
+        {category === "slskd" ? slskd : null}
         {category === "xdcc" ? xdcc : null}
         {category === "ftp" ? ftp : null}
         {category === "musique" ? <>{music}</> : null}

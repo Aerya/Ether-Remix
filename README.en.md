@@ -15,6 +15,8 @@ Ether-Remix is an on-demand media server based on [Ether](https://github.com/bra
 
 [Installation](#get-started) · [Features](#features) · [Apps](#apps) · [Documentation](#documentation)
 
+Optional **aMule and Soulseek (slskd)** connectors search movies, episodes and music, download on playback and play completed files. Manual search and transfer tracking are included; compatible external services and a shared download mount are required. [Setup and limitations](docs/pse/PEER.en.md).
+
 ## Ether at a glance
 
 Ether is an **on-demand** media server. It shows a TMDB-based catalogue inside the apps you already use, without downloading anything in advance. Its scope depends on server settings. When you play a title, it picks the best release from your debrid accounts and Usenet providers, checks that it works, then streams it. This workflow needs no Sonarr, Radarr, download client or mount to scan. It can run alongside an existing Plex, Jellyfin or Emby server.

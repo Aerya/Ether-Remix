@@ -379,6 +379,9 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	if (fd.Key == "PSE_SEERRCATALOG_TOKEN" || fd.Key == "PSE_SEERRCATALOG_SEARCH_TOKEN") && v != "" && len(v) < 32 {
 		return "", errors.New("clé de 32 caractères minimum")
 	}
+	if out, ok, err := validatePeer(fd.Key, v); ok {
+		return out, err
+	}
 	if out, ok, err := validateXDCC(fd.Key, v); ok {
 		return out, err
 	}

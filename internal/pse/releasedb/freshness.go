@@ -68,7 +68,7 @@ var FTPCopyFirst atomic.Bool
 
 // counts indique si une release compte pour le catalogue lisible.
 func counts(r Release, now time.Time) bool {
-	if r.SourceID == XDCCSourceID && now.Sub(r.LastSeen) > XDCCMaxAge {
+	if (r.SourceID == XDCCSourceID || r.SourceID == "remix-amule" || r.SourceID == "remix-slskd") && now.Sub(r.LastSeen) > XDCCMaxAge {
 		return false
 	}
 	return sourceActive(r.SourceID) && now.Sub(r.LastSeen) <= MaxAge

@@ -25,6 +25,7 @@ func (a *App) buildPSEIndexer() {
 	a.startSeerrCatalog()
 	a.startPSETorrent()
 	a.startPSEXdcc()
+	a.startPSEPeers()
 	a.startPSEFTP()
 	if a.indexers != nil {
 		a.indexers.SetSearchAdmission(func(ctx context.Context, req core.SearchRequest, rs []core.Release) []core.Release {
@@ -82,7 +83,7 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 		},
 		Config: func() config.Config { // sources XDCC et FTP comprises, si actives
 			c := a.cfg.Read()
-			c.Indexers = ftpIndexers(xdccIndexers(c.Indexers))
+			c.Indexers = peerIndexers(ftpIndexers(xdccIndexers(c.Indexers)))
 			return c
 		},
 		Resolve: func(ctx context.Context, info core.ReleaseInfo) (core.Title, bool) {

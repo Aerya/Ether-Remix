@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -574,6 +575,9 @@ func (rs Resolvers) Resolve(ctx context.Context, t Track) (Stream, error) {
 		}
 		if ctx.Err() != nil {
 			return Stream{}, ctx.Err()
+		}
+		if errors.Is(err, core.ErrDownloadQueued) {
+			return Stream{}, err
 		}
 		last = err
 	}

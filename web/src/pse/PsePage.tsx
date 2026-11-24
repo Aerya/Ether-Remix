@@ -1,3 +1,4 @@
+import { PeerStatus } from "./PeerStatus";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStartHint } from "./QuickStart";
@@ -411,6 +412,8 @@ function PseSettings() {
               torrent={current.features
                 .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
                 .map((f) => renderFeature(f))}
+              amule={current.features.filter((f) => f.id === "amule").map((f) => renderFeature(f))}
+              slskd={current.features.filter((f) => f.id === "slskd").map((f) => renderFeature(f))}
               xdcc={current.features.filter((f) => f.id === "xdcc").map((f) => renderFeature(f))}
               ftp={current.features.filter((f) => f.id === "ftp").map((f) => renderFeature(f))}
               stremio={
@@ -769,6 +772,7 @@ function FeatureSection({
         {basic.map(row)}
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "torrent" ? <TorrentStatus status={feature.status} /> : null}
+        {feature.id === "amule" || feature.id === "slskd" ? <PeerStatus kind={feature.id} /> : null}
         {feature.id === "xdcc" ? <XdccStatus status={feature.status} /> : null}
         {feature.id === "ftp" ? <FtpStatus status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
