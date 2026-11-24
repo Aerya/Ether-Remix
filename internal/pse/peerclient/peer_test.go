@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -200,5 +202,62 @@ func TestHTTPDoesNotLeakCredentials(t *testing.T) {
 	err := c.Test(t.Context())
 	if err == nil || leaked.Load() || strings.Contains(err.Error(), "private-fixture") {
 		t.Fatal("redirect or secret leakage")
+	}
+}
+
+func TestAmbiguousEnqueueRetainsActiveSlots(t *testing.T) {
+	var adds atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			adds.Add(1)
+			// Simulate an accepted request whose response cannot be decoded.
+			io.WriteString(w, `{`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cfg := Settings{Kind: "slskd", URL: srv.URL, Secret: "fixture-key"}
+	db := store.OpenTest(t)
+	s := &Service{DB: db, Client: &Client{Settings: cfg}}
+	hits := make([]Hit, 3)
+	for n := range hits {
+		h := Hit{Name: fmt.Sprintf("song%d.flac", n), Filename: fmt.Sprintf("Artist/Album/song%d.flac", n), User: "peer", Size: 10}
+		h.ID = hitID(h)
+		hits[n] = h
+		if err := s.save(t.Context(), Item{Hit: h}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, h := range hits[:2] {
+		if _, err := s.Ready(t.Context(), h.ID, true); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("enqueue: %v", err)
+		}
+		i, err := s.Item(t.Context(), h.ID)
+		if err != nil || i.State != "queued" {
+			t.Fatalf("lost uncertain intent: %+v %v", i, err)
+		}
+	}
+	// The same protection survives a restart while remote state is still absent.
+	s = &Service{DB: db, Client: &Client{Settings: cfg}}
+	if _, err := s.Ready(t.Context(), hits[2].ID, true); !errors.Is(err, core.ErrDownloadLimit) {
+		t.Fatalf("limit: %v", err)
+	}
+	if adds.Load() != 2 {
+		t.Fatalf("unexpected submissions: %d", adds.Load())
+	}
+	// Sustained absence releases the slot; the old request itself is not retried.
+	for _, h := range hits[:2] {
+		i, _ := s.Item(t.Context(), h.ID)
+		i.Started = time.Now().Add(-3 * time.Minute).Unix()
+		if err := s.save(t.Context(), i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Ready(t.Context(), hits[2].ID, true); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("released limit: %v", err)
+	}
+	if adds.Load() != 3 {
+		t.Fatalf("unexpected submissions: %d", adds.Load())
 	}
 }

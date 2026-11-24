@@ -167,8 +167,9 @@ func (s *Service) Ready(ctx context.Context, id string, allow bool) (string, err
 			return "", e
 		}
 		if e = s.Client.Enqueue(ctx, i.Hit); e != nil {
-			i.State = "failed"
-			_ = s.save(ctx, i)
+			// The remote service may have accepted the request before its response
+			// was lost. Retain the intent and active slot until Transfer confirms
+			// completion/failure or sustained absence; never retry this POST.
 			return "", e
 		}
 		return "", queued()

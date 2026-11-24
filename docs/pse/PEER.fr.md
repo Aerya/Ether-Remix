@@ -34,3 +34,5 @@ Le montage doit contenir le fichier complet et de la taille annoncée. La lectur
 Les versions anciennes d’aMule sans `amuleapi` et de slskd sans API de lots ne sont pas compatibles. Aucun streaming d’un fichier incomplet, installation automatique de client ou changement de configuration réseau n’est réalisé.
 
 Les reprises musicales utilisent en priorité la tâche déjà enregistrée, sans nouvelle recherche ni lancement d’une seconde copie. Les titres numériques (par exemple « 1979 ») sont conservés lors du retrait d’un numéro de piste.
+
+Si la réponse à un lancement est perdue ou invalide, sa place reste réservée jusqu’à vérification du transfert ; une absence confirmée pendant plus de deux minutes libère cette place sans relancer la demande initiale.

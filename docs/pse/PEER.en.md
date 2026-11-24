@@ -19,3 +19,5 @@ Playback checks completion and file size, supports video HTTP byte ranges throug
 Older aMule versions without amuleapi and slskd versions without the batches API are incompatible. The connectors do not install clients, change network settings or stream incomplete files.
 
 Music playback retries use the recorded transfer before running another search, avoiding a second copy. Numeric titles (for example “1979”) are preserved when stripping a track number.
+
+If an enqueue response is lost or invalid, its active slot remains reserved until the transfer is checked; confirmed absence after more than two minutes releases the slot without resubmitting the original request.
