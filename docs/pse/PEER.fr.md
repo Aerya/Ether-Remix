@@ -32,3 +32,5 @@ Le panneau permet aussi une recherche manuelle, un lancement explicite et l’ac
 Le montage doit contenir le fichier complet et de la taille annoncée. La lecture vidéo passe par un serveur HTTP local à jetons avec prise en charge des plages d’octets ; la musique ouvre le fichier directement dans le montage. Les liens symboliques ne peuvent pas sortir de ce dossier. Pour retrouver aussi les fichiers hors du catalogue à la demande, ajoutez le montage à une bibliothèque locale, avec les droits de partage voulus.
 
 Les versions anciennes d’aMule sans `amuleapi` et de slskd sans API de lots ne sont pas compatibles. Aucun streaming d’un fichier incomplet, installation automatique de client ou changement de configuration réseau n’est réalisé.
+
+Les reprises musicales utilisent en priorité la tâche déjà enregistrée, sans nouvelle recherche ni lancement d’une seconde copie. Les titres numériques (par exemple « 1979 ») sont conservés lors du retrait d’un numéro de piste.

@@ -24,6 +24,8 @@ describe("Limiter le recours aux débrideurs, voire préférer le téléchargeme
         <SourceOrder />
       </MemoryRouter>,
     );
+    // Wait for the fetched configuration before editing its initial state.
+    await screen.findAllByText("Mon Seedstrem");
     const mode = await screen.findByRole("switch", { name: "Configuration rapide" });
     expect(mode).not.toBeChecked();
     expect(screen.queryByLabelText("Usenet")).not.toBeInTheDocument();

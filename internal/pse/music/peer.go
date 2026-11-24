@@ -20,6 +20,19 @@ func (r PeerResolver) Resolve(ctx context.Context, t Track) (Stream, error) {
 	if !core.OnDemandStreamsAllowed(ctx) || core.PSEAvailabilityCheck(ctx) {
 		return Stream{}, core.ErrForegroundOnly
 	}
+	// Resume persisted work before discovery: search ordering and peer availability
+	// must not cause another copy to be queued on each playback attempt.
+	items, err := s.Items(ctx)
+	if err != nil {
+		return Stream{}, err
+	}
+	for _, item := range items {
+		if item.State == "failed" || !peerMatches(item.Hit, t) {
+			continue
+		}
+		// Keep the chosen copy even on transient failures.
+		return peerStream(ctx, s, item.Hit)
+	}
 	hits, err := s.Search(ctx, t.Artist.Name+" "+t.Title)
 	if err != nil {
 		return Stream{}, err
@@ -28,14 +41,18 @@ func (r PeerResolver) Resolve(ctx context.Context, t Track) (Stream, error) {
 		if !peerMatches(h, t) {
 			continue
 		}
-		open, err := s.MusicOpen(ctx, h.ID)
-		if err != nil {
-			return Stream{}, err
-		}
-		return Stream{URL: "peer:" + s.Client.Settings.Kind + ":" + h.ID, Provider: s.Client.Settings.Kind, Open: open, Mime: audioExts[strings.ToLower(path.Ext(h.Name))], Quality: debridQuality(h.Name)}, nil
+		return peerStream(ctx, s, h)
 	}
 	return Stream{}, ErrNotFound
 }
+func peerStream(ctx context.Context, s *peerclient.Service, h peerclient.Hit) (Stream, error) {
+	open, err := s.MusicOpen(ctx, h.ID)
+	if err != nil {
+		return Stream{}, err
+	}
+	return Stream{URL: "peer:" + s.Client.Settings.Kind + ":" + h.ID, Provider: s.Client.Settings.Kind, Open: open, Mime: audioExts[strings.ToLower(path.Ext(h.Name))], Quality: debridQuality(h.Name)}, nil
+}
+
 func peerMatches(h peerclient.Hit, t Track) bool {
 	if !IsAudio(h.Name) || t.Artist.Name == "" || t.Album.Title == "" || t.Title == "" {
 		return false
@@ -50,9 +67,12 @@ func peerMatches(h peerclient.Hit, t Track) bool {
 	if !sameVersion(base, t.Title) {
 		return false
 	}
-	normalized = strings.TrimSpace(strings.TrimLeft(normalized, "0123456789 "))
+	stripped := normalized
+	if number, rest, ok := strings.Cut(normalized, " "); ok && strings.Trim(number, "0123456789") == "" {
+		stripped = rest
+	}
 	artist, album, want := foldWords(t.Artist.Name), foldWords(t.Album.Title), foldWords(t.Title)
-	if normalized == artist+" "+album+" "+want {
+	if normalized == artist+" "+album+" "+want || stripped == artist+" "+album+" "+want {
 		return true
 	}
 	artistFound, albumFound := false, false
@@ -60,5 +80,5 @@ func peerMatches(h peerclient.Hit, t Track) bool {
 		artistFound = artistFound || foldWords(component) == artist
 		albumFound = albumFound || foldWords(component) == album
 	}
-	return albumFound && (artistFound && normalized == want || normalized == artist+" "+want)
+	return albumFound && (artistFound && (normalized == want || stripped == want) || normalized == artist+" "+want || stripped == artist+" "+want)
 }

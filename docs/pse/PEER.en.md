@@ -17,3 +17,5 @@ The panel also supports manual searches, explicit downloads and transfer refresh
 Playback checks completion and file size, supports video HTTP byte ranges through a local token server and opens audio directly within the mount. Symlinks cannot escape the mount. Add the mount as a local library with appropriate sharing permissions to browse downloaded files independently of on-demand catalogue playback.
 
 Older aMule versions without amuleapi and slskd versions without the batches API are incompatible. The connectors do not install clients, change network settings or stream incomplete files.
+
+Music playback retries use the recorded transfer before running another search, avoiding a second copy. Numeric titles (for example “1979”) are preserved when stripping a track number.
