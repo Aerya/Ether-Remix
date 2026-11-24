@@ -524,7 +524,7 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 			if !marks {
 				cached = cachedHints(r)
 			}
-			if src.id == XDCCSourceID {
+			if src.id == XDCCSourceID || src.id == "remix-amule" || src.id == "remix-slskd" {
 				cached = nil // un paquet XDCC se télécharge d'abord : jamais « en cache »
 			}
 			if src.id == FTPSourceID && FTPCopyFirst.Load() {

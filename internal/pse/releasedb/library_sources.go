@@ -15,7 +15,7 @@ func LibraryKeys(ctx context.Context, db *sql.DB, source string) ([]core.RatingK
 		return nil, nil
 	}
 	age := MaxAge
-	if source == XDCCSourceID {
+	if source == XDCCSourceID || source == "remix-amule" || source == "remix-slskd" {
 		age = XDCCMaxAge
 	}
 	rows, err := db.QueryContext(ctx, `SELECT title_key FROM pse_releases WHERE source_id=? AND last_seen>=? GROUP BY title_key ORDER BY MAX(last_seen) DESC,title_key LIMIT 5000`, source, time.Now().Add(-age).Unix())

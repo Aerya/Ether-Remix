@@ -15,6 +15,8 @@ export const REMIX_TABS = [
       "torrent2",
       "torrent3",
       "xdcc",
+      "amule",
+      "slskd",
       "ftp",
     ],
   },
@@ -227,7 +229,17 @@ export function sourcesHref(tab = "debrid", search = "") {
     "source",
     tab === "indexers"
       ? "indexeurs"
-      : ["debrid", "usenet", "iptv", "stremio", "torrent", "xdcc", "ftp"].includes(tab)
+      : [
+            "debrid",
+            "usenet",
+            "iptv",
+            "stremio",
+            "torrent",
+            "xdcc",
+            "amule",
+            "slskd",
+            "ftp",
+          ].includes(tab)
         ? tab
         : "debrid",
   );

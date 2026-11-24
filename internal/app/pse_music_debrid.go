@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/pse/music"
+	"github.com/braedonsaunders/ether/internal/pse/peerclient"
 )
 
 // Lecture musicale depuis les comptes debrid configurés dans Ether-Remix :
@@ -43,6 +44,9 @@ func (a *App) newPSEMusicDebrid() music.DebridSources {
 	}
 	// Client torrent de Remix, en dernier : il télécharge ce qui manque.
 	out = append(out, a.musicTorrentSource())
+	for _, kind := range []string{"amule", "slskd"} {
+		out = append(out, music.DebridSource{Kind: kind, Name: kind, Resolver: music.PeerResolver{Service: func() *peerclient.Service { return a.peer(kind) }}})
+	}
 	return out
 }
 

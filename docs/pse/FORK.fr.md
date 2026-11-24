@@ -221,3 +221,7 @@ Les migrations publiées `plugins/7` (cadence des manifests), `collections/9` (o
 Les règles d’identité des indexeurs utilisent désormais l’éditeur `IdentityRules`. Les sélecteurs `AnyProviderIdEquals` passent par le parcours commun Ether, avec les droits du spectateur ; les bibliothèques Scrob restent un ajout Remix. La visibilité des thèmes est appliquée aussi aux contrôles par lots. Sur Plex, les requêtes par bibliothèque répartissent les rangées choisies pour l’accueil selon leur type ; elles n’ajoutent pas en bloc les recommandations de la page Bibliothèque. Les sources de plugins et bibliothèques personnalisées conservent leur filtrage propre.
 
 La sélection explicite d’un créneau de version peut retenter une autre release du même créneau. Les échecs automatiques restent temporisés et le plafond Remix de tentatives reste applicable (4 par défaut, réglable jusqu’à 10). Les tests de transcodage utilisent les binaires épinglés de `packaging/ffmpeg.lock.json`.
+
+## Connecteurs aMule / slskd
+
+`internal/pse/peerclient` porte les API et transferts persistants ; `internal/app/pse_peer.go` les raccorde aux indexeurs, à la préparation de lecture et à la console. `internal/pse/music/peer.go` fournit le repli musical. Les points de raccordement suivent les sources XDCC / FTP ; guide : [PEER.fr.md](PEER.fr.md).

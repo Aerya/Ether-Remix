@@ -169,6 +169,8 @@ var Features = communityFields([]Feature{
 	torrentExtraClient(2),
 	torrentExtraClient(3),
 	xdccFeature(),
+	peerFeature("amule"),
+	peerFeature("slskd"),
 	ftpFeature(),
 	{
 		ID:          "playable",

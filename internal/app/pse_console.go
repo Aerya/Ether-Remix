@@ -73,8 +73,9 @@ type pseRuntime struct {
 	lfmOnce  sync.Once
 	lastfm   *music.Scrobbler
 	torrent  pseTorrentState // client BitTorrent (PSE_TORRENT)
-	xdcc     pseXdccState    // source XDCC (PSE_XDCC)
-	ftp      pseFTPState     // source FTP / SFTP (PSE_FTP)
+	peers    psePeerState
+	xdcc     pseXdccState // source XDCC (PSE_XDCC)
+	ftp      pseFTPState  // source FTP / SFTP (PSE_FTP)
 }
 
 // scrobbler prépare l'envoi des écoutes à Last.fm.
@@ -190,6 +191,7 @@ func (rt *pseRuntime) apply(a *App) {
 	releasedb.OverridePlayable(releasedb.LoadPlayable())
 	rt.reloadTorrent(a)
 	rt.reloadXdcc(a)
+	rt.reloadPeers(a)
 	rt.reloadFTP(a)
 	rt.reloadMusic(a)
 	a.reapplyAddonIndexers()
@@ -239,7 +241,7 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		},
 		Sources: func() []console.Option {
 			var out []console.Option
-			for _, ix := range ftpIndexers(xdccIndexers(a.cfg.Get().Indexers)) {
+			for _, ix := range peerIndexers(ftpIndexers(xdccIndexers(a.cfg.Get().Indexers))) {
 				if ix.ID == "" {
 					continue
 				}
@@ -354,6 +356,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		}
 		if strings.HasPrefix(r.URL.Path, "/jukebox/") {
 			http.StripPrefix("/jukebox", jukeboxAPI).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/peer/") {
+			a.psePeerAPI(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/xdcc/") {
