@@ -86,7 +86,6 @@ type homeEntry struct {
 	pr          Request
 	queued      bool
 	flight      *homeFlight
-	psePolicy   string // PSE-HOOK: écrans immédiats, empreinte des droits — voir docs/pse/FORK.fr.md
 }
 
 type homeFlight struct {
@@ -126,11 +125,10 @@ func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, route string,
 		now := time.Now()
 		s.homeCache().mu.Lock()
 		e := s.homeCache().entries[key]
-		pseStale := s.pseStaleHome(e, hard, pr, now) // PSE-HOOK: écrans immédiats, servis puis reconstruits — voir docs/pse/FORK.fr.md
-		if e != nil && (pseStale || e.hard == hard && now.Sub(e.builtAt) < homeMaxStale) && (!e.provisional || now.Sub(e.builtAt) < homeProvisionalRefresh) {
+		if e != nil && e.hard == hard && now.Sub(e.builtAt) < homeMaxStale && (!e.provisional || now.Sub(e.builtAt) < homeProvisionalRefresh) {
 			e.usedAt = now
 			e.tmpl, e.pr = detachedTemplate(r, pr)
-			stale := pseStale || e.soft != soft || now.Sub(e.builtAt) >= homeRefreshAfter
+			stale := e.soft != soft || now.Sub(e.builtAt) >= homeRefreshAfter
 			body, gz, offset, total := e.body, e.gz, e.offset, e.total
 			impressions, warm, section := e.impressions, e.warm, e.section
 			s.homeCache().mu.Unlock()
@@ -267,7 +265,6 @@ func detachedTemplate(r *http.Request, pr *Request) (*http.Request, Request) {
 }
 
 func (s *Server) storeHome(e *homeEntry) {
-	e.psePolicy = s.psePolicyStamp(&e.pr) // PSE-HOOK: écrans immédiats, empreinte des droits — voir docs/pse/FORK.fr.md
 	e.size = int64(len(e.body)+len(e.gz)) + 2048
 	for _, r := range e.impressions {
 		e.size += int64(len(r.id)+len(r.title)) + 8*int64(len(r.keys)) + 64

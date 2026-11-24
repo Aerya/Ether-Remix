@@ -54,6 +54,10 @@ export const REMIX_UPDATES = [
         "Une synchronisation Deezer, Last.fm ou ListenBrainz en erreur conserve les playlists précédentes du compte. Une panne de recherche n’est plus traitée comme un titre introuvable.",
         "A failed Deezer, Last.fm or ListenBrainz synchronization preserves the account’s previous playlists. Search outages are no longer treated as missing tracks.",
       ],
+      [
+        "Plex et Plezy : les écrans immédiats sont retirés. L’accueil et la vue Recommandé reviennent au cache d’Ether (rapide pendant 30 min, mis à jour en arrière-plan) ; le réglage PSE_INSTANT_SCREENS est désormais ignoré.",
+        "Plex and Plezy: instant screens are removed. Home and the Recommended view return to Ether’s cache (fast for 30 min, refreshed in the background); the PSE_INSTANT_SCREENS setting is now ignored.",
+      ],
     ],
   },
   {
