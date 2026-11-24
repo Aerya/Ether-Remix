@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-amule-slskd",
+    id: "2026-11-24-music-reliability",
     version: "current",
+    date: "2026-11-24",
+    title: [
+      "Correspondances musicales et playlists préservées",
+      "Music matching and preserved playlists",
+    ],
+    items: [
+      [
+        "La musique refuse les correspondances fondées sur un nom partiel ou un sous-titre différent. Un ISRC identique ne contourne plus les contradictions de version, de titre ou de durée ; les anciennes correspondances en cache sont revérifiées.",
+        "Music rejects matches based on partial names or different subtitles. A matching ISRC no longer overrides conflicting versions, titles or durations; cached matches are rechecked.",
+      ],
+      [
+        "Une synchronisation Deezer, Last.fm ou ListenBrainz en erreur conserve les playlists précédentes du compte. Une panne de recherche n’est plus traitée comme un titre introuvable.",
+        "A failed Deezer, Last.fm or ListenBrainz synchronization preserves the account’s previous playlists. Search outages are no longer treated as missing tracks.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-amule-slskd",
+    version: "0.2.37-remix.134.1",
     date: "2026-11-24",
     title: ["Connecteurs aMule et Soulseek", "aMule and Soulseek connectors"],
     items: [

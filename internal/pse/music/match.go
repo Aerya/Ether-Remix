@@ -76,8 +76,21 @@ type candidate struct {
 
 // matchScore note un résultat ; ok est faux s'il doit être refusé.
 func matchScore(c candidate, t Track) (score int, ok bool) {
+	// An identifier must not override evidence of a preview or another version.
+	if c.title != "" && t.Title != "" && !sameVersion(c.title, t.Title) {
+		return 0, false
+	}
+	if t.Duration > 0 && c.duration > 0 {
+		d := seconds(c.duration) - int64(t.Duration)
+		if d < -20 || d > 20 {
+			return 0, false
+		}
+	}
 	if c.isrc != "" && t.ISRC != "" {
 		if strings.EqualFold(c.isrc, t.ISRC) {
+			if c.title != "" && t.Title != "" && recordingTitle(c.title) != recordingTitle(t.Title) {
+				return 0, false
+			}
 			return 100, true
 		}
 		return 0, false
@@ -85,7 +98,7 @@ func matchScore(c candidate, t Track) (score int, ok bool) {
 	if !sameVersion(c.title, t.Title) {
 		return 0, false
 	}
-	ct, tt := foldWords(stripTrackExtras(c.title)), foldWords(stripTrackExtras(t.Title))
+	ct, tt := recordingTitle(c.title), recordingTitle(t.Title)
 	if ct == "" || tt == "" {
 		return 0, false
 	}
@@ -97,13 +110,11 @@ func matchScore(c candidate, t Track) (score int, ok bool) {
 	default:
 		return 0, false
 	}
-	ca, ta := fold(c.artist), fold(t.Artist.Name)
-	if ca != "" && ta != "" {
-		if !strings.Contains(ca, ta) && !strings.Contains(ta, ca) {
-			return 0, false
-		}
-		score += 2
+	ca, ta := foldWords(c.artist), foldWords(t.Artist.Name)
+	if ca == "" || ta == "" || ca != ta {
+		return 0, false
 	}
+	score += 2
 	if t.Duration > 0 && c.duration > 0 {
 		d := seconds(c.duration) - int64(t.Duration)
 		if d < 0 {
@@ -183,4 +194,18 @@ func checkAudioHost(ctx context.Context, link string) error {
 		}
 	}
 	return nil
+}
+
+// Only explicitly neutral edition labels may disappear during matching.
+// Keep subtitles, movement numbers and remix names as part of the identity.
+var recordingAnnotationRe = regexp.MustCompile(`\([^()]*\)|\[[^\[\]]*\]|\s+-\s+.*$`)
+var neutralEditionRe = regexp.MustCompile(`^(?:(?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?|radio edit|deluxe(?: edition)?)$`)
+
+func recordingTitle(title string) string {
+	return foldWords(recordingAnnotationRe.ReplaceAllStringFunc(title, func(annotation string) string {
+		if neutralEditionRe.MatchString(foldWords(annotation)) {
+			return " "
+		}
+		return annotation
+	}))
 }
