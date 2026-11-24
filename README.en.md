@@ -43,6 +43,8 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 
 Without a shared ISRC, music matching requires consistent artist and title metadata; partial names, different subtitles and incompatible versions are rejected. A matching ISRC does not override an obviously short preview. Failed Deezer, Last.fm or ListenBrainz synchronizations preserve the previous playlists.
 
+**Scheduled playlists**: rotating personal mixes, followed Deezer/Spotify/ListenBrainz playlists and optional AudioMuse recommendations, with per-viewer intervals and retained contents on failure. [Setup and limits](docs/pse/MUSIC-FLOWS.en.md).
+
 Ether-Remix has its own **Remix** group in the left menu, above **Libraries**. It opens in **Simple mode** for beginners: Start, Sources, Languages and quality, Content and Diagnostics. The four-step assistant starts on a first launch with no source, and **Diagnostics** explains why nothing plays. The group’s **Expert** switch adds every other page, with nothing removed. [Guide](docs/pse/GUIDE.en.md#nav-demarrage-rapide).
 
 **JukeBox** quick setup helps create libraries and collections. SubMaker subtitles, Scrob and Last.fm tracking, statistics and the French console round out these features.

@@ -1,3 +1,4 @@
+import { MusicFlows } from "./MusicFlows";
 import { PlaylistBrowser } from "./PlaylistBrowser";
 import { Badge, Button, Input, toast } from "@braedonsaunders/appkit-ui";
 import { RefreshCw } from "lucide-react";
@@ -65,7 +66,7 @@ export function deezerLinks(account: string) {
 const ENDPOINT = "/pse/music/playlists/";
 
 export function MusicPlaylists() {
-  const [tab, setTab] = useState<"discover" | "accounts" | "import">("discover");
+  const [tab, setTab] = useState<"discover" | "accounts" | "import" | "flows">("discover");
   const doc = useAsync(() => apiFetch<PlaylistData>(ENDPOINT), []);
   const [data, setData] = useState<PlaylistData | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -165,7 +166,7 @@ export function MusicPlaylists() {
         role="group"
         aria-label={L("Gestion des playlists", "Playlist management")}
       >
-        {(["discover", "accounts", "import"] as const).map((id) => (
+        {(["discover", "accounts", "import", "flows"] as const).map((id) => (
           <Button
             key={id}
             size="sm"
@@ -177,11 +178,14 @@ export function MusicPlaylists() {
               ? L("Découvrir", "Discover")
               : id === "accounts"
                 ? L("Mes comptes", "My accounts")
-                : L("Importer", "Import")}
+                : id === "flows"
+                  ? L("Programmées", "Scheduled")
+                  : L("Importer", "Import")}
           </Button>
         ))}
       </div>
-      <div hidden={tab === "accounts"}>
+      {tab === "flows" && <MusicFlows viewers={current.viewers} />}
+      <div hidden={tab === "accounts" || tab === "flows"}>
         <PlaylistBrowser
           viewers={current.viewers}
           mode={tab === "import" ? "import" : "discover"}

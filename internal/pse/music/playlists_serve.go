@@ -64,6 +64,8 @@ func playlistComment(pl Playlist) string {
 	switch pl.Source {
 	case SourceUser:
 		return "Playlist personnelle"
+	case SourceFlow:
+		return "Playlist programmée, actualisée par Remix"
 	case SourceSmart:
 		return smartComment(pl.Ref)
 	case ServiceListenBrainz:

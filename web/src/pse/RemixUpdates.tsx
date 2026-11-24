@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-music-reliability",
+    id: "2026-11-24-music-flows",
     version: "current",
+    date: "2026-11-24",
+    title: ["Playlists programmées et mixes personnels", "Scheduled playlists and personal mixes"],
+    items: [
+      [
+        "Playlists → Programmées : mixes renouvelés, suivi Deezer/Spotify/ListenBrainz et AudioMuse facultatif pour une bibliothèque locale déjà analysée. Cadence par spectateur, actualisation manuelle et dernier contenu conservé en cas d’échec.",
+        "Playlists → Scheduled: rotating mixes, followed Deezer/Spotify/ListenBrainz playlists and optional AudioMuse for an already analysed local library. Per-viewer intervals, manual refresh and previous contents preserved on failure.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-music-reliability",
+    version: "0.2.37-remix.135.1",
     date: "2026-11-24",
     title: [
       "Correspondances musicales et playlists préservées",

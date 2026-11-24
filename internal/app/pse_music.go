@@ -85,6 +85,7 @@ func (a *App) startPSEPlaylists(rt *pseRuntime) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.closers = append(a.closers, cancel)
 	sync := rt.playlistSync(a)
+	flows := &music.PlaylistAPI{Sync: sync, Viewers: a.pseViewers, Spotify: &music.SpotifyPlaylists{Store: sync.Store, Sealer: a.cfg}}
 	go func() {
 		wait := time.Minute // laisse le démarrage se terminer
 		for {
@@ -97,6 +98,7 @@ func (a *App) startPSEPlaylists(rt *pseRuntime) {
 			if rt.music.Load() != nil {
 				sync.SyncDue(ctx, music.PlaylistEvery())
 				a.psePlaylistsSystem(ctx, sync)
+				flows.SyncFlows(ctx)
 			}
 		}
 	}()

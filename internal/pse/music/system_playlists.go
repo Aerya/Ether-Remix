@@ -268,7 +268,7 @@ func (s *PlaylistSync) discoverTracks(ctx context.Context, viewer int64) ([]Trac
 		return nil, err
 	}
 	for _, l := range lists {
-		if l.Source == SourceCharts || l.Source == SourceDiscover {
+		if l.Source == SourceCharts || l.Source == SourceDiscover || l.Source == SourceFlow {
 			continue
 		}
 		for _, t := range l.Tracks {
