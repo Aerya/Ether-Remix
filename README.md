@@ -162,3 +162,5 @@ Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://ecli
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
 
 Les contributions passent par une PR vers `main`, avec CI et détection des secrets obligatoires. Les PR de `kesurof/Ether-Remix` ouvertes par `kesurof` fusionnent automatiquement après validation. [Règles de contribution et synchronisation](docs/pse/FORK.fr.md).
+
+Le logo Remix-Media identifie la console ; le numéro de version et le lien Remix du pied de menu ouvrent ce dépôt, à côté du crédit Ether.
