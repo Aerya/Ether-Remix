@@ -83,7 +83,7 @@ import { hasExemptDiagnostic } from "./lib/health";
 import { useMediaQuery } from "./lib/hooks";
 import { t, tn } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
-import { Brand, BrandSplash, EtherMark } from "./components/brand";
+import { BrandSplash, EtherMark } from "./components/brand";
 import { CommandSearch } from "./components/CommandSearch";
 import { WatchButton } from "./components/WatchButton";
 import { AskEther } from "./components/agent/AskEther";
@@ -114,7 +114,7 @@ import { theme } from "./theme";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
-import { PseVersionLink, RemixRepositoryLinks } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
+import { PseVersionLink, RemixRepositoryLinks, RemixBrand } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 
 const loadDesigner = () => import("./pages/designer/Designer");
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
@@ -554,7 +554,7 @@ function Shell() {
             aria-label={t("Ether home")}
             className="block rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
-            <Brand />
+            <RemixBrand />
           </Link>
         }
         headerMiddle={

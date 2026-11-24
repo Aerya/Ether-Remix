@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-remix-media",
+    id: "2026-11-24-remix-media-logo",
     version: "current",
+    date: "2026-11-24",
+    title: ["Le logo Remix-Media dans la console", "Remix-Media logo in the console"],
+    items: [
+      [
+        "Le logo rejoint l’en-tête et le lien Remix du pied de menu. Le numéro de version ouvre le nouveau dépôt ; le crédit et le lien du projet originel Ether restent disponibles.",
+        "The logo appears in the header and the Remix footer link. The version number opens the new repository; the original Ether project credit and link remain available.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-remix-media",
+    version: "0.2.37-remix.138.1",
     date: "2026-11-24",
     title: ["Remix rejoint Remix-Media", "Remix moves to Remix-Media"],
     items: [
