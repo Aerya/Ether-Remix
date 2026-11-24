@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 /** Dépôt GitHub de PSE, ouvert depuis le numéro de version de la console. */
-export const PSE_REPO_URL = "https://github.com/Aerya/Ether-Remix";
+export const PSE_REPO_URL = "https://github.com/Remix-Media/Ether-Remix";
 
 /**
  * Numéro de version en bas de la barre latérale, cliquable vers le dépôt

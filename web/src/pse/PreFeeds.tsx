@@ -39,7 +39,7 @@ export const PRE_PUBLIC_FEEDS = [
   },
 ] as const;
 
-const DOC = "https://github.com/Aerya/Ether-Remix/blob/main/docs/pse/";
+const DOC = "https://github.com/Remix-Media/Ether-Remix/blob/main/docs/pse/";
 
 /** Sources lues par défaut, avec leurs liens, en tête de la vue Pre (bêta). */
 export function PreFeeds() {

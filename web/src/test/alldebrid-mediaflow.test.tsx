@@ -37,7 +37,7 @@ describe("AllDebrid MediaFlow", () => {
     expect(button).toBeDisabled();
     expect(screen.getByRole("link", { name: /Compose and Remix setup/ })).toHaveAttribute(
       "href",
-      "https://github.com/Aerya/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation",
+      "https://github.com/Remix-Media/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation",
     );
     get.mockRestore();
     test.mockRestore();

@@ -51,6 +51,8 @@ The detailed step-by-step guide is in **Start**, collapsible; it does not change
 
 ## Installation
 
+[Remix-Media migration: existing installations keep their Docker address.](DOCKER-MIGRATION.en.md)
+
 The Docker image is public. No GHCR login or GitHub token is needed to download it.
 
 ```yaml

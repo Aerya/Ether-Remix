@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-music-flows",
+    id: "2026-11-24-remix-media",
     version: "current",
+    date: "2026-11-24",
+    title: ["Remix rejoint Remix-Media", "Remix moves to Remix-Media"],
+    items: [
+      [
+        "Le dépôt GitHub rejoint l’organisation Remix-Media. Les installations Docker existantes peuvent garder ghcr.io/aerya/ether-remix : un miroir maintient cette adresse. La nouvelle adresse est ghcr.io/remix-media/ether-remix ; les volumes et réglages restent identiques.",
+        "The GitHub repository moves to Remix-Media. Existing Docker installations may keep ghcr.io/aerya/ether-remix: a mirror maintains this address. The new address is ghcr.io/remix-media/ether-remix; volumes and settings stay the same.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-music-flows",
+    version: "0.2.37-remix.137.1",
     date: "2026-11-24",
     title: ["Playlists programmées et mixes personnels", "Scheduled playlists and personal mixes"],
     items: [

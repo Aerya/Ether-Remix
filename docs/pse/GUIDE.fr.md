@@ -51,6 +51,8 @@ Le guide détaillé pas à pas se trouve, repliable, dans **Accueil** ; il ne mo
 
 ## Installation
 
+[Migration vers Remix-Media : les installations existantes gardent leur adresse Docker.](DOCKER-MIGRATION.fr.md)
+
 L’image Docker est publique. Aucune connexion à GHCR ni aucun jeton GitHub ne sont nécessaires pour la télécharger.
 
 ```yaml
