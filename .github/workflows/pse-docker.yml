@@ -2,9 +2,9 @@
 # multi-architecture (linux/amd64 + linux/arm64) sur GHCR, construite
 # automatiquement à chaque changement de main et après chaque
 # synchronisation upstream réussie.
-#   ghcr.io/aerya/ether-remix:latest
-#   ghcr.io/aerya/ether-remix:<version>-remix.<run>.<tentative>
-#   ghcr.io/aerya/ether-remix:sha-<commit>
+#   ghcr.io/remix-media/ether-remix:latest
+#   ghcr.io/remix-media/ether-remix:<version>-remix.<run>.<tentative>
+#   ghcr.io/remix-media/ether-remix:sha-<commit>
 name: Ether-Remix · Images Docker
 
 on:
@@ -63,7 +63,7 @@ jobs:
         env:
           TMDB_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
         run: |
-          img=ghcr.io/aerya/ether-remix
+          img=ghcr.io/remix-media/ether-remix
           tags="-t $img:latest -t $img:${{ steps.v.outputs.version }} -t $img:sha-${{ steps.v.outputs.commit }}"
           docker buildx build \
             --platform "${{ steps.v.outputs.platforms }}" \

@@ -82,7 +82,7 @@ export function SeerrCatalogHelp({ status }: { status?: Record<string, unknown> 
         {" · "}
         <a
           className="underline"
-          href="https://github.com/Aerya/Ether-Remix"
+          href="https://github.com/Remix-Media/Ether-Remix"
           target="_blank"
           rel="noopener noreferrer"
         >

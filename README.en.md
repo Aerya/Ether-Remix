@@ -1,4 +1,6 @@
 <p align="center">
+
+The repository now lives in **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. The historical Docker address `ghcr.io/aerya/ether-remix:latest` remains supported through a mirror; existing installations do not need to change. The new address is `ghcr.io/remix-media/ether-remix:latest`. [Docker transition](docs/pse/DOCKER-MIGRATION.en.md).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/ether-remix-signature-dark.svg">
     <img src=".github/assets/ether-remix-signature-light.svg" width="560" alt="Ether Remix">

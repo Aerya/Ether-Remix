@@ -12,7 +12,7 @@ it("explains setup and fallback, links both projects and reports synchronization
   );
   expect(screen.getByRole("link", { name: "Ether Remix · GitHub" })).toHaveAttribute(
     "href",
-    "https://github.com/Aerya/Ether-Remix",
+    "https://github.com/Remix-Media/Ether-Remix",
   );
   expect(screen.getByText(/42 items/)).toBeTruthy();
   expect(screen.getByText(/falls back to normal discovery/)).toBeTruthy();
