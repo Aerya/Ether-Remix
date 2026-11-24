@@ -677,8 +677,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			if p.source.reviewed == nil || current.URL != p.source.URL || !strings.EqualFold(current.SHA256, p.source.SHA256) {
 				return Record{}, fmt.Errorf("plugins: catalogue entry changed since the package was reviewed")
 			}
-			approved := Manifest{Ether: &EtherBlock{Permissions: current.Permissions, Capabilities: current.Capabilities}}
-			if man.Ether == nil || man.Ether.Kind != current.Kind || len(PermissionDiff(approved, man)) != 0 {
+			if man.Ether == nil || man.Ether.Kind != current.Kind || len(catalogueReviewDiff(current, man)) != 0 {
 				return Record{}, fmt.Errorf("plugins: catalogue review changed since the package was reviewed")
 			}
 		} else if _, err := cat.Resolve(ctx, man.ID, ""); err != nil && errors.Is(err, ErrRevoked) {
