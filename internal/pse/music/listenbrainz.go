@@ -149,7 +149,11 @@ func (s *PlaylistSync) listenbrainzLists(ctx context.Context, user string) ([]Pl
 		}
 		pl := Playlist{Ref: p.ref, Name: p.name}
 		for _, t := range full.Playlist.Track {
-			if tr, ok := s.findTrack(ctx, t.Creator, t.Title); ok {
+			tr, ok, matchErr := s.findTrackResult(ctx, t.Creator, t.Title)
+			if matchErr != nil {
+				return out, errors.Join(errors.Join(errs...), matchErr)
+			}
+			if ok {
 				pl.Tracks = append(pl.Tracks, tr)
 				if len(pl.Tracks) >= s.maxTracks() {
 					break

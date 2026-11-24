@@ -284,7 +284,12 @@ func (s *PlaylistSync) syncLocked(ctx context.Context, a Account) error {
 	default:
 		err = fmt.Errorf("service inconnu %q", a.Service)
 	}
-	if err == nil || len(lists) > 0 {
+	// Commit only a complete snapshot. A partial response must not delete
+	// playlists or tracks that merely failed to load this time.
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil {
 		if rerr := s.Store.replace(ctx, a.Viewer, a.Service, lists); rerr != nil {
 			err = errors.Join(err, rerr)
 		}
@@ -494,7 +499,10 @@ func (s *PlaylistSync) lastfmLists(ctx context.Context, user string) ([]Playlist
 			if ctx.Err() != nil {
 				return lists, ctx.Err()
 			}
-			m, ok := s.findTrack(ctx, t.artist(), t.Name)
+			m, ok, matchErr := s.findTrackResult(ctx, t.artist(), t.Name)
+			if matchErr != nil {
+				return lists, errors.Join(errors.Join(errs...), matchErr)
+			}
 			if ok && !seen[m.ID] {
 				seen[m.ID] = true
 				pl.Tracks = append(pl.Tracks, m)
@@ -552,13 +560,6 @@ func (s *PlaylistSync) lastfmTracks(ctx context.Context, user, method, period st
 	return out, nil
 }
 
-// findTrack retrouve un titre Last.fm dans le catalogue Deezer ; le
-// résultat (ou l'absence) est gardé en base.
-func (s *PlaylistSync) findTrack(ctx context.Context, artist, title string) (Track, bool) {
-	t, ok, _ := s.findTrackResult(ctx, artist, title)
-	return t, ok
-}
-
 // findTrackResult distinguishes a missing match from a provider outage for imports.
 func (s *PlaylistSync) findTrackResult(ctx context.Context, artist, title string) (Track, bool, error) {
 	artist, title = strings.TrimSpace(artist), strings.TrimSpace(title)
@@ -567,7 +568,13 @@ func (s *PlaylistSync) findTrackResult(ctx context.Context, artist, title string
 	}
 	key := foldWords(artist) + "\x00" + foldWords(title)
 	if t, ok, known := s.Store.match(ctx, key); known {
-		return t, ok, nil
+		if !ok {
+			return t, false, nil
+		}
+		// Recheck persisted matches created by older, more permissive rules.
+		if _, valid := bestTrackMatch([]Track{t}, artist, title); valid {
+			return t, true, nil
+		}
 	}
 	clean := func(v string) string { return strings.NewReplacer(`"`, " ", `\`, " ").Replace(v) }
 	var best *Track
@@ -592,30 +599,19 @@ func (s *PlaylistSync) findTrackResult(ctx context.Context, artist, title string
 	return *best, true, nil
 }
 
-// bestTrackMatch garde le premier résultat dont l'artiste et le titre
-// correspondent (mots du titre Last.fm présents, artiste identique ou
-// contenu).
+// bestTrackMatch prefers the exact title, then a neutral edition variant.
+// Substring artist matches and title prefixes are not recording identities.
 func bestTrackMatch(cands []Track, artist, title string) (Track, bool) {
-	fa, ft := foldWords(artist), foldWords(title)
-	base := foldWords(stripTrackExtras(title))
-	for pass := 0; pass < 2; pass++ {
-		for _, c := range cands {
-			ca, ct := foldWords(c.Artist.Name), foldWords(c.Title)
-			if ca == "" || !(ca == fa || strings.Contains(ca, fa) || strings.Contains(fa, ca)) {
-				continue
-			}
-			if !sameVersion(c.Title, title) {
-				continue // une version live ou un remix n'est pas l'original
-			}
-			if pass == 0 && ct == ft {
-				return c, true
-			}
-			if pass == 1 && (strings.HasPrefix(ct, base) || strings.HasPrefix(foldWords(stripTrackExtras(c.Title)), base)) && base != "" {
-				return c, true
-			}
+	target := Track{Title: title, Artist: Artist{Name: artist}}
+	var best Track
+	bestScore := -1
+	for _, c := range cands {
+		score, ok := matchScore(candidate{title: c.Title, artist: c.Artist.Name}, target)
+		if ok && score > bestScore {
+			best, bestScore = c, score
 		}
 	}
-	return Track{}, false
+	return best, bestScore >= 0
 }
 
 var trackExtrasRe = regexp.MustCompile(`\s*[\(\[][^\)\]]*[\)\]]|\s+-\s+.*$`)

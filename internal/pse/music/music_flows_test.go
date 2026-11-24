@@ -383,12 +383,21 @@ func TestAudioMuseRejectsMalformedAndOversizedResponses(t *testing.T) {
 
 func TestMusicFlowRejectsLooseCachedMatches(t *testing.T) {
 	a, _ := flowHarness(t)
+	var searches atomic.Int32
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search/track" {
+			searches.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{dzJSON(1, "Song (Live)", "Artist", 1, true)}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"playlist": map[string]any{"title": "Source", "track": []map[string]string{{"title": "Song", "creator": "Artist"}, {"title": "Other", "creator": "Artist"}}}})
 	}))
 	defer remote.Close()
 	a.Sync.ListenBrainz = remote.URL
 	a.Sync.HTTP = remote.Client()
+	a.Sync.Deezer = NewDeezerSource(nil, remote.Client())
+	a.Sync.Deezer.API = remote.URL
+	a.Sync.Pace = 1
 	wrong := Track{ID: 1, Title: "Song (Live)", Artist: Artist{Name: "Artist"}}
 	right := Track{ID: 2, Title: "Other", Artist: Artist{Name: "Artist"}}
 	a.Sync.Store.saveMatch(t.Context(), foldWords("Artist")+"\x00"+foldWords("Song"), &wrong)
@@ -397,6 +406,9 @@ func TestMusicFlowRejectsLooseCachedMatches(t *testing.T) {
 	f.Mode = "playlist"
 	f.URL = "https://listenbrainz.org/playlist/11111111-1111-1111-1111-111111111111"
 	tracks, missing, err := a.flowTracks(t.Context(), f)
+	if searches.Load() == 0 {
+		t.Fatal("cached mismatch was not rechecked")
+	}
 	if err != nil || len(tracks) != 1 || tracks[0].ID != 2 || missing != 1 {
 		t.Fatal(tracks, missing, err)
 	}

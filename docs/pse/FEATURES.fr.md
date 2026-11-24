@@ -134,6 +134,9 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 #### Vos playlists et de nouvelles découvertes
 
+- **Correspondances strictes** : sans ISRC commun, le nom d’artiste et le titre doivent correspondre après normalisation ; les noms partiels et les sous-titres différents ne suffisent plus. Les mentions neutres reconnues (remasterisation, radio edit, deluxe) restent tolérées. Un ISRC concordant ne contourne ni une contradiction de titre/version ni un écart de durée supérieur à 20 secondes lorsque les deux durées sont connues. Les anciennes correspondances en cache sont revérifiées lors des imports et synchronisations, sans réécrire les playlists personnelles déjà importées.
+- **Synchronisation sans perte sur erreur** : une panne, un quota ou une réponse partielle en erreur conserve toutes les playlists précédentes du compte concerné, avec l’erreur visible dans son état. Le prochain succès remplace normalement cet ensemble, y compris les suppressions faites à la source. Les titres réellement introuvables restent ignorés ; aucune analyse acoustique ni récupération anticipée des fichiers n’est déclenchée.
+
 - **Parcourez les playlists Deezer** et connectez votre compte Spotify pour retrouver vos playlists accessibles.
 - **Importez par lien** depuis Deezer, Spotify ou ListenBrainz, ou à partir d’un fichier CSV/XSPF.
 - Vérifiez l’aperçu, choisissez le spectateur destinataire et suivez les titres retrouvés ou manquants. Les imports créent des copies personnelles sans remplacer vos autres playlists.

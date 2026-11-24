@@ -129,6 +129,9 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 #### Your playlists and new discoveries
 
+- **Strict matching**: without a shared ISRC, normalized artist names and titles must agree; partial names and different subtitles are insufficient. Recognized neutral labels (remaster, radio edit, deluxe) remain accepted. A matching ISRC cannot override a conflicting title/version or a duration difference greater than 20 seconds when both durations are known. Cached matches are rechecked during imports and synchronization; previously imported personal playlists are not rewritten.
+- **Preserve playlists on sync errors**: an outage, quota or partial response with an error preserves the affected account's previous playlists and reports the error in its status. The next successful synchronization replaces that snapshot normally, including upstream removals. Truly unmatched tracks are still skipped; no sonic analysis or advance audio download is triggered.
+
 - **Browse Deezer playlists** and connect your Spotify account to find playlists you can access.
 - **Import by URL** from Deezer, Spotify or ListenBrainz, or from CSV/XSPF files.
 - Review the preview, choose the destination viewer and track matched or missing tracks. Imports create personal copies without replacing other playlists.
