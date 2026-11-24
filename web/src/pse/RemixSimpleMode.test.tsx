@@ -85,7 +85,7 @@ beforeEach(() => {
 it("ouvre l’accueil, sans barre d’onglets, avec le titre de la page", async () => {
   window.localStorage.setItem("remix.setup.wizard", "1");
   render(page("/remix"));
-  expect(await screen.findByText("3 étapes pour regarder un film")).toBeTruthy();
+  expect(await screen.findByText("Votre configuration Remix")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Accueil", level: 1 })).toBeTruthy();
   expect(screen.queryAllByRole("tab")).toHaveLength(0);
   expect(screen.getByRole("link", { name: /Relancer l’assistant/ })).toBeTruthy();
@@ -94,25 +94,34 @@ it("ouvre l’accueil, sans barre d’onglets, avec le titre de la page", async 
 it("lance l’assistant une seule fois quand aucune source n’existe", async () => {
   app.dashboard = dashboard(false);
   render(page("/remix/accueil"));
-  expect(await screen.findByText("Où trouver vos films et séries ?")).toBeTruthy();
+  expect(await screen.findByText("Que souhaitez-vous retrouver ?")).toBeTruthy();
   expect(window.localStorage.getItem("remix.setup.wizard")).toBe("1");
 });
 
-it("enregistre le choix de langue de l’assistant puis passe à l’application", async () => {
+it("conserve les changements de langue jusqu’à l’examen final", async () => {
+  apiFetch.mockResolvedValue({
+    revision: "r1",
+    fields: [
+      {
+        key: "PSE_FRENCH",
+        value: "off",
+        label: { fr: "Catalogue français", en: "French catalogue" },
+      },
+    ],
+    warnings: [],
+  });
   render(page("/remix/assistant?step=2"));
-  fireEvent.click(await screen.findByRole("radio", { name: /Français/ }));
+  const french = await screen.findByRole("checkbox", { name: /Privilégier le catalogue français/ });
+  await waitFor(() => expect(french).not.toBeDisabled());
+  fireEvent.click(french);
   fireEvent.click(screen.getByRole("button", { name: "Suivant" }));
-  await waitFor(() =>
-    expect(
-      apiFetch.mock.calls.some(
-        ([path, init]) =>
-          path === "/pse/" &&
-          (init as RequestInit)?.method === "PUT" &&
-          String((init as RequestInit)?.body).includes('"PSE_FRENCH":"on"'),
-      ),
-    ).toBe(true),
-  );
-  expect(await screen.findByText("Connectez votre application")).toBeTruthy();
+  expect(await screen.findByText("Comment découvrir vos contenus ?")).toBeTruthy();
+  expect(
+    apiFetch.mock.calls.some(
+      ([, init]) =>
+        (init as RequestInit)?.method === "PUT" || (init as RequestInit)?.method === "POST",
+    ),
+  ).toBe(false);
 });
 
 function Sidebar() {

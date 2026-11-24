@@ -1,3 +1,5 @@
+> **BETA** — Experimental assistant on branch `BETA` and Docker tag `beta`. `main` / `latest` retain stable setup. [Try it](docs/pse/SETUP.en.md).
+
 <p align="center">
 
 The repository now lives in **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. The historical Docker address `ghcr.io/aerya/ether-remix:latest` remains supported through a mirror; existing installations do not need to change. The new address is `ghcr.io/remix-media/ether-remix:latest`. [Docker transition](docs/pse/DOCKER-MIGRATION.en.md).
@@ -47,7 +49,7 @@ Without a shared ISRC, music matching requires consistent artist and title metad
 
 **Scheduled playlists**: rotating personal mixes, followed Deezer/Spotify/ListenBrainz playlists and optional AudioMuse recommendations, with per-viewer intervals and retained contents on failure. [Setup and limits](docs/pse/MUSIC-FLOWS.en.md).
 
-Ether-Remix has its own **Remix** group in the left menu, above **Libraries**. It opens in **Simple mode** for beginners: Start, Sources, Languages and quality, Content and Diagnostics. The four-step assistant starts on a first launch with no source, and **Diagnostics** explains why nothing plays. The group’s **Expert** switch adds every other page, with nothing removed. [Guide](docs/pse/GUIDE.en.md#nav-demarrage-rapide).
+Ether-Remix has its own **Remix** group in the left menu, above **Libraries**. It opens in **Simple mode** for beginners: Start, Sources, Languages and quality, Content and Diagnostics. The new **setup assistant** replaces quick setup: content, languages, discovery, usage, sources, libraries, artwork and review. It opens the relevant editors in new tabs and previews global changes before applying them. **Diagnostics** then checks connections and playback. [Journey and limits](docs/pse/SETUP.en.md). The group’s **Expert** switch adds every other page, with nothing removed. [Guide](docs/pse/GUIDE.en.md#nav-demarrage-rapide).
 
 **JukeBox** quick setup helps create libraries and collections. SubMaker subtitles, Scrob and Last.fm tracking, statistics and the French console round out these features.
 
@@ -162,3 +164,5 @@ Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclip
 [License](LICENSE) · [Legal information](LEGAL.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 Contributions use a pull request to `main`, with required CI and secret detection. PRs authored by `kesurof` from `kesurof/Ether-Remix` merge automatically after validation. [Contribution and synchronization rules](docs/pse/FORK.fr.md).
+
+The Remix-Media logo identifies the console; the version number and Remix footer link open this repository, alongside the Ether credit.

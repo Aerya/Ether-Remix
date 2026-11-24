@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-remix-media",
+    id: "2026-11-24-guided-setup",
     version: "current",
+    date: "2026-11-24",
+    title: [
+      "Un assistant pour composer votre configuration",
+      "An assistant to build your configuration",
+    ],
+    items: [
+      [
+        "Le démarrage rapide devient un questionnaire en huit étapes : contenus, langues, découvertes, usages, sources, bibliothèques, affiches et récapitulatif. Les éditeurs utiles s’ouvrent dans un autre onglet ; les connexions restent à tester.",
+        "Quick setup becomes an eight-step questionnaire: content, languages, discovery, usage, sources, libraries, artwork and review. Relevant editors open in another tab; connections still need testing.",
+      ],
+      [
+        "Les réglages globaux proposés sont comparés avant application, avec avertissements sur les filtres cumulés, les pre et les sous-titres. Un changement concurrent impose un nouvel aperçu ; le dernier lot peut être réexaminé pour annulation pendant la session.",
+        "Proposed global settings are compared before applying, with warnings about combined filters, pre announcements and subtitles. Concurrent changes require a fresh preview; the last batch can be reviewed for undo during the session.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-remix-media",
+    version: "0.2.37-remix.138.1",
     date: "2026-11-24",
     title: ["Remix rejoint Remix-Media", "Remix moves to Remix-Media"],
     items: [

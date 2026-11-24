@@ -1,4 +1,20 @@
 import type { ReactNode } from "react";
+import remixLogo from "../assets/brands/remix-media.png";
+
+/** Identité du fork, distincte du crédit Ether conservé dans le pied de menu. */
+export function RemixBrand() {
+  return (
+    <span className="flex items-center gap-2.5">
+      <img src={remixLogo} alt="" width={40} height={40} className="rounded-xl shrink-0" />
+      <span className="text-lg font-semibold tracking-tight">
+        Remix
+        <span className="block text-[10px] font-normal tracking-wide text-fg-subtle">
+          Remix-Media
+        </span>
+      </span>
+    </span>
+  );
+}
 
 /** Dépôt GitHub de PSE, ouvert depuis le numéro de version de la console. */
 export const PSE_REPO_URL = "https://github.com/Remix-Media/Ether-Remix";
@@ -46,9 +62,10 @@ export function RemixRepositoryLinks() {
         href={PSE_REPO_URL}
         target="_blank"
         rel="noopener noreferrer"
-        className="hover:underline"
-        title="GitHub · Ether-Remix"
+        className="inline-flex items-center gap-1 hover:underline"
+        title="GitHub · Remix-Media / Ether-Remix"
       >
+        <img src={remixLogo} alt="" width={16} height={16} className="rounded" />
         Remix ↗
       </a>
     </div>

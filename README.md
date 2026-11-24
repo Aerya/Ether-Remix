@@ -1,3 +1,5 @@
+> **BETA** — Assistant expérimental sur la branche `BETA` et le tag Docker `beta`. `main` / `latest` conservent l’assistant stable. [Essayer](docs/pse/SETUP.fr.md).
+
 <p align="center">
 
 Le dépôt est désormais hébergé dans **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. L’adresse Docker historique `ghcr.io/aerya/ether-remix:latest` reste prise en charge par un miroir ; aucune modification n’est requise pour les installations existantes. La nouvelle adresse est `ghcr.io/remix-media/ether-remix:latest`. [Transition Docker](docs/pse/DOCKER-MIGRATION.fr.md).
@@ -47,7 +49,7 @@ Sans ISRC commun, les correspondances musicales exigent un artiste et un titre c
 
 **Playlists programmées** : mixes personnels renouvelés, suivi de playlists Deezer/Spotify/ListenBrainz et recommandations AudioMuse facultatives, avec cadence par spectateur et conservation du dernier contenu en cas d’échec. [Configuration et limites](docs/pse/MUSIC-FLOWS.fr.md).
 
-Ether-Remix a son propre groupe **Remix** dans le menu de gauche, au-dessus de **Bibliothèque**. Il s’ouvre en **mode Simple** pour les débutants : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. L’assistant en quatre étapes se lance au premier lancement sans source, et le **Diagnostic** explique pourquoi rien ne se lance. L’interrupteur **Expert** du groupe ajoute toutes les autres pages, sans rien retirer. [Guide](docs/pse/GUIDE.fr.md#nav-demarrage-rapide).
+Ether-Remix a son propre groupe **Remix** dans le menu de gauche, au-dessus de **Bibliothèque**. Il s’ouvre en **mode Simple** pour les débutants : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. Le nouvel **assistant de configuration** remplace le parcours rapide : contenus, langues, découvertes, usages, sources, bibliothèques, affiches et récapitulatif. Il ouvre les éditeurs utiles dans de nouveaux onglets et présente les modifications globales avant application. Le **Diagnostic** vérifie ensuite les connexions et la lecture. [Parcours et limites](docs/pse/SETUP.fr.md). L’interrupteur **Expert** du groupe ajoute toutes les autres pages, sans rien retirer. [Guide](docs/pse/GUIDE.fr.md#nav-demarrage-rapide).
 
 La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.
 
@@ -162,3 +164,5 @@ Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://ecli
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
 
 Les contributions passent par une PR vers `main`, avec CI et détection des secrets obligatoires. Les PR de `kesurof/Ether-Remix` ouvertes par `kesurof` fusionnent automatiquement après validation. [Règles de contribution et synchronisation](docs/pse/FORK.fr.md).
+
+Le logo Remix-Media identifie la console ; le numéro de version et le lien Remix du pied de menu ouvrent ce dépôt, à côté du crédit Ether.
