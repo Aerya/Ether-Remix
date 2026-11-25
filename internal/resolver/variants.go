@@ -554,6 +554,9 @@ func variantLabel(rel core.Release, kind string) string {
 // "Auto · 1080p WEB-DL · DD+ 5.1 · FLUX".
 func autoLabel(rel core.Release) string {
 	parts := []string{"Auto", qualityPhrase(rel.Info)}
+	if e := strings.TrimSpace(rel.Info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if a := audioPhrase(rel.Info); a != "" {
 		parts = append(parts, a)
 	}
@@ -568,6 +571,9 @@ func autoLabel(rel core.Release) string {
 // Anything the release name does not say is left out.
 func alternativeLabel(rel core.Release) string {
 	parts := []string{qualityPhrase(rel.Info)}
+	if e := strings.TrimSpace(rel.Info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if a := audioPhrase(rel.Info); a != "" {
 		parts = append(parts, a)
 	}
