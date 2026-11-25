@@ -1,9 +1,9 @@
 package frontend
 
 import (
+	"slices"
 	"sync/atomic"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/latestfilter"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 )
@@ -36,19 +36,19 @@ func pseLatestCompiled() *latestfilter.Compiled {
 	return c
 }
 
-// PSELatestHidden renvoie le test d'exclusion des derniers ajouts pour un type
-// (core.MediaTypeMovie ou core.MediaTypeShow), ou nil sans règle.
-func PSELatestHidden(movie bool) func(*core.Title) bool {
+// PSELatestFilter retire des derniers ajouts les titres exclus par les règles
+// du type (films si movie, sinon séries). active est faux sans règle.
+func PSELatestFilter(movie bool, rows []LatestItem) (out []LatestItem, active bool) {
 	c := pseLatestCompiled()
 	if c.Empty() {
-		return nil
+		return rows, false
 	}
 	flt := c.Show
 	if movie {
 		flt = c.Movie
 	}
 	if flt == nil {
-		return nil
+		return rows, false
 	}
-	return flt.Hidden
+	return slices.DeleteFunc(rows, func(row LatestItem) bool { return flt.Hidden(&row.Title) }), true
 }
