@@ -58,6 +58,7 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/app/build_sources.go`, `internal/app/stremio_addons.go`, `internal/debrid/pse_xdcc.go`, `internal/pse/releasedb/{freshness,indexer}.go`, `internal/catalog/pse_tier_sources.go` | FTP / SFTP source: virtual indexer, pre-probe preparation registry shared with XDCC, availability after copying and fork-table preservation. Configuration and API: `internal/app/pse_ftp.go`, `internal/pse/ftp`, `internal/pse/console/fields_ftp.go`. |
 | `internal/resolver/variants.go` (`autoLabel`, `alternativeLabel`) | cut (Director's Cut, Extended…) shown in Auto and alternative version labels (`internal/resolver/pse_edition_label_test.go`) |
 | `internal/frontends/mediabrowser/release_versions.go` (`mediaSourceName`) | cut in the Jellyfin/Emby version name (Plezy, Jellyfin) |
+| `internal/frontends/mediabrowser/browse.go` (item detail) | starts the release search when the Jellyfin detail only has provisional versions, then rebuilds it (`internal/frontends/mediabrowser/pse_detail_refill.go`) |
 | `.github/workflows/pr-image-build.yml` (`paths-ignore`) | no preview image for a PR that only touches documentation (`*.md`, `docs/`, `LICENSE`); `pr-image-publish.yml` only runs after a successful build, so it is skipped too |
 
 Every PSE setting goes through `internal/pse/pseenv`: the value saved in the console (`pse_settings` table) wins over the environment variable. A new addition reads its settings with `pseenv.Get` and declares them in `internal/pse/console/fields.go`.
