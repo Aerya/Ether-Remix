@@ -73,6 +73,7 @@ Les fichiers d'Ether ne sont modifiés que pour des **points d'accroche** : quel
 | `internal/app/frontend_runtime.go` (clé de cache WebDAV), `internal/identity/image_page_grant.go` (`pageImages`) | caches WebDAV et images de page invalidés quand les bibliothèques Remix changent (`frontend.PSEThemesGeneration`) |
 | `internal/collections/collections.go` (`Service.builtHook`, `build`) | fonction appelée après chaque reconstruction réussie d'une collection, pour invalider les caches dérivés de ses membres (`internal/collections/pse_built_hook.go`) |
 | `internal/resolver/variants.go` (`autoLabel`, `alternativeLabel`) | montage (Director's Cut, Extended…) affiché dans le libellé des versions Auto et alternatives (`internal/resolver/pse_edition_label_test.go`) |
+| `internal/frontends/mediabrowser/release_versions.go` (`mediaSourceName`) | montage dans le nom de version Jellyfin/Emby (Plezy, Jellyfin) |
 | `web/src/pages/viewers/ViewerAccess.tsx` (`ViewerLibraries`) | cases des bibliothèques Remix dans l'accès d'un spectateur restreint, marqueur 5100, enregistrement bloqué si leur lecture échoue (`web/src/pse/ViewerRemixLibraries.tsx`) |
 | `.github/workflows/pr-image-build.yml` (`paths-ignore`) | pas d'image d'aperçu pour une PR qui ne touche que la documentation (`*.md`, `docs/`, `LICENSE`) ou la configuration GitHub (`.github/`) ; `pr-image-publish.yml` ne tourne qu'après un build réussi, il est donc ignoré aussi |
 
