@@ -629,6 +629,9 @@ func (i *instance) browseRoutes() error {
 			http.NotFound(w, r)
 			return
 		}
+		d = i.pseRefillDetail(r, d, func() (frontend.ItemDetail, error) { // PSE-HOOK: versions réelles en Jellyfin — voir docs/pse/FORK.fr.md
+			return i.host.Experience.Item(frontend.WithColdDetail(i.identityContext(r), key), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+		})
 		if d.Collection == nil && d.Playlist == nil && versionID == "" && !mbIsBookItem(d.Title) && (d.Title.Type == "movie" || d.Title.Type == "episode") {
 			i.warmDetail(r, v, key)
 		}

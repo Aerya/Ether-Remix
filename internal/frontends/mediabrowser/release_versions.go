@@ -100,6 +100,9 @@ func mediaSourceName(v frontend.ReleaseVariant) string {
 		quality = append(quality, "HDR")
 	}
 	parts := []string{strings.Join(quality, " ")}
+	if e := strings.TrimSpace(info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if audio := audioLabel(info); audio != "" {
 		parts = append(parts, audio)
 	}

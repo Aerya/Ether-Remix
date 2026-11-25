@@ -35,6 +35,10 @@ export const REMIX_UPDATES = [
         "Le logo rejoint l’en-tête et le lien Remix du pied de menu. Le numéro de version ouvre le nouveau dépôt ; le crédit et le lien du projet originel Ether restent disponibles.",
         "The logo appears in the header and the Remix footer link. The version number opens the new repository; the original Ether project credit and link remain available.",
       ],
+      [
+        "Lire la version : le montage (Director’s Cut, Extended…) apparaît aussi dans le libellé de la version Auto et des alternatives, pas seulement dans les autres versions.",
+        "Play version: the cut (Director’s Cut, Extended…) also appears in the Auto and alternative version labels, not only in other versions.",
+      ],
     ],
   },
   {
