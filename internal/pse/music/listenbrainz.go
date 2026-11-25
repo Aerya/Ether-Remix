@@ -85,7 +85,7 @@ func (s *PlaylistSync) lb(ctx context.Context, path string, q url.Values, into a
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Ether-Remix (https://github.com/Aerya/Ether-Remix)")
+	req.Header.Set("User-Agent", "Ether-Remix (https://github.com/Remix-Media/Ether-Remix)")
 	hc := s.HTTP
 	if hc == nil {
 		hc = &http.Client{Timeout: 20 * time.Second}

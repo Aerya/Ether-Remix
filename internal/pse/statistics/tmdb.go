@@ -127,7 +127,7 @@ func (s *Service) count(ctx context.Context, kind string, date time.Time) (int, 
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Aerya/Ether-Remix)")
+	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Remix-Media/Ether-Remix)")
 	client := s.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 90 * time.Second}
