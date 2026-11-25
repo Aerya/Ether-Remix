@@ -160,13 +160,14 @@ func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, lates
 		}
 		var rows []frontend.LatestItem
 		if grouped, ok := i.host.Experience.(frontend.LibraryActivityGrouping); ok {
-			rows, err = grouped.LatestAddedGrouped(r.Context(), viewer, device(r), view, count, group)
+			rows, err = grouped.LatestAddedGrouped(r.Context(), viewer, device(r), view, pseLatestFetch(view, count), group) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		} else if group {
-			rows, err = service.LatestAdded(r.Context(), viewer, device(r), view, count)
+			rows, err = service.LatestAdded(r.Context(), viewer, device(r), view, pseLatestFetch(view, count)) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		} else {
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		rows = pseFilterLatest(view, rows, count) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		for _, row := range rows {
 			titles = append(titles, row.Title)
 			if row.AddedAt != nil {

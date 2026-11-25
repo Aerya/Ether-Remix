@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/braedonsaunders/ether/internal/pse/latestfilter"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 	"github.com/braedonsaunders/ether/internal/pse/torrentclient"
@@ -134,6 +135,8 @@ func Handler(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.get)
 	mux.HandleFunc("PUT /{$}", h.put)
+	mux.HandleFunc("GET /jellyfin-latest", h.getLatest)
+	mux.HandleFunc("PUT /jellyfin-latest", h.putLatest)
 	mux.HandleFunc("POST /music/test", h.testMusic)
 	mux.HandleFunc("POST /predb/test", h.testPre)
 	mux.HandleFunc("POST /seerrcatalog/test", h.testSeerrCatalog)
@@ -502,6 +505,11 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 			}
 		}
 		return strings.Join(items, ","), nil
+	case KindJSON:
+		if fd.Key == latestfilter.Key {
+			return latestfilter.Normalize(v)
+		}
+		return "", errors.New("réglage JSON non pris en charge")
 	case KindFilter:
 		if len(v) > 500 {
 			return "", errors.New("filtre trop long")

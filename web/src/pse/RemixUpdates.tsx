@@ -39,6 +39,10 @@ export const REMIX_UPDATES = [
         "Lire la version : le montage (Director’s Cut, Extended…) apparaît aussi dans le libellé de la version Auto et des alternatives, pas seulement dans les autres versions.",
         "Play version: the cut (Director’s Cut, Extended…) also appears in the Auto and alternative version labels, not only in other versions.",
       ],
+      [
+        "Jellyfin : des règles d'exclusion, éditées comme dans « Modifier la collection » (genre, pays, langue…), retirent des titres (ex. animation, documentaires, émissions) des derniers ajouts de Films et Séries ; un modèle par défaut est proposé.",
+        "Jellyfin: exclusion rules, edited like “Edit collection” (genre, country, language…), remove titles (e.g. animation, documentaries, shows) from Movies and Shows latest additions; a default template is offered.",
+      ],
     ],
   },
   {

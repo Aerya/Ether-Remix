@@ -33,7 +33,12 @@ export const REMIX_TABS = [
     en: "Playback",
     features: ["french", "playable", "submaker", "continuewatch", "lightlists"],
   },
-  { key: "contenus", fr: "Contenus", en: "Content", features: ["music", "librarysort"] },
+  {
+    key: "contenus",
+    fr: "Contenus",
+    en: "Content",
+    features: ["music", "librarysort", "jellyfinlatest"],
+  },
   { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
