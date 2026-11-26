@@ -18,9 +18,9 @@ import (
 // docs/pse/FORK.fr.md.
 
 const (
-	pseCatalogPrefix   = "ether-pse-"
-	psePageSize        = 100
-	pseMaxSkip         = 10000
+	pseCatalogPrefix = "ether-pse-"
+	psePageSize      = 100
+	pseMaxSkip       = 10000
 )
 
 // pseThemeRows est l'accès du service d'expérience aux rangées Remix : droits,

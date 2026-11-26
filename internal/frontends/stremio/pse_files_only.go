@@ -2,7 +2,6 @@ package stremio
 
 import (
 	"net/http"
-
 )
 
 // Lien « fichiers seuls » : même jeton, chemin /fichiers/. L'addon ne publie
@@ -37,4 +36,3 @@ func pseFilesManifestBody() map[string]any {
 		"catalogs":   []any{},
 	}
 }
-

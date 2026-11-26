@@ -106,4 +106,3 @@ func (s *Service) PSEThemeCatalogTitles(ctx context.Context, viewer *core.Viewer
 	}
 	return nil, core.ErrNotFound
 }
-
