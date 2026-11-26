@@ -64,6 +64,8 @@ func (a *App) pseThemes() *themes.Service {
 // collections se reconstruisent en arrière-plan).
 const pseLangExemptEvery = 15 * time.Minute
 
+const pseQualityRefreshTimeout = 30 * time.Minute
+
 // runPSELangExempt publie dans le catalogue les titres qui échappent au
 // filtre de langue (bibliothèques « toutes langues », collections
 // d'exception), au démarrage, après chaque modification et toutes les
@@ -82,7 +84,13 @@ func (a *App) runPSELangExempt(ctx context.Context, svc *themes.Service, kick <-
 			selectionReady = false
 			a.log.Warn("exceptions de langue Ether-Remix non enregistrées", "err", err)
 		}
-		if err := a.refreshPSEQuality(run, svc); err != nil {
+		cancel()
+		// Large catalogues need an independent budget: Seerr and language updates
+		// must not consume the time available for the playable rebuild.
+		qualityRun, qualityCancel := context.WithTimeout(ctx, pseQualityRefreshTimeout)
+		qualityErr := a.refreshPSEQuality(qualityRun, svc)
+		qualityCancel()
+		if err := qualityErr; err != nil {
 			selectionReady = false
 			a.log.Warn("profils qualité non actualisés", "err", err)
 		}
@@ -92,7 +100,6 @@ func (a *App) runPSELangExempt(ctx context.Context, svc *themes.Service, kick <-
 				a.log.Warn("nettoyage des références hors critères interrompu", "err", err)
 			}
 		}
-		cancel()
 		select {
 		case <-ctx.Done():
 			return

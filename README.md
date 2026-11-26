@@ -89,6 +89,8 @@ Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options,
 
 Les recherches et imports conservent dans un index commun les références conformes aux critères Remix actifs. Les liens hors critères sont refusés ; les anciens liens sont nettoyés après actualisation des profils et exceptions. À la lecture, Remix propose les références encore utilisables, applique les critères de langue et de qualité, puis recherche d’autres sources si nécessaire. L’identité du film ou de l’épisode reste vérifiée ; une référence enregistrée ne garantit pas sa disponibilité.
 
+Le recalcul du catalogue lisible conserve les compteurs précédents jusqu’à la publication complète des nouveaux résultats. Une interruption conserve aussi la signature précédente ; le prochain cycle peut réessayer. Le calcul dispose d’un budget indépendant de 30 minutes et publie ses écritures par lots dans une seule transaction.
+
 Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquement des releases**, prépare les contenus du catalogue en arrière-plan. Les sources se choisissent sur la même page ; cadence et budgets sont dans les réglages avancés. Désactiver cette recherche conserve l’index, sa consultation et son utilisation à la lecture.
 
 La recherche de fond ne télécharge ni ne débride les fichiers. Un addon distant peut néanmoins effectuer ses propres appels. Pour les séries, le passage initial couvre **S01E01** : les autres épisodes sont enregistrés au fil des recherches, sans garantie de saison complète. [Fonctionnement de l’index](docs/pse/RELEASE_LIBRARY.fr.md).
