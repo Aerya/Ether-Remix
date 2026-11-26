@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
@@ -287,7 +286,7 @@ func pseVideoCodec(v frontend.Version) string {
 }
 
 func pseAudio(v frontend.Version) string {
-	var a *core.StreamInfo
+	var a *frontend.StreamInfo
 	for n := range v.Media.Streams {
 		if v.Media.Streams[n].Type == "audio" {
 			a = &v.Media.Streams[n]

@@ -72,7 +72,7 @@ export function StremioLinkChoice({
   const name = useId();
   const formatName = useId();
   if (connection.surface !== "stremio" || !connection.filesUrl) return null;
-  const options: [boolean, string, string][] = [
+  const linkTypes: [boolean, string, string][] = [
     [
       false,
       L("Avec les catalogues du profil", "With the profile's catalogues"),
@@ -117,7 +117,7 @@ export function StremioLinkChoice({
     <div className="min-w-0 space-y-4">
       <fieldset className="min-w-0 space-y-2">
         <legend className="text-sm font-medium">{L("Type de lien", "Link type")}</legend>
-        {options.map(([value, label, help]) => (
+        {linkTypes.map(([value, label, help]) => (
           <label key={String(value)} className="flex cursor-pointer items-start gap-2 text-sm">
             <input
               type="radio"

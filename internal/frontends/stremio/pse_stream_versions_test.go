@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 )
@@ -52,7 +51,7 @@ func (v *versionLazy) Issue(_ context.Context, credential string, req frontend.P
 
 type fakeHandles struct{ frontend.VersionHandles }
 
-func (fakeHandles) Issue(_ context.Context, _ frontend.VersionScope, _ core.RatingKey, id string) (string, error) {
+func (fakeHandles) Issue(_ context.Context, _ frontend.VersionScope, _ frontend.RatingKey, id string) (string, error) {
 	return "h-" + id, nil
 }
 
@@ -79,8 +78,8 @@ func versionList(t *testing.T, path string, versions []frontend.Version) *httpte
 func testVersions() []frontend.Version {
 	hdr := true
 	return []frontend.Version{
-		{ID: "ether:auto", Name: "Auto · 2160p WEB-DL · DD+ 5.1 · FLUX", Media: core.MediaInfo{Size: 8 << 30, Streams: []core.StreamInfo{{Type: "video", Codec: "hevc", Width: 3840, Height: 1600, ColorTransfer: "smpte2084", HDR10Plus: &hdr}, {Type: "audio", Codec: "eac3", Channels: 6, Language: "fre"}}}, FileName: "Film.2160p.WEB-DL.DDP5.1-FLUX.mkv"},
-		{ID: "r1", Name: "1080p Blu-ray · AMIABLE", Edition: "Director's Cut", Media: core.MediaInfo{Size: 3 << 30}},
+		{ID: "ether:auto", Name: "Auto · 2160p WEB-DL · DD+ 5.1 · FLUX", Media: frontend.MediaInfo{Size: 8 << 30, Streams: []frontend.StreamInfo{{Type: "video", Codec: "hevc", Width: 3840, Height: 1600, ColorTransfer: "smpte2084", HDR10Plus: &hdr}, {Type: "audio", Codec: "eac3", Channels: 6, Language: "fre"}}}, FileName: "Film.2160p.WEB-DL.DDP5.1-FLUX.mkv"},
+		{ID: "r1", Name: "1080p Blu-ray · AMIABLE", Edition: "Director's Cut", Media: frontend.MediaInfo{Size: 3 << 30}},
 		{ID: "ph", Name: "Same-quality version 1"},
 		{ID: "bad", Name: "720p WEB-DL"},
 		{ID: "r3", Name: "720p HDTV"},
