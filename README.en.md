@@ -113,6 +113,7 @@ When an indexer throttles Ether (HTTP 429), playback names it and shows when it 
 | Jellyfin / Emby | Infuse, Swiftfin, Findroid, Streamyfin and compatible TV clients. Emby for TV 2.x on Apple TV is not supported. |
 | Silo | Silo clients on desktop, mobile and TV. |
 | Stremio | Personal addon; requires an HTTPS address. Two links per profile: with catalogues (Movies, Shows and one row per collection of the granted Remix libraries) or files only (playback only). Display (Direct, Compact, Detailed) and number of versions per quality (4K, 1080p, 720p) set per link: the Auto stream then the best ranked releases of each quality. |
+| Nuvio | Per-viewer link (Profile › Sign-in & devices › Nuvio): code sign-in, Nuvio profile choice, resume points and history synced both ways (Nuvio → Ether every 5 minutes, adjustable; Ether → Nuvio when a playback stops or a title is marked watched), one-click install of the viewer's Stremio link in Nuvio. The addon also declares the Stremio `player` and `library` resources for Nuvio TV 1.2.0-beta.2 or later. |
 | WebDAV | Infuse, VLC, Kodi and rclone. |
 | IPTV / local network | M3U, XMLTV, Xtream and DLNA, depending on enabled access methods. |
 | Subsonic | Symfonium, Feishin, Supersonic, DSub and other compatible clients. |
