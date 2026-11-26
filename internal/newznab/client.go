@@ -873,7 +873,7 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
 	// v7: Usenet poster and upload date preserved for cross-indexer content identity.
 	// v8: Brazilian/Portuguese release language variants (PT.BR, PTBR, Dublado/Legendado, slash/plus delimiters).
-	fmt.Fprint(h, "release-parse-v8|")
+	fmt.Fprint(h, "release-parse-v8|pse-title-number-v1|") // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	if mode := c.currentSearchCatMode(); mode != searchCatDefault {
 		fmt.Fprintf(h, "catmode:%d|", mode)
 	}

@@ -16,6 +16,7 @@ func AssociationReason(req core.SearchRequest, r core.Release) string {
 		return "placeholder"
 	}
 	info := Parse(r.Name)
+	info = PSETitleWithNumber(info, append([]string{req.Title, req.OriginalTitle, req.EnglishTitle}, req.AlternativeTitles...)...) // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	same, conflict := CompareTitleIDs(r.ReportedTitleIDs(), req.IDs)
 	if conflict {
 		return "identifier_conflict"
@@ -59,12 +60,12 @@ func AssociationReason(req core.SearchRequest, r core.Release) string {
 			return "unconfirmed_year"
 		}
 	} else {
-		if !SeriesYearMatches(EpisodeSeriesYear(r.Name, info.Year), req.Year) {
+		if !SeriesYearMatches(PSEEpisodeSeriesYear(r.Name, info), req.Year) { // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 			return "year_conflict"
 		}
 		// Yearless episode filenames need a successful local namesake check.
 		// A catalogue year alone is not evidence about the source answer.
-		if !same && (req.Year == 0 || (EpisodeSeriesYear(r.Name, info.Year) == 0 && (req.Type != core.TypeEpisode || !req.SeriesIdentityChecked))) {
+		if !same && (req.Year == 0 || (PSEEpisodeSeriesYear(r.Name, info) == 0 && (req.Type != core.TypeEpisode || !req.SeriesIdentityChecked))) { // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 			return "unconfirmed_series_year"
 		}
 		if req.Type == core.TypeEpisode && (info.FullSeason || len(info.Episodes) != 1 || !EpisodeMatchesNumbering(info, req.Season, req.Episode, AnimeSearchEpisode(req))) {
