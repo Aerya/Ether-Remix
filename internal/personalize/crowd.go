@@ -541,7 +541,7 @@ func crowdReason(ce *crowdEntry) string {
 // enough to recommend, in a language the viewer watches, not a genre they
 // reject, and not clearly against their taste.
 func (b *builder) crowdOK(t *core.Title, fit float64) bool {
-	return b.taste.watchesLanguage(t.Language) && !genreVetoed(b.taste, t) && fit > -0.2 && weightedRating(t) >= 6.3
+	return b.watchesLanguage(t) && !genreVetoed(b.taste, t) && fit > -0.2 && weightedRating(t) >= 6.3
 }
 
 // crowdTitles returns per-type row titles.

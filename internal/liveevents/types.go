@@ -203,10 +203,6 @@ func (s managerSource) Call(ctx context.Context, pluginID string, req plugins.Re
 // ev.Watch in place.
 type WatchEnricher func(ctx context.Context, viewer *core.Viewer, events []core.LiveEvent)
 
-// ScreenFeedResolver maps a screen ID (from /vela/v0/live/stream?screens=...)
-// to the live feeds that screen displays.
-type ScreenFeedResolver func(ctx context.Context, viewer *core.Viewer, screenID string) ([]FeedRef, error)
-
 // ChangeHandler observes raw (unmasked) event transitions detected by the hub.
 // prev is nil when the event is seen for the first time.
 type ChangeHandler func(prev *core.LiveEvent, next core.LiveEvent)
@@ -258,9 +254,6 @@ type SubscribeRequest struct {
 	EventIDs []string
 	// Feeds are feed references ("pluginID:feedID") or bare feed IDs ("scores").
 	Feeds []string
-	// Screens are screen IDs resolved through ScreenFeedResolver (falling back to
-	// matching feed refs when no resolver is installed).
-	Screens []string
 	// Viewer scopes spoiler filtering, watch enrichment, screen resolution, and alerts.
 	Viewer *core.Viewer
 	// ViewerID is an optional fallback when Viewer is nil (e.g. background alert subscribers).

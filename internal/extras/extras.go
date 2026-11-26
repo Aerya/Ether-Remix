@@ -120,9 +120,14 @@ type Service struct {
 	themeCtx         context.Context
 	themeCancel      context.CancelFunc
 	themeFFmpeg      func() string
-	themeWork        sync.Mutex
+	themeWG          sync.WaitGroup
 	themeMu          sync.Mutex
-	themeRetry       map[string]time.Time
+	themeEvictMu     sync.Mutex
+	themeWait        time.Duration
+	themeFlights     map[core.RatingKey]*themeFlight
+	themeRetry       map[core.RatingKey]time.Time
+	themeBotUntil    time.Time
+	themeBotStep     time.Duration
 	cacheDir         string
 	cacheHTTP        *http.Client
 	cacheMu          sync.Mutex
@@ -207,7 +212,7 @@ func New(o Options) *Service {
 	themeCtx, themeCancel := context.WithCancel(context.Background())
 	return &Service{
 		db: o.DB, themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
-		themeFFmpeg: o.ThemeFFmpeg, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
+		themeFFmpeg: o.ThemeFFmpeg, themeWait: themeFirstOpenWait, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
 		videos: o.Videos, discover: o.Discover, cfgFn: o.Config,
 		log: o.Logger.With("component", "extras"), now: o.Now,
 		ttl: o.CacheTTL, emptyTTL: emptyTTL, coldWait: coldWait,
@@ -259,7 +264,14 @@ func (s *Service) CommandAvailable() bool {
 
 // Enabled reports whether any playable extras can be advertised.
 func (s *Service) Enabled() bool {
-	return s.cfg().Enabled && (s.DiscoverAvailable() || s.CommandAvailable())
+	return s.cfg().Enabled && (s.DiscoverAvailable() || s.videoSourceAvailable() && s.CommandAvailable())
+}
+
+func (s *Service) videoSourceAvailable() bool {
+	if keyed, ok := s.videos.(interface{ HasKey() bool }); ok {
+		return keyed.HasKey()
+	}
+	return s.videos != nil
 }
 
 // DisabledReason explains why extras are off, for a startup log line.
@@ -271,6 +283,8 @@ func (s *Service) DisabledReason() string {
 		return "extras disabled in config (extras.enabled is false)"
 	case s.Enabled():
 		return ""
+	case s.CommandAvailable():
+		return "extras enabled but no trailer metadata source is configured"
 	case strings.TrimSpace(c.ResolverCommand) == "":
 		return "extras enabled but trailers need yt-dlp installed (or set extras.resolverCommand to a yt-dlp-compatible tool)"
 	default:
@@ -299,7 +313,10 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	}
 	iso := ISO639(lang)
 	discoverOn := s.DiscoverAvailable()
-	cmdOn := s.CommandAvailable() && s.videos != nil
+	cmdOn := trailerTMDBID(parent) > 0 && s.videoSourceAvailable() && s.CommandAvailable()
+	if !discoverOn && !cmdOn {
+		return nil, nil
+	}
 	cacheKey := fmt.Sprintf("%s|%s|%t|%t", parent.Key.String(), iso, discoverOn, cmdOn)
 
 	s.mu.Lock()
@@ -456,18 +473,19 @@ func (s *Service) putListLocked(cacheKey string, items []Extra, expires time.Tim
 	s.lists[cacheKey] = listEntry{extras: append([]Extra(nil), items...), expires: expires}
 }
 
-func (s *Service) fetchVideos(ctx context.Context, parent *core.Title, lang string) ([]tmdb.Video, error) {
-	tmdbID := parent.IDs.TMDB
-	if tmdbID == 0 {
-		tmdbID = parent.Key.TMDB()
-	}
+func trailerTMDBID(parent *core.Title) int64 {
 	if parent.Type == core.TypeEpisode || parent.Type == core.TypeSeason {
-		if parent.ShowIDs.TMDB > 0 {
-			tmdbID = parent.ShowIDs.TMDB
-		} else {
-			tmdbID = parent.Key.TMDB()
+		if parent.EpisodeOrder.Source != "" && (parent.EpisodeOrder.Source != core.MetadataTMDB || parent.EpisodeOrder.Kind != core.OrderAired) ||
+			parent.Key.Allocated() || parent.Key.Season() != parent.Season || parent.Key.Episode() != parent.Episode {
+			return 0
 		}
+		return parent.ShowIDs.TMDB
 	}
+	return parent.IDs.TMDB
+}
+
+func (s *Service) fetchVideos(ctx context.Context, parent *core.Title, lang string) ([]tmdb.Video, error) {
+	tmdbID := trailerTMDBID(parent)
 	if tmdbID <= 0 {
 		return nil, nil
 	}

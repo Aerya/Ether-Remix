@@ -24,6 +24,7 @@ import (
 type ownedServiceState struct {
 	mu       sync.Mutex
 	channels map[string]*ownedShared
+	relays   map[relayOutputKey]*sharedRelay
 	slates   slateCache
 }
 
@@ -98,6 +99,7 @@ func (s *Service) acquirePassthrough(ss *session) *ownedLease {
 		ctx, cancel := context.WithCancel(s.serviceContext())
 		log := s.logger().With("channel", c.ID, "owned", "passthrough")
 		tl := newOwnedTimeline(c.ID, log, nil, reserve, slates)
+		s.enableOwnedTimeshift(tl, c)
 		policy := s.latencyPolicy()
 		tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
 		tl.setHint(slateProfileFromInfo(c.ID, ss.info.MediaInfo, "ts"))

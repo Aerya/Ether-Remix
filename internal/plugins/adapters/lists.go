@@ -23,11 +23,11 @@ import (
 )
 
 // MaxPluginListItems bounds the maximum items an explicit source config may request.
-const MaxPluginListItems = stremio.MaxCatalogItems
+const MaxPluginListItems = plugins.MaxListItems
 
-// DefaultPluginListItems bounds an unbounded list refresh per run so multi-thousand-item
-// Stremio/MDBList catalogues page incrementally without exhausting runtime timeouts.
-const DefaultPluginListItems = 500
+// DefaultPluginListItems is what a list that declares no size reads per
+// refresh (shown in the install review, owner-adjustable).
+const DefaultPluginListItems = plugins.DefaultListItems
 
 // Bridge tracks the source kinds registered for each plugin so enable,
 // disable, update and uninstall cleanly replace or remove them.
@@ -107,11 +107,11 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 			meta:       ls,
 			fields:     plugins.ParseListParamFields(ls.Params),
 		}
-		kind.catalog, kind.declared = listCatalog(r.Manifest.Stremio(), ls)
+		kind.catalog, kind.declared = plugins.ListCatalog(r.Manifest.Stremio(), ls)
 		if b.cols != nil {
 			_ = b.cols.RegisterSourceKind(kind)
 		}
-		if b.pers != nil {
+		if b.pers != nil && kind.rowable() {
 			_ = b.pers.RegisterRowSourceKind(&rowSourceKind{list: kind})
 		}
 		b.listIDs[r.ID] = append(b.listIDs[r.ID], kind.ID())
@@ -175,29 +175,6 @@ type listSourceKind struct {
 	// declaration and it pages only when it declares skip.
 	catalog  stremio.Catalog
 	declared bool
-}
-
-// listCatalog reads a list source's catalog ("movie/top", or an id alone)
-// and its declaration in the manifest. A plugin's own list that the
-// manifest does not declare pages with skip, as the plugin contract says.
-func listCatalog(m stremio.Manifest, ls plugins.ListSourceMeta) (stremio.Catalog, bool) {
-	spec := strings.TrimSuffix(strings.TrimPrefix(strings.Trim(strings.TrimSpace(ls.Catalog), "/"), "catalog/"), ".json")
-	typ, id, ok := strings.Cut(spec, "/")
-	if !ok {
-		typ, id = "", spec
-	}
-	typ, id = strings.ToLower(strings.TrimSpace(typ)), strings.TrimSpace(id)
-	if id == "" {
-		id = ls.Key
-	}
-	switch typ {
-	case "show", "tv":
-		typ = stremio.TypeSeries
-	}
-	if c, ok := m.CatalogNamed(typ, id); ok {
-		return c, true
-	}
-	return stremio.Catalog{Type: typ, ID: id, Extra: []stremio.Extra{{Name: "skip"}}}, false
 }
 
 func (k *listSourceKind) MinRefresh() time.Duration {
@@ -274,20 +251,25 @@ func catalogExtras(params map[string]string) map[string]string {
 	return out
 }
 
-// maxItems is how many items one refresh reads: the source's own limit,
-// within the list's, within DefaultPluginListItems when neither sets one.
-func (k *listSourceKind) maxItems(src core.CollectionSource) int {
-	if k.meta.MaxItems <= 0 && src.MaxItems <= 0 {
-		return DefaultPluginListItems
+// maxItems is how many items one refresh reads: the list's granted size
+// (what it declares, or what the owner set in the plugin's limits). A
+// collection that sets its own size reads that many, within what the
+// list declares and the owner's limits; the default size for a list that
+// declares none does not cut it short. granted reports whether the grant,
+// not the collection, is the bound.
+func (k *listSourceKind) maxItems(src core.CollectionSource) (n int, granted bool) {
+	meta := k.meta
+	if src.MaxItems > 0 && meta.MaxItems <= 0 {
+		meta.MaxItems = MaxPluginListItems
 	}
-	n := MaxPluginListItems
-	if k.meta.MaxItems > 0 && k.meta.MaxItems < n {
-		n = k.meta.MaxItems
+	n = meta.RequestedItems()
+	if k.mgr != nil {
+		n = k.mgr.GrantedListItems(k.pluginID, meta)
 	}
 	if src.MaxItems > 0 && src.MaxItems < n {
-		n = src.MaxItems
+		return src.MaxItems, false
 	}
-	return n
+	return n, true
 }
 
 // catalogs are the catalogs one gather reads: the list's own, or for a
@@ -323,7 +305,7 @@ func (k *listSourceKind) catalogs(kinds []string) []stremio.Catalog {
 func (k *listSourceKind) Gather(g *collections.Gather) {
 	if k.mgr == nil {
 		if g.Strict {
-			g.Fail(fmt.Errorf("catalogue source unavailable"))
+			g.Fail(fmt.Errorf("%s can't be read because plugins are not running on this server", k.label()))
 			return
 		}
 		g.Warn("%s is unavailable", k.label())
@@ -345,7 +327,7 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			return
 		}
 	}
-	limit := k.maxItems(g.Src)
+	limit, granted := k.maxItems(g.Src)
 	if preview && limit > collections.PreviewItems {
 		limit = collections.PreviewItems
 	}
@@ -416,6 +398,12 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 	}
 	if !read {
 		return
+	}
+	if !preview {
+		g.Paged(total, limit)
+		if granted && total >= limit {
+			g.Warn("%s: synced the first %d titles; raise Titles per list in the plugin's limits to sync more", k.label(), limit)
+		}
 	}
 	if total == 0 {
 		g.Warn("%s is empty", k.label())
@@ -528,27 +516,103 @@ type rowSourceKind struct {
 	list *listSourceKind
 }
 
-func (r *rowSourceKind) Kind() string { return r.list.ID() }
+// Info describes the list as a Recommendations row source under "From
+// plugins › <plugin>": catalogue titles of the list's type, and a Genre
+// choice when the catalogue takes one. Its rows are served by
+// collections.LayoutRow.
+func (r *rowSourceKind) Info() core.RowSourceInfo {
+	k := r.list
+	info := core.RowSourceInfo{
+		Kind:        k.ID(),
+		Title:       k.label(),
+		Description: resolvePlainText(k.mgr, k.pluginID, k.meta.Hint, ""),
+		Group:       "plugins",
+		Plugin:      firstNonEmpty(k.pluginName, k.pluginID),
+		Needs:       []string{core.CapCatalogue},
+		Split:       true,
+		Params:      k.rowParams(),
+	}
+	switch k.catalog.Type {
+	case stremio.TypeMovie:
+		info.Needs = append(info.Needs, core.CapMovies)
+	case stremio.TypeSeries:
+		info.Needs = append(info.Needs, core.CapEpisodes)
+	}
+	return info
+}
 
-func (r *rowSourceKind) Descriptor() core.RowDescriptor {
-	id := r.list.ID()
-	title := r.list.label()
-	desc := resolvePlainText(r.list.mgr, r.list.pluginID, r.list.meta.Hint, "")
-	sections := []string{"home"}
-	for _, mt := range r.list.mediaTypes() {
-		switch mt {
-		case "movie":
-			sections = append(sections, "movies")
-		case "show":
-			sections = append(sections, "shows")
+// rowable reports whether the list can fill a row by itself: every value
+// it needs is one the owner picks from a list. Catalogues that need ids
+// only a client has (calendarVideosIds, lastVideosIds) or a free-text
+// value (search) are not offered.
+func (k *listSourceKind) rowable() bool {
+	if k.declared {
+		for _, ex := range k.catalog.Extras() {
+			switch ex.Name {
+			case "calendarVideosIds", "lastVideosIds":
+				return false
+			}
+			if ex.IsRequired && ex.Name != "skip" && len(ex.Options) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	for _, f := range k.fields {
+		if f.Required && len(f.Options) == 0 {
+			return false
 		}
 	}
-	return core.RowDescriptor{
-		HubID:       id,
-		Title:       title,
-		Kind:        id,
-		Description: desc,
-		Sections:    sections,
-		Group:       "collections",
+	return true
+}
+
+// rowParams are the list's options as row parameters: a declared
+// catalogue's extras with options (Genre), or the plugin's own fields
+// with options. Free-text values are not row options.
+func (k *listSourceKind) rowParams() []core.RowParam {
+	var out []core.RowParam
+	add := func(key, label string, required bool, def string, opts []core.ParamOption) {
+		if key == "" || len(opts) == 0 {
+			return
+		}
+		p := core.RowParam{Key: key, Label: label, Type: core.ParamChoice, Required: required, Default: def}
+		if !required {
+			p.Choices = append(p.Choices, core.ParamOption{Value: "", Label: "Any"})
+		}
+		p.Choices = append(p.Choices, opts...)
+		out = append(out, p)
 	}
+	if k.declared {
+		for _, ex := range k.catalog.Extras() {
+			if ex.Name == "skip" || ex.Name == "search" || len(ex.Options) == 0 {
+				continue
+			}
+			opts := make([]core.ParamOption, 0, len(ex.Options))
+			for _, o := range ex.Options {
+				if o = strings.TrimSpace(o); o != "" {
+					opts = append(opts, core.ParamOption{Value: o, Label: o})
+				}
+			}
+			label := strings.ToUpper(ex.Name[:1]) + ex.Name[1:]
+			def := ""
+			if ex.IsRequired && len(opts) > 0 {
+				def = opts[0].Value
+			}
+			add(ex.Name, label, ex.IsRequired, def, opts)
+		}
+		return out
+	}
+	for _, f := range k.fields {
+		key := firstNonEmpty(f.Key, f.Name)
+		opts := make([]core.ParamOption, 0, len(f.Options))
+		for _, o := range f.Options {
+			if strings.TrimSpace(o.Value) != "" {
+				opts = append(opts, core.ParamOption{Value: o.Value, Label: resolvePlainText(k.mgr, k.pluginID, o.Label, o.Value)})
+			}
+		}
+		def, _ := f.Default.(string)
+		label := resolvePlainText(k.mgr, k.pluginID, f.Label, key)
+		add(key, label, f.Required, def, opts)
+	}
+	return out
 }

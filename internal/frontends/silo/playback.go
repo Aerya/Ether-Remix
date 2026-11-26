@@ -177,6 +177,10 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	// rendition, read with the picture instead of extracted from the file.
 	cap.Client.HLSTextRenditions = slices.Contains(b.Features, "hls_subtitle_renditions_v1")
 	scope := frontend.VersionScope{Viewer: v, Device: d, Protocol: "silo", Caps: cap.Client}
+	if frontend.IsCatchUpGUID(b.FileID) {
+		i.startCatchUp(w, r, v, b, cap.Client)
+		return
+	}
 	// A channel GUID or live channel file_id tunes through the same live
 	// session as Jellyfin and Plex instead of a catalogue file.
 	channel, liveFile, err := i.resolveLiveFile(r, v, b.FileID)
@@ -194,6 +198,10 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		}
 		offer, err = i.host.SourceOffers.Resolve(r.Context(), scope, b.FileID)
 		if err != nil || offer.Target.Item == 0 || (offer.Target.VersionHandle == "") == (offer.Target.DetailSource == "") {
+			if errors.Is(err, frontend.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
 			if err == nil {
 				err = fmt.Errorf("offer %q item %d version %q detail %q", b.FileID, offer.Target.Item, offer.Target.VersionHandle, offer.Target.DetailSource)
 			}
@@ -233,20 +241,26 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(videoCodecs) > 0}})
 	if err != nil {
+		if writeIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+			return
+		}
 		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "plan")
 			return
 		}
-		i.playbackError(w, v, err)
+		i.playbackError(w, v, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "silo", PlanID: plan.ID, Viewer: v, Device: d})
 	if err != nil {
+		if writeIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+			return
+		}
 		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "open")
 			return
 		}
-		i.playbackError(w, v, err)
+		i.playbackError(w, v, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if liveFile {
@@ -291,7 +305,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	media, err := i.host.Sessions.StartStream(r.Context(), access, session.ID, frontend.StreamRequest{Format: format, Position: pos})
 	if err != nil {
 		i.stopFailedAdmission(r.Context(), access, session.ID)
-		i.playbackError(w, v, err)
+		i.playbackError(w, v, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	// Admission finishes only after stream preparation and one last exact
@@ -553,6 +567,7 @@ func siloMediaURL(sessionID string, format frontend.StreamFormat) string {
 }
 
 type playbackPlan struct {
+	replacement     string
 	format          frontend.StreamFormat
 	live            bool
 	baseID          string
@@ -727,6 +742,21 @@ func (i *instance) progress(w http.ResponseWriter, r *http.Request) {
 	}
 	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: "silo"}
 	sessionID := r.PathValue("session")
+	if _, ok := i.catchUpSession(r, v, sessionID); ok {
+		if stop {
+			_ = i.host.LiveTV.Stop(r.Context(), sessionID, v)
+			reply(w, 200, map[string]any{"outcome": "stopped", "stop_id": b.StopID})
+		} else if b.Sequence == 0 || b.Position == nil || b.Paused == nil || *b.Position < 0 {
+			http.Error(w, "Bad Request", 400)
+		} else if archive, ok := i.host.LiveTV.(frontend.LiveCatchUp); ok {
+			if err := archive.TouchLiveSession(r.Context(), v, sessionID); err != nil {
+				i.playbackError(w, v, err, r.Header.Get("Accept-Language"))
+				return
+			}
+			reply(w, 200, map[string]any{"outcome": "applied", "accepted": map[string]any{"position": *b.Position, "sequence": b.Sequence, "is_paused": *b.Paused}})
+		}
+		return
+	}
 	hasSample := b.Sequence != 0 || b.Position != nil || b.Paused != nil
 	if !hasSample && stop {
 		if err = i.host.Sessions.Stop(r.Context(), access, sessionID); err != nil {
@@ -771,15 +801,31 @@ func playbackError(w http.ResponseWriter, err error) {
 	playbackErrorFor(w, nil, nil, err)
 }
 
-func (i *instance) playbackError(w http.ResponseWriter, v *frontend.Viewer, err error) {
+func (i *instance) playbackError(w http.ResponseWriter, v *frontend.Viewer, err error, languages ...string) {
 	var policy any
 	if i != nil {
 		policy = i.host.ViewerPolicy
 	}
-	playbackErrorFor(w, policy, v, err)
+	playbackErrorFor(w, policy, v, err, languages...)
 }
 
-func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error) {
+func writeIndexersPaused(w http.ResponseWriter, err error, languages ...string) bool {
+	msg := frontend.IndexersPausedMessage(err, languages...)
+	if msg == "" {
+		return false
+	}
+	w.Header().Set("X-Ether-Media-Error", frontend.IndexersPausedCode)
+	w.Header().Set("Cache-Control", "no-store")
+	problemReply(w, http.StatusServiceUnavailable, map[string]any{
+		"type": "about:blank", "title": msg, "status": http.StatusServiceUnavailable, "detail": msg,
+	})
+	return true
+}
+
+func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error, languages ...string) {
+	if writeIndexersPaused(w, err, languages...) {
+		return
+	}
 	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		http.Error(w, frontend.VideoTranscodingOffMessage(policy, viewer), http.StatusUnprocessableEntity)
 		return
@@ -843,7 +889,11 @@ func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer
 			return
 		}
 		w.Header().Set("X-Request-ID", requestID)
-		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "https://siloserver.org/docs/api/v2/problems/transcode_capacity", "title": "Transcode capacity unavailable", "status": 503, "detail": "The server is busy; retry later.", "instance": "urn:silo:request:" + requestID})
+		detail := frontend.VideoEncoderCapacityMessage(err, languages...)
+		if detail == "" {
+			detail = "The server is busy; retry later."
+		}
+		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "https://siloserver.org/docs/api/v2/problems/transcode_capacity", "title": "Transcode capacity unavailable", "status": 503, "detail": detail, "instance": "urn:silo:request:" + requestID})
 		return
 	}
 	http.Error(w, "Playback unavailable", 503)
@@ -961,6 +1011,10 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("session")
+	if info, ok := i.catchUpSession(r, v, id); ok {
+		i.replanCatchUp(w, r, v, info, b)
+		return
+	}
 	if !i.ownsSession(r.Context(), v, device(r), id) {
 		problem(w, http.StatusNotFound, "urn:ether:problem:playback-session-not-found", "Playback session not found", "No playback session matches this device.")
 		return
@@ -1016,6 +1070,16 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: "silo"}
+	failedKey := b.PlanKey
+	if b.FailedPlan != "" {
+		failedKey = b.FailedPlan
+	}
+	if failedKey == "" {
+		failedKey = currentKey
+	}
+	if !snap.live && !nonFailureReplan(b.Operation) && i.replanRecoveredOriginal(w, r, access, id, failedKey, snap, document, plan) {
+		return
+	}
 	pos := time.Duration(b.Position * float64(time.Second))
 	if snap.live {
 		pos = 0
@@ -1059,7 +1123,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 				siloAdaptationUnavailable(w, id)
 				return
 			}
-			i.playbackError(w, access.Viewer, err)
+			i.playbackError(w, access.Viewer, err, r.Header.Get("Accept-Language"))
 			return
 		}
 		nextFormat = chosen.format
@@ -1068,7 +1132,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		nextReason = chosen.reason
 	} else {
 		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: nextFormat, Position: pos}); err != nil {
-			i.playbackError(w, access.Viewer, err)
+			i.playbackError(w, access.Viewer, err, r.Header.Get("Accept-Language"))
 			return
 		}
 		if !nonFailureReplan(b.Operation) && attempted[nextKey] {
@@ -1097,6 +1161,9 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		plan["stream"] = stream
 	}
 	stream["url"] = siloMediaURL(id, nextFormat)
+	if snap.replacement != "" && nextFormat == frontend.StreamDirect {
+		stream["url"] = siloMediaURL(id, nextFormat) + "?sourceRevision=" + snap.replacement
+	}
 	if nextFormat == frontend.StreamHLS {
 		stream["protocol"] = "hls"
 		stream["container"] = "hls"
@@ -1126,7 +1193,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	document["session_id"] = id
-	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start, media: snap.media, hlsRenditions: snap.hlsRenditions, audioCopy: snap.audioCopy && nextDelivery != "server_transcode_hls"})
+	i.rememberPlan(id, playbackPlan{replacement: snap.replacement, format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start, media: snap.media, hlsRenditions: snap.hlsRenditions, audioCopy: snap.audioCopy && nextDelivery != "server_transcode_hls"})
 	reply(w, http.StatusOK, document)
 }
 
@@ -1210,6 +1277,10 @@ func (i *instance) serveSessionMedia(w http.ResponseWriter, r *http.Request, ses
 	viewer, _, err := i.deviceViewer(r)
 	if err != nil || viewer == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if _, ok := i.catchUpSession(r, viewer, sessionID); ok {
+		i.catchUpMedia(w, r, viewer, sessionID, resource)
 		return
 	}
 	media, ok := i.host.Sessions.(sessionMedia)
@@ -1486,15 +1557,15 @@ func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b rep
 	}
 	restart := format == frontend.StreamHLS && (audio != currentAudio || burn || wasBurned || qualityChanged || format != snap.format)
 	if restart {
-		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio}
-		if burn {
-			req.SubtitleStream, req.BurnImageSubtitles = &subtitle, true
-		}
+		// Always name the subtitle: without it the restart kept the previous
+		// selection, so a burned PGS track stayed in the picture after
+		// switching to a text track (both showed) or to Off.
+		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio, SubtitleStream: &subtitle, BurnImageSubtitles: burn}
 		if qualityChanged {
 			req.MaxHeight = &height
 		}
 		if _, err := i.host.Sessions.StartStream(r.Context(), access, id, req); err != nil {
-			i.playbackError(w, access.Viewer, err)
+			i.playbackError(w, access.Viewer, err, r.Header.Get("Accept-Language"))
 			return
 		}
 	}

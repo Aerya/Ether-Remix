@@ -98,14 +98,14 @@ func TestMediaBudgetIncludesHedgesAndHoldsUntilBodyClose(t *testing.T) {
 	slots := make(chan struct{}, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	first, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, true, slots)
+	first, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, 4, true, slots)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Body.Close()
 	done := make(chan *http.Response, 1)
 	go func() {
-		resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, true, slots)
+		resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, 4, true, slots)
 		if err != nil {
 			done <- nil
 			return
@@ -152,7 +152,7 @@ func TestHedgeWinnerImmediatelyCancelsStalledLoser(t *testing.T) {
 	slots := make(chan struct{}, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, true, slots)
+	resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, 4, true, slots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestFullBudgetSkipsHedgeWithoutBlockingPrimary(t *testing.T) {
 	slots := make(chan struct{}, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, true, slots)
+	resp, _, err := r.eng.get(ctx, "http://media.invalid/file", 0, 3, 4, true, slots)
 	if err != nil {
 		t.Fatal(err)
 	}

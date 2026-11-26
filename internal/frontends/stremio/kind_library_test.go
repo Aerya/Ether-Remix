@@ -110,6 +110,9 @@ func TestManifestListsCatalogPerPublishedPluginLibrary(t *testing.T) {
 	if _, ok := byID["ether-movies"]; !ok {
 		t.Fatalf("builtin alias missing: %v", byID)
 	}
+	if movies, ok := byID["ether-lib-1"]; !ok || movies.Type != "movie" || movies.Name != "Movies" {
+		t.Fatalf("built-in library catalog: %v", byID)
+	}
 	rec, ok := byID["ether-lib-3"]
 	if !ok || rec.Type != "series" || rec.Name != "Records" {
 		t.Fatalf("plugin library catalog: %v", byID)

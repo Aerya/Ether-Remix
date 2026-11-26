@@ -3,6 +3,7 @@ package vela
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 // bytes; planned and unused rungs never start work. The session must be
 // unpublished or a private snapshot; never hold the live UI lock here.
 func (i *instance) refreshOutput(ctx context.Context, id string, s *playSession) bool {
+	if s.archive != nil {
+		if s.archive.info.ChannelID != "" {
+			return refreshStartOver(s, i.catchUpNow())
+		}
+		return i.refreshLiveWindow(ctx, s.archive.tuneID, s)
+	}
 	liveChanged := i.refreshLiveWindow(ctx, id, s)
 	hs, ok := i.host.Sessions.TranscodeFor(ctx, id)
 	if !ok || hs == nil {
@@ -89,16 +96,106 @@ func (i *instance) refreshLiveWindow(ctx context.Context, id string, s *playSess
 		return false
 	}
 	before, _ := json.Marshal(live)
+	previousAnchor, previousEdge := live["anchor"], live["liveEdgeSeconds"]
 	delete(live, "anchor")
 	delete(live, "windowStartSeconds")
 	delete(live, "liveEdgeSeconds")
-	if reader, ok := i.host.Sessions.(frontend.LiveWindowReader); ok {
-		if window, err := reader.LiveWindow(ctx, id); err == nil && window.Anchor.MediaSequence >= 0 && window.Anchor.MediaSequence <= 1<<53-1 {
-			live["anchor"] = window.Anchor
-			live["windowStartSeconds"] = window.Anchor.WindowStartSeconds
-			live["liveEdgeSeconds"] = window.LiveEdgeSeconds
-		}
+	delete(live, "timeshift")
+	var window frontend.LiveWindow
+	err := frontend.ErrNotAvailable
+	if s.archive != nil {
+		window, err = i.host.LiveTV.(frontend.LiveCatchUp).CatchUpLiveWindow(ctx, id)
+	} else if reader, ok := i.host.Sessions.(frontend.LiveWindowReader); ok {
+		window, err = reader.LiveWindow(ctx, id)
 	}
+	if err == nil && window.Anchor.MediaSequence >= 0 && window.Anchor.MediaSequence <= 1<<53-1 {
+		live["anchor"] = window.Anchor
+		live["windowStartSeconds"] = window.Anchor.WindowStartSeconds
+		live["liveEdgeSeconds"] = window.LiveEdgeSeconds
+		if previousEdge != window.LiveEdgeSeconds || previousAnchor != window.Anchor || live["edgeAt"] == nil {
+			live["edgeAt"] = i.catchUpNow()
+		}
+		if window.TimeshiftMinutes > 0 {
+			live["timeshift"] = object{"maxMinutes": window.TimeshiftMinutes}
+		}
+	} else {
+		delete(live, "edgeAt")
+	}
+	s.updateBehindLive()
 	after, _ := json.Marshal(live)
 	return string(before) != string(after)
+}
+
+func liveWindowBounds(v any) (start, edge float64, ok bool) {
+	live, ok := v.(object)
+	if !ok {
+		return 0, 0, false
+	}
+	start, okStart := live["windowStartSeconds"].(float64)
+	edge, okEdge := live["liveEdgeSeconds"].(float64)
+	if !okStart || !okEdge || math.IsNaN(start) || math.IsInf(start, 0) || math.IsNaN(edge) || math.IsInf(edge, 0) || start < 0 || edge < start {
+		return 0, 0, false
+	}
+	return start, edge, true
+}
+
+func durationFromSeconds(sec float64) time.Duration {
+	if sec <= 0 || math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return 0
+	}
+	return time.Duration(math.Round(sec * float64(time.Second)))
+}
+
+// rebaseLivePosition maps a live session's playback position onto the new
+// rendition's live window so positionSeconds, windowStartSeconds and
+// liveEdgeSeconds stay on one timeline across a replan (whether the new lease
+// starts fresh at 0 or joins an already-running rendition).
+func rebaseLivePosition(live any, prevPos time.Duration, oldStart, oldEdge float64, carryBehind bool) time.Duration {
+	newStart, newEdge, hasNew := liveWindowBounds(live)
+	if !hasNew {
+		return 0
+	}
+	posSec := newEdge
+	if carryBehind {
+		prevSec := prevPos.Seconds()
+		if prevSec >= oldStart {
+			behind := oldEdge - prevSec
+			if behind < 0 {
+				behind = 0
+			}
+			posSec = newEdge - behind
+			if posSec < newStart {
+				posSec = newStart
+			}
+		}
+	}
+	return durationFromSeconds(posSec)
+}
+
+func (s *playSession) updateBehindLive() {
+	if live, ok := s.plan["live"].(object); ok {
+		_, edge, _ := liveWindowBounds(live)
+		live["behindLiveSeconds"] = max(0, edge-s.position.Seconds())
+	}
+}
+
+// alignUnobservedLivePosition starts viewers at the live edge until they
+// report a position or set one through a command.
+func alignUnobservedLivePosition(s *playSession) {
+	if s.observedSource == s.source || s.plan["state"] == "paused" {
+		return
+	}
+	live, _ := s.plan["live"].(object)
+	if live["mode"] == "startOver" {
+		return
+	}
+	start, edge, ok := liveWindowBounds(live)
+	if !ok {
+		return
+	}
+	if sec := s.position.Seconds(); sec == 0 || sec < start || sec > edge {
+		s.position = durationFromSeconds(edge)
+		s.plan["positionSeconds"] = s.position.Seconds()
+		s.updateBehindLive()
+	}
 }

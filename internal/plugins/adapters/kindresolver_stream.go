@@ -13,7 +13,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
-	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
@@ -178,6 +177,7 @@ func (r *KindResolver) Close() {
 		sess.abort(now)
 	}
 	r.streamWG.Wait()
+	r.closeSourceFlights()
 }
 
 func (r *KindResolver) cancelPluginStreamingSearches(pluginID string) {
@@ -298,6 +298,9 @@ func (r *KindResolver) validateIndexerSearchQuery(ctx context.Context, q core.So
 			Message: err.Error(),
 		}}}
 	}
+	if fe := plugins.ValidateSourceLookup(q); fe != nil {
+		return "", "", &plugins.ValidationError{Fields: []plugins.FieldError{*fe}}
+	}
 	if q.SettleMS != nil && *q.SettleMS < 0 {
 		return "", "", &plugins.ValidationError{Fields: []plugins.FieldError{{
 			Field:   "settleMs",
@@ -351,9 +354,23 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 	if scored == nil {
 		scored = []core.SourceCandidate{}
 	}
+	var nzbRefs, torrentRefs []string
+	if r.pluginNZBs != nil {
+		nzbRefs, torrentRefs = r.pluginNZBs.PluginReleaseReferences(ctx, rels)
+	}
 	knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
 	for i := range scored {
-		scored[i] = r.stripCandidateAuth(scored[i])
+		if r.pluginNZBs != nil {
+			scored[i].NZBRef, scored[i].TorrentRef = nzbRefs[i], torrentRefs[i]
+			scored[i] = r.publicReleaseLinks(scored[i])
+		} else {
+			scored[i] = r.stripCandidateAuth(scored[i])
+		}
+		if plugin, kind, ref, ok := directStream(rels[i].GUID); ok && kind == "lazy" {
+			// A plugin source's category answer: no link of its own, the
+			// plugin lists and opens it (#792).
+			scored[i].PluginRelease = &core.PluginReleaseRef{Plugin: plugin, ID: ref}
+		}
 		if fc := rels[i].KnownFileCount(); fc > scored[i].FileCount {
 			scored[i].FileCount = fc
 		}
@@ -368,7 +385,7 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 		nonUsenet := make([]core.SourceCandidate, 0, len(scored))
 		usenetOnly := make([]core.SourceCandidate, 0, len(scored))
 		for _, c := range scored {
-			if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" {
+			if (c.NZBURL != "" || c.NZBRef != "") && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" && c.TorrentRef == "" {
 				usenetOnly = append(usenetOnly, c)
 			} else {
 				nonUsenet = append(nonUsenet, c)
@@ -382,9 +399,6 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 }
 
 func (r *KindResolver) startStreamingIndexerSearch(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
-	if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
-		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
-	}
 	query, category, err := r.validateIndexerSearchQuery(ctx, q)
 	if err != nil {
 		return core.SourceResolveResult{}, err
@@ -531,6 +545,7 @@ func (r *KindResolver) startStreamingIndexerSearch(ctx context.Context, pluginID
 		searchReq := core.SearchRequest{
 			Title:    query,
 			Category: category,
+			Lookup:   q.Lookup,
 		}
 		onArrived := func(batch []core.Release) {
 			if len(batch) == 0 {

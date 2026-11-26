@@ -41,32 +41,38 @@ describe("Collection Studio editor", () => {
       WAIT,
     );
   });
-  it("sets the collection row's full schedule under Audience, the one the Home designer edits", async () => {
-    const { fake } = renderApp("/collections/new?draft=test-schedule");
-    const name = await screen.findByLabelText("Collection name", {}, { timeout: 10000 });
-    fireEvent.change(name, { target: { value: "Christmas Evenings" } });
-    expect(screen.getByRole("tab", { name: "Refresh" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Schedule" })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Audience" }));
-    const months = screen.getByRole("group", { name: "Months" });
-    fireEvent.click(within(months).getAllByRole("button")[11]!);
-    const parts = screen.getByRole("group", { name: "Times of day" });
-    fireEvent.click(within(parts).getAllByRole("button")[2]!);
-    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-12-01" } });
-    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-12-31" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+  it("lists where the collection is used and links each row to Recommendations", async () => {
+    const { fake } = renderApp("/collections/c1?section=used");
+    const drawer = await screen.findByRole("dialog", { name: "Edit collection" }, WAIT);
+    expect(within(drawer).queryByRole("tab", { name: "Audience" })).toBeNull();
+    expect(within(drawer).queryByText("Where it appears")).toBeNull();
+    expect(within(drawer).queryByText("Who sees it")).toBeNull();
+    const home = await within(drawer).findByRole(
+      "link",
+      { name: "Edit the Edge of your seat row on Home" },
+      WAIT,
+    );
+    expect(home).toHaveAttribute("href", "/recommendations?page=home&row=row-edge-of-your-seat");
+    expect(within(home).getByText(/Pinned at #3 · Fri–Sat evenings/)).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("link", {
+        name: "Edit the Edge of your seat row on Movies › Recommendations",
+      }),
+    ).toHaveAttribute(
+      "href",
+      "/recommendations?page=library%3A1%2Frecommended&row=row-edge-of-your-seat-movies",
+    );
+    expect(within(drawer).getByRole("link", { name: /Add to a page…/ })).toHaveAttribute(
+      "href",
+      "/recommendations?add=collection%3Ac1",
+    );
+    fireEvent.click(within(drawer).getByRole("switch", { name: /Browse in apps/ }));
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Save$/ }));
     await waitFor(
       () =>
         expect(
-          calls(fake, "POST", "/collections").some(
-            (c) =>
-              JSON.stringify((c.body as CollectionSpec).targets.schedule) ===
-              JSON.stringify({
-                months: [12],
-                dayparts: ["evening"],
-                startDate: "2026-12-01",
-                endDate: "2026-12-31",
-              }),
+          calls(fake, "PUT", "/collections/c1").some(
+            (c) => (c.body as CollectionSpec).browseInApps === false,
           ),
         ).toBe(true),
       WAIT,
@@ -334,30 +340,6 @@ describe("Collection Studio gallery", () => {
     expect(
       await screen.findByRole("heading", { name: "Family Movie Night" }, WAIT),
     ).toBeInTheDocument();
-  });
-
-  it("customises built-in artwork while preserving the managed definition", async () => {
-    const { fake } = renderApp("/collections?tab=builtin");
-    await screen.findByRole("heading", { name: "Recently added" }, WAIT);
-    fireEvent.click(screen.getByRole("button", { name: "Customise collection" }));
-    const drawer = await screen.findByRole("dialog", { name: "Edit collection" }, WAIT);
-    expect(await within(drawer).findByLabelText("Collection name", {}, WAIT)).toBeDisabled();
-    fireEvent.click(await within(drawer).findByRole("radio", { name: "Custom image" }, WAIT));
-    fireEvent.change(within(drawer).getByLabelText("Custom image URL"), {
-      target: { value: "https://example.com/collection.jpg" },
-    });
-    fireEvent.click(within(drawer).getByRole("button", { name: /^Save$/ }));
-    await waitFor(
-      () => expect(calls(fake, "PUT", "/collections/builtin-recent")).toHaveLength(1),
-      WAIT,
-    );
-    const saved = fake.state.collections.find((c) => c.id === "builtin-recent")!;
-    expect(saved.artwork).toMatchObject({
-      mode: "custom",
-      url: "https://example.com/collection.jpg",
-    });
-    expect(saved.name).toBe("Recently added");
-    expect(saved.builtIn).toBe(true);
   });
 
   it("browses native collection posters and opens a selected preview", async () => {

@@ -3,6 +3,7 @@ package livetv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -145,4 +146,88 @@ func (p costPersonalPicker) Picks(context.Context, *core.User, map[string]float6
 		out[i] = core.PersonalPick{Title: &core.Title{Key: core.MovieKey(int64(i + 1)), Type: core.TypeMovie, Title: fmt.Sprint(i), Runtime: 5 * time.Minute, ContentRating: "G"}, Kind: "picked", Score: 1}
 	}
 	return out, nil
+}
+
+// OnNow must return immediately with available channels instead of failing
+// Home assembly when a virtual channel's guide is cold or a newly signed-in
+// viewer's personal channel has not been built yet; direct cold snapshot reads
+// must surface a retryable PreparingError rather than bare ErrNotAvailable.
+func TestColdVirtualGuideOnNowDegradesAndPrepares(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	s := testService(t, Options{DB: db, Now: func() time.Time { return now }, Picker: costPersonalPicker{4}})
+	u := &core.User{ID: 1, IsOwner: true}
+
+	ready := testChannel()
+	ready.ID = "ready"
+	ready.Number = "101"
+	ready.Items = []Item{{Key: core.MovieKey(1), Title: "Ready", DurationMS: 3600000, Rating: "G"}}
+	if _, err := s.SaveChannel(ctx, ready); err != nil {
+		t.Fatal(err)
+	}
+
+	cold := testChannel()
+	cold.ID = "cold"
+	cold.Number = "102"
+	cold.Items = []Item{{Key: core.MovieKey(2), Title: "Cold", DurationMS: 3600000, Rating: "G"}}
+	if _, err := s.SaveChannel(ctx, cold); err != nil {
+		t.Fatal(err)
+	}
+
+	personal := testChannel()
+	personal.ID = "personal"
+	personal.Number = "103"
+	personal.Mode = ""
+	personal.Items = nil
+	personal.Personal = &PersonalRecipe{}
+	if _, err := s.SaveChannel(ctx, personal); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.refreshVirtualGuide(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an idle eviction of the cold showcase channel while leaving
+	// the ready channel warm, and leave the personal channel unbuilt.
+	s.virtualGuide.mu.Lock()
+	delete(s.virtualGuide.entries, cold.ID)
+	s.virtualGuide.mu.Unlock()
+
+	_, ps, err := s.OnNow(ctx, u, now, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("OnNow with cold virtual and unbuilt personal channels failed: %v", err)
+	}
+	foundReady := false
+	for _, p := range ps {
+		if p.ChannelID == ready.ID {
+			foundReady = true
+		}
+	}
+	if !foundReady {
+		t.Fatalf("OnNow omitted warm channel %q: got %+v", ready.ID, ps)
+	}
+
+	// Even when every virtual channel has been idle-evicted, OnNow must
+	// return cleanly rather than stalling or returning ErrNotAvailable.
+	s.virtualGuide.mu.Lock()
+	s.virtualGuide.entries = map[string]*virtualGuideSnapshot{}
+	s.virtualGuide.mu.Unlock()
+	if _, _, err := s.OnNow(ctx, u, now, now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("OnNow with all virtual channels cold failed: %v", err)
+	}
+
+	// Direct snapshot read of an unbuilt personal channel must be retryable.
+	_, err = s.ProgrammesSnapshot(ctx, u, personal.ID, now, now.Add(2*time.Hour), SnapshotGuide)
+	if !errors.Is(err, core.ErrPreparing) || !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatalf("unbuilt personal snapshot err = %v, want PreparingError wrapping ErrNotAvailable", err)
+	}
+	var prep *core.PreparingError
+	if !errors.As(err, &prep) || prep.RetryAfter <= 0 {
+		t.Fatalf("unbuilt personal snapshot err = %v, want positive RetryAfter", err)
+	}
 }

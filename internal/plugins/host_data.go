@@ -616,13 +616,28 @@ func (h *host) httpFetchToCacheResumable(
 				_ = resp.Body.Close()
 				return FetchCacheResult{}, err
 			}
+			reserveTotal := expectedTotal
+			if reserveTotal < 0 {
+				reserveTotal = cached + chunkExpected
+			}
+			if reserveTotal > cached {
+				if err := partial.Reserve(reserveTotal); err != nil {
+					_ = resp.Body.Close()
+					if errors.Is(err, blobcache.ErrTooLarge) && !errors.Is(err, blobcache.ErrQuotaFull) {
+						_ = partial.Discard()
+					} else {
+						_ = partial.Sync()
+					}
+					return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
+				}
+			}
 
 			reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: maxBytes - cached}
 			_, copyErr := io.CopyBuffer(partial, reader, buf)
 			totalTransferred += reader.size
 			_ = resp.Body.Close()
 			if copyErr != nil {
-				if errors.Is(copyErr, blobcache.ErrTooLarge) || errors.Is(copyErr, errDataExceedsSizeLimit) {
+				if errors.Is(copyErr, errDataExceedsSizeLimit) || (errors.Is(copyErr, blobcache.ErrTooLarge) && !errors.Is(copyErr, blobcache.ErrQuotaFull)) {
 					_ = partial.Discard()
 					if errors.Is(copyErr, errDataExceedsSizeLimit) && cached+reader.size > cacheQuota {
 						return FetchCacheResult{}, fetchSizeLimitError(cached+reader.size, fetchLimit, cacheQuota)
@@ -656,8 +671,10 @@ func (h *host) httpFetchToCacheResumable(
 
 			committed, cerr := partial.Commit(fetchCtx, req.Name)
 			if cerr != nil {
-				if errors.Is(cerr, blobcache.ErrTooLarge) {
+				if errors.Is(cerr, blobcache.ErrTooLarge) && !errors.Is(cerr, blobcache.ErrQuotaFull) {
 					_ = partial.Discard()
+				} else {
+					_ = partial.Sync()
 				}
 				return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, cerr)
 			}
@@ -694,13 +711,21 @@ func (h *host) httpFetchToCacheResumable(
 			_ = resp.Body.Close()
 			return FetchCacheResult{}, err
 		}
+		if expectedTotal > 0 {
+			if err := partial.Reserve(expectedTotal); err != nil {
+				_ = resp.Body.Close()
+				return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, err)
+			}
+		}
 
 		reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: maxBytes}
 		_, copyErr := io.CopyBuffer(partial, reader, buf)
 		totalTransferred += reader.size
 		_ = resp.Body.Close()
 		if copyErr != nil {
-			if errors.Is(copyErr, blobcache.ErrTooLarge) || errors.Is(copyErr, errDataExceedsSizeLimit) || compressed || !hasResumeValidator(newMeta) || partial.Size() == 0 {
+			unfitBlob := errors.Is(copyErr, errDataExceedsSizeLimit) ||
+				(errors.Is(copyErr, blobcache.ErrTooLarge) && !errors.Is(copyErr, blobcache.ErrQuotaFull))
+			if unfitBlob || compressed || !hasResumeValidator(newMeta) || partial.Size() == 0 {
 				_ = partial.Discard()
 				if errors.Is(copyErr, errDataExceedsSizeLimit) && reader.size > cacheQuota {
 					return FetchCacheResult{}, fetchSizeLimitError(reader.size, fetchLimit, cacheQuota)
@@ -726,8 +751,11 @@ func (h *host) httpFetchToCacheResumable(
 
 		committed, cerr := partial.Commit(fetchCtx, req.Name)
 		if cerr != nil {
-			if errors.Is(cerr, blobcache.ErrTooLarge) {
+			unfitBlob := errors.Is(cerr, blobcache.ErrTooLarge) && !errors.Is(cerr, blobcache.ErrQuotaFull)
+			if unfitBlob || compressed || !hasResumeValidator(newMeta) || partial.Size() == 0 {
 				_ = partial.Discard()
+			} else {
+				_ = partial.Sync()
 			}
 			return FetchCacheResult{}, wrapFetchCacheError(fetchCtx, req.URL, cerr)
 		}

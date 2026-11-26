@@ -51,7 +51,6 @@ import {
 import { useAsync, useDebouncedValue, useMediaQuery } from "../../lib/hooks";
 import {
   blankSpec,
-  describeTargets,
   normalizeSpec,
   previewableSpec,
   specProblems,
@@ -59,16 +58,11 @@ import {
 } from "../../lib/rules";
 import { BuildPanel } from "./BuildPanel";
 import { DescribeDialog } from "./DescribeDialog";
-import { isBlankCollectionSpec, newCollectionHref } from "./links";
-import {
-  ArtworkPanel,
-  ArtworkPreview,
-  AudiencePanel,
-  SchedulePanel,
-  describeSchedule,
-} from "./SettingsPanels";
+import { isBlankCollectionSpec, newCollectionHref, studioBackLink } from "./links";
+import { ArtworkPanel, ArtworkPreview, SchedulePanel, UsedOnPanel } from "./SettingsPanels";
+import { useCollectionUsage, usedOnSummary } from "./UsedOn";
 
-type Tab = "build" | "schedule" | "artwork" | "audience";
+type Tab = "build" | "schedule" | "artwork" | "used";
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -107,10 +101,6 @@ export default function CollectionEditor() {
   const templateId = search.get("template");
   const pluginSource = search.get("pluginSource");
   const pluginName = search.get("name") ?? "";
-  const pickAddonCatalog = !id && search.get("source") === "addonCatalog";
-  // The picker opens once, with the first Build panel; switching tabs back
-  // later does not reopen it.
-  const [openAddonPicker, setOpenAddonPicker] = useState(pickAddonCatalog);
   const incoming = (location.state as { spec?: CollectionSpec } | null)?.spec;
   const [newDraftId] = useState(() => search.get("draft") ?? `new-${Date.now().toString(36)}`);
 
@@ -153,11 +143,6 @@ export default function CollectionEditor() {
         sort: "source" as const,
         sources: [{ kind: pluginSource, ...d.meta?.defaults } as Source],
       };
-    }
-    if (pickAddonCatalog) {
-      // A Home row from an add-on catalog: the catalog is chosen in Build.
-      const spec = blankSpec();
-      return { ...spec, targets: { ...spec.targets, homeRow: true } };
     }
     return blankSpec();
   }, [id, templateId, pluginSource, pluginName]);
@@ -202,12 +187,9 @@ export default function CollectionEditor() {
   }, [source.data, dKey, id]);
 
   const ready = baseline !== null;
-  useEffect(() => {
-    if (ready && openAddonPicker) setOpenAddonPicker(false);
-  }, [ready, openAddonPicker]);
+  const usage = useCollectionUsage(id);
   const dirty = ready && !same(spec, baseline);
   const isNew = !id;
-  const readOnly = Boolean(baseline?.builtIn);
 
   // Autosave the working copy locally — only after hydration and a real user edit,
   // so initial blank state can never overwrite a collection's draft or save an
@@ -220,7 +202,6 @@ export default function CollectionEditor() {
   useEffect(() => {
     if (
       !ready ||
-      readOnly ||
       debouncedDraft.dKey !== dKey ||
       debouncedDraft.rev !== hydration.rev ||
       !debouncedDraft.userEdited
@@ -237,7 +218,7 @@ export default function CollectionEditor() {
       clearDraft(dKey);
       setSavedLocallyAt(null);
     }
-  }, [debouncedDraft, baseline, dKey, hydration.rev, isNew, ready, readOnly]);
+  }, [debouncedDraft, baseline, dKey, hydration.rev, isNew, ready]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -295,7 +276,7 @@ export default function CollectionEditor() {
   const [describeOpen, setDescribeOpen] = useState(false);
   const [tab, setTab] = useState<Tab>(() => {
     const section = search.get("section");
-    return section === "artwork" || section === "audience" ? section : "build";
+    return section === "artwork" || section === "used" ? section : "build";
   });
   const wide = useMediaQuery("(min-width: 1024px)");
   const [pane, setPane] = useState<"edit" | "preview">("edit");
@@ -334,15 +315,22 @@ export default function CollectionEditor() {
                 }),
           },
         );
-        if (!id && saved.id)
+        // "New collection…" from a Recommendations row picker: back to the
+        // page, with the new collection as the row's source.
+        const back = search.get("returnTo");
+        if (!id && saved.id && back?.startsWith("/recommendations?"))
+          navigate(`${back}${encodeURIComponent(saved.id)}`, { replace: true });
+        else if (!id && saved.id)
           navigate(`/collections/${encodeURIComponent(saved.id)}`, { replace: true });
+        // "Edit collection" from a Recommendations row: back to that row.
+        else if (studioBackLink(search)) navigate(studioBackLink(search)!);
       } catch (e) {
         toast.error(t("Couldn't save"), { description: errorMessage(e) });
       } finally {
         setSaving(false);
       }
     },
-    [readOnly, spec, id, dKey, history, navigate],
+    [spec, id, dKey, history, navigate, search],
   );
 
   const rebuild = async () => {
@@ -389,7 +377,6 @@ export default function CollectionEditor() {
         spec: {
           ...spec,
           id: undefined,
-          builtIn: undefined,
           name: t("{name} (copy)", { name: spec.name }),
           enabled: false,
         },
@@ -451,16 +438,13 @@ export default function CollectionEditor() {
 
   const showEdit = wide || pane === "edit";
   const showPreview = wide || pane === "preview";
-  const targets = describeTargets(spec);
 
   return (
     <section aria-label={t("Collection Studio")} className="flex min-h-0 flex-1 flex-col">
       <header className="shrink-0 border-b border-border bg-surface px-3 py-3 sm:px-6">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span className="flex flex-wrap gap-1.5">
-            {readOnly ? (
-              <Badge variant="secondary">{t("Built-in")}</Badge>
-            ) : spec.enabled ? (
+            {spec.enabled ? (
               <Badge variant="success">
                 <Globe2 size={11} /> {t("Published")}
               </Badge>
@@ -485,7 +469,6 @@ export default function CollectionEditor() {
             onChange={(e) => update({ name: e.currentTarget.value }, "name")}
             placeholder={t("Name your collection")}
             aria-label={t("Collection name")}
-            disabled={readOnly}
             className="h-11 min-w-0 flex-1 basis-full border-transparent sm:min-w-64 sm:basis-0 bg-transparent px-1 text-xl font-semibold shadow-none hover:border-border focus-visible:border-primary sm:text-xl"
           />
           <div className="flex flex-wrap items-center gap-1.5">
@@ -517,11 +500,9 @@ export default function CollectionEditor() {
             >
               <Redo2 size={16} />
             </Button>
-            {!readOnly ? (
-              <Button variant="ghost" size="sm" onClick={() => setDescribeOpen(true)}>
-                <Sparkles size={15} /> {t("Describe it")}
-              </Button>
-            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => setDescribeOpen(true)}>
+              <Sparkles size={15} /> {t("Describe it")}
+            </Button>
             <ActionMenu
               label={t("Collection actions")}
               variant="outline"
@@ -534,7 +515,7 @@ export default function CollectionEditor() {
                   label: t("Rebuild now"),
                   icon: RefreshCw,
                   onSelect: () => void rebuild(),
-                  disabled: isNew || dirty || readOnly,
+                  disabled: isNew || dirty,
                 },
                 {
                   key: "unpublish",
@@ -557,7 +538,7 @@ export default function CollectionEditor() {
                   icon: Trash2,
                   onSelect: () => void remove(),
                   danger: true,
-                  disabled: isNew || readOnly,
+                  disabled: isNew,
                 },
               ]}
             />
@@ -581,17 +562,8 @@ export default function CollectionEditor() {
         </div>
       </header>
 
-      {restored || problems.length || readOnly ? (
+      {restored || problems.length ? (
         <div className="shrink-0 space-y-2 border-b border-border bg-surface px-3 py-2 sm:px-6">
-          {readOnly ? (
-            <Alert variant="info">
-              <AlertDescription>
-                {t(
-                  "Ether manages this collection’s name and rules. Customise its artwork and audience here, or duplicate it to change the title selection.",
-                )}
-              </AlertDescription>
-            </Alert>
-          ) : null}
           {restored ? (
             <Alert variant="info">
               <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -658,22 +630,12 @@ export default function CollectionEditor() {
                   { key: "build", label: t("Build") },
                   { key: "schedule", label: t("Refresh") },
                   { key: "artwork", label: t("Artwork") },
-                  { key: "audience", label: t("Audience") },
+                  { key: "used", label: t("Used on") },
                 ]}
               />
             </div>
-            <fieldset
-              disabled={readOnly && (tab === "build" || tab === "schedule")}
-              className="min-w-0 p-3 sm:p-5"
-            >
-              {tab === "build" ? (
-                <BuildPanel
-                  spec={spec}
-                  update={update}
-                  region={region}
-                  pickAddonCatalog={openAddonPicker}
-                />
-              ) : null}
+            <div className="min-w-0 p-3 sm:p-5">
+              {tab === "build" ? <BuildPanel spec={spec} update={update} region={region} /> : null}
               {tab === "schedule" ? (
                 <SchedulePanel
                   spec={spec}
@@ -685,8 +647,8 @@ export default function CollectionEditor() {
               {tab === "artwork" ? (
                 <ArtworkPanel spec={spec} update={update} preview={preview?.items ?? []} />
               ) : null}
-              {tab === "audience" ? <AudiencePanel spec={spec} update={update} /> : null}
-            </fieldset>
+              {tab === "used" ? <UsedOnPanel spec={spec} update={update} usage={usage} /> : null}
+            </div>
           </aside>
         ) : null}
 
@@ -727,22 +689,13 @@ export default function CollectionEditor() {
                     <p className="line-clamp-2 text-sm text-fg-muted">{spec.description}</p>
                   ) : null}
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    {targets.length ? (
-                      targets.map((target) => (
-                        <Badge key={target} variant="default">
-                          {target}
-                        </Badge>
-                      ))
-                    ) : (
-                      <Badge variant="warning">{t("Not shown anywhere")}</Badge>
-                    )}
-                    <Badge variant="secondary">
-                      {spec.targets.users === "all"
-                        ? t("Everyone")
-                        : tn(spec.targets.users.length, "{count} viewer", "{count} viewers")}
-                    </Badge>
-                    {spec.targets.schedule ? (
-                      <Badge variant="secondary">{describeSchedule(spec)}</Badge>
+                    {spec.browseInApps ? (
+                      <Badge variant="default">{t("Browse in apps")}</Badge>
+                    ) : null}
+                    {spec.id ? (
+                      <Badge variant="secondary">
+                        {t("Used on: {pages}", { pages: usedOnSummary(usage.data) })}
+                      </Badge>
                     ) : null}
                     <Badge variant="secondary">{refreshBadge(spec.refresh)}</Badge>
                     {spec.rotate ? (

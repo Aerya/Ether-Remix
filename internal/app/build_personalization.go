@@ -37,6 +37,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Logger:             log.With("component", "state"),
 		Availability:       a.dbAvail,
 		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
+		Ancestry:           a.watchAncestry,
 		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
 	})
 	timeline.SetResumeAfter(cfg.Server.ResumeAfterSeconds)
@@ -67,6 +68,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			return a.favoriteTitlesCached(ctx, u, keys, visibility)
 		},
 		PreloadTitles: a.catalog.PreloadStored,
+		TitleRole:     a.favoriteTitleRole,
 		Changed:       func(ctx context.Context, id int64, subject favorites.Subject) { a.favoriteChanged(ctx, id, subject) },
 	})
 	if err != nil {
@@ -151,7 +153,9 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		}
 		return out
 	}
+	a.built = make(chan struct{})
 	if a.personalize, err = personalize.New(personalize.Options{
+		Ready: a.built,
 		PersonalWatchlist: func(ctx context.Context, u *core.User) ([]core.Title, error) {
 			if a.watchlist == nil {
 				return nil, nil
@@ -187,12 +191,32 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		// membership — the same filter its All browse runs (#549).
 		LibraryMembers:  a.libraryRecommendationMembers,
 		LibrarySections: librarySections,
+		LibraryRowsTab:  a.libraryRowsTab,
+		PageLibraries:   a.pageLibraries,
+		Surfaces:        a.recommendationSurfaces,
+		PageCandidates:  a.pluginPageCandidates,
 		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
-		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
+		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, FavoriteShowsFor: a.favorites.HasTitles, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows:   a.extraHomeRows,
 		PreviewContinue: a.previewContinue,
-		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
-			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
+		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error) {
+			exclusions := newLibraryPageExclusionsFor(a, nil)
+			cardFilter := collections.WithCollectionCardFilter(func(ctx context.Context, u *core.User, typ core.MediaType) (core.Filter, bool, error) {
+				if !u.IsOwner && len(u.AllowedLibraries) != 0 {
+					allowed := false
+					for id, sectionType := range librarySections(ctx) {
+						if sectionType == typ && u.AllowsLibrary(core.LibraryID(id)) {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						return core.Filter{}, false, nil
+					}
+				}
+				return experience.CollectionCardFilter(u, exclusions(ctx, u, typ), typ)
+			})
+			opts := append(a.collectionOptions(cfg), cardFilter, collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
 			var err error
 			a.collections, err = collections.New(a.db, a.catalog, log.With("component", "collections"), opts...)
 			if err != nil {
@@ -224,12 +248,10 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	}); err != nil {
 		return fmt.Errorf("personalization: %w", err)
 	}
-	// One-time: Home layout schedules for collection rows move onto their
-	// collections, which own them now.
-	if a.collections != nil {
-		if err := a.collections.AdoptLayoutSchedules(ctx, a.personalize); err != nil {
-			a.log.Warn("collections: could not move Home layout schedules onto collections; retrying next start", "err", err)
-		}
+	// One-time: the Home layout and collection rows become Recommendations
+	// pages (rows-pages-v1).
+	if err := a.migrateRowsPages(ctx); err != nil {
+		a.log.Warn("recommendations: could not move the Home layout onto Recommendations pages; retrying next start", "err", err)
 	}
 	if err := parityWarmPersonalization(ctx, a); err != nil {
 		a.personalize.Close()
@@ -247,4 +269,32 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	})
 
 	return nil
+}
+
+// watchAncestry combines durable identity links with the current cached
+// season projection. The timeline and manual watch writes need no provider I/O.
+func (a *App) watchAncestry(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]state.Ancestry, error) {
+	links, err := a.catalog.ChildAncestry(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[core.RatingKey]state.Ancestry, len(links))
+	for key, link := range links {
+		out[key] = state.Ancestry{ShowKey: link.ShowKey, ParentKey: link.ParentKey}
+	}
+	titles, err := a.catalog.CachedTitles(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for _, title := range titles {
+		ancestors := out[title.Key]
+		if title.ShowKey != 0 {
+			ancestors.ShowKey = title.ShowKey
+		}
+		if title.ParentKey != 0 {
+			ancestors.ParentKey = title.ParentKey
+		}
+		out[title.Key] = ancestors
+	}
+	return out, nil
 }

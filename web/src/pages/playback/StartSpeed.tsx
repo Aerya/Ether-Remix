@@ -14,7 +14,7 @@ const RACE = localized(() => [
   ...[2, 3, 4].map((n) => ({ value: String(n), label: t("First healthy of {n}", { n }) })),
 ]);
 
-/** How soon playback starts (Quality › Searching). */
+/** How soon playback starts (Releases › Searching). */
 export function StartSpeed() {
   const { config, resolver, save } = useResolver();
   const saved = useMemo(

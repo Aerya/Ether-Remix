@@ -1,6 +1,7 @@
 // Package clientreg is the data-driven client capability engine.
 // One ordered registry matches every client. Roles share that matcher:
-// policy (Dolby Vision profiles, subtitles, family), playback (codecs and
+// class (the device kind quality rules group by, for apps that span kinds
+// or report no platform; it never changes capabilities), policy (Dolby Vision profiles, subtitles, family), playback (codecs and
 // limits for clients that send no profile), patch (narrow hardware facts),
 // quirk (a named flag, including a wire-protocol quirk) and segmented-audio
 // (audio codecs a client's segmented player must not receive copied, even
@@ -32,6 +33,7 @@ type Identity struct {
 type Result struct {
 	ID                  string
 	Family              string
+	Class               string
 	Notes               string
 	Video               []string
 	Audio               []string
@@ -108,6 +110,8 @@ func Apps() []App {
 type Device struct {
 	Name     string   `json:"name"`
 	Identity Identity `json:"identity"`
+	// Aliases are other names owners search for ("iPad" for iOS).
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Devices returns the registry's catalogue identities in display order.
@@ -149,9 +153,12 @@ type definition struct {
 	HDR10               *bool    `json:"hdr10"`
 	DolbyVision         *bool    `json:"dolbyVision"`
 	Quirks              []string `json:"quirks"`
-	PatchHeight         *int     `json:"patchHeight"`
-	PatchHDR10          *bool    `json:"patchHdr10"`
-	Match               Match    `json:"match"`
+	// Class is the kind of device a policy or playback record describes:
+	// "tv", "mobile" or "computer" (rule device groups).
+	Class       string `json:"class"`
+	PatchHeight *int   `json:"patchHeight"`
+	PatchHDR10  *bool  `json:"patchHdr10"`
+	Match       Match  `json:"match"`
 }
 
 // Match is one rule. A leaf compares Field. All, Any and None combine rules.
@@ -342,6 +349,7 @@ func (d definition) result() Result {
 	out := Result{
 		ID:                  d.ID,
 		Family:              base.Family,
+		Class:               d.Class,
 		Notes:               base.Notes,
 		Video:               slices.Clone(base.Video),
 		Audio:               slices.Clone(base.Audio),

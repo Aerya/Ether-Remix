@@ -96,6 +96,30 @@ func completeHEVCConfig(data []byte) bool {
 	return len(sets[32]) > 0 && len(sets[33]) > 0 && len(sets[34]) > 0
 }
 
+// inBandParameterSets reports an ISO decoder configuration record (avcC or
+// hvcC, version 1) that parses cleanly and carries no NAL units at all: its
+// parameter sets travel only in-band, as in remuxes of DASH avc3/hev1
+// streams. Only such a record is flagged, because the h264_metadata and
+// hevc_metadata filters that rebuild it parse the record first and refuse to
+// start on one that is truncated or partial (an hvcC with an SPS but no VPS
+// fails "VPS id 0 not available"); those copies keep running as before.
+// Empty and Annex B extradata are not ISO records and return false: ffmpeg
+// builds the MP4 record from Annex B parameter sets itself.
+func inBandParameterSets(codec string, record []byte) bool {
+	if len(record) == 0 || record[0] != 1 {
+		return false
+	}
+	switch codec {
+	case "h264":
+		sps, pps, ok := avcCSets(record)
+		return ok && sps == 0 && pps == 0
+	case "hevc":
+		_, nals, ok := hvcCSets(record)
+		return ok && nals == 0
+	}
+	return false
+}
+
 // hevcProbeConfig builds a decoder record for the native SPS parser only.
 // It must not turn an empty source CodecPrivate into affirmative evidence
 // that ffmpeg's copy filter can initialize from that source's extradata.

@@ -22,15 +22,13 @@ func TestHomeLayoutChangeReachesOtherNode(t *testing.T) {
 	h.e.SetBus(hub.Node("a"))
 	e2.SetBus(hub.Node("b"))
 
-	d, _ := h.e.HomeLayout(ctx)
-	d.Viewers = []core.ViewerLayout{{UserID: 1, Pages: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindTrending, Status: "always", Slot: 2}}}}}}
-	if _, err := h.e.SetHomeLayout(ctx, d); err != nil {
-		t.Fatal(err)
-	}
+	p := rpage(core.PageHome, prow(KindTrending, core.PlacementAuto, 0))
+	viewerOverride(&p, 1, p.Rows[0].ID, core.PlacementPinned, 2)
+	mustSavePage(t, h.e, p)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got, _ := e2.HomeLayout(ctx)
-		if len(got.Viewers) == 1 && got.Viewers[0].UserID == 1 {
+		got, _ := e2.Page(ctx, core.PageHome)
+		if len(got.Variants) == 1 && got.Variants[0].Viewer == 1 {
 			break
 		}
 		if time.Now().After(deadline) {

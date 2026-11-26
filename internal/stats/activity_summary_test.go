@@ -150,3 +150,92 @@ func TestActivityPlayAddressAndAudioDecision(t *testing.T) {
 		t.Fatalf("summary: %+v %v", sum.Decisions, err)
 	}
 }
+
+func TestActivityMatchesSummary(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// 2026-11-24 20:42:00 EST == 2026-11-25 01:42:00 UTC (tz = -300).
+	now := time.Date(2026, 11, 25, 1, 42, 0, 0, time.UTC)
+	tz := -300
+	s := New(db, Options{Now: func() time.Time { return now }})
+
+	rows := []struct {
+		id        string
+		userID    int64
+		ratingKey int64
+		channelID string
+		started   time.Time
+		watchedMS int64
+		bytes     int64
+	}{
+		// Outside 30d window: excluded from both Summary and Activity.
+		{"too-old", 1, 1000000000000001, "", now.AddDate(0, 0, -30).Add(-time.Minute), 1_800_000, 10 << 20},
+		// Boundary day (2026-10-25 21:00 EST): inside rolling 30d window!
+		{"boundary", 1, 1000000000000001, "", time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC), 150_000, 5 << 20},
+		// Failed 0-byte play: excluded from both Summary and Activity.
+		{"failed-zero", 2, 1000000000000002, "", now.Add(-24 * time.Hour), 0, 0},
+		// Same user, same movie twice on the same local day (must count as 2 plays, not collapsed to 1).
+		{"vod-1", 1, 1000000000000001, "", time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC), 150_000, 8 << 20},
+		{"vod-2", 1, 1000000000000001, "", time.Date(2026, 11, 23, 21, 0, 0, 0, time.UTC), 150_000, 8 << 20},
+		// Live TV play on a different viewer the same local day (2026-11-23).
+		{"live-1", 2, 0, "ch-espn", time.Date(2026, 11, 24, 3, 0, 0, 0, time.UTC), 1_800_000, 20 << 20},
+		// Non-catalog/plugin play on today (2026-11-24 EST, after UTC midnight).
+		{"plugin-1", 3, 9005000000092613, "", time.Date(2026, 11, 25, 1, 0, 0, 0, time.UTC), 150_000, 3 << 20},
+	}
+	for _, r := range rows {
+		_, err = db.Exec(
+			`INSERT INTO stats_plays(id,user_id,rating_key,username,title,channel_id,platform,device,decision,started,updated,ended,watched_ms,bytes) VALUES(?,?,?,'u','t',?,'p','d','directplay',?,?,?,?,?)`,
+			r.id, r.userID, r.ratingKey, r.channelID, r.started.Unix(), r.started.Unix()+60, r.started.Unix()+60, r.watchedMS, r.bytes,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	since, until := s.daysWindow(30)
+	sum, err := s.Summary(ctx, since, until, 0, tz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days, err := s.Activity(ctx, 30, tz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 31 || days[0].Date != "2026-10-25" || days[len(days)-1].Date != "2026-11-24" {
+		t.Fatalf("days span = %d (%s..%s), want 31 (2026-10-25..2026-11-24)", len(days), days[0].Date, days[len(days)-1].Date)
+	}
+	var totalPlays int64
+	var totalWatchedMS int64
+	byDate := map[string]core.ActivityDay{}
+	for _, d := range days {
+		totalPlays += int64(d.Plays)
+		totalWatchedMS += d.WatchedMS
+		byDate[d.Date] = d
+	}
+	if totalPlays != sum.Plays || totalPlays != 5 {
+		t.Fatalf("activity plays = %d, summary plays = %d, want 5", totalPlays, sum.Plays)
+	}
+	if totalWatchedMS != sum.WatchedMS || totalWatchedMS != 2_400_000 {
+		t.Fatalf("activity watchedMs = %d, summary watchedMs = %d, want 2400000", totalWatchedMS, sum.WatchedMS)
+	}
+	// Verify local-day bucketing matches Summary.Daily and distinct viewer counts.
+	if len(sum.Daily) != 3 {
+		t.Fatalf("summary daily = %+v, want 3 active days", sum.Daily)
+	}
+	for _, b := range sum.Daily {
+		d, ok := byDate[b.Label]
+		if !ok || int64(d.Plays) != b.Plays || d.WatchedMS != b.WatchedMS {
+			t.Fatalf("day %s mismatch: activity=%+v summary=%+v", b.Label, d, b)
+		}
+	}
+	if got := byDate["2026-11-23"]; got.Plays != 3 || got.UniqueViewers != 2 {
+		t.Fatalf("2026-11-23 = %+v, want 3 plays and 2 unique viewers", got)
+	}
+	if got := byDate["2026-10-25"]; got.Plays != 1 || got.WatchedMS != 150_000 || got.Hours != 0 {
+		t.Fatalf("2026-10-25 = %+v, want 1 play, 150000ms, 0.0h rounded day", got)
+	}
+}

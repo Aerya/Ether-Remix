@@ -797,13 +797,7 @@ export function blankSpec(mediaType: CollectionSpec["mediaType"] = "movie"): Col
     refresh: "daily",
     rotate: null,
     artwork: { mode: "auto" },
-    targets: {
-      collectionsTab: true,
-      homeRow: false,
-      sectionRow: false,
-      users: "all",
-      schedule: null,
-    },
+    browseInApps: true,
     enabled: false,
   };
 }
@@ -818,7 +812,7 @@ export function normalizeSpec(spec: Partial<CollectionSpec>): CollectionSpec {
     rules: Array.isArray(spec.rules) ? spec.rules : [],
     exclude: Array.isArray(spec.exclude) ? spec.exclude : [],
     artwork: { ...base.artwork, ...(spec.artwork ?? {}) },
-    targets: { ...base.targets, ...(spec.targets ?? {}) },
+    browseInApps: spec.browseInApps ?? base.browseInApps,
   };
 }
 
@@ -837,10 +831,7 @@ export function previewableSpec(spec: CollectionSpec): CollectionSpec {
 export function specProblems(spec: CollectionSpec): string[] {
   const out: string[] = [];
   if (spec.releaseMode === "upcoming" || spec.releaseMode === "mixed") {
-    if (!spec.targets.collectionsTab || spec.targets.homeRow || spec.targets.sectionRow)
-      out.push(
-        t("Upcoming collections require the Collections tab and cannot use Home or library rows."),
-      );
+    if (!spec.browseInApps) out.push(t("Upcoming collections must be browseable in apps."));
     if (spec.localOnly || spec.sources.length !== 1 || spec.sources[0]?.kind !== "catalog")
       out.push(t("Upcoming titles require the whole catalogue source and remote TMDB discovery."));
     if (
@@ -874,14 +865,5 @@ export function specProblems(spec: CollectionSpec): string[] {
     out.push(t("Add an image URL for custom artwork."));
   if (spec.rotate && (spec.rotate.size < 1 || !Number.isFinite(spec.rotate.size)))
     out.push(t("Rotation needs a subset size of at least 1."));
-  return out;
-}
-
-/** Where the collection appears, in words. */
-export function describeTargets(spec: CollectionSpec): string[] {
-  const out: string[] = [];
-  if (spec.targets.collectionsTab) out.push(t("Collections tab"));
-  if (spec.targets.homeRow) out.push(t("Home row"));
-  if (spec.targets.sectionRow) out.push(t("Library row"));
   return out;
 }

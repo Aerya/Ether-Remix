@@ -13,31 +13,34 @@ import (
 // appendScheduled adds metadata-only future episodes to a season, or to a
 // show's recursive episode list. They stay out of playback: the broker
 // refuses a future premiere before it resolves a release.
-func (s *Service) appendScheduled(ctx context.Context, v *core.User, key core.RatingKey, items []core.Title, q frontend.ItemQuery) ([]core.Title, error) {
+func (s *Service) appendScheduled(ctx context.Context, v *core.User, parent *core.Title, items []core.Title, q frontend.ItemQuery) ([]core.Title, error) {
 	if s.d.Scheduled == nil {
 		return items, nil
 	}
-	var seasons []core.RatingKey
-	switch key.Kind() {
-	case core.KindSeason:
-		if key.Season() <= 0 {
+	var seasons []core.Title
+	switch parent.Type {
+	case core.TypeSeason:
+		if parent.Season <= 0 {
 			return items, nil
 		}
-		seasons = []core.RatingKey{key}
-	case core.KindShow:
+		seasons = []core.Title{*parent}
+	case core.TypeShow:
 		if !q.Recursive || s.d.Children == nil {
 			return items, nil
 		}
-		kids, err := s.d.Children(ctx, v, key)
+		kids, err := s.d.Children(ctx, v, parent.Key)
 		if err != nil {
 			return nil, err
 		}
 		for _, kid := range kids {
-			if kid.Type == core.TypeSeason && kid.Key.Season() > 0 {
-				seasons = append(seasons, kid.Key)
+			if kid.Type == core.TypeSeason && kid.Season > 0 && (q.Season == nil || kid.Season == *q.Season) {
+				seasons = append(seasons, kid)
 			}
 		}
 	default:
+		return items, nil
+	}
+	if len(seasons) == 0 || s.scheduleBlocked(ctx, v, seriesOfTitle(*parent)) {
 		return items, nil
 	}
 	seen := make(map[core.RatingKey]bool, len(items))
@@ -47,10 +50,7 @@ func (s *Service) appendScheduled(ctx context.Context, v *core.User, key core.Ra
 	now := time.Now()
 	extra := []core.Title{}
 	for _, season := range seasons {
-		if s.scheduleBlocked(ctx, v, core.ShowKey(season.TMDB())) {
-			continue
-		}
-		episodes, err := s.d.Scheduled(ctx, season)
+		episodes, err := s.d.Scheduled(ctx, season.Key)
 		if errors.Is(err, core.ErrNotFound) {
 			continue
 		}
@@ -58,7 +58,7 @@ func (s *Service) appendScheduled(ctx context.Context, v *core.User, key core.Ra
 			return nil, err
 		}
 		for _, episode := range episodes {
-			if seen[episode.Key] || episode.Type != core.TypeEpisode || episode.Key.Parent() != season {
+			if seen[episode.Key] || episode.Type != core.TypeEpisode || !episodeInSeason(episode, season.Key) {
 				continue
 			}
 			if episode.Released.IsZero() || !episode.Released.After(now) {
@@ -93,15 +93,19 @@ func (s *Service) appendScheduled(ctx context.Context, v *core.User, key core.Ra
 	return out, nil
 }
 
+func episodeInSeason(episode core.Title, season core.RatingKey) bool {
+	parent := episode.ParentKey
+	if parent == 0 {
+		parent = episode.Key.Parent()
+	}
+	return parent == season
+}
+
 func (s *Service) scheduledTitle(ctx context.Context, v *core.User, key core.RatingKey) *core.Title {
-	if s.d.Scheduled == nil || key.Kind() != core.KindEpisode || key.Season() <= 0 {
+	if s.d.Scheduled == nil || key.Kind() != core.KindEpisode {
 		return nil
 	}
-	season := key.Parent()
-	if s.scheduleBlocked(ctx, v, core.ShowKey(season.TMDB())) {
-		return nil
-	}
-	episodes, err := s.d.Scheduled(ctx, season)
+	episodes, err := s.d.Scheduled(ctx, key)
 	if err != nil {
 		return nil
 	}
@@ -111,8 +115,18 @@ func (s *Service) scheduledTitle(ctx context.Context, v *core.User, key core.Rat
 		if episode.Key != key || episode.Type != core.TypeEpisode || episode.Released.IsZero() || !episode.Released.After(now) {
 			continue
 		}
-		if s.scheduledAllowed(ctx, v, episode) {
-			return episode
+		if episode.Season <= 0 || s.scheduleBlocked(ctx, v, seriesOfTitle(*episode)) || !s.scheduledAllowed(ctx, v, episode) {
+			continue
+		}
+		parent := episode.ParentKey
+		if parent == 0 {
+			parent = episode.Key.Parent()
+		}
+		if parent != 0 {
+			if season, err := s.item(ctx, v, parent); err == nil && season.Type == core.TypeSeason &&
+				season.Season == episode.Season && seriesOfTitle(*season) == seriesOfTitle(*episode) {
+				return episode
+			}
 		}
 	}
 	return nil
@@ -120,14 +134,40 @@ func (s *Service) scheduledTitle(ctx context.Context, v *core.User, key core.Rat
 
 // futureSeasonEpisodes is the metadata-only tail of one season. It does not
 // walk the show's other seasons.
-func (s *Service) futureSeasonEpisodes(ctx context.Context, v *core.User, show core.RatingKey, season int, q frontend.ItemQuery) ([]core.Title, error) {
+func (s *Service) futureSeasonEpisodes(ctx context.Context, v *core.User, show core.RatingKey, season int, aired []core.Title, q frontend.ItemQuery) ([]core.Title, error) {
 	if s.d.Scheduled == nil || season <= 0 {
 		return nil, nil
 	}
 	if s.scheduleBlocked(ctx, v, show) {
 		return nil, nil
 	}
-	seasonKey := core.SeasonKey(show.TMDB(), season)
+	var seasonKey core.RatingKey
+	for _, title := range aired {
+		if title.Type == core.TypeEpisode && title.Season == season {
+			seasonKey = title.ParentKey
+			if seasonKey == 0 {
+				seasonKey = title.Key.Parent()
+			}
+			if seasonKey != 0 {
+				break
+			}
+		}
+	}
+	if seasonKey == 0 && s.d.Children != nil {
+		seasons, err := s.d.Children(ctx, v, show)
+		if err != nil {
+			return nil, err
+		}
+		for _, title := range seasons {
+			if title.Type == core.TypeSeason && title.Season == season {
+				seasonKey = title.Key
+				break
+			}
+		}
+	}
+	if seasonKey == 0 {
+		return nil, nil
+	}
 	episodes, err := s.d.Scheduled(ctx, seasonKey)
 	if errors.Is(err, core.ErrNotFound) {
 		return nil, nil
@@ -138,7 +178,7 @@ func (s *Service) futureSeasonEpisodes(ctx context.Context, v *core.User, show c
 	now := time.Now()
 	extra := make([]core.Title, 0, len(episodes))
 	for _, episode := range episodes {
-		if episode.Type != core.TypeEpisode || episode.Key.Parent() != seasonKey || episode.Released.IsZero() || !episode.Released.After(now) {
+		if episode.Type != core.TypeEpisode || !episodeInSeason(episode, seasonKey) || episode.Released.IsZero() || !episode.Released.After(now) {
 			continue
 		}
 		if !s.scheduledAllowed(ctx, v, &episode) {
@@ -172,7 +212,7 @@ func (s *Service) pagedSeason(ctx context.Context, v *core.User, key core.Rating
 	if !ok {
 		return core.Page{}, false, nil
 	}
-	future, err := s.futureSeasonEpisodes(ctx, v, key, *q.Season, q)
+	future, err := s.futureSeasonEpisodes(ctx, v, key, *q.Season, aired.Items, q)
 	if err != nil {
 		future = nil
 	}

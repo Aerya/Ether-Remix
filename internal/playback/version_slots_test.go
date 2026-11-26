@@ -230,6 +230,18 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 		autoID:    "UHD",
 	}
 	h.m.deps.Resolver = res
+	stopAndWait := func(id string) {
+		t.Helper()
+		retirement, ok := h.m.SourceRetirement(id)
+		if !ok {
+			t.Fatal("missing source retirement")
+		}
+		h.m.Stop(id)
+		waitRetirementTest(t, retirement.Done(), "stopped session's source close")
+		if err := retirement.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	caps := defaultCaps("slot-failover")
 
 	// Prime Auto resume with 4K UHD so we prove picking 1080p never falls back to 4K Auto.
@@ -237,7 +249,7 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 	if err != nil || autoSess.Resolution.Release.ID != "UHD" {
 		t.Fatalf("Auto prepare = %+v, %v; want UHD", autoSess, err)
 	}
-	h.m.Stop(autoSess.ID)
+	stopAndWait(autoSess.ID)
 
 	// First pick of 1080p fails when HD1 cannot open and no lower tier is offered:
 	// must fail instead of playing 4K Auto, record HD1 stale, and NOT latch slot1080.
@@ -267,19 +279,13 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 	if len(excludes) == 0 || !slices.Contains(excludes[0], "HD1") {
 		t.Fatalf("repeat slot pick excludes = %v, want HD1 excluded on first resolve", excludes)
 	}
-	h.m.Stop(second.ID)
+	stopAndWait(second.ID)
 
 	// Now break HD2 (the resumed 1080p copy) and offer a 720p step-down:
 	// - openInitial must fail over off broken resumed HD2, mark HD2 stale, and step down to SD1
 	// - live repeat request for slot1080 reuses the stepped-down session
 	// - neither saveResume nor ObserveViewerChoice binds SD1 to slot1080 or overwrites Auto
-	// Break HD2 for new opens AND for any handle the stopped session left
-	// open (a reused handle would otherwise keep serving it). OpenErr is
-	// written under the engine lock that Open reads it under.
-	h.engine.mu.Lock()
 	hdGood.OpenErr = core.ErrArticleMissing
-	h.engine.mu.Unlock()
-	hdGood.setFail(0, hdGood.Size, core.ErrArticleMissing)
 	res.mu.Lock()
 	res.slotOrder = nil
 	res.stepDown = "SD1"
@@ -296,7 +302,7 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 	if err != nil || reused.ID != stepped.ID {
 		t.Fatalf("live repeat for stepped-down slot = %+v, %v; want reuse of %s", reused, err, stepped.ID)
 	}
-	h.m.Stop(stepped.ID)
+	stopAndWait(stepped.ID)
 
 	res.mu.Lock()
 	obs := append([]string(nil), res.observedChoices...)
@@ -310,12 +316,12 @@ func TestPickedSlotStaleMemoryKeyedPerReleaseAndStepDownPreservesAuto(t *testing
 	if err != nil || afterAuto.Resolution.Release.ID != "UHD" {
 		t.Fatalf("Auto after step-down = %+v, %v; want UHD", afterAuto, err)
 	}
-	h.m.Stop(afterAuto.ID)
+	stopAndWait(afterAuto.ID)
 	steppedAgain, err := h.m.PrepareVariant(ctx, owner, movieKey, caps, slot1080)
 	if err != nil || steppedAgain.Resolution.Release.ID != "SD1" {
 		t.Fatalf("second step-down pick = %+v, %v; want SD1", steppedAgain, err)
 	}
-	h.m.Stop(steppedAgain.ID)
+	stopAndWait(steppedAgain.ID)
 	_, resumedRel, resumedSel, ok := h.m.ResumedVersion(ctx, owner, movieKey, caps)
 	if !ok || resumedRel.ID != "UHD" || resumedSel != "" {
 		t.Fatalf("ResumedVersion after step-down = (%s, %q, %v); want Auto UHD preserved", resumedRel.ID, resumedSel, ok)

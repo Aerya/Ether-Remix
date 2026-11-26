@@ -11,6 +11,9 @@ const (
 	EventViewerInviteCreated      = "viewer.invite.created"
 	EventViewerInviteAccepted     = "viewer.invite.accepted"
 	EventViewerWatchScrobbled     = "viewer.watch.scrobbled"
+	EventViewerWatchWatched       = "viewer.watch.watched"
+	EventViewerWatchUnwatched     = "viewer.watch.unwatched"
+	EventViewerWatchProgress      = "viewer.watch.progress"
 	EventViewerRatingSubmitted    = "viewer.rating.submitted"
 )
 
@@ -69,13 +72,22 @@ type ViewerInviteAcceptedPayload struct {
 }
 
 type ViewerWatchScrobbledPayload struct {
-	ViewerID  int64  `json:"viewerId" event:"label=Viewer ID;desc=Viewer whose watch state changed;example=7"`
-	Username  string `json:"username" event:"label=Username;desc=Viewer display name or username;pii;example=alex"`
-	TitleKey  string `json:"titleKey" event:"label=Title Key;desc=Canonical rating key of the title;example=movie:603"`
-	TitleName string `json:"titleName" event:"label=Title Name;desc=Display name of the title;example=The Matrix"`
-	MediaType string `json:"mediaType" event:"label=Media Type;desc=Type of media scrobbled;enum=movie|show|season|episode|other;example=movie"`
-	Watched   bool   `json:"watched" event:"label=Watched;desc=True when marked watched and false when marked unwatched;example=true"`
-	Source    string `json:"source" event:"label=Source;desc=Source of the watch state update;example=scrobble"`
+	ViewerID   int64  `json:"viewerId" event:"label=Viewer ID;desc=Viewer whose watch state changed;example=7"`
+	Username   string `json:"username" event:"label=Username;desc=Viewer display name or username;pii;example=alex"`
+	TitleKey   string `json:"titleKey" event:"label=Title Key;desc=Canonical rating key of the title;example=movie:603"`
+	TitleName  string `json:"titleName" event:"label=Title Name;desc=Display name of the title;example=The Matrix"`
+	MediaType  string `json:"mediaType" event:"label=Media Type;desc=Type of media scrobbled;enum=movie|show|season|episode|other;example=movie"`
+	Watched    bool   `json:"watched" event:"label=Watched;desc=True when marked watched and false when marked unwatched;example=true"`
+	State      string `json:"state" event:"label=State;desc=New watch state;enum=watched|unwatched|progress;example=watched"`
+	Source     string `json:"source" event:"label=Source;desc=What triggered the update;enum=playback|manual|plugin|import;example=manual"`
+	Surface    string `json:"surface,omitempty" event:"label=Surface;desc=App or plugin that made the update;example=vela"`
+	ItemRef    string `json:"itemRef,omitempty" event:"label=Item Ref;desc=Stable reference for an item owned by the receiving plugin;example=pk:example.anime:anime:ep-1"`
+	TMDBID     int64  `json:"tmdbId,omitempty" event:"label=TMDB ID;desc=TMDB movie or series ID;example=603"`
+	TVDBID     int64  `json:"tvdbId,omitempty" event:"label=TVDB ID;desc=TVDB movie or series ID"`
+	IMDBID     string `json:"imdbId,omitempty" event:"label=IMDb ID;desc=IMDb movie or series ID;example=tt0133093"`
+	Season     *int   `json:"season,omitempty" event:"label=Season;desc=Season number including zero for specials"`
+	Episode    *int   `json:"episode,omitempty" event:"label=Episode;desc=Episode number within the season"`
+	PositionMS *int64 `json:"positionMs,omitempty" event:"label=Position;desc=Resume position after a progress change;unit=ms"`
 }
 
 type ViewerRatingSubmittedPayload struct {
@@ -185,20 +197,21 @@ func RegisterViewerSchemas(r *Registry) {
 		},
 	})
 
-	mustRegisterBuiltin[ViewerWatchScrobbledPayload](r, EventSchema{
-		Type:        EventViewerWatchScrobbled,
-		Label:       "Title Scrobbled",
-		Description: "A title was marked watched or unwatched for a viewer.",
-		Sample: ViewerWatchScrobbledPayload{
-			ViewerID:  7,
-			Username:  "alex",
-			TitleKey:  "movie:603",
-			TitleName: "The Matrix",
-			MediaType: "movie",
-			Watched:   true,
-			Source:    "scrobble",
-		},
-	})
+	for _, watch := range []struct{ eventType, label, description, state, source string }{
+		{EventViewerWatchScrobbled, "Title Scrobbled", "A title was marked watched or unwatched for a viewer.", "watched", "manual"},
+		{EventViewerWatchWatched, "Title Watched", "A title became watched for a viewer.", "watched", "playback"},
+		{EventViewerWatchUnwatched, "Title Unwatched", "A title became unwatched for a viewer.", "unwatched", "manual"},
+		{EventViewerWatchProgress, "Watch Progress", "A viewer's playback resume position changed.", "progress", "playback"},
+	} {
+		mustRegisterBuiltin[ViewerWatchScrobbledPayload](r, EventSchema{
+			Type: watch.eventType, Label: watch.label, Description: watch.description,
+			Sample: ViewerWatchScrobbledPayload{
+				ViewerID: 7, Username: "alex", TitleKey: "1000000000000603",
+				TitleName: "The Matrix", MediaType: "movie", TMDBID: 603, IMDBID: "tt0133093",
+				Watched: watch.state == "watched", State: watch.state, Source: watch.source,
+			},
+		})
+	}
 
 	mustRegisterBuiltin[ViewerRatingSubmittedPayload](r, EventSchema{
 		Type:        EventViewerRatingSubmitted,

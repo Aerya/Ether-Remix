@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -40,5 +41,50 @@ func TestVariantRegistryPointLookups(t *testing.T) {
 	}
 	if len(restarted.byID) > 3 {
 		t.Fatal("collision scanned registry")
+	}
+}
+
+// A cache generation may end between a touch and its flush, or between
+// a client receiving an ID and pruning protecting that client's live pair.
+func TestVariantRegistryRetentionAcrossEviction(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Now()
+	r := NewVariantIDs(db, func() time.Time { return now })
+	touched := VariantRef{Key: core.MovieKey(1), ReleaseID: "touched"}
+	live := VariantRef{Key: core.MovieKey(2), ReleaseID: "live"}
+	expired := VariantRef{Key: core.MovieKey(3), ReleaseID: "expired"}
+	ids, err := r.IDsFor(ctx, []VariantRef{touched, live, expired})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(variantRetention + time.Hour)
+	if _, ok := r.Lookup(ids[touched]); !ok {
+		t.Fatal("lookup before eviction missed")
+	}
+	for i := int64(0); len(r.byID) < maxVariantIDs; i++ {
+		r.cacheLocked(-i-1, variantEntry{ref: VariantRef{Key: core.MovieKey(i + 4)}})
+	}
+	// A reverse lookup of a row outside the cache must enforce the same cap.
+	miss := VariantRef{Key: core.MovieKey(4), ReleaseID: "uncached"}
+	missID := NewVariantIDs(db, func() time.Time { return now }).IDFor(miss.Key, miss.ReleaseID)
+	if ref, ok := r.Lookup(missID); !ok || ref != miss {
+		t.Fatalf("reverse lookup across eviction = %+v, %v", ref, ok)
+	}
+	if len(r.byID) > maxVariantIDs || len(r.byPair) != len(r.byID) {
+		t.Fatal("reverse lookup left the cache over capacity or its indexes out of sync")
+	}
+
+	if _, err := r.Prune(ctx, nil, []VariantRef{live}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []VariantRef{touched, live} {
+		if got, ok := r.Lookup(ids[ref]); !ok || got != ref {
+			t.Fatalf("prune lost %v after eviction", ref)
+		}
+	}
+	if _, ok := r.Lookup(ids[expired]); ok {
+		t.Fatal("prune kept an expired, unreferenced mapping")
 	}
 }

@@ -906,6 +906,9 @@ func (TrackPreferences) HasViewerRules(context.Context, int64) (bool, error) { r
 func (TrackPreferences) ForgetChoice(context.Context, int64, core.RatingKey, string) error {
 	return nil
 }
+func (TrackPreferences) SubtitleOff(context.Context, int64, core.RatingKey) (bool, error) {
+	return false, nil
+}
 func (TrackPreferences) PreloadChoices(context.Context, int64, []core.RatingKey) error { return nil }
 
 func (f Sessions) ReportSample(ctx context.Context, a frontend.SessionAccess, id string, sample frontend.ProgressSample) (frontend.ReportOutcome, error) {

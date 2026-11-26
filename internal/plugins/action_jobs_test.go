@@ -156,4 +156,77 @@ func TestHostedJobInvariants(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("non-2xx includes bounded redacted body or message", func(t *testing.T) {
+		j := &actionJob{}
+		err := runActionJob(context.Background(), j, 1, func(context.Context, json.RawMessage) (Response, error) {
+			return Response{
+				Status: 500,
+				Body:   json.RawMessage(`{"error":"internal","message":"pluginitems: kind item \"item-9\" field \"note\": failed"}`),
+			}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "job returned HTTP 500:") || !strings.Contains(err.Error(), `kind item "item-9"`) {
+			t.Fatalf("structured message err = %v", err)
+		}
+
+		// Nested error.message is preferred over generic wrapper text.
+		err = runActionJob(context.Background(), &actionJob{}, 1, func(context.Context, json.RawMessage) (Response, error) {
+			return Response{
+				Status: 502,
+				Body:   json.RawMessage(`{"error":{"code":"upstream","message":"backend timed out"}}`),
+			}, nil
+		})
+		if err == nil || err.Error() != "job returned HTTP 502: backend timed out" {
+			t.Fatalf("nested error.message err = %v", err)
+		}
+
+		// Empty body produces bare status error without trailing colon.
+		err = runActionJob(context.Background(), &actionJob{}, 1, func(context.Context, json.RawMessage) (Response, error) {
+			return Response{Status: 500}, nil
+		})
+		if err == nil || err.Error() != "job returned HTTP 500" {
+			t.Fatalf("empty body err = %v", err)
+		}
+
+		// Multi-line long body is collapsed to one line, bounded, and secrets
+		// straddling the truncation boundary are redacted before truncation.
+		longPrefix := strings.Repeat("a", 285)
+		secret := "my-saved-plugin-secret-999999"
+		err = runActionJobWithHook(context.Background(), &actionJob{}, 1, func(context.Context, json.RawMessage) (Response, error) {
+			return Response{
+				Status: 500,
+				Body:   json.RawMessage("line1\n" + longPrefix + " " + secret + " https://api.example/?apikey=fake"),
+			}, nil
+		}, nil, func(s string) string {
+			return strings.ReplaceAll(s, secret, "[redacted]")
+		})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "job returned HTTP 500: ") {
+			t.Fatalf("unexpected prefix: %q", msg)
+		}
+		if strings.Contains(msg, "\n") {
+			t.Fatalf("error should be single-line: %q", msg)
+		}
+		if strings.Contains(msg, "my-saved-plugin") || strings.Contains(msg, "apikey=fake") {
+			t.Fatalf("secret leaked into job error: %q", msg)
+		}
+		summary := strings.TrimPrefix(msg, "job returned HTTP 500: ")
+		if len(summary) > jobErrorBodyLimit+4 {
+			t.Fatalf("summary too long (%d bytes): %q", len(summary), summary)
+		}
+
+		// Unstructured JSON fallback scrubs sensitive keys.
+		err = runActionJob(context.Background(), &actionJob{}, 1, func(context.Context, json.RawMessage) (Response, error) {
+			return Response{
+				Status: 500,
+				Body:   json.RawMessage(`{"token":"raw-secret-tok","detail":"sync crashed"}`),
+			}, nil
+		})
+		if err == nil || strings.Contains(err.Error(), "raw-secret-tok") || !strings.Contains(err.Error(), "sync crashed") {
+			t.Fatalf("unstructured JSON err = %v", err)
+		}
+	})
 }

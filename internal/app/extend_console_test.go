@@ -19,22 +19,21 @@ func TestConsoleDescriptorsRegister(t *testing.T) {
 	if len(pages) != 25 {
 		t.Fatalf("pages = %d, want 25", len(pages))
 	}
-	// Sidebar order and grouping, exactly as the old navigation() list.
+	// Sidebar order and grouping.
 	wantNav := []struct{ id, group, route string }{
 		{"overview", "", "/"}, {"activity", "", "/activity"}, {"viewers", "", "/viewers"},
 		{"libraries", "library", "/libraries"}, {"collections", "library", "/collections"},
-		{"home", "library", "/home"}, {"livetv", "library", "/livetv"},
+		{"recommendations", "library", "/recommendations"}, {"livetv", "library", "/livetv"},
 		{"calendar", "library", "/calendar"}, {"metadata", "library", "/metadata"},
-		{"sources", "streaming", "/sources"}, {"releases", "streaming", "/quality"},
+		{"sources", "streaming", "/sources"}, {"releases", "streaming", "/releases"},
 		{"cache", "streaming", "/cache"}, {"playback", "streaming", "/playback"},
-		{"general", "server", "/server"}, {"apps", "server", "/apps"},
-		{"integrations", "server", "/services"}, {"plugins", "server", "/plugins"},
-		{"notifications", "server", "/notifications"}, {"flows", "server", "/flows"},
-		{"cluster", "server", "/cluster"},
-		{"maintenance", "server", "/maintenance"},
+		{"apps", "connect", "/apps"}, {"integrations", "connect", "/services"},
+		{"plugins", "connect", "/plugins"},
+		{"notifications", "automate", "/notifications"}, {"flows", "automate", "/flows"},
+		{"general", "system", "/server"}, {"cluster", "system", "/cluster"},
+		{"maintenance", "system", "/maintenance"},
 	}
-	// Registry order is group, then order: "" < "library" < "server" <
-	// "streaming", so compare per group.
+	// Registry order is group, then order, so compare per group.
 	nav := r.List(extend.KindNavItem)
 	if len(nav) != len(wantNav) {
 		t.Fatalf("navItems = %d, want %d", len(nav), len(wantNav))
@@ -45,9 +44,11 @@ func TestConsoleDescriptorsRegister(t *testing.T) {
 	}
 	for group, ids := range map[string][]string{
 		"":          {"overview", "activity", "viewers"},
-		"library":   {"libraries", "collections", "home", "livetv", "calendar", "metadata"},
+		"library":   {"libraries", "collections", "recommendations", "livetv", "calendar", "metadata"},
 		"streaming": {"sources", "playback", "releases", "cache"},
-		"server":    {"general", "apps", "integrations", "plugins", "notifications", "flows", "cluster", "maintenance"},
+		"connect":   {"apps", "integrations", "plugins"},
+		"automate":  {"notifications", "flows"},
+		"system":    {"general", "cluster", "maintenance"},
 	} {
 		var got []string
 		for _, d := range nav {

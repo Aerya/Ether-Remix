@@ -136,6 +136,9 @@ func (b *addonBackend) Search(ctx context.Context, req core.SearchRequest, reser
 	if !rec.Enabled || !rec.Manifest.HasCapability(plugins.CapStreamSource) {
 		return nil, nil
 	}
+	if req.Category != "" {
+		return b.categorySearch(ctx, mgr, rec, req, reserve)
+	}
 	b.s.mu.RLock()
 	anime := b.s.anime
 	specials := b.s.specials

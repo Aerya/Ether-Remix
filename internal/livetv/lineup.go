@@ -41,6 +41,7 @@ type ChannelSummary struct {
 	GuideSourceID string   `json:"guideSourceId,omitempty"`
 	Group         string   `json:"group,omitempty"`
 	MergedInto    string   `json:"mergedInto,omitempty"`
+	ArchiveDays   int      `json:"archiveDays,omitempty"`
 
 	rawHiddenApps []string
 	numberKey     numberKey
@@ -160,9 +161,10 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 		}
 		c.rawHiddenApps = c.HiddenApps
 		var stream struct {
-			Look          *ChannelLook   `json:"look"`
-			StreamURL     string         `json:"streamUrl"`
-			StreamSources []StreamSource `json:"streamSources"`
+			Look          *ChannelLook    `json:"look"`
+			StreamURL     string          `json:"streamUrl"`
+			StreamSources []StreamSource  `json:"streamSources"`
+			Archive       *ChannelArchive `json:"archive"`
 		}
 		if err = json.Unmarshal(b, &stream); err != nil {
 			rows.Close()
@@ -172,6 +174,7 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 			c.styleID = stream.Look.LookID
 			c.reelID = stream.Look.ReelID
 		}
+		c.ArchiveDays = (Channel{Archive: stream.Archive}).ArchiveDays()
 		c.sweepKey = sweepSignature(Channel{StreamURL: stream.StreamURL, StreamSources: stream.StreamSources})
 		c.numberKey = parseNumberKey(c.Number)
 		out = append(out, c)

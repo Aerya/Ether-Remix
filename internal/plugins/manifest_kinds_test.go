@@ -217,6 +217,7 @@ func TestContentManifestRules(t *testing.T) {
 			m.Ether.Contributes.MediaKinds = append(m.Ether.Contributes.MediaKinds, validMediaKind())
 		}, "mediaKinds[1].key"},
 		{"bad library card", func(m *Manifest) { kind(m).Library.Card = "banner" }, "library.card"},
+		{"bad library experience", func(m *Manifest) { kind(m).Library.Experience = "Big Screen" }, "library.experience"},
 		{"too many library tabs", func(m *Manifest) {
 			for i := 0; i < 7; i++ {
 				kind(m).Library.Tabs = append(kind(m).Library.Tabs, KindLibraryTab{Key: "tab", Label: "Tab", Kind: "library"})
@@ -375,6 +376,12 @@ func TestContentManifestRules(t *testing.T) {
 		{"push refresh", func(m *Manifest) {
 			kind(m).Sync = KindSyncDecl{Mode: KindSyncPush, Refresh: "1h"}
 		}, "sync.refresh"},
+		{"pull sync undo", func(m *Manifest) {
+			kind(m).Sync = KindSyncDecl{Mode: KindSyncPull, Undo: KindSyncUndoIDs}
+		}, "sync.undo"},
+		{"bad sync undo", func(m *Manifest) {
+			kind(m).Sync = KindSyncDecl{Mode: KindSyncPush, Undo: "none"}
+		}, "sync.undo"},
 		{"sync without provider", func(m *Manifest) {
 			m.Ether.Capabilities = []Capability{CapKindResolver}
 		}, "sync.mode"},

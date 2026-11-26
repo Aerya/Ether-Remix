@@ -217,6 +217,9 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 	if maxHeight != nil {
 		targetHeight = *maxHeight
 	}
+	oldStart, oldEdge, hadOldWindow := liveWindowBounds(s.plan["live"])
+	oldPos := s.position
+	hadObserved := s.observedSource == s.source
 
 	var url string
 	var err error
@@ -267,5 +270,6 @@ func (i *instance) replanLiveSession(w http.ResponseWriter, r *http.Request, v *
 	if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
 		return false, false
 	}
+	s.position = rebaseLivePosition(s.plan["live"], oldPos, oldStart, oldEdge, hadOldWindow && hadObserved)
 	return true, true
 }

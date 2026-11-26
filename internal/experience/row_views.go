@@ -243,7 +243,7 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 			entries = append(entries, ref)
 		}
 		snap.Entries = entries[:min(len(entries), 1000)]
-		if len(snap.Entries) == 0 {
+		if len(snap.Entries) == 0 && !IsSurfaceRow(snap.Row) {
 			continue
 		}
 		normalized = append(normalized, snap)
@@ -346,6 +346,16 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 				return nil, err
 			}
 		}
+	}
+	// An empty visit has no snapshot revision to revalidate. Build it
+	// again next time, when the viewer may have started or finished a title.
+	if len(candidates) == 0 {
+		if exists {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM experience_row_view_manifests WHERE scope_hash=?`, manifestScope); err != nil {
+				return nil, err
+			}
+		}
+		return []frontend.RowView{}, tx.Commit()
 	}
 	// Expired visits cannot be resolved and must not exhaust the per-device
 	// bound as viewers encounter new rows over time.
@@ -471,7 +481,7 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 		return nil, false, nil
 	}
 	var refs []manifestRow
-	if err = json.Unmarshal([]byte(payload), &refs); err != nil || len(refs) > 100 {
+	if err = json.Unmarshal([]byte(payload), &refs); err != nil || len(refs) == 0 || len(refs) > 100 {
 		return nil, false, ErrRowViewStale
 	}
 	out := make([]frontend.RowView, 0, len(refs))
@@ -524,7 +534,7 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 			return nil, false, ErrRowViewStale
 		}
 		allRefs = append(allRefs, snap.Entries...)
-		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
+		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Key: snap.Row.ID, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
 		snapshots = append(snapshots, snap)
 	}
 	if s.o.PrepareSnapshots != nil && len(snapshots) > 0 {

@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -19,10 +18,14 @@ func (s *Server) liveProviderSource() string {
 	return "server://" + s.identity().MachineIdentifier + "/" + frontend.LiveTVProvider
 }
 
+func liveProgrammeOnAir(p frontend.LiveTVProgramme, now time.Time) bool {
+	return !now.Before(p.Start) && now.Before(p.End)
+}
+
 func (s *Server) liveSearchProgrammeMetadata(r *http.Request, c frontend.LiveTVChannel, p frontend.LiveTVProgramme, now time.Time, source string) (model.Metadata, bool) {
 	md := s.liveProgrammeMetadata(c, p)
 	s.applyGuideChannelThumb(r, &md, c)
-	onAir := !now.Before(p.Start) && !now.After(p.End)
+	onAir := liveProgrammeOnAir(p, now)
 	if onAir && len(md.Media) > 0 {
 		md.Media[0].Extra = append(md.Media[0].Extra, model.A("onAir", true))
 	}
@@ -30,6 +33,53 @@ func (s *Server) liveSearchProgrammeMetadata(r *http.Request, c frontend.LiveTVC
 		md.Extra = append(md.Extra, model.A("source", source))
 	}
 	return md, onAir
+}
+
+// liveChannelMatchAiringMetadata shapes the on-now airing Metadata for a
+// channel-name/call-sign match on /library/search. It keeps the PMS guide
+// Media[0] channel attributes (channelTitle, channelCallSign,
+// channelIdentifier, channelVcn, channelThumb, beginsAt, endsAt, onAir) and
+// episodic grandparentTitle without inventing non-PMS attributes. Because
+// Plex for iOS and Apple TV ignore SearchResult.Channel and render only
+// Metadata.title (plus grandparentTitle for episodes) on search rows, title
+// carries the matched channel name while the programme title is preserved in
+// tagline/summary (and grandparentTitle for episodes).
+func (s *Server) liveChannelMatchAiringMetadata(r *http.Request, c frontend.LiveTVChannel, p frontend.LiveTVProgramme, now time.Time, source string) (model.Metadata, bool) {
+	md, onAir := s.liveSearchProgrammeMetadata(r, c, p, now, source)
+	if !onAir || c.Name == "" {
+		return md, onAir
+	}
+	progTitle := strings.TrimSpace(md.Title)
+	showTitle := strings.TrimSpace(md.GrandparentTitle)
+	if md.Type == "episode" {
+		if (showTitle == "" || strings.EqualFold(showTitle, c.Name)) && progTitle != "" && !strings.EqualFold(progTitle, c.Name) {
+			md.GrandparentTitle = progTitle
+		}
+	}
+	progLabel := progTitle
+	if showTitle != "" && !strings.EqualFold(showTitle, c.Name) {
+		if progTitle != "" && !strings.EqualFold(showTitle, progTitle) {
+			progLabel = showTitle + " — " + progTitle
+		} else {
+			progLabel = showTitle
+		}
+	}
+	md.Title = c.Name
+	if progLabel != "" && !strings.EqualFold(progLabel, c.Name) {
+		if md.Type == "movie" && md.Tagline == "" {
+			md.Tagline = progLabel
+		}
+		summary := strings.TrimSpace(md.Summary)
+		if summary == "" {
+			md.Summary = progLabel
+		} else if !strings.HasPrefix(strings.ToLower(summary), strings.ToLower(progLabel)) {
+			md.Summary = progLabel + " — " + summary
+		}
+	}
+	if md.Thumb == "" {
+		md.Thumb = s.liveGuideLogo(r, c)
+	}
+	return md, true
 }
 
 func (s *Server) canSearchLiveTV(ctx context.Context, pr *Request) (frontend.LiveTVSearch, bool) {
@@ -52,7 +102,8 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
+	rawQuery := r.URL.Query().Get("query")
+	query := strings.ToLower(strings.TrimSpace(rawQuery))
 	if utf8.RuneCountInString(query) > 256 {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
@@ -62,6 +113,8 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 		s.write(w, r, mc)
 		return
 	}
+	r, leave := s.enterSearch(r, rawQuery)
+	defer leave()
 	search, ok := s.svc().liveTV.(frontend.LiveTVSearch)
 	if !ok {
 		s.write(w, r, mc)
@@ -69,7 +122,7 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 	}
 	results, err := search.SearchLiveTV(r.Context(), FromContext(r.Context()).User, query, limit)
 	if err != nil {
-		s.writeErr(w, r, err)
+		s.writeSearchErr(w, r, err, mc)
 		return
 	}
 	source := s.liveProviderSource()
@@ -117,40 +170,26 @@ func (s *Server) liveSearchChannel(r *http.Request, c frontend.LiveTVChannel) *m
 	}
 }
 
+const (
+	// Channel-name/call-sign matches outrank library title matches (max raw
+	// ~1.16) so a matched channel's on-now airing lands first on /library/search.
+	liveChannelMatchRawBase  = 1.25
+	liveChannelMatchRawFloor = 1.18
+)
+
 type liveLibrarySearchResult struct {
-	results []model.SearchResult
-	scores  []float64
-}
-
-func liveCompactFold(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(unicode.ToLower(r))
-		}
-	}
-	return b.String()
-}
-
-func liveChannelSearchScore(c frontend.LiveTVChannel, query string, rank int) float64 {
-	q := liveCompactFold(query)
-	name := liveCompactFold(c.Name)
-	num := liveCompactFold(c.Number)
-	base := 0.82
-	if q != "" {
-		if name == q || num == q {
-			base = 0.95
-		} else if strings.HasPrefix(name, q) || strings.HasPrefix(num, q) {
-			base = 0.88
-		}
-	}
-	return max(0.1, base-float64(rank)*0.001)
+	results           []model.SearchResult
+	scores            []float64
+	hasChannelMatches bool
 }
 
 // searchLiveTVLibrary runs indexed, policy-filtered Live TV search for
-// /library/search, returning channels in the EPG SearchResult.Channel shape
-// along with matching airings and on-now airings on matched channels.
+// /library/search. When the query matches channels by name/call sign/number,
+// each matched channel emits its on-now airing Metadata (ranked first, with
+// the channel name visible for clients like Plex for iOS/Apple TV that skip
+// SearchResult.Channel) alongside its Channel element, and omits future
+// airings of that channel. Matches on programme titles keep normal ranking
+// and future airings.
 func (s *Server) searchLiveTVLibrary(r *http.Request, pr *Request, query string, limit int) liveLibrarySearchResult {
 	query = strings.TrimSpace(query)
 	if query == "" || utf8.RuneCountInString(query) > 256 {
@@ -163,24 +202,89 @@ func (s *Server) searchLiveTVLibrary(r *http.Request, pr *Request, query string,
 	}
 	results, err := search.SearchLiveTV(ctx, pr.User, query, limit)
 	if err != nil {
-		s.log.Warn("live search unavailable", "error", err)
+		if !frontend.SearchWasSuperseded(ctx) && ctx.Err() == nil {
+			s.log.Warn("live search unavailable", "error", err)
+		}
 		return liveLibrarySearchResult{}
 	}
 	source := s.liveProviderSource()
 	now := s.now()
 	var out liveLibrarySearchResult
+
 	matchedByID := make(map[string]frontend.LiveTVChannel, len(results.Channels))
 	matchedIDs := make([]string, 0, len(results.Channels))
-	for i, c := range results.Channels {
+	for _, c := range results.Channels {
+		if _, dup := matchedByID[c.ID]; dup {
+			continue
+		}
 		matchedByID[c.ID] = c
 		matchedIDs = append(matchedIDs, c.ID)
-		sc := liveChannelSearchScore(c, query, i)
+	}
+
+	onNowCap := min(len(matchedIDs), min(max(limit, 1), 20))
+	onNowByChannel := make(map[string]frontend.LiveTVProgramme, onNowCap)
+	for _, p := range results.Programmes {
+		if _, matched := matchedByID[p.ChannelID]; !matched {
+			continue
+		}
+		if liveProgrammeOnAir(p, now) {
+			if _, exists := onNowByChannel[p.ChannelID]; !exists {
+				onNowByChannel[p.ChannelID] = p
+			}
+		}
+	}
+	if onNowCap > 0 {
+		missing := make([]string, 0, onNowCap)
+		for _, id := range matchedIDs[:onNowCap] {
+			if _, exists := onNowByChannel[id]; !exists {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			if onNow, err := s.svc().liveTV.GuideForChannels(ctx, pr.User, now, now.Add(time.Second), missing); err == nil {
+				for _, p := range onNow {
+					if liveProgrammeOnAir(p, now) {
+						if _, exists := onNowByChannel[p.ChannelID]; !exists {
+							onNowByChannel[p.ChannelID] = p
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for i, id := range matchedIDs {
+		c := matchedByID[id]
+		out.hasChannelMatches = true
+		airRaw := max(liveChannelMatchRawFloor+0.001, liveChannelMatchRawBase-float64(i)*0.0005)
+		chanRaw := airRaw - 0.0001
+		wireScore := math.Round(max(0.99, 1.0-float64(i)*0.0001)*10000) / 10000
+		if i < onNowCap {
+			if p, ok := onNowByChannel[c.ID]; ok {
+				if md, onAir := s.liveChannelMatchAiringMetadata(r, c, p, now, source); onAir {
+					out.results = append(out.results, model.SearchResult{
+						Score:    wireScore,
+						Metadata: &md,
+					})
+					out.scores = append(out.scores, airRaw)
+				}
+			} else {
+				md := s.liveChannelMetadata(r, c)
+				md.Extra = append(md.Extra, model.A("source", source))
+				out.results = append(out.results, model.SearchResult{
+					Score:    wireScore,
+					Metadata: &md,
+				})
+				out.scores = append(out.scores, airRaw)
+			}
+		}
 		out.results = append(out.results, model.SearchResult{
-			Score:   math.Round(sc*10000) / 10000,
+			Score:   wireScore,
 			Channel: s.liveSearchChannel(r, c),
 		})
-		out.scores = append(out.scores, sc)
+		out.scores = append(out.scores, chanRaw)
 	}
+
 	parents := make(map[string]frontend.LiveTVChannel, len(results.ProgrammeChannels)+len(results.Channels))
 	for _, c := range results.Channels {
 		parents[c.ID] = c
@@ -188,46 +292,26 @@ func (s *Server) searchLiveTVLibrary(r *http.Request, pr *Request, query string,
 	for _, c := range results.ProgrammeChannels {
 		parents[c.ID] = c
 	}
-	seenProg := make(map[string]bool, len(results.Programmes))
-	for i, p := range results.Programmes {
-		seenProg[p.ID] = true
+	progRank := 0
+	for _, p := range results.Programmes {
+		if _, matched := matchedByID[p.ChannelID]; matched {
+			// Channel-name matches return only the on-now airing above, not
+			// future airings of that channel.
+			continue
+		}
 		c := parents[p.ChannelID]
 		md, onAir := s.liveSearchProgrammeMetadata(r, c, p, now, source)
 		sc := 0.72
 		if onAir {
 			sc = 0.82
 		}
-		sc = max(0.1, sc-float64(i)*0.001)
+		sc = max(0.1, sc-float64(progRank)*0.001)
+		progRank++
 		out.results = append(out.results, model.SearchResult{
 			Score:    math.Round(sc*10000) / 10000,
 			Metadata: &md,
 		})
 		out.scores = append(out.scores, sc)
-	}
-	if len(matchedIDs) > 0 {
-		onNowCap := min(len(matchedIDs), 20)
-		if onNow, err := s.svc().liveTV.GuideForChannels(ctx, pr.User, now, now.Add(time.Second), matchedIDs[:onNowCap]); err == nil {
-			for i, p := range onNow {
-				if seenProg[p.ID] {
-					continue
-				}
-				c, ok := matchedByID[p.ChannelID]
-				if !ok {
-					continue
-				}
-				md, onAir := s.liveSearchProgrammeMetadata(r, c, p, now, source)
-				if !onAir {
-					continue
-				}
-				seenProg[p.ID] = true
-				sc := max(0.1, 0.68-float64(i)*0.001)
-				out.results = append(out.results, model.SearchResult{
-					Score:    math.Round(sc*10000) / 10000,
-					Metadata: &md,
-				})
-				out.scores = append(out.scores, sc)
-			}
-		}
 	}
 	return out
 }
@@ -243,7 +327,9 @@ func (s *Server) appendLiveSearchHubs(r *http.Request, mc *model.MediaContainer,
 	}
 	results, err := search.SearchLiveTV(r.Context(), pr.User, query, limit)
 	if err != nil {
-		s.log.Warn("live search unavailable", "error", err)
+		if !frontend.SearchWasSuperseded(r.Context()) && r.Context().Err() == nil {
+			s.log.Warn("live search unavailable", "error", err)
+		}
 		return
 	}
 	source := s.liveProviderSource()

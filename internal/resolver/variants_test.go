@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
@@ -694,21 +695,24 @@ func TestResolutionVariantsBalanceAndBounds(t *testing.T) {
 		mk("sd", "The.Signal.1999.720p.WEB-DL.H.264-TOP", 4000),
 		mk("sd2", "The.Signal.1999.720p.WEB-DL.H.264-ALT", 3000),
 	}
-	profile := core.QualityProfile{MaxHeight: 2160}
 	for _, tc := range []struct {
 		name                       string
 		alternatives, cap, ceiling int
 		want                       string
 	}{
-		{"two per resolution", 1, 7, 2160, "auto,hd,uhd,uhd2,sd,sd2"},
-		{"coverage before duplicates", 3, 3, 2160, "auto,uhd,sd"},
+		{"two per resolution", 1, 7, 2160, "auto,uhd,hd,sd,uhd2,sd2"},
+		{"coverage before duplicates", 3, 3, 2160, "auto,uhd,hd"},
 		{"profile ceiling", 1, 7, 1080, "auto,hd,sd,sd2"},
-		{"no alternatives", 0, 7, 2160, "auto,uhd,sd"},
+		{"no alternatives", 0, 7, 2160, "auto,uhd,hd,sd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := profile
-			p.MaxHeight = tc.ceiling
-			got := pickResolutionVariants(matrixTitle(), p, pool[0].rel, pool, tc.alternatives, tc.cap, false, true, false, nil)
+			cfg := testCfg()
+			cfg.Resolver.AlternativesPerResolution = true
+			cfg.Resolver.SameQualityAlternatives = tc.alternatives
+			svc := New(&fakeIndexer{}, fakeHealth{}, nil, cfg, Options{})
+			defer svc.Close()
+			plan := svc.configuredSlots(core.QualityProfile{MaxHeight: tc.ceiling}, appleTVCaps(), tc.cap)
+			got := slotPlanVariants(matrixTitle(), plan, pool, pool[0].rel, core.ResolveRequest{}, nil, nil)
 			var ids []string
 			for i, v := range got {
 				if v.Auto != (i == 0) {
@@ -743,60 +747,100 @@ func TestResolutionVariantsBalanceAndBounds(t *testing.T) {
 	}
 }
 
-// TestAlternativesPerSourceOffersSourceAtEachResolution is the lasting test
-// for the AlternativesPerSource setting: cached results hold several remuxes
-// and one WEB-DL at 2160p and 1080p. With the setting on, the menu keeps Auto
-// (the 4K remux) and still shows a WEB-DL at each resolution, instead of the
-// per-resolution slots filling with more remuxes. Off, today's behaviour is
-// unchanged, and Auto is identical either way.
-func TestAlternativesPerSourceOffersSourceAtEachResolution(t *testing.T) {
-	mk := func(id, name string, size int64) candidate { return candidate{rel: withParsed(rel(id, name, size))} }
-	pool := []candidate{
-		mk("auto", "The.Signal.1999.2160p.UHD.BluRay.REMUX.HEVC.TrueHD.7.1-TOP", 50000),
-		mk("r2", "The.Signal.1999.2160p.UHD.BluRay.REMUX.HEVC.DTS-HD.5.1-ALT", 48000),
-		mk("uhdweb", "The.Signal.1999.2160p.WEB-DL.H.265-WEB", 20000),
-		mk("hd1", "The.Signal.1999.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-TOP", 30000),
-		mk("hd2", "The.Signal.1999.1080p.BluRay.x265.DTS-HD.MA.5.1-ALT", 12000),
-		mk("hdweb", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-WEB", 8000),
+// TestSourceVersionsReserveRequireAndKeepAuto is the lasting test for
+// per-source Play Version control (#309). The cached results hold several
+// remuxes and Blu-ray encodes at every resolution and one WEB-DL at each.
+//   - Offer every source (the earlier AlternativesPerSource switch): a WEB-DL
+//     shows at 4K and 1080p. Before, six Remux/Blu-ray reservations filled the
+//     seven-entry menu first.
+//   - Required survives the menu limit: a 720p WEB-DL marked Required is
+//     listed even though nine offered cells cannot all fit.
+//   - Off leaves the class out.
+//   - Auto is the strict profile pick in every mode, and with per-source
+//     control on, Variants (Jellyfin, Emby) lists the same releases as
+//     VersionSlots (Plex, Vela, Silo).
+func TestSourceVersionsReserveRequireAndKeepAuto(t *testing.T) {
+	releases := []core.Release{
+		rel("auto", "The.Signal.1999.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-TOP", 60000),
+		rel("r2", "The.Signal.1999.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.5.1-ALT", 58000),
+		rel("uhdenc", "The.Signal.1999.2160p.UHD.BluRay.x265.HDR.DTS-HD.MA.5.1-ENC", 30000),
+		rel("uhdweb", "The.Signal.1999.2160p.WEB-DL.HDR.DDP5.1.H.265-WEB", 20000),
+		rel("hdremux", "The.Signal.1999.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-TOP", 30000),
+		rel("hdenc", "The.Signal.1999.1080p.BluRay.x264.DTS-HD.MA.5.1-ENC", 12000),
+		rel("hdweb", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-WEB", 8000),
+		rel("sdremux", "The.Signal.1999.720p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-TOP", 20000),
+		rel("sdenc", "The.Signal.1999.720p.BluRay.x264.DTS-HD.MA.5.1-ENC", 5000),
+		rel("sdweb", "The.Signal.1999.720p.WEB-DL.DDP5.1.H.264-WEB", 3000),
 	}
-	profile := core.QualityProfile{MaxHeight: 2160}
-	heights := func(vs []core.ReleaseVariant) map[string]int {
-		m := map[string]int{}
-		for _, v := range vs {
-			m[v.Release.ID] = v.Release.Info.Height
+	offerAll := config.SourceVersionsAll(config.SourceVersionOffer)
+	requireSD := offerAll
+	requireSD.HD.WEB = config.SourceVersionRequired
+	noWEB := offerAll
+	noWEB.UHD.WEB, noWEB.FHD.WEB, noWEB.HD.WEB = config.SourceVersionOff, config.SourceVersionOff, config.SourceVersionOff
+	menu := func(t *testing.T, legacy bool, matrix *config.SourceVersions) []string {
+		t.Helper()
+		cfg := testCfg()
+		for i := range cfg.Quality.Profiles {
+			if cfg.Quality.Profiles[i].Name == "4K" {
+				cfg.Quality.Profiles[i].MinHeight = 0 // list 720p as well
+			}
 		}
-		return m
+		cfg.Resolver.AlternativesPerSource = legacy
+		cfg.Resolver.SourceVersions = matrix
+		svc := New(&fakeIndexer{releases: releases}, fakeHealth{}, nil, cfg, Options{})
+		defer svc.Close()
+		primeSearchCache(t, svc, appleTVCaps())
+		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
+		slots, err := svc.VersionSlots(context.Background(), req, core.MaxVariants, true)
+		if err != nil || len(slots) == 0 || len(slots) > core.MaxVariants || !slots[0].Auto {
+			t.Fatalf("slots: %v %+v", err, slots)
+		}
+		var ids []string
+		for _, v := range slots {
+			if v.Release.ID != v.ID { // a filled choice, not a placeholder
+				ids = append(ids, v.Release.ID)
+			}
+		}
+		listed, err := svc.Variants(context.Background(), req, core.MaxVariants)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var listedIDs []string
+		for _, v := range listed {
+			listedIDs = append(listedIDs, v.Release.ID)
+		}
+		if (legacy || matrix != nil) && !slices.Equal(ids, listedIDs) {
+			t.Fatalf("VersionSlots %v and Variants %v disagree", ids, listedIDs)
+		}
+		if ids[0] != "auto" {
+			t.Fatalf("Auto changed: %v", ids)
+		}
+		return ids
 	}
 
-	on := pickResolutionVariants(matrixTitle(), profile, pool[0].rel, pool, 1, core.MaxVariants, false, false, true, nil)
-	if len(on) == 0 || !on[0].Auto || on[0].Release.ID != "auto" {
-		t.Fatalf("Auto moved with per-source on: %+v", on)
-	}
-	byID := heights(on)
-	for _, want := range []struct {
-		id     string
-		height int
-	}{{"uhdweb", 2160}, {"hdweb", 1080}} {
-		if byID[want.id] != want.height {
-			t.Fatalf("per-source on: %s (height %d) missing from %v", want.id, want.height, byID)
+	off := menu(t, false, nil)
+	legacy := menu(t, true, nil)
+	for _, want := range []string{"uhdweb", "hdweb"} {
+		if !slices.Contains(legacy, want) {
+			t.Fatalf("offer every source: %s missing from %v", want, legacy)
 		}
 	}
-	if byID["r2"] != 0 {
-		t.Fatalf("per-source on surfaced an extra remux: %v", byID)
+	if !slices.Equal(menu(t, false, &offerAll), legacy) {
+		t.Fatal("an all-offer matrix differs from the earlier switch")
 	}
-
-	// Off: the per-resolution slots fill with remuxes and no WEB-DL shows,
-	// which is exactly why the setting exists.
-	off := pickResolutionVariants(matrixTitle(), profile, pool[0].rel, pool, 1, core.MaxVariants, false, false, false, nil)
-	if len(off) == 0 || !off[0].Auto || off[0].Release.ID != "auto" {
-		t.Fatalf("Auto moved with per-source off: %+v", off)
+	if slices.Contains(legacy, "sdweb") {
+		t.Fatalf("an offered 720p WEB-DL fit a full menu: %v", legacy)
 	}
-	if byID := heights(off); byID["uhdweb"] != 0 || byID["hdweb"] != 0 {
-		t.Fatalf("per-source off unexpectedly surfaced a WEB-DL: %v", byID)
+	required := menu(t, false, &requireSD)
+	if !slices.Contains(required, "sdweb") || !slices.Contains(required, "uhdweb") {
+		t.Fatalf("required 720p WEB-DL dropped by the menu limit: %v", required)
 	}
-
-	// Auto is identical either way.
-	if on[0].Release.ID != off[0].Release.ID || on[0].Label != off[0].Label || on[0].Info.BitrateKbps != off[0].Info.BitrateKbps {
-		t.Fatalf("Auto changed with the setting: on=%+v off=%+v", on[0], off[0])
+	for _, id := range menu(t, false, &noWEB) {
+		if strings.Contains(id, "web") {
+			t.Fatalf("WEB set to off is listed: %s", id)
+		}
+	}
+	if off[0] != legacy[0] || off[0] != required[0] {
+		t.Fatalf("Auto differs by mode: off=%s legacy=%s required=%s", off[0], legacy[0], required[0])
 	}
 }

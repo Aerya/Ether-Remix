@@ -99,9 +99,14 @@ type routeReq struct {
 // and providers that cannot serve are not considered usable.
 func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pools []*pool, spill *pool) {
 	prio := req.prio
-	pools = f.order()
+	pools, balanced := f.orderSnapshot()
 	if req.health {
 		pools = demoteUntrustedStatPools(pools)
+	}
+	var hint *core.ProviderMissHint
+	if !req.health && !core.IsBackgroundCheck(ctx) {
+		hint = core.ProviderMissHintFrom(ctx)
+		pools = demoteMissed(hint, pools, balanced)
 	}
 	usable := func(p *pool) bool {
 		return !slices.Contains(known, p.key) && p.serves()
@@ -131,6 +136,7 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 		}
 		return pools, nil
 	}
+	preferred := hint != nil && !hint.Demoted(first.key)
 	for i := head + 1; i < len(pools); i++ {
 		p := pools[i]
 		if p.cfg.Backfill {
@@ -142,7 +148,10 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 		if req.health && !first.statTrust.isUntrusted() && p.statTrust.isUntrusted() {
 			continue
 		}
-		sameTier := p.cfg.Priority == first.cfg.Priority && (!req.health || p.statTrust.isUntrusted() == first.statTrust.isUntrusted())
+		sameTier := samePoolTier(p, first, balanced) && (!req.health || p.statTrust.isUntrusted() == first.statTrust.isUntrusted())
+		if sameTier && preferred && hint.Demoted(p.key) {
+			continue
+		}
 		ok := p.spare(prio, until) > 0
 		if !sameTier && prio != core.PriorityLive {
 			ok = p.quiet(prio, until)

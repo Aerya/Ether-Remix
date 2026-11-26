@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
@@ -28,7 +29,13 @@ func TestViewerCapabilitiesPolicyAndMembership(t *testing.T) {
 	if err = a.users.RefreshViewers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = a.safety.Put(ctx, id, safety.Policy{RemoteDisabled: true, MaxBitrateKbps: 3000, BlockedKeywords: []string{"violence"}}); err != nil {
+	if err = a.safety.Put(ctx, id, safety.Policy{RemoteDisabled: true, BlockedKeywords: []string{"violence"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.cfg.Update(func(c *config.Config) error {
+		c.Quality.Rules = append(c.Quality.Rules, config.QualityRule{ID: "r_alice_cap", Viewers: []int64{id}, MaxBitrateKbps: 3000})
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := a.users.ActiveUser(ctx, id)

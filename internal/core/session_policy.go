@@ -17,6 +17,12 @@ type SessionPolicy struct {
 	MasterMetadata bool
 	// PlainSourceGone uses the adapter plain-text missing-source response.
 	PlainSourceGone bool
+	// ReopenKeepsDirectFile treats a new open of the source a device is
+	// direct-playing (same viewer, item and client playback) as a track
+	// switch inside that session: Jellyfin/Emby apps post PlaybackInfo per
+	// switch and keep reading the file URL they have. On every other
+	// protocol a new start is a new play and never returns a session.
+	ReopenKeepsDirectFile bool
 }
 
 // DeliveryPolicy supplies the frontend representation and credential envelope.

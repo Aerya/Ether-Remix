@@ -91,9 +91,76 @@ func TestUpsertSkipsUnchangedItems(t *testing.T) {
 	}
 }
 
+// #766: KindUpsertWithUndo skips snapshots for unchanged items and skips all
+// snapshot reads when snapshotPrevious is false (sync.undo: "ids").
+func TestKindUpsertWithUndoSkipsUnchangedSnapshots(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	s, _ := openTestService(t, Options{Now: func() time.Time { return now }})
+	if _, err := s.UpsertKind(ctx, "community.books", 10, sampleBookDecl(), false); err != nil {
+		t.Fatal(err)
+	}
+	items := []core.KindItem{
+		{ID: "s1", Level: "series", Title: "Series 1"},
+		{ID: "b1", Level: "book", ParentID: "s1", Title: "Book 1", ETag: "v1",
+			Art: []core.KindArtRef{{Role: "poster", URL: "https://img.example/b1.jpg", Width: 10, Height: 15}}},
+	}
+
+	u1, err := s.KindUpsertWithUndo(ctx, "community.books", "book", items, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u1.AddedIDs) != 2 || len(u1.UpdatedIDs) != 0 || len(u1.Previous) != 0 {
+		t.Fatalf("initial undo = %+v, want 2 added, 0 updated, 0 previous", u1)
+	}
+
+	// Re-publishing identical content yields zero snapshots and zero changed IDs.
+	now = now.Add(time.Hour)
+	u2, err := s.KindUpsertWithUndo(ctx, "community.books", "book", items, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u2.Result.Unchanged != 2 || len(u2.AddedIDs) != 0 || len(u2.UpdatedIDs) != 0 || len(u2.Previous) != 0 {
+		t.Fatalf("unchanged undo = %+v, want 2 unchanged and empty change set", u2)
+	}
+
+	// Re-publishing with s1 unchanged, b1 revised, and b2 added snapshots only b1 (with art).
+	now = now.Add(time.Hour)
+	mixed := []core.KindItem{
+		items[0],
+		{ID: "b1", Level: "book", ParentID: "s1", Title: "Book 1, revised", ETag: "v2",
+			Art: []core.KindArtRef{{Role: "poster", URL: "https://img.example/b1-v2.jpg", Width: 20, Height: 30}}},
+		{ID: "b2", Level: "book", ParentID: "s1", Title: "Book 2"},
+	}
+	u3, err := s.KindUpsertWithUndo(ctx, "community.books", "book", mixed, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u3.AddedIDs) != 1 || u3.AddedIDs[0] != "b2" {
+		t.Fatalf("mixed AddedIDs = %v, want [b2]", u3.AddedIDs)
+	}
+	if len(u3.UpdatedIDs) != 1 || u3.UpdatedIDs[0] != "b1" {
+		t.Fatalf("mixed UpdatedIDs = %v, want [b1]", u3.UpdatedIDs)
+	}
+	if len(u3.Previous) != 1 || u3.Previous[0].ID != "b1" || u3.Previous[0].Title != "Book 1" || len(u3.Previous[0].Art) != 1 || u3.Previous[0].Art[0].URL != "https://img.example/b1.jpg" {
+		t.Fatalf("mixed Previous = %+v, want only pre-write b1 with original art", u3.Previous)
+	}
+
+	// With snapshotPrevious=false (sync.undo: "ids"), modified IDs are tracked without loading snapshots.
+	now = now.Add(time.Hour)
+	mixed[1].Title = "Book 1, v3"
+	u4, err := s.KindUpsertWithUndo(ctx, "community.books", "book", mixed, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u4.AddedIDs) != 0 || len(u4.UpdatedIDs) != 1 || u4.UpdatedIDs[0] != "b1" || len(u4.Previous) != 0 {
+		t.Fatalf("ids-mode undo = %+v, want updated [b1] with no previous snapshots", u4)
+	}
+}
+
 // #647: deleting from a flat single-level kind works and deleting ids
 // that do not exist stays a no-op; the descendant walk itself is kept an
-// index seek by construction (see deleteRefsAndDescendantsTx).
+// index seek by construction (see loadDeleteTargets).
 func TestDeleteFlatKindAndMissingIDs(t *testing.T) {
 	ctx := context.Background()
 	s, _ := openTestService(t, Options{})

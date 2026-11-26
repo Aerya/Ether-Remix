@@ -120,9 +120,9 @@ func planFixture() (QualityImport, map[string]core.CustomFormat, config.Config) 
 		format("other", "Other", map[string]int{"default": 7}, titleSpec),
 	}
 	cfg.Quality.Profiles = []core.QualityProfile{
-		{Name: "SQP", MediaType: core.MediaMovie},
-		{Name: "SQP (2)", MediaType: core.MediaMovie},
-		{Name: "Mine", MediaType: core.MediaMovie, CustomFormatScores: map[string]int{"new": 3}},
+		{Name: "SQP"},
+		{Name: "SQP (2)"},
+		{Name: "Mine", CustomFormatScores: map[string]int{"new": 3}},
 	}
 	return imp, found, cfg
 }

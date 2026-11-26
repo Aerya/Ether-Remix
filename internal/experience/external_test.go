@@ -30,6 +30,11 @@ func TestResolveExternalVisibilityAndCanonicalEpisode(t *testing.T) {
 			t.Fatal("lookup arguments", source, id)
 		}
 		return result, nil
+	}, ResolveEpisode: func(_ context.Context, showKey core.RatingKey, season, episode int) (core.RatingKey, error) {
+		if showKey == show.Key && season == ep.Season && episode == ep.Episode {
+			return ep.Key, nil
+		}
+		return 0, core.ErrNotFound
 	}, Get: func(_ context.Context, _ *core.User, k core.RatingKey) (*core.Title, error) {
 		if t := titles[k]; t != nil {
 			return t, nil
@@ -84,7 +89,7 @@ func TestResolveExternalRejectsAbusiveInputAndPropagatesLookupError(t *testing.T
 	upstream := errors.New("upstream unavailable")
 	s := &Service{d: ServiceDeps{Active: func(_ context.Context, id int64) (*core.User, error) { return &core.User{ID: id}, nil }, ByExternalID: func(context.Context, string, string) (*core.Title, error) { calls++; return nil, upstream }}}
 	bad := []frontend.ExternalRequest{{Source: "imdb", ID: "tt"}, {Source: "imdb", ID: "tt12x"}, {Source: "imdb", ID: "tt" + strings.Repeat("1", 17)}, {Source: "tmdb", ID: "tt123"}, {Source: "imdb", ID: "tt 123"}}
-	season, episode := 1000, 1
+	season, episode := 10000, 1
 	bad = append(bad, frontend.ExternalRequest{Source: "imdb", ID: "tt123", Season: &season, Episode: &episode}, frontend.ExternalRequest{Source: "imdb", ID: "tt123", Season: &season})
 	for _, req := range bad {
 		if _, err := s.ResolveExternal(ctx, &core.User{ID: 1}, core.Device{}, req); !errors.Is(err, core.ErrNotFound) {
@@ -111,6 +116,7 @@ func TestResolveExternalRejectsUnrepresentableShowAndUnavailableEpisode(t *testi
 	}
 	show.Key = core.ShowKey(4)
 	ep := core.Title{Key: core.EpisodeKey(4, 1, 1), Type: core.TypeEpisode, ShowKey: show.Key, Season: 1, Episode: 1}
+	s.d.ResolveEpisode = func(context.Context, core.RatingKey, int, int) (core.RatingKey, error) { return ep.Key, nil }
 	s.d.Get = func(context.Context, *core.User, core.RatingKey) (*core.Title, error) { return &ep, nil }
 	s.d.Visibility = Visibility{SectionFor: func(core.MediaType) (int, bool) { return 2, true }, GetTitle: func(context.Context, core.RatingKey) (*core.Title, error) { return &show, nil }, FilterAvailable: func(context.Context, []core.Title) []core.Title { return nil }}
 	if _, err := s.ResolveExternal(ctx, u, core.Device{}, req); !errors.Is(err, core.ErrNotFound) {

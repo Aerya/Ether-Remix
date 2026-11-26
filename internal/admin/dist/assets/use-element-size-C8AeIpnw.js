@@ -1,1 +1,0 @@
-import{S as e,g as t}from"./i18n-XVTp2jR7.js";var n=e(t(),1);function r(){let e=n.useRef(null),[t,r]=n.useState({width:0,height:0});return n.useEffect(()=>{let t=e.current;if(!t)return;let n=new ResizeObserver(e=>{var t;let n=(t=e[0])==null?void 0:t.contentRect;n&&r({width:n.width,height:n.height})});return n.observe(t),()=>n.disconnect()},[]),[e,t]}export{r as t};

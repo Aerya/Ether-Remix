@@ -174,20 +174,31 @@ func (s *Service) pauseAnalysisAccount(id string, after time.Duration) {
 	_, _ = rand.Read(entropy[:])
 	jitter := time.Duration(binary.LittleEndian.Uint16(entropy[:])%1000) * time.Millisecond
 	state.until = maxTimeAnalysis(state.until, now.Add(delay+jitter))
+	until := state.until
 	s.analysisMu.Unlock()
-	// Reuse existing account-wide cluster backoff broadcasts, not new lease infra.
-	s.mu.RLock()
-	var account *entry
-	for _, candidate := range s.entries {
-		if candidate.cfg.ID == id {
-			account = candidate
-			break
-		}
+	// A CDN 429 pauses background analysis on every node, on its own
+	// topic: the provider API breaker is not involved, so Plays, link
+	// refreshes and cache checks on the account carry on.
+	s.publishAnalysisPause(id, until)
+}
+
+// analysisPauseLimit bounds a pause another node asks for.
+const analysisPauseLimit = 30 * time.Minute
+
+// applyRemoteAnalysisPause applies another node's analysis pause, never
+// beyond analysisPauseLimit and never shortening a longer local one.
+func (s *Service) applyRemoteAnalysisPause(id string, until time.Time) {
+	now := s.now()
+	if limit := now.Add(analysisPauseLimit); until.After(limit) {
+		until = limit
 	}
-	s.mu.RUnlock()
-	if account != nil {
-		s.observe(account, &rateLimitError{retryAfter: delay + jitter})
+	if !until.After(now) {
+		return
 	}
+	s.analysisMu.Lock()
+	state := s.analysisState(id)
+	state.until = maxTimeAnalysis(state.until, until)
+	s.analysisMu.Unlock()
 }
 func maxTimeAnalysis(a, b time.Time) time.Time {
 	if a.After(b) {

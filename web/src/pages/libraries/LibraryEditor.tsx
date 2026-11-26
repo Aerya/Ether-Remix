@@ -16,6 +16,7 @@ import { librariesApi, type CollectionSource, type Library } from "./api";
 import { RulesPanel, type VisibilityRule } from "./browser/LibraryVisibility";
 import { AddCatalogueSource, SourceIcon, sourceOwner } from "./CatalogueSources";
 import { useStreamEvent } from "../../lib/stream";
+import { LibraryMetadataSource } from "./LibraryMetadataSource";
 import { SetupWizard } from "./SetupWizard";
 
 /**
@@ -290,10 +291,19 @@ export function LibraryEditor({
   const [name, setName] = useState("");
   const [type, setType] = useState(seed?.get("type") === "show" ? "show" : "movie");
   const [saving, setSaving] = useState(false);
+  const [metadataSource, setMetadataSource] = useState("");
   const save = async () => {
     setSaving(true);
     try {
-      const lib = await librariesApi.create(name.trim(), type, rules, fallback, undefined, sources);
+      const lib = await librariesApi.create(
+        name.trim(),
+        type,
+        rules,
+        fallback,
+        undefined,
+        sources,
+        metadataSource || undefined,
+      );
       toast.success(t("Library created"));
       onCreated(lib);
     } catch (e) {
@@ -346,6 +356,15 @@ export function LibraryEditor({
             aria-label={t("Library name")}
           />
         </label>
+        <label className="library-field">
+          <span>{t("Details from")}</span>
+          <LibraryMetadataSource
+            mediaType={type}
+            value={metadataSource}
+            onChange={setMetadataSource}
+            disabled={saving}
+          />
+        </label>
         {allTitles && sourceNames?.length ? (
           <p className="text-sm text-fg-muted">
             {t("Titles from: {sources}", { sources: sourceNames.join(", ") })}
@@ -370,6 +389,7 @@ export function LibraryEditor({
                         ? () => {}
                         : (next) => {
                             setType(next);
+                            setMetadataSource("");
                             setRules(rules.map((rule) => ({ ...rule, mediaType: next })));
                           }
                     }
@@ -429,6 +449,7 @@ export function CollectionLibraryEditor({
   const [name, setName] = useState("");
   const [collectionId, setCollectionId] = useState<number | null>(initialCollectionId ?? null);
   const [saving, setSaving] = useState(false);
+  const [metadataSource, setMetadataSource] = useState("");
 
   const collections: CollectionSource[] = sources.data ?? [];
   const selected = collections.find((c) => c.id === collectionId) ?? null;
@@ -440,6 +461,7 @@ export function CollectionLibraryEditor({
   );
   const chooseCollection = (c: CollectionSource) => {
     setCollectionId(c.id);
+    setMetadataSource("");
     setType(sourceType === "show" || (!sourceType && c.mediaType === "show") ? "show" : "movie");
     if (!name.trim()) setName(c.name);
   };
@@ -454,6 +476,7 @@ export function CollectionLibraryEditor({
         type,
         undefined,
         sourceIds,
+        metadataSource || undefined,
       );
       toast.success(t("Library created"));
       onCreated(lib);
@@ -558,6 +581,15 @@ export function CollectionLibraryEditor({
             aria-label={t("Library name")}
           />
         </label>
+        <label className="library-field">
+          <span>{t("Details from")}</span>
+          <LibraryMetadataSource
+            mediaType={type}
+            value={metadataSource}
+            onChange={setMetadataSource}
+            disabled={saving}
+          />
+        </label>
         {sourceNames?.length ? (
           <p className="text-sm text-fg-muted">
             {t("Titles from: {sources}", { sources: sourceNames.join(", ") })}
@@ -570,7 +602,11 @@ export function CollectionLibraryEditor({
               <Segmented
                 ariaLabel={t("What goes in it")}
                 value={type}
-                onChange={sourceType ? () => {} : setType}
+                onChange={(value) => {
+                  if (sourceType) return;
+                  setType(value);
+                  setMetadataSource("");
+                }}
                 options={[
                   { value: "movie", label: t("Movies") },
                   { value: "show", label: t("TV shows") },

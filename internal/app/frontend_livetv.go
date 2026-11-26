@@ -66,7 +66,7 @@ func (s surfaceLiveTV) liveChannel(ctx context.Context, viewer *core.Viewer, c l
 	if err != nil {
 		return frontend.LiveChannel{}, err
 	}
-	result := frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group, Groups: groups}
+	result := frontend.LiveChannel{ArchiveDays: c.ArchiveDays(), ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group, Groups: groups}
 	if s.channelArtwork != nil {
 		if image := s.channelArtwork(viewer, c); image.Path != "" {
 			result.Images = []frontend.Image{image}
@@ -151,7 +151,11 @@ func (s surfaceLiveTV) GuidePage(ctx context.Context, v *core.Viewer, pageQuery 
 func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery frontend.LiveGuidePageQuery, paged bool) (frontend.LiveGuidePage, error) {
 	q := pageQuery.LiveGuideQuery
 	ctx = s.withApp(ctx)
-	if !q.Until.After(q.From) || q.Until.Sub(q.From) > 7*24*time.Hour || q.Limit < 0 || q.Limit > maxLiveProgrammes || pageQuery.Offset < 0 {
+	maxSpan := 7 * 24 * time.Hour
+	if s.surface == "xtream" && len(q.Channels) == 1 {
+		maxSpan = 32 * 24 * time.Hour
+	}
+	if !q.Until.After(q.From) || q.Until.Sub(q.From) > maxSpan || q.Limit < 0 || q.Limit > maxLiveProgrammes || pageQuery.Offset < 0 {
 		return frontend.LiveGuidePage{}, errLiveQuery
 	}
 	viewer, err := s.viewer(ctx, v)
@@ -175,10 +179,10 @@ func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery 
 	for _, id := range q.Channels {
 		selected[id] = true
 	}
-	allowed := make(map[string]bool, len(permitted))
+	allowed := make(map[string]int, len(permitted))
 	for _, c := range permitted {
 		if len(selected) == 0 || selected[c.ID] {
-			allowed[c.ID] = true
+			allowed[c.ID] = c.ArchiveDays()
 		}
 	}
 	// TODO: bound upstream guide materialization after policy filtering; retain
@@ -209,7 +213,7 @@ func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery 
 	selectedPage := make([]livetv.Programme, 0, min(len(programmes), limit+1))
 	index := 0
 	for _, p := range programmes {
-		if !allowed[p.ChannelID] {
+		if _, ok := allowed[p.ChannelID]; !ok {
 			continue
 		}
 		if paged {
@@ -234,7 +238,7 @@ func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery 
 	out := make([]frontend.LiveProgramme, 0, len(selectedPage))
 	imageCache := make(map[core.RatingKey][]frontend.Image)
 	for _, p := range selectedPage {
-		item := frontend.LiveProgramme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating, ShowTitle: p.Item.ShowTitle, EpisodeTitle: p.Item.EpisodeTitle, Season: p.Item.Season, Episode: p.Item.Episode, Genres: p.Item.Genres}
+		item := frontend.LiveProgramme{ArchiveDays: allowed[p.ChannelID], ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating, ShowTitle: p.Item.ShowTitle, EpisodeTitle: p.Item.EpisodeTitle, Season: p.Item.Season, Episode: p.Item.Episode, Genres: p.Item.Genres}
 		if s.programmeArtwork != nil {
 			item.Images = s.programmeArtwork(viewer, p)
 		}
@@ -335,7 +339,7 @@ func (s surfaceLiveTV) GuideWindowBatch(ctx context.Context, v *core.Viewer, q f
 		items := make([]frontend.LiveProgramme, len(ch.Programmes))
 		for j, p := range ch.Programmes {
 			item := frontend.LiveProgramme{
-				ID:           p.ID,
+				ArchiveDays: ch.ArchiveDays, ID: p.ID,
 				ChannelID:    p.ChannelID,
 				Start:        p.Start,
 				End:          p.End,
@@ -393,7 +397,7 @@ func (s surfaceLiveTV) GuideWindowBatch(ctx context.Context, v *core.Viewer, q f
 			}
 			items[j] = item
 		}
-		rows[i] = frontend.LiveGuideWindowChannel{
+		rows[i] = frontend.LiveGuideWindowChannel{ArchiveDays: ch.ArchiveDays,
 			ChannelID:  ch.ChannelID,
 			State:      ch.State,
 			Programmes: items,
@@ -524,12 +528,12 @@ func (s surfaceLiveTV) ServeDASHPart(w http.ResponseWriter, r *http.Request, id 
 }
 func (s surfaceLiveTV) ServePlaylist(w http.ResponseWriter, r *http.Request, id string, u *frontend.User) {
 	if h := s.host(); h != nil {
-		h.ServePlaylist(w, r, id, u)
+		h.ServePlaylist(w, r.WithContext(s.withApp(r.Context())), id, u)
 	}
 }
 func (s surfaceLiveTV) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id string, n int, u *frontend.User) {
 	if h := s.host(); h != nil {
-		h.ServeRelaySegment(w, r, id, n, u)
+		h.ServeRelaySegment(w, r.WithContext(s.withApp(r.Context())), id, n, u)
 	}
 }
 func (s surfaceLiveTV) ServeResource(w http.ResponseWriter, r *http.Request, id, resource string, u *frontend.User) {
@@ -680,4 +684,195 @@ func (s surfaceLiveTV) FilterDiscovery(ctx context.Context, u *frontend.User, ps
 		return h.FilterDiscovery(s.withApp(ctx), viewer, ps)
 	}
 	return nil, nil, frontend.ErrNotAvailable
+}
+
+func (s surfaceLiveTV) StartCatchUp(ctx context.Context, v *frontend.User, req frontend.CatchUpRequest, caps frontend.ClientCaps, sessionID string) (frontend.CatchUpInfo, error) {
+	if !s.Enabled() {
+		return frontend.CatchUpInfo{}, core.ErrNotAvailable
+	}
+	if sessionID == "" {
+		sessionID = caps.ClientID
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.CatchUpInfo{}, err
+	}
+	return s.app.livetv.StartCatchUp(s.withApp(ctx), viewer, req, liveTVClientCaps(caps), sessionID)
+}
+
+func (s surfaceLiveTV) SeekCatchUp(ctx context.Context, v *frontend.User, id string, at time.Duration) (frontend.CatchUpInfo, error) {
+	if !s.Enabled() {
+		return frontend.CatchUpInfo{}, core.ErrNotAvailable
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.CatchUpInfo{}, err
+	}
+	return s.app.livetv.SeekCatchUp(s.withApp(ctx), viewer, id, at)
+}
+
+func (s surfaceLiveTV) TouchLiveSession(ctx context.Context, v *frontend.User, id string) error {
+	if !s.Enabled() {
+		return core.ErrNotAvailable
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return err
+	}
+	return s.app.livetv.TouchLiveSession(s.withApp(ctx), viewer, id)
+}
+
+func (s surfaceLiveTV) CatchUpLiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	if !s.Enabled() {
+		return frontend.LiveWindow{}, core.ErrNotAvailable
+	}
+	return (sessionLive{service: s.app.livetv}).LiveWindow(ctx, id)
+}
+
+func (s surfaceLiveTV) ServeCatchUpTS(w http.ResponseWriter, r *http.Request, id string, v *frontend.User) {
+	if !s.Enabled() {
+		http.NotFound(w, r)
+		return
+	}
+	viewer, err := s.viewer(r.Context(), v)
+	if err != nil {
+		http.Error(w, "Playback unavailable", http.StatusForbidden)
+		return
+	}
+	s.app.livetv.ServeCatchUpTS(w, r.WithContext(s.withApp(r.Context())), id, viewer)
+}
+
+var _ frontend.LiveCatchUp = surfaceLiveTV{}
+
+func (s surfaceLiveTV) LiveCatchUpMaxDays(ctx context.Context, v *frontend.Viewer) (int, error) {
+	if !s.Enabled() {
+		return 0, nil
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return 0, err
+	}
+	channels, err := s.app.livetv.AllowedChannels(s.withApp(ctx), viewer)
+	if err != nil {
+		return 0, err
+	}
+	days := 0
+	for _, ch := range channels {
+		days = max(days, ch.ArchiveDays())
+	}
+	return days, nil
+}
+
+func (s surfaceLiveTV) LiveTimeshiftMinutes(ctx context.Context, id string) int {
+	if !s.Enabled() {
+		return 0
+	}
+	return s.app.livetv.LiveTimeshiftMinutes(ctx, id)
+}
+
+// ServeLiveSessionMedia keeps a start-over handoff on the scoped Vela media route.
+func (s surfaceLiveTV) ServeLiveSessionMedia(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, id, tail string) {
+	if !s.Enabled() {
+		http.NotFound(w, r)
+		return
+	}
+	viewer, err := s.viewer(r.Context(), v)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	(sessionLive{service: s.app.livetv}).Serve(w, r.WithContext(s.withApp(r.Context())), viewer, id, tail, "")
+}
+
+func (s surfaceLiveTV) catchUpLibrary(ctx context.Context, v *frontend.Viewer) (frontend.CatchUpLibrary, *core.User, error) {
+	h, ok := s.host().(frontend.CatchUpLibrary)
+	if !ok {
+		return nil, nil, nil
+	}
+	viewer, err := s.viewer(ctx, v)
+	return h, viewer, err
+}
+
+func (s surfaceLiveTV) CatchUpLibraryVisible(ctx context.Context, v *frontend.Viewer) (bool, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil || h == nil {
+		return false, err
+	}
+	return h.CatchUpLibraryVisible(s.withApp(ctx), viewer)
+}
+
+func (s surfaceLiveTV) CatchUpItems(ctx context.Context, v *frontend.Viewer, q frontend.CatchUpQuery) (frontend.CatchUpPage, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil || h == nil {
+		return frontend.CatchUpPage{}, err
+	}
+	page, err := h.CatchUpItems(s.withApp(ctx), viewer, q)
+	for j := range page.Items {
+		s.catchUpArtwork(viewer, &page.Items[j])
+	}
+	return page, err
+}
+
+func (s surfaceLiveTV) CatchUpItem(ctx context.Context, v *frontend.Viewer, id string) (frontend.CatchUpItem, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil {
+		return frontend.CatchUpItem{}, err
+	}
+	if h == nil {
+		return frontend.CatchUpItem{}, core.ErrNotFound
+	}
+	item, err := h.CatchUpItem(s.withApp(ctx), viewer, id)
+	if err == nil {
+		s.catchUpArtwork(viewer, &item)
+	}
+	return item, err
+}
+
+func (s surfaceLiveTV) catchUpArtwork(viewer *core.Viewer, item *frontend.CatchUpItem) {
+	p := &item.Programme
+	if s.programmeArtwork != nil {
+		item.Artwork = s.programmeArtwork(viewer, livetv.Programme{
+			ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End,
+			Item: livetv.Item{Thumb: p.Item.Thumb, Art: p.Item.Art},
+		})
+	}
+	p.Item.Thumb, p.Item.Art = "", ""
+}
+
+func (s surfaceLiveTV) CatchUpArtwork(ctx context.Context, v *frontend.Viewer, id, kind string) ([]byte, string, error) {
+	if s.artwork == nil {
+		return nil, "", core.ErrNotFound
+	}
+	item, err := s.CatchUpItem(ctx, v, id)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, image := range item.Artwork {
+		if image.Kind == kind {
+			return s.artwork.Read(s.withApp(ctx), frontend.ArtworkRequest{
+				Viewer: v, Channel: item.Programme.ChannelID, Programme: item.Programme.ID,
+			}, image, frontend.ArtworkTransform{})
+		}
+	}
+	return nil, "", core.ErrNotFound
+}
+
+func (s surfaceLiveTV) FindCatchUp(ctx context.Context, v *frontend.Viewer, req frontend.CatchUpRequest, caps frontend.ClientCaps, clientSession string) (frontend.CatchUpInfo, bool) {
+	h, ok := s.host().(frontend.CatchUpSessionFinder)
+	if !ok {
+		return frontend.CatchUpInfo{}, false
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.CatchUpInfo{}, false
+	}
+	return h.FindCatchUp(s.withApp(ctx), viewer, req, liveTVClientCaps(caps), clientSession)
+}
+
+func (s surfaceLiveTV) LibraryCatchUpSession(access frontend.SessionAccess, id string) (frontend.CatchUpInfo, bool) {
+	h, ok := s.host().(frontend.CatchUpSessionReader)
+	if !ok {
+		return frontend.CatchUpInfo{}, false
+	}
+	return h.LibraryCatchUpSession(access, id)
 }

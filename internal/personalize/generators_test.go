@@ -266,8 +266,8 @@ func TestOwnerCollectionRows(t *testing.T) {
 			picks = append(picks, cat.titles[movieKey(8, j)])
 		}
 		cols.rows = []core.CollectionRow{
-			{CollectionID: "docs", HomeRow: true, Hub: core.Hub{ID: "collection.docs", Title: "Staff Documentary Picks", Context: "hub.home.collection", Items: picks}},
-			{CollectionID: "secret", SectionRow: true, Hub: core.Hub{ID: "collection.secret", Title: "Section Only", Items: picks}},
+			{CollectionID: "docs", Hub: core.Hub{ID: "collection.docs", Title: "Staff Documentary Picks", Context: "hub.home.collection", Items: picks}},
+			{CollectionID: "secret", Hub: core.Hub{ID: "collection.secret", Title: "Section Only", Items: picks}},
 		}
 		o.Collections = cols
 	})
@@ -276,6 +276,9 @@ func TestOwnerCollectionRows(t *testing.T) {
 	if err := waitGenericReady(h.e, waitCtx); err != nil {
 		t.Fatal(err)
 	}
+	// Collections show where a page places them: docs on Home, secret on Movies.
+	mustSavePage(t, h.e, rpage(core.PageHome, prow(KindCollectionPrefix+"docs", core.PlacementShow, 0)))
+	mustSavePage(t, h.e, rpage(libPage(1), prow(KindCollectionPrefix+"secret", core.PlacementShow, 0)))
 	u := core.User{ID: 4, Username: "dee"}
 	h.rebuild(u)
 	p, err := h.e.PreviewHome(context.Background(), &u, hubContext(testNow, core.DeviceTV), "", 12)

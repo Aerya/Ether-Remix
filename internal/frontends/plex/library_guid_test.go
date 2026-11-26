@@ -117,6 +117,19 @@ func (c guidCatalog) ByExternalID(ctx context.Context, source, id string) (*core
 	return nil, core.ErrNotFound
 }
 
+func (c guidCatalog) ResolveEpisode(ctx context.Context, show core.RatingKey, season, episode int) (core.RatingKey, error) {
+	episodes, err := c.Grandchildren(ctx, show)
+	if err != nil {
+		return 0, err
+	}
+	for _, title := range episodes {
+		if title.Season == season && title.Episode == episode {
+			return title.Key, nil
+		}
+	}
+	return 0, core.ErrNotFound
+}
+
 func TestLibraryGUIDVisibilityAndPaging(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()

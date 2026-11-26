@@ -3,6 +3,7 @@ package favorites
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -32,6 +33,7 @@ func (p *Playlists) project(ctx context.Context, uid int64, pl *core.Playlist) (
 	}
 	cp := *pl
 	cp.Items = make([]core.RatingKey, 0, len(entries))
+	cp.ItemAddedAt = make([]time.Time, 0, len(entries))
 	updated, err := p.Favorites.UpdatedAt(ctx, uid)
 	if err != nil {
 		return nil, err
@@ -45,6 +47,7 @@ func (p *Playlists) project(ctx context.Context, uid int64, pl *core.Playlist) (
 			return nil, err
 		}
 		cp.Items = append(cp.Items, k)
+		cp.ItemAddedAt = append(cp.ItemAddedAt, e.AddedAt)
 	}
 	return &cp, nil
 }

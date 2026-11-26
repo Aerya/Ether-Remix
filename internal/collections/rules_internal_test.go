@@ -139,26 +139,11 @@ func TestNormalizeDefaults(t *testing.T) {
 	sp := core.CollectionSpec{Name: "  x  ", MediaType: "tv"}
 	Normalize(&sp)
 	if sp.Name != "x" || sp.MediaType != MediaShow || sp.Match != MatchAll || sp.Sort != "popularity" || !sp.SortDesc ||
-		sp.Refresh != RefreshDaily || sp.Artwork.Mode != "auto" || !sp.Targets.Users.All || len(sp.Sources) != 1 || sp.Sources[0].Kind != "catalog" {
+		sp.Refresh != RefreshDaily || sp.Artwork.Mode != "auto" || len(sp.Sources) != 1 || sp.Sources[0].Kind != "catalog" {
 		t.Fatalf("defaults: %+v", sp)
 	}
 	if err := Validate(&sp); err != nil {
 		t.Fatal(err)
-	}
-	// An explicit empty user list targets nobody.
-	var u core.UserTargets
-	if err := json.Unmarshal([]byte(`[]`), &u); err != nil || u.All || u.Includes(&core.User{ID: 1}) {
-		t.Fatalf("empty users: %+v %v", u, err)
-	}
-	if err := json.Unmarshal([]byte(`"all"`), &u); err != nil || !u.All || !u.Includes(nil) {
-		t.Fatalf("all users: %+v", u)
-	}
-	if err := json.Unmarshal([]byte(`[1,"2"]`), &u); err != nil || !u.Includes(&core.User{ID: 2}) || u.Includes(nil) {
-		t.Fatalf("ids: %+v %v", u, err)
-	}
-	b, _ := json.Marshal(core.UserTargets{IDs: []int64{4}})
-	if string(b) != "[4]" {
-		t.Fatalf("marshal: %s", b)
 	}
 }
 

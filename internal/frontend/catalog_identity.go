@@ -26,3 +26,14 @@ func ParseRatingKey(value string) (RatingKey, error) { return core.ParseRatingKe
 func PluginPersonID(name string) int64               { return core.PluginPersonID(name) }
 func IsPluginPersonID(id int64) bool                 { return core.IsPluginPersonID(id) }
 func FacetID(kind, value string) string              { return core.FacetID(kind, value) }
+
+// IDs and provider references carry stored identity across adapters.
+type IDs = core.IDs
+type ProviderRef = core.ProviderRef
+type MetadataSourceID = core.MetadataSourceID
+
+const (
+	MetadataTMDB = core.MetadataTMDB
+	MetadataTVDB = core.MetadataTVDB
+	OrderAired   = core.OrderAired
+)

@@ -84,6 +84,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	// storing the plan, so Open does not mistake an omitted limit for a
 	// policy violation. Open still rechecks for policy changes.
 	b.stampViewerTranscoding(req.Viewer, &caps)
+	caps = b.applyRuleLimits(ctx, caps, &opts, req.Viewer, nil)
 	limit := b.deps.BitrateLimit(req.Viewer)
 	if caps.Remote && b.deps.RemoteBitrateLimit != nil {
 		if remote := b.deps.RemoteBitrateLimit(); remote > 0 && (limit == 0 || remote < limit) {
@@ -148,7 +149,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		b.mu.Unlock()
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
+	b.plans[id] = brokerPlan{versionAdmission: versionAdmission{caps: caps, opts: opts}, request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
 	stored = true
 	b.mu.Unlock()
 	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, VideoTranscodingOff: videoOff, ETag: etag}, nil
@@ -191,6 +192,7 @@ func (b *Broker) reusePlexSession(_ context.Context, v *core.Viewer, req fronten
 	current.playID = ps.ID
 	current.playbackID = p.request.Intent.PlaybackID
 	current.decision = p.decision
+	current.versionAdmission = p.versionAdmission
 	current.caps = p.request.Caps
 	current.opts = p.request.Intent.Options
 	current.clientID = p.request.Caps.ClientID

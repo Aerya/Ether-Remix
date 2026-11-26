@@ -154,7 +154,7 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 	// down to TMDB discover so the whole catalogue is searched for them.
 	assured := map[core.RatingKey]map[*rule]bool{}
 	var pushed []core.Title
-	if hasCatalog && s.api.c != nil && !sp.LocalOnly {
+	if hasCatalog && s.api.configured() && !sp.LocalOnly {
 		pushed, assured = s.pushdown(ctx, &sp, rules, warn)
 	} else if hasCatalog && !sp.LocalOnly {
 		for _, r := range rules {
@@ -717,7 +717,7 @@ func (s *Service) resolveRuleRefs(ctx context.Context, rules []*rule, warn func(
 			}
 			// Local matching needs ids for people/collections and names
 			// for keywords/studios/networks.
-			if s.api.c == nil {
+			if !s.api.configured() {
 				needs := (r.field == "person" || r.field == "collection" || r.field == "watchProvider") && rf.ID <= 0
 				needs = needs || ((r.field == "keyword" || r.field == "studio" || r.field == "network") && rf.Name == "")
 				if needs {
@@ -1128,7 +1128,7 @@ func countryCode(c string) string {
 // TMDB discover (the most popular titles first).
 func (s *Service) providerSet(ctx context.Context, sp *core.CollectionSpec, r *rule, include bool, rules []*rule, warn func(string, ...any)) (map[core.RatingKey]bool, []core.Title) {
 	set := map[core.RatingKey]bool{}
-	if s.api.c == nil {
+	if !s.api.configured() {
 		warn("watch-provider rules need TMDB, which is not configured")
 		return set, nil
 	}

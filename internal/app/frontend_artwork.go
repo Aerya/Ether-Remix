@@ -30,7 +30,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	}
 	var images *artworkservice.RemoteCache
 	if a.images != nil {
-		images = artworkservice.NewBackedRemoteCache(128<<20, a.images)
+		images = artworkservice.NewBackedRemoteCache(a.images)
 	} else {
 		images = artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
 	}
@@ -56,6 +56,9 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		return a.playback.Sessions()
 	}, []experience.Library{{ID: 1, Type: core.TypeMovie}, {ID: 2, Type: core.TypeShow}})
 	source := &artworkservice.Source{OwnerEnabled: func() bool { enabled := a.cfg.Read().Posters.OwnerEnabled; return enabled == nil || *enabled }, PosterGen: func() uint64 { return a.cfg.Read().Posters.Generation }, Assets: &artwork.LocalAssets{}, AssetFolder: func() string { return a.cfg.Read().Posters.AssetFolder }, OwnerDir: filepath.Join(a.opts.DataDir, "artwork", "owner"), Catalog: pluginArtworkTitles{catalog: a.catalog, app: a}, Collections: collections, Playlists: a.playlists, Visibility: visibility, Discovery: a.discoveryFeatures.Frontend(), Images: images, ImageURL: imageURL, Palettes: palettes, Now: now, Raster: artwork.NewSVGRasterizer()}
+	if a.collections != nil {
+		source.CollectionCards = a.collections.CollectionCardHeaders
+	}
 	if a.livetv != nil {
 		source.LiveTV = a.livetv
 	}
@@ -77,6 +80,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	source.LibraryLiveThumb = func(ctx context.Context, viewer *core.Viewer, viewID string, path string) (string, error) {
 		return surfaceLibraryLive{app: a}.AuthorizeLibraryLiveThumb(ctx, viewer, viewID, path)
 	}
+	source.PluginImage = pluginImages{app: a}.AuthorizePluginImage
 	source.ViewerAvatar = func(ctx context.Context, viewer *core.Viewer) ([]byte, string, error) {
 		if viewer == nil || viewer.ID <= 0 || viewer.PlexID <= 0 || strings.TrimSpace(viewer.Thumb) == "" {
 			return nil, "", core.ErrNotFound
@@ -88,7 +92,12 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		return a.cachedPlexAvatar(ctx, token, viewer.Thumb)
 	}
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
-	source.Variants = variants.Get
+	source.Variants = func(title *core.Title, language string) (*frontend.ArtworkImages, bool) {
+		if !a.catalog.TMDBConfigured() || !hasTMDBArtwork(title) {
+			return nil, false
+		}
+		return variants.Get(title, language)
+	}
 	source.Generated = a.titlePosters()
 	source.Collages = &artworkservice.LibraryCollageCache{Dir: filepath.Join(a.opts.DataDir, "cache", "library-collages")}
 	// source.Read binds a copy of source: everything Read uses is set above.
@@ -103,6 +112,21 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 			return a.catalog.PersistsArtwork(ctx, key)
 		}
 		metadata.PersistFor(persists)
+		metadata.PersistBatchFor(func(ctx context.Context, keys []core.RatingKey) map[core.RatingKey]bool {
+			out := make(map[core.RatingKey]bool, len(keys))
+			nonPlugin := make([]core.RatingKey, 0, len(keys))
+			for _, k := range keys {
+				if k.IsPluginKey() {
+					out[k] = false
+				} else {
+					nonPlugin = append(nonPlugin, k)
+				}
+			}
+			for k, v := range a.catalog.PersistsArtworkMany(ctx, nonPlugin) {
+				out[k] = v
+			}
+			return out
+		})
 		palettes.PersistFor(persists)
 	}
 	source.Metadata = metadata.Get
@@ -131,6 +155,11 @@ func (a *App) sharedPluginArtworkItem(ctx context.Context, viewer *core.User, _ 
 	}
 	if piv.Library.Hidden || !a.pluginsRT.kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
 		return nil, nil, core.ErrNotFound
+	}
+	if app := core.LiveApp(ctx); app != "" {
+		if _, _, ok := presentLibraryForProtocol(piv.Library.Present, core.Protocol(app), a.pluginsRT.kindCatalog.RootMediaType(ctx, piv.Library)); !ok {
+			return nil, nil, core.ErrNotFound
+		}
 	}
 	if !experience.SectionAllowed(active, int(piv.Library.ID)) || !experience.TitleAllowed(a.safety, active, &piv.Title) {
 		return nil, nil, core.ErrNotFound

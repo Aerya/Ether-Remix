@@ -143,7 +143,7 @@ func TestApplyPresetReusesCollections(t *testing.T) {
 		t.Fatalf("%d collections créées", len(cols.created))
 	}
 	sp := cols.created[0]
-	if !sp.Targets.CollectionsTab || sp.Targets.HomeRow || !sp.Targets.Users.All || sp.Sources[0].Kind != "watchProvider" || sp.Sources[0].ID == 0 {
+	if !sp.BrowseInApps || sp.Users != nil || sp.Sources[0].Kind != "watchProvider" || sp.Sources[0].ID == 0 {
 		t.Fatalf("collection créée = %+v", sp)
 	}
 	if last := cols.created[len(cols.created)-1]; last.MediaType != "show" || last.Sources[0].MediaType != "show" {

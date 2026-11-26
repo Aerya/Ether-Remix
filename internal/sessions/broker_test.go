@@ -451,7 +451,9 @@ func TestBrokerSupersededReportCannotStopReplacement(t *testing.T) {
 	}
 	staleMedia := httptest.NewRecorder()
 	b.ServeMedia(staleMedia, httptest.NewRequest(http.MethodGet, old.MediaPath, nil))
-	if staleMedia.Code != http.StatusNotFound {
+	// Never served; a just-replaced session asks the player to retry (409)
+	// until it loads the replacement's URL.
+	if staleMedia.Code != http.StatusConflict {
 		t.Fatalf("superseded grant still served: %d", staleMedia.Code)
 	}
 	if err := b.Report(ctx, frontend.SessionAccess{Viewer: &core.Viewer{ID: 3}, Device: d, Protocol: "jellyfin"}, old.ID, frontend.Timeline{State: "stopped"}); !errors.Is(err, core.ErrUnauthorized) {

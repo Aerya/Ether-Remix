@@ -2,43 +2,134 @@ package pluginitems
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // upsertChunkSize bounds one write transaction inside an upsert batch
-// (#646). The per-kind lock is held across chunks, so a batch still looks
-// atomic to the kind's own writers, but the database write gate is
-// released between chunks and unrelated writers interleave instead of
-// timing out behind a minutes-long republish.
+// (#646), and one keyset batch of a kind reindex. The per-kind lock is held
+// across chunks, so a batch still looks atomic to the kind's own writers,
+// but the database write gate is released between chunks and unrelated
+// writers interleave instead of timing out behind a minutes-long republish.
 const upsertChunkSize = 200
+
+// An upsert batch sizes its chunks by how long the previous chunk held the
+// writer, aiming for upsertChunkTarget. What a chunk costs varies by two
+// orders of magnitude: re-seeing unchanged items is a few microseconds each,
+// while a new item writes its row, ~10 field rows across five indexes, FTS
+// tokens and tallies, and on a cold cache costs ~3 ms. A fixed 200 held the
+// writer 0.6-3 s for new items on the lab, so playback and session writes
+// queued behind it.
+const (
+	upsertChunkTarget = 25 * time.Millisecond
+	upsertChunkFirst  = 8
+	writeChunkBudget  = 200 * time.Millisecond
+)
+
+// nextUpsertChunkSize scales the chunk that held the writer for held toward
+// upsertChunkTarget, at most doubling per step.
+func nextUpsertChunkSize(n int, held time.Duration) int {
+	if held <= 0 {
+		return min(2*n, upsertChunkSize)
+	}
+	next := int(float64(n) * float64(upsertChunkTarget) / float64(held))
+	return max(1, min(next, 2*n, upsertChunkSize))
+}
 
 type upsertChunkResult struct {
 	added      int
 	updated    int
 	unchanged  int
 	totalItems int64
+	addedIDs   []string
+	updatedIDs []string
+	previous   []core.KindItem
+	// held is how long the transaction held the writer.
+	held time.Duration
 }
 
 // writeUpsertChunk writes one chunk of prepared items in a single
 // transaction. Existing items whose content hash matches are not
 // rewritten — no plugin_items index churn, no FTS replace, no field or
 // art delete/reinsert — only their seen bookkeeping is refreshed, in one
-// statement, and only when it would change.
-func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK, pin bool) (upsertChunkResult, error) {
-	var res upsertChunkResult
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return res, err
+// statement, and only when it would change. When captureUndo is true, the
+// committed added/updated IDs are returned, and when snapshotPrevious is also
+// true, pre-write copies are loaded only for items whose content hash changed.
+func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, seenAt, nowUnix int64, bumpGen, markOK, pin, captureUndo, snapshotPrevious bool) (upsertChunkResult, error) {
+	// The kind lock serializes item content, search rows and facets for this
+	// kind. Pin and seen bookkeeping can change independently and is merged
+	// by the write statements.
+	var plan *upsertChunkPlan
+	var err error
+	if store.DialectOf(s.db) == store.SQLite {
+		plan, err = prepareUpsertChunk(ctx, s.db, kind, chunk, nowUnix, captureUndo, snapshotPrevious)
+		if err != nil {
+			return upsertChunkResult{}, err
+		}
+		if err := s.planUpsertFTS(ctx, kind.LibraryID, chunk, plan); err != nil {
+			return upsertChunkResult{}, err
+		}
+		if err := prepareTallyRepairs(ctx, s.db, kind.LibraryID, kind.Decl, plan.fieldTally, plan.personTally); err != nil {
+			return upsertChunkResult{}, err
+		}
 	}
-	defer tx.Rollback()
-
-	existing, err := lookupExistingItemsTx(ctx, tx, chunk)
+	var res upsertChunkResult
+	// The live cap callback reads plugin metadata through the pool and can
+	// run its own writes. It must run before taking the SQLite writer.
+	var maxItems int
+	if plan == nil || plan.result.added > 0 {
+		maxItems = s.MaxItemsFor(pluginID)
+	}
+	held, err := s.runWriteChunk(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if plan == nil {
+			var err error
+			plan, err = prepareUpsertChunk(ctx, tx, kind, chunk, nowUnix, captureUndo, snapshotPrevious)
+			if err != nil {
+				return err
+			}
+		}
+		res = plan.result
+		var err error
+		res.totalItems, err = s.applyUpsertChunk(ctx, tx, kind, pluginID, kindKey, chunk, plan, maxItems, seenAt, nowUnix, bumpGen, markOK, pin)
+		return err
+	})
 	if err != nil {
-		return res, err
+		if errors.Is(err, ErrMaxItemsExceeded) {
+			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", maxItems))
+		}
+		return upsertChunkResult{}, err
+	}
+	res.held = held
+	if res.added > 0 || res.updated > 0 {
+		s.noteWrite()
+	}
+	return res, nil
+}
+
+type upsertChunkPlan struct {
+	result      upsertChunkResult
+	existing    map[core.ItemRef]existingItemMeta
+	unchanged   []core.ItemRef
+	changed     []bool
+	fields      []itemFieldDiff
+	fts         []upsertFTSChange
+	fieldTally  map[fieldTallyKey]*fieldTallyChange
+	personTally map[personTallyKey]*personTallyChange
+	parentTally map[parentTallyKey]parentTallyDelta
+}
+
+func prepareUpsertChunk(ctx context.Context, q queryer, kind KindRecord, chunk []preparedItem, nowUnix int64, captureUndo, snapshotPrevious bool) (*upsertChunkPlan, error) {
+	var res upsertChunkResult
+	existing, err := lookupExistingItems(ctx, q, chunk)
+	if err != nil {
+		return nil, err
 	}
 
 	unchangedRefs := make([]core.ItemRef, 0, len(chunk))
@@ -50,65 +141,21 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 		case !ok:
 			changed[i] = true
 			res.added++
+			if captureUndo {
+				res.addedIDs = append(res.addedIDs, chunk[i].validated.Item.ID)
+			}
 		case ex.hash != "" && ex.hash == chunk[i].hash:
 			unchangedRefs = append(unchangedRefs, ref)
 			res.unchanged++
 		default:
 			changed[i] = true
 			res.updated++
+			if captureUndo {
+				res.updatedIDs = append(res.updatedIDs, chunk[i].validated.Item.ID)
+			}
 		}
 	}
 
-	if res.added > 0 {
-		maxItems := s.MaxItemsFor(pluginID)
-		// The tally is maintained in the same transactions as the items,
-		// so summing its per-level rows (bounded by kinds x levels)
-		// replaces a COUNT(*) over the plugin's whole item table.
-		var pluginTotal int64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id IN (SELECT library_id FROM plugin_kinds WHERE plugin_id = ?)`,
-			pluginID).Scan(&pluginTotal); err != nil {
-			return res, err
-		}
-		if pluginTotal+int64(res.added) > int64(maxItems) {
-			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", maxItems))
-			return res, ErrMaxItemsExceeded
-		}
-	}
-
-	var nextSeq int64
-	if res.added > 0 {
-		nextSeq, err = allocateSeqRangeTx(ctx, tx, int64(res.added))
-		if err != nil {
-			return res, err
-		}
-	}
-
-	if len(unchangedRefs) > 0 {
-		placeholders := make([]string, len(unchangedRefs))
-		args := make([]any, 0, len(unchangedRefs)+2)
-		args = append(args, seenAt)
-		for i, r := range unchangedRefs {
-			placeholders[i] = "?"
-			args = append(args, string(r))
-		}
-		args = append(args, seenAt)
-		updateUnchangedSQL := `UPDATE plugin_items SET seen_at = ?, missed_walks = 0 WHERE item_ref IN (` + strings.Join(placeholders, ",") + `) AND (missed_walks <> 0 OR seen_at <> ?)`
-		if pin {
-			updateUnchangedSQL = `UPDATE plugin_items SET seen_at = ?, missed_walks = 0, pinned = 1 WHERE item_ref IN (` + strings.Join(placeholders, ",") + `) AND (missed_walks <> 0 OR seen_at <> ? OR pinned = 0)`
-		}
-		if _, err := tx.ExecContext(ctx, updateUnchangedSQL, args...); err != nil {
-			return res, err
-		}
-	}
-
-	pinInt := 0
-	if pin {
-		pinInt = 1
-	}
-
-	fieldTallyDelta := map[fieldTallyKey]*fieldTallyChange{}
-	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	changedExisting := make([]core.ItemRef, 0, len(chunk))
 	for i := range chunk {
 		if !changed[i] {
@@ -118,192 +165,38 @@ func (s *Service) writeUpsertChunk(ctx context.Context, kind KindRecord, pluginI
 			changedExisting = append(changedExisting, chunk[i].validated.Item.Ref)
 		}
 	}
-	var oldFieldsByRef map[core.ItemRef][]existingTextField
+	var oldRowsByRef map[core.ItemRef][]existingFieldRow
 	if len(changedExisting) > 0 {
-		oldFields, err := lookupExistingTextFieldsTx(ctx, tx, changedExisting)
+		if captureUndo && snapshotPrevious {
+			prev, err := queryItemsByRef(ctx, q, changedExisting)
+			if err != nil {
+				return nil, err
+			}
+			res.previous = prev
+		}
+		oldRowsByRef, err = lookupExistingFieldRows(ctx, q, changedExisting)
 		if err != nil {
-			return res, err
-		}
-		oldFieldsByRef = make(map[core.ItemRef][]existingTextField, len(changedExisting))
-		for _, of := range oldFields {
-			oldFieldsByRef[of.ref] = append(oldFieldsByRef[of.ref], of)
+			return nil, err
 		}
 	}
 
-	isPG := store.DialectOf(s.db) == store.Postgres
-	tallyDelta := map[string]int64{}
-
-	var parentTally *parentTallyTracker
-	if len(kind.Decl.Levels) >= 2 && kind.LibraryID > 0 {
-		leafLevels := kind.Decl.LeafLevels()
-		parentTally = newParentTallyTracker(tx, kind.LibraryID, leafLevels, existing)
-		primeParentRefs := make([]core.ItemRef, 0, len(chunk))
-		primeLeafRefs := make([]core.ItemRef, 0, len(chunk))
-		for i := range chunk {
-			if !changed[i] {
-				continue
-			}
-			p := &chunk[i]
-			it := &p.validated.Item
-			ex, isExisting := existing[it.Ref]
-			newParent := core.ItemRef(p.parentRef)
-			if isExisting && ex.parentRef == newParent && ex.level == it.Level {
-				continue
-			}
-			if ex.parentRef != "" {
-				primeParentRefs = append(primeParentRefs, ex.parentRef)
-				primeLeafRefs = append(primeLeafRefs, ex.parentRef)
-			}
-			if newParent != "" {
-				primeParentRefs = append(primeParentRefs, newParent)
-				primeLeafRefs = append(primeLeafRefs, newParent)
-			}
-			if !leafLevels[it.Level] || (isExisting && !leafLevels[ex.level]) {
-				primeLeafRefs = append(primeLeafRefs, it.Ref)
-			}
-		}
-		if err := parentTally.primeParents(ctx, primeParentRefs); err != nil {
-			return res, err
-		}
-		if err := parentTally.primeLeaves(ctx, primeLeafRefs); err != nil {
-			return res, err
-		}
-		for i := range chunk {
-			if !changed[i] {
-				continue
-			}
-			p := &chunk[i]
-			it := &p.validated.Item
-			ex, isExisting := existing[it.Ref]
-			if err := parentTally.apply(ctx, it.Ref, isExisting, ex.parentRef, core.ItemRef(p.parentRef), ex.level, it.Level); err != nil {
-				return res, err
-			}
-		}
-	}
-
+	fields := make([]itemFieldDiff, len(chunk))
+	fieldTallyDelta := map[fieldTallyKey]*fieldTallyChange{}
+	personTallyDelta := map[personTallyKey]*personTallyChange{}
 	for i := range chunk {
 		if !changed[i] {
 			continue
 		}
-		p := &chunk[i]
-		v := &p.validated
+		v := &chunk[i].validated
 		it := &v.Item
 		ex, isExisting := existing[it.Ref]
-		var seq int64
-		var addedAt int64
+		addedAt := nowUnix
 		if isExisting {
-			seq = ex.seq
 			addedAt = ex.addedAt
-			if ex.level != it.Level {
-				tallyDelta[ex.level]--
-				tallyDelta[it.Level]++
-			}
-		} else {
-			seq = nextSeq
-			nextSeq++
-			addedAt = nowUnix
-			tallyDelta[it.Level]++
 		}
-		it.Key = core.PluginKey(seq)
-
-		if isPG {
-			if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_items(
-	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
-	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
-	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, search_tsv
-) VALUES(
-	?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, 0, ?, ?,
-	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
-) ON CONFLICT(item_ref) DO UPDATE SET
-	parent_ref   = excluded.parent_ref,
-	level        = excluded.level,
-	idx          = excluded.idx,
-	title        = excluded.title,
-	sort_title   = excluded.sort_title,
-	summary      = excluded.summary,
-	year         = excluded.year,
-	released     = excluded.released,
-	rating       = excluded.rating,
-	rating_level = excluded.rating_level,
-	playable     = excluded.playable,
-	child_count  = excluded.child_count,
-	leaf_count   = excluded.leaf_count,
-	unavailable  = excluded.unavailable,
-	hints        = excluded.hints,
-	fields       = excluded.fields,
-	etag         = excluded.etag,
-	updated_at   = excluded.updated_at,
-	seen_at      = excluded.seen_at,
-	missed_walks = 0,
-	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
-	content_hash = excluded.content_hash,
-	search_tsv   = excluded.search_tsv`,
-				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
-				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, contentRatingLevel(it.Fields), p.playableInt, it.ChildCount, it.LeafCount,
-				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
-				it.Title, v.SearchFields, v.SearchPeople,
-			); err != nil {
-				return res, err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_items(
-	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
-	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
-	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash
-) VALUES(
-	?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, 0, ?, ?
-) ON CONFLICT(item_ref) DO UPDATE SET
-	parent_ref   = excluded.parent_ref,
-	level        = excluded.level,
-	idx          = excluded.idx,
-	title        = excluded.title,
-	sort_title   = excluded.sort_title,
-	summary      = excluded.summary,
-	year         = excluded.year,
-	released     = excluded.released,
-	rating       = excluded.rating,
-	rating_level = excluded.rating_level,
-	playable     = excluded.playable,
-	child_count  = excluded.child_count,
-	leaf_count   = excluded.leaf_count,
-	unavailable  = excluded.unavailable,
-	hints        = excluded.hints,
-	fields       = excluded.fields,
-	etag         = excluded.etag,
-	updated_at   = excluded.updated_at,
-	seen_at      = excluded.seen_at,
-	missed_walks = 0,
-	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
-	content_hash = excluded.content_hash`,
-				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
-				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, contentRatingLevel(it.Fields), p.playableInt, it.ChildCount, it.LeafCount,
-				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash,
-			); err != nil {
-				return res, err
-			}
-			if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
-				return res, err
-			}
-		}
-
-		// Replace indexed fields for this item.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return res, err
-		}
+		fields[i] = diffItemFields(oldRowsByRef[it.Ref], v.IndexedFields)
 		var itemPersonHasThumb map[int64]bool
 		for _, fv := range v.IndexedFields {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
-				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
-				return res, err
-			}
 			if fv.HasThumb && core.IsPluginPersonID(fv.Int) {
 				if itemPersonHasThumb == nil {
 					itemPersonHasThumb = map[int64]bool{}
@@ -325,7 +218,7 @@ INSERT INTO plugin_items(
 					if itemPersonHasThumb[fv.Int] {
 						th = newRank
 					}
-					addPersonTallyChange(personTallyDelta, it.Level, fv.Field, fv.Int, 1, fv.Text, "", newRank, "", th, "")
+					addPersonTallyChange(personTallyDelta, it.Level, fv.Field, fv.Int, 1, fv.Text, "", newRank, "", th, "", refStr)
 				}
 			}
 		} else {
@@ -333,15 +226,15 @@ INSERT INTO plugin_items(
 			rankUp := newRank.beats(oldRank)
 			rankDown := oldRank.beats(newRank)
 
-			oldTextSet := make(map[fieldTallyKey]struct{}, len(oldFieldsByRef[it.Ref]))
+			oldTextSet := make(map[fieldTallyKey]struct{}, len(oldRowsByRef[it.Ref]))
 			oldPersonMap := map[personTallyKey]string{}
-			for _, of := range oldFieldsByRef[it.Ref] {
-				if of.text == "" {
+			for _, of := range oldRowsByRef[it.Ref] {
+				if of.key.text == "" {
 					continue
 				}
-				oldTextSet[fieldTallyKey{level: ex.level, field: of.field, text: of.text}] = struct{}{}
-				if core.IsPluginPersonID(of.intV) {
-					oldPersonMap[personTallyKey{level: ex.level, field: of.field, vInt: of.intV}] = of.text
+				oldTextSet[fieldTallyKey{level: ex.level, field: of.key.field, text: of.key.text}] = struct{}{}
+				if core.IsPluginPersonID(of.key.intV) {
+					oldPersonMap[personTallyKey{level: ex.level, field: of.key.field, vInt: of.key.intV}] = of.key.text
 				}
 			}
 
@@ -375,13 +268,13 @@ INSERT INTO plugin_items(
 				} else if rankUp {
 					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 0, newRank, "")
 				} else if rankDown {
-					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 0, tallyItemRank{}, refStr)
+					addFieldTallyChange(fieldTallyDelta, k.level, k.field, k.text, 0, newRank, refStr)
 				}
 			}
 
 			for k, oldText := range oldPersonMap {
 				if _, keep := newPersonMap[k]; !keep {
-					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, -1, "", oldText, tallyItemRank{}, refStr, tallyItemRank{}, refStr)
+					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, -1, "", oldText, tallyItemRank{}, refStr, tallyItemRank{}, refStr, refStr)
 				}
 			}
 			for k, nv := range newPersonMap {
@@ -391,7 +284,7 @@ INSERT INTO plugin_items(
 					if nv.hasThumb {
 						th = newRank
 					}
-					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 1, nv.text, "", newRank, "", th, "")
+					addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 1, nv.text, "", newRank, "", th, "", refStr)
 					continue
 				}
 				var addTxt, remTxt string
@@ -401,9 +294,10 @@ INSERT INTO plugin_items(
 				}
 				var addRep tallyItemRank
 				var remRep string
-				if rankUp {
+				if rankUp || rankDown {
 					addRep = newRank
-				} else if rankDown {
+				}
+				if rankDown {
 					remRep = refStr
 				}
 				var addTh tallyItemRank
@@ -416,50 +310,600 @@ INSERT INTO plugin_items(
 				} else {
 					remTh = refStr
 				}
-				addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 0, addTxt, remTxt, addRep, remRep, addTh, remTh)
+				addPersonTallyChange(personTallyDelta, k.level, k.field, k.vInt, 0, addTxt, remTxt, addRep, remRep, addTh, remTh, refStr)
+			}
+		}
+	}
+	var parentTally *parentTallyTracker
+	if len(kind.Decl.Levels) >= 2 && kind.LibraryID > 0 {
+		leafLevels := kind.Decl.LeafLevels()
+		parentTally = newParentTallyTracker(q, kind.LibraryID, leafLevels, existing)
+		primeParentRefs := make([]core.ItemRef, 0, len(chunk))
+		primeLeafRefs := make([]core.ItemRef, 0, len(chunk))
+		for i := range chunk {
+			if !changed[i] {
+				continue
+			}
+			p := &chunk[i]
+			it := &p.validated.Item
+			ex, isExisting := existing[it.Ref]
+			newParent := core.ItemRef(p.parentRef)
+			if isExisting && ex.parentRef == newParent && ex.level == it.Level {
+				continue
+			}
+			if ex.parentRef != "" {
+				primeParentRefs = append(primeParentRefs, ex.parentRef)
+				primeLeafRefs = append(primeLeafRefs, ex.parentRef)
+			}
+			if newParent != "" {
+				primeParentRefs = append(primeParentRefs, newParent)
+				primeLeafRefs = append(primeLeafRefs, newParent)
+			}
+			if !leafLevels[it.Level] || (isExisting && !leafLevels[ex.level]) {
+				primeLeafRefs = append(primeLeafRefs, it.Ref)
+			}
+		}
+		if err := parentTally.primeParents(ctx, primeParentRefs); err != nil {
+			return nil, err
+		}
+		if err := parentTally.primeLeaves(ctx, primeLeafRefs); err != nil {
+			return nil, err
+		}
+		for i := range chunk {
+			if !changed[i] {
+				continue
+			}
+			p := &chunk[i]
+			it := &p.validated.Item
+			ex, isExisting := existing[it.Ref]
+			if err := parentTally.apply(ctx, it.Ref, isExisting, ex.parentRef, core.ItemRef(p.parentRef), ex.level, it.Level); err != nil {
+				return nil, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
+			}
+		}
+	}
+
+	var parentDelta map[parentTallyKey]parentTallyDelta
+	if parentTally != nil {
+		parentDelta = parentTally.delta
+	}
+	return &upsertChunkPlan{
+		result: res, existing: existing, unchanged: unchangedRefs, changed: changed,
+		fields: fields, fieldTally: fieldTallyDelta, personTally: personTallyDelta, parentTally: parentDelta,
+	}, nil
+}
+
+// Distinguish this deadline from the caller's when deciding whether to split.
+var errWriteChunkBudget = fmt.Errorf("%w", context.DeadlineExceeded)
+
+// runWriteChunk starts the budget after writer admission. The transaction's
+// context also covers SQLite's commit, including FTS flushes.
+func (s *Service) runWriteChunk(ctx context.Context, write func(context.Context, *sql.Tx) error) (time.Duration, error) {
+	workCtx := ctx
+	var cancel context.CancelCauseFunc
+	if store.DialectOf(s.db) == store.SQLite {
+		workCtx, cancel = context.WithCancelCause(ctx)
+		defer cancel(nil)
+	}
+	tx, err := s.db.BeginTx(workCtx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	began := time.Now()
+	if cancel != nil {
+		timer := time.AfterFunc(writeChunkBudget, func() { cancel(errWriteChunkBudget) })
+		defer timer.Stop()
+	}
+	if err = write(workCtx, tx); err == nil {
+		err = tx.Commit()
+	}
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(workCtx), errWriteChunkBudget) {
+		return 0, errWriteChunkBudget
+	}
+	return time.Since(began), err
+}
+
+// betweenWriteChunks hands the writer to queued foreground work, then checks
+// WAL pressure without holding the writer.
+func (s *Service) betweenWriteChunks(ctx context.Context) error {
+	runtime.Gosched()
+	return store.WaitWALBudget(ctx, s.db)
+}
+
+// writeChunks retries only transactions that rolled back on the local
+// budget. At one item, give transient I/O one retry before stopping.
+func (s *Service) writeChunks(ctx context.Context, count int, write func(start, end int) (time.Duration, error)) error {
+	size := upsertChunkFirst
+	retriedSingle := false
+	for start := 0; start < count; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := min(start+size, count)
+		held, err := write(start, end)
+		if errors.Is(err, errWriteChunkBudget) && end-start > 1 {
+			size = (end - start) / 2
+		} else if errors.Is(err, errWriteChunkBudget) && !retriedSingle {
+			retriedSingle = true
+		} else if err != nil {
+			return err
+		} else {
+			size = nextUpsertChunkSize(end-start, held)
+			retriedSingle = false
+			start = end
+		}
+		if start < count {
+			if err := s.betweenWriteChunks(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// planUpsertFTS reads stored search documents in one rowid lookup and
+// keeps token writes out of updates whose indexed text is unchanged.
+func (s *Service) planUpsertFTS(ctx context.Context, libraryID core.LibraryID, chunk []preparedItem, plan *upsertChunkPlan) error {
+	var seqs []any
+	for i, p := range chunk {
+		if ex, ok := plan.existing[p.validated.Item.Ref]; ok && plan.changed[i] {
+			seqs = append(seqs, ex.seq)
+		}
+	}
+	old, err := s.lookupExistingSQLiteFTS(ctx, seqs)
+	if err != nil {
+		return err
+	}
+	plan.fts = make([]upsertFTSChange, len(chunk))
+	for i, p := range chunk {
+		if !plan.changed[i] {
+			continue
+		}
+		v := p.validated
+		want := existingFTSRow{
+			itemRef: string(v.Item.Ref), libraryID: int64(libraryID),
+			title: strings.TrimSpace(v.Item.Title), fields: strings.TrimSpace(v.SearchFields),
+			people: strings.TrimSpace(v.SearchPeople),
+		}
+		cur, found := old[plan.existing[v.Item.Ref].seq]
+		if found && cur == want {
+			continue
+		}
+		plan.fts[i] = upsertFTSChange{remove: found}
+		if want.title != "" || want.fields != "" || want.people != "" {
+			plan.fts[i].insert = &want
+		}
+	}
+	return nil
+}
+
+type upsertFTSChange struct {
+	remove bool
+	insert *existingFTSRow
+}
+
+func (s *Service) applyUpsertChunk(ctx context.Context, tx *sql.Tx, kind KindRecord, pluginID, kindKey string, chunk []preparedItem, plan *upsertChunkPlan, maxItems int, seenAt, nowUnix int64, bumpGen, markOK, pin bool) (int64, error) {
+	existing, changed, unchangedRefs := plan.existing, plan.changed, plan.unchanged
+
+	if plan.result.added > 0 {
+		// The tally is maintained in the same transactions as the items,
+		// so summing its per-level rows (bounded by kinds x levels)
+		// replaces a COUNT(*) over the plugin's whole item table.
+		var pluginTotal int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id IN (SELECT library_id FROM plugin_kinds WHERE plugin_id = ?)`,
+			pluginID).Scan(&pluginTotal); err != nil {
+			return 0, err
+		}
+		if pluginTotal+int64(plan.result.added) > int64(maxItems) {
+			return 0, ErrMaxItemsExceeded
+		}
+	}
+
+	var nextSeq int64
+	if plan.result.added > 0 {
+		var err error
+		nextSeq, err = allocateSeqRangeTx(ctx, tx, int64(plan.result.added))
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	if len(unchangedRefs) > 0 {
+		placeholders := make([]string, len(unchangedRefs))
+		args := make([]any, 0, len(unchangedRefs)+2)
+		args = append(args, seenAt)
+		for i, r := range unchangedRefs {
+			placeholders[i] = "?"
+			args = append(args, string(r))
+		}
+		args = append(args, seenAt)
+		updateUnchangedSQL := `UPDATE plugin_items SET seen_at = ?, missed_walks = 0 WHERE item_ref IN (` + strings.Join(placeholders, ",") + `) AND (missed_walks <> 0 OR seen_at <> ?)`
+		if pin {
+			updateUnchangedSQL = `UPDATE plugin_items SET seen_at = ?, missed_walks = 0, pinned = 1 WHERE item_ref IN (` + strings.Join(placeholders, ",") + `) AND (missed_walks <> 0 OR seen_at <> ? OR pinned = 0)`
+		}
+		if _, err := tx.ExecContext(ctx, updateUnchangedSQL, args...); err != nil {
+			return 0, err
+		}
+	}
+
+	pinInt := 0
+	if pin {
+		pinInt = 1
+	}
+
+	isPG := store.DialectOf(s.db) == store.Postgres
+	tallyDelta := map[string]int64{}
+	recordingDelta := map[string]int64{}
+
+	fieldConflictCols := `item_ref, field, v_text, v_int`
+	if isPG {
+		fieldConflictCols = `item_ref, field, md5(v_text), v_int`
+	}
+
+	for i := range chunk {
+		if !changed[i] {
+			continue
+		}
+		p := &chunk[i]
+		v := &p.validated
+		it := &v.Item
+		ex, isExisting := existing[it.Ref]
+		if ex.recording != it.Recording {
+			recordingDelta[ex.recording]--
+			recordingDelta[it.Recording]++
+		}
+		var seq int64
+		var addedAt int64
+		if isExisting {
+			seq = ex.seq
+			addedAt = ex.addedAt
+			if ex.level != it.Level {
+				tallyDelta[ex.level]--
+				tallyDelta[it.Level]++
+			}
+		} else {
+			seq = nextSeq
+			nextSeq++
+			addedAt = nowUnix
+			tallyDelta[it.Level]++
+		}
+		it.Key = core.PluginKey(seq)
+
+		if isPG {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_items(
+	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
+	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
+	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, recording, search_tsv
+) VALUES(
+	?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
+	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
+) ON CONFLICT(item_ref) DO UPDATE SET
+	parent_ref   = excluded.parent_ref,
+	level        = excluded.level,
+	idx          = excluded.idx,
+	title        = excluded.title,
+	sort_title   = excluded.sort_title,
+	summary      = excluded.summary,
+	year         = excluded.year,
+	released     = excluded.released,
+	rating       = excluded.rating,
+	rating_level = excluded.rating_level,
+	playable     = excluded.playable,
+	child_count  = excluded.child_count,
+	leaf_count   = excluded.leaf_count,
+	unavailable  = excluded.unavailable,
+	hints        = excluded.hints,
+	fields       = excluded.fields,
+	etag         = excluded.etag,
+	updated_at   = excluded.updated_at,
+	seen_at      = excluded.seen_at,
+	missed_walks = 0,
+	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
+	content_hash = excluded.content_hash,
+	recording    = excluded.recording,
+	search_tsv   = excluded.search_tsv`,
+				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
+				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, p.ratingLevel, p.playableInt, it.ChildCount, it.LeafCount,
+				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash, it.Recording,
+				it.Title, v.SearchFields, v.SearchPeople,
+			); err != nil {
+				return 0, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_items(
+	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
+	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
+	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, pinned, content_hash, recording
+) VALUES(
+	?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
+) ON CONFLICT(item_ref) DO UPDATE SET
+	parent_ref   = excluded.parent_ref,
+	level        = excluded.level,
+	idx          = excluded.idx,
+	title        = excluded.title,
+	sort_title   = excluded.sort_title,
+	summary      = excluded.summary,
+	year         = excluded.year,
+	released     = excluded.released,
+	rating       = excluded.rating,
+	rating_level = excluded.rating_level,
+	playable     = excluded.playable,
+	child_count  = excluded.child_count,
+	leaf_count   = excluded.leaf_count,
+	unavailable  = excluded.unavailable,
+	hints        = excluded.hints,
+	fields       = excluded.fields,
+	etag         = excluded.etag,
+	updated_at   = excluded.updated_at,
+	seen_at      = excluded.seen_at,
+	missed_walks = 0,
+	pinned       = CASE WHEN plugin_items.pinned <> 0 OR excluded.pinned <> 0 THEN 1 ELSE 0 END,
+	content_hash = excluded.content_hash,
+	recording    = excluded.recording`,
+				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, p.parentRef, it.Level, it.Index,
+				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, p.ratingLevel, p.playableInt, it.ChildCount, it.LeafCount,
+				p.unavailableStr, p.hintsStr, p.fieldsStr, it.ETag, addedAt, nowUnix, seenAt, pinInt, p.hash, it.Recording,
+			); err != nil {
+				return 0, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
+			}
+			fts := plan.fts[i]
+			if fts.remove {
+				if err := sqliteDeleteFTS(ctx, tx, seq); err != nil {
+					return 0, fmt.Errorf("pluginitems: kind item %q search: %w", it.ID, err)
+				}
+			}
+			if doc := fts.insert; doc != nil {
+				if err := sqliteInsertFTS(ctx, tx, seq, it.Ref, kind.LibraryID, doc.title, doc.fields, doc.people); err != nil {
+					return 0, fmt.Errorf("pluginitems: kind item %q search: %w", it.ID, err)
+				}
+			}
+		}
+
+		// Replace indexed fields for this item. An existing item's rows are
+		// diffed against what is stored: a typical republish changes few or
+		// no indexed values, and rewriting every row churned five indexes
+		// per field inside the write transaction.
+		if err := writeItemFieldsTx(ctx, tx, isPG, it.ID, it.Ref, plan.fields[i], fieldConflictCols); err != nil {
+			return 0, err
+		}
+
+		if lv, _, ok := kind.Decl.Level(it.Level); ok && lv.Members {
+			if err := writeMembersTx(ctx, tx, isPG, it.Ref, len(it.Members), p.membersJSON); err != nil {
+				return 0, fmt.Errorf("pluginitems: kind item %q members: %w", it.ID, err)
 			}
 		}
 
 		// Replace artwork rows for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_art WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return res, err
+			return 0, fmt.Errorf("pluginitems: kind item %q: %w", it.ID, err)
 		}
 		for _, a := range it.Art {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_art(item_ref, role, url, width, height) VALUES(?, ?, ?, ?, ?)`,
 				string(it.Ref), a.Role, a.URL, a.Width, a.Height); err != nil {
-				return res, err
+				return 0, fmt.Errorf("pluginitems: kind item %q art %q: %w", it.ID, a.Role, err)
 			}
 		}
 	}
 
+	if err := applyRecordingTallyDeltaTx(ctx, tx, kind.LibraryID, recordingDelta); err != nil {
+		return 0, err
+	}
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
-		return res, err
+		return 0, err
 	}
-	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, fieldTallyDelta)
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, plan.fieldTally)
 	if err != nil {
-		return res, err
+		return 0, err
 	}
-	if err := applyPersonTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, kind.Decl, personTallyDelta, emptiedText); err != nil {
-		return res, err
+	if err := applyPersonTallyDeltaTx(ctx, tx, isPG, kind.LibraryID, kind.Decl, plan.personTally, emptiedText); err != nil {
+		return 0, err
 	}
-	if parentTally != nil {
-		if err := applyParentTallyDeltaTx(ctx, tx, kind.LibraryID, parentTally.delta); err != nil {
-			return res, err
-		}
+	if err := applyParentTallyDeltaTx(ctx, tx, kind.LibraryID, plan.parentTally); err != nil {
+		return 0, err
 	}
 	if bumpGen {
 		total, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, nowUnix, markOK)
+		return total, err
+	}
+	return 0, nil
+}
+
+// queryItemsByRef loads full KindItems (including art) for refs ordered to match refs. It closes the plugin_items cursor before querying
+// plugin_item_art so PostgreSQL pgx connections never see two open cursors on
+// the same transaction.
+func queryItemsByRef(ctx context.Context, tx queryer, refs []core.ItemRef) ([]core.KindItem, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(refs))
+	args := make([]any, len(refs))
+	for i, r := range refs {
+		placeholders[i] = "?"
+		args[i] = string(r)
+	}
+	inClause := strings.Join(placeholders, ",")
+	rows, err := tx.QueryContext(ctx, `SELECT `+itemCols+` FROM plugin_items WHERE item_ref IN (`+inClause+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]core.KindItem, 0, len(refs))
+	for rows.Next() {
+		it, _, _, err := scanItemRow(rows)
 		if err != nil {
-			return res, err
+			rows.Close()
+			return nil, err
 		}
-		res.totalItems = total
+		items = append(items, it)
 	}
-	if err := tx.Commit(); err != nil {
-		return upsertChunkResult{}, err
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
-	if res.added > 0 || res.updated > 0 {
-		s.noteWrite()
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
-	return res, nil
+	if len(items) == 0 {
+		return nil, nil
+	}
+	byRefIdx := make(map[core.ItemRef][]int, len(items))
+	for i := range items {
+		byRefIdx[items[i].Ref] = append(byRefIdx[items[i].Ref], i)
+	}
+	artRows, err := tx.QueryContext(ctx,
+		`SELECT item_ref, role, url, width, height FROM plugin_item_art WHERE item_ref IN (`+inClause+`) ORDER BY item_ref, role`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer artRows.Close()
+	for artRows.Next() {
+		var refStr, role, url string
+		var w, h int64
+		if err := artRows.Scan(&refStr, &role, &url, &w, &h); err != nil {
+			return nil, err
+		}
+		art := core.KindArtRef{Role: role, URL: url, Width: int(w), Height: int(h)}
+		for _, idx := range byRefIdx[core.ItemRef(refStr)] {
+			items[idx].Art = append(items[idx].Art, art)
+		}
+	}
+	if err := artRows.Err(); err != nil {
+		return nil, err
+	}
+	byRef := make(map[core.ItemRef]core.KindItem, len(items))
+	for _, it := range items {
+		byRef[it.Ref] = it
+	}
+	ordered := make([]core.KindItem, 0, len(items))
+	for _, ref := range refs {
+		if it, ok := byRef[ref]; ok {
+			ordered = append(ordered, it)
+		}
+	}
+	return ordered, nil
+}
+
+// queryer is a read handle: the pool, or a transaction.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type fieldRowKey struct {
+	field string
+	text  string
+	intV  int64
+}
+
+// existingFieldRow is one stored plugin_item_fields row of an item being
+// rewritten.
+type existingFieldRow struct {
+	key  fieldRowKey
+	real float64
+	fold string
+}
+
+// lookupExistingFieldRows loads every stored indexed field row for refs,
+// grouped by item, in primary-key order.
+func lookupExistingFieldRows(ctx context.Context, tx queryer, refs []core.ItemRef) (map[core.ItemRef][]existingFieldRow, error) {
+	out := make(map[core.ItemRef][]existingFieldRow, len(refs))
+	const chunkSize = 250
+	for start := 0; start < len(refs); start += chunkSize {
+		end := min(start+chunkSize, len(refs))
+		chunk := refs[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = string(r)
+		}
+		rows, err := tx.QueryContext(ctx,
+			`SELECT item_ref, field, v_text, v_int, v_real, v_fold FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) ORDER BY item_ref, field, v_text, v_int`,
+			args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var refStr string
+			var r existingFieldRow
+			if err := rows.Scan(&refStr, &r.key.field, &r.key.text, &r.key.intV, &r.real, &r.fold); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[core.ItemRef(refStr)] = append(out[core.ItemRef(refStr)], r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+type itemFieldDiff struct {
+	removed []fieldRowKey
+	written []IndexedFieldValue
+}
+
+// diffItemFields keeps unchanged rows out of the write, including their
+// secondary indexes. Last occurrence wins for duplicate keys.
+func diffItemFields(old []existingFieldRow, fields []IndexedFieldValue) itemFieldDiff {
+	var diff itemFieldDiff
+	last := make(map[fieldRowKey]int, len(fields))
+	for i, fv := range fields {
+		last[fieldRowKey{field: fv.Field, text: fv.Text, intV: fv.Int}] = i
+	}
+	stored := make(map[fieldRowKey]existingFieldRow, len(old))
+	for _, r := range old {
+		stored[r.key] = r
+		if _, keep := last[r.key]; !keep {
+			diff.removed = append(diff.removed, r.key)
+		}
+	}
+	for i, fv := range fields {
+		k := fieldRowKey{field: fv.Field, text: fv.Text, intV: fv.Int}
+		if last[k] != i {
+			continue
+		}
+		if r, ok := stored[k]; ok && r.real == fv.Real && r.fold == fv.Fold {
+			continue
+		}
+		diff.written = append(diff.written, fv)
+	}
+	return diff
+}
+
+func writeItemFieldsTx(ctx context.Context, tx *sql.Tx, isPG bool, id string, ref core.ItemRef, diff itemFieldDiff, conflictCols string) error {
+	refStr := string(ref)
+	for _, k := range diff.removed {
+		var err error
+		if isPG {
+			_, err = tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND md5(v_text) = ? AND v_text = ? AND v_int = ?`,
+				refStr, k.field, pgTextMD5(k.text), k.text, k.intV)
+		} else {
+			_, err = tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ? AND field = ? AND v_text = ? AND v_int = ?`,
+				refStr, k.field, k.text, k.intV)
+		}
+		if err != nil {
+			return fmt.Errorf("pluginitems: kind item %q field %q: %w", id, k.field, err)
+		}
+	}
+	for _, fv := range diff.written {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(`+conflictCols+`) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+			refStr, fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
+			return fmt.Errorf("pluginitems: kind item %q field %q: %w", id, fv.Field, err)
+		}
+	}
+	return nil
 }

@@ -275,8 +275,33 @@ func (i *instance) writePersonItem(w http.ResponseWriter, r *http.Request, v *fr
 	}
 	grants, imgs := i.issuePersonGrants(r, []frontend.PersonDetail{person})
 	dto := i.personItemDTO(person, grants[0], imgs[0], true)
+	i.addPersonWorkCounts(r, v, person, dto)
 	i.replyItems(w, r, dto)
 	return true
+}
+
+// addPersonWorkCounts sets MovieCount and SeriesCount on a person's detail
+// item. Jellyfin Web (itemsByName.js) and Emby build a person's Movies and
+// Shows sections only when these counts are set, then list each with
+// IncludeItemTypes and PersonIds; the counts come from that same query so a
+// shown section is never empty. Plugin people (authors, narrators) have no
+// catalogue credits.
+func (i *instance) addPersonWorkCounts(r *http.Request, v *frontend.Viewer, person frontend.PersonDetail, dto map[string]any) {
+	if r == nil || person.TMDB <= 0 || frontend.IsPluginPersonID(person.TMDB) || person.KnownFor == "MusicArtist" {
+		return
+	}
+	for _, c := range []struct {
+		typ   frontend.MediaType
+		field string
+	}{{frontend.TypeMovie, "MovieCount"}, {frontend.TypeShow, "SeriesCount"}} {
+		q := frontend.ItemQuery{Limit: 1, Types: []frontend.MediaType{c.typ}}
+		q.Filter.Person = person.TMDB
+		page, err := i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
+		if err != nil || page.Total <= 0 {
+			continue
+		}
+		dto[c.field] = page.Total
+	}
 }
 
 func personExcluded(q frontend.ItemQuery) bool {

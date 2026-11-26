@@ -36,13 +36,17 @@ func (c *readCapabilityStore) mint(sessionID, clientID string, userID int64) str
 	if c == nil || sessionID == "" {
 		return ""
 	}
-	token := rand.Text()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	binding := readCapability{sessionID: sessionID, clientID: clientID, userID: userID}
 	if old, ok := c.bySession[sessionID]; ok {
+		if c.byToken[old] == binding {
+			return old
+		}
 		delete(c.byToken, old)
 	}
-	c.byToken[token] = readCapability{sessionID: sessionID, clientID: clientID, userID: userID}
+	token := rand.Text()
+	c.byToken[token] = binding
 	c.bySession[sessionID] = token
 	return token
 }
@@ -80,6 +84,7 @@ func (c *readCapabilityStore) token(sessionID string) string {
 
 func (s *Server) bindTranscodeStarted(entry *transcodeEntry, dec frontend.Decision, offset time.Duration) {
 	entry.decision, entry.offset, entry.started, entry.updatedAt = dec, offset, true, s.now()
+	entry.requested.restartEncoder = false
 	s.transcodes.put(entry)
 	s.mintReadCapability(entry.id, entry.clientID, entry.userID)
 	s.retireSupersededTranscodes(entry)

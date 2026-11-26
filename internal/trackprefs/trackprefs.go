@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,6 +337,13 @@ func (s *Service) ForgetChoice(ctx context.Context, user int64, key core.RatingK
 	return err
 }
 
+// SubtitleOff reports whether the viewer's remembered subtitle choice for
+// key's title is Off.
+func (s *Service) SubtitleOff(ctx context.Context, user int64, key core.RatingKey) (bool, error) {
+	c, ok, err := s.choice(ctx, user, key, "subtitle")
+	return ok && c.Off, err
+}
+
 func (s *Service) Forget(ctx context.Context, user, show int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM trackprefs_memory WHERE user_id=? AND show_id=?`, user, show)
 	return err
@@ -457,8 +465,12 @@ func rankStreamLanguage(t core.StreamInfo, want []string) int {
 	return 0
 }
 
+// nonMainAudioPenalty outweighs every bonus pick can add (language order,
+// default flag, remembered choice), so a main audio track always wins.
+const nonMainAudioPenalty = 1_000_000
+
 func pick(streams []core.StreamInfo, kind string, want []string, style string, forcedOnly bool, memory *Choice, original string) int {
-	best, score := -1, -100000
+	best, score := -1, math.MinInt
 	for i, t := range streams {
 		if t.Type != kind || (forcedOnly && !forced(t)) {
 			continue
@@ -476,12 +488,21 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 		}
 		if kind == "audio" && matched == 0 && rankStreamLanguage(t, []string{original}) > 0 {
 			// No preference matched this stream: the title's original
-			// language outranks an arbitrary first stream, but not the
-			// file's default flag.
-			n += 2
+			// language outranks an arbitrary first stream. A viewer who
+			// asked for languages this file lacks gets the original over the
+			// file's default flag (on a dubbed release that marks a third
+			// language's dub); with no preference at all the flag still wins.
+			if len(want) > 0 {
+				n += 8
+			} else {
+				n += 2
+			}
 		}
 		if kind == "audio" && langtag.TrackRole(t.Title, t.Commentary, t.VisualImpaired) != langtag.RoleMain {
-			n -= 150
+			// Commentary and audio description play only when the file
+			// has no main audio track: a wanted language, a remembered
+			// choice or the default flag never lifts them above one.
+			n -= nonMainAudioPenalty
 		}
 		if kind == "subtitle" {
 			if (style == "sdh") == sdh(t) {
@@ -639,8 +660,11 @@ func (s *Service) serverLanguage() string {
 // list, or user 0's list when the viewer saved none. PreferOriginal ranks the
 // title original first. Otherwise the order is that list, then the catalog
 // language. The title's original language is deliberately NOT a ranked
-// preference: pick falls back to the file's default-flagged track and only
-// then to the original language.
+// preference: a file track in any language of this order wins. When none
+// matches, pick prefers the original language over the file's
+// default-flagged track (on a dubbed release the flag marks a third
+// language's dub); only with an empty order does the default flag win, with
+// the original language next.
 func AudioOrder(audio []string, server, original string, preferOriginal bool) []string {
 	var want []string
 	if preferOriginal {

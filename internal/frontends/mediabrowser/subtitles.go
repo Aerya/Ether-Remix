@@ -37,6 +37,10 @@ func (i *instance) subtitle(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if _, ok := i.authorizePlaybackItem(r, viewer, key); !ok {
+		http.NotFound(w, r)
+		return
+	}
 	vals := route.Query(r.URL.Query(), "PlaySessionId")
 	if len(vals) != 1 || vals[0] == "" {
 		http.Error(w, "Missing session", 400)

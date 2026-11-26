@@ -57,6 +57,9 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
+	if s.createCatchUpQueue(w, r) {
+		return
+	}
 	var start frontend.RatingKey
 	if q.Has("key") {
 		start = keyFromPath(q.Get("key"))
@@ -124,10 +127,15 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 			path, _, _ = strings.Cut(path, "?")
 			if m := reMetadataPath.FindStringSubmatch(path); len(m) > 0 {
 				if k, err := frontend.ParseRatingKey(m[1]); err == nil && k.Kind() == frontend.KindShow {
-					keepSpecials := start != 0 && s.queueSpecial(ctx, pr, start)
+					eps, _ := s.metadataGrandchildren(ctx, pr, k)
+					byKey := make(map[frontend.RatingKey]*frontend.Title, len(eps))
+					for n := range eps {
+						byKey[eps[n].Key] = &eps[n]
+					}
+					keepSpecials := s.isQueueSpecial(ctx, pr, byKey[start])
 					filtered := keys[:0]
 					for _, item := range keys {
-						if s.queueSpecial(ctx, pr, item) == keepSpecials {
+						if s.isQueueSpecial(ctx, pr, byKey[item]) == keepSpecials {
 							filtered = append(filtered, item)
 						}
 					}
@@ -257,13 +265,15 @@ func (s *Server) expandQueueURI(ctx context.Context, pr *Request, uri string, co
 		return keys, nil
 	}
 	ep := keys[0]
-	season := ep.Season()
-	if s.episodeOrder() != nil {
-		if n, _, _, ok := s.episodeOrder().Position(ctx, pr.User, ep); ok {
-			season = n
-		}
+	title, err := s.metadataTitle(ctx, pr, ep)
+	if err != nil || title == nil {
+		return keys, nil
 	}
-	eps, err := s.metadataChildren(ctx, pr, frontend.SeasonKey(ep.TMDB(), season))
+	parent := s.presentedParent(ctx, pr, title)
+	if parent == 0 {
+		return keys, nil
+	}
+	eps, err := s.metadataChildren(ctx, pr, parent)
 	if err != nil {
 		return keys, nil
 	}
@@ -273,7 +283,7 @@ func (s *Server) expandQueueURI(ctx context.Context, pr *Request, uri string, co
 			for _, candidate := range eps[i+1:] {
 				// Presented seasons: an episode order may place a TMDB special
 				// inside a regular season, where it belongs in the queue.
-				if (ep.Season() > 0 && s.queueSpecial(ctx, pr, candidate.Key)) || (!candidate.Released.IsZero() && candidate.Released.After(s.now())) {
+				if (title.Season > 0 && s.isQueueSpecial(ctx, pr, &candidate)) || (!candidate.Released.IsZero() && candidate.Released.After(s.now())) {
 					continue
 				}
 				candidates = append(candidates, candidate)
@@ -285,13 +295,13 @@ func (s *Server) expandQueueURI(ctx context.Context, pr *Request, uri string, co
 	return keys, nil
 }
 
-// queueSpecial identifies a special outside an explicitly interleaved order.
-func (s *Server) queueSpecial(ctx context.Context, pr *Request, key frontend.RatingKey) bool {
-	if key.Kind() != frontend.KindEpisode || key.Season() != 0 {
+// isQueueSpecial identifies a special outside an explicitly interleaved order.
+func (s *Server) isQueueSpecial(ctx context.Context, pr *Request, t *frontend.Title) bool {
+	if t == nil || t.Season != 0 {
 		return false
 	}
-	if s.episodeOrder() != nil {
-		if season, _, _, ok := s.episodeOrder().Position(ctx, pr.User, key); ok && season > 0 {
+	if s.episodeOrder() != nil && viewerEpisodeOrder(t) {
+		if season, _, _, ok := s.episodeOrder().Position(ctx, pr.User, t.Key); ok && season > 0 {
 			return false
 		}
 	}
@@ -494,6 +504,10 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 }
 
 func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQueue, playIntent bool) {
+	if frontend.IsCatchUpID(pq.LiveSession) {
+		s.writeCatchUpQueue(w, r, pq)
+		return
+	}
 	if pq.LiveSession != "" {
 		s.writeLivePlayQueue(w, r, pq)
 		return
@@ -670,16 +684,23 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	// credits snapshot so per-row metadata() calls never hit plexguid_mappings
 	// or plexguid_title_credits one row at a time.
 	ctx = s.withPlexCredits(ctx, nil, nil, false)
-	for _, row := range rows {
-		var md model.Metadata
+	var slotPage *slotMediaPage
+	if len(rows) > 1 {
+		slotPage = &slotMediaPage{}
+	}
+	if len(rows) > 0 {
+		mc.Metadata = make([]model.Metadata, len(rows))
+	}
+	for i, row := range rows {
+		md := &mc.Metadata[i]
 		if row.extra != nil {
-			md = *row.extra
+			*md = *row.extra
 		} else {
-			md = s.metadata(ctx, pr, row.t, renderOpts{detail: true, media: true, listRender: len(rows) > 1 && row.it.ID != selItem.ID, state: state})
+			s.metadataInto(ctx, pr, row.t, renderOpts{detail: true, media: true, listRender: len(rows) > 1 && row.it.ID != selItem.ID, state: state, slotPage: slotPage}, md)
 		}
 		md.PlayQueueItemID = row.it.ID
-		mc.Metadata = append(mc.Metadata, md)
 	}
+	s.finishSlotPage(ctx, pr, slotPage)
 	applyExcludedElements(mc.Metadata, excludedElements(q))
 	mc.Size = len(mc.Metadata)
 	s.write(w, r, mc)

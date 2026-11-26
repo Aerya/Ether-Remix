@@ -24,6 +24,11 @@ type MediaCredit = core.MediaCredit
 type TitleReading = core.TitleReading
 type TitleFact = core.TitleFact
 
+// Lyrics are a title's words, timed or plain.
+type Lyrics = core.Lyrics
+type LyricLine = core.LyricLine
+type LyricWord = core.LyricWord
+
 const (
 	MediaClassVideo     = core.MediaClassVideo
 	MediaClassMusic     = core.MediaClassMusic
@@ -45,6 +50,7 @@ const (
 	MediaRoleShow       = core.MediaRoleShow
 	MediaRoleEpisode    = core.MediaRoleEpisode
 	MediaRoleCollection = core.MediaRoleCollection
+	MediaRolePlaylist   = core.MediaRolePlaylist
 )
 
 type Page = core.Page

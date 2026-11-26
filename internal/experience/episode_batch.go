@@ -31,7 +31,11 @@ func (b EpisodeBatch) Load(ctx context.Context, viewer *core.User, ts []core.Tit
 	withSeasons := map[core.RatingKey]bool{}
 	for i := range ts {
 		if ts[i].Type == core.TypeSeason {
-			withSeasons[core.ShowKey(ts[i].Key.TMDB())] = true
+			show := ts[i].ShowKey
+			if show == 0 {
+				show = ts[i].Key.Parent()
+			}
+			withSeasons[show] = true
 		}
 	}
 	var shows []core.RatingKey

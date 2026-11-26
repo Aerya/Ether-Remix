@@ -75,6 +75,9 @@ type ReleaseInfo struct {
 	Proper     bool   `json:"proper,omitempty"`
 	Repack     bool   `json:"repack,omitempty"`
 	Container  string `json:"container,omitempty"`
+	// CourRelative marks episodes counted within Cour ("S3 Part 2 - 03"),
+	// not within the season ("S04.Part.2.S04E09") (additive).
+	CourRelative bool `json:"courRelative,omitempty"`
 }
 
 // Release is an indexer search result for a title.
@@ -89,6 +92,8 @@ type Release struct {
 	Indexer    string      `json:"indexer"`              // indexer name
 	Name       string      `json:"name"`                 // release name
 	NZBURL     string      `json:"nzbUrl"`
+	NZBRef     string      `json:"-"` // opaque plugin NZB reference
+	TorrentRef string      `json:"-"` // opaque plugin torrent descriptor reference
 	Size       int64       `json:"size"`
 	PubDate    time.Time   `json:"pubDate"`
 	Grabs      int         `json:"grabs,omitempty"`
@@ -150,6 +155,7 @@ type Release struct {
 	// the addon answered with; it and StreamHeaders (request headers the
 	// addon requires) can carry the addon's credentials, so they never
 	// leave the server. StreamOrigin is the owner-configured addon origin
+	PluginStream bool `json:"-"` // direct HTTP link supplied by an Ether plugin
 	// (scheme://host:port), the only private address the URL may reach.
 	// StreamDebrid names the provider required to unlock StreamURL, a verified
 	// file link, without adding or checking a magnet. The URL stays server-side.
@@ -431,70 +437,31 @@ func (r *Resolution) MatchesVersion(id string) bool {
 	return r != nil && (r.Release.ID == id || id != "" && r.VersionSelector == id)
 }
 
-// Media scopes a quality profile or rule. Every profile serves exactly one
-// media; a client rule may leave it empty to apply to every media.
+// Media scopes a client quality rule to the films or the episodes it
+// applies to; an empty scope applies to every title. Quality profiles have
+// no media: a library chooses its profile.
 const (
 	MediaAny   = ""
 	MediaMovie = "movie"
 	MediaTV    = "tv"
 )
 
-// ProfileMediaTypes lists the media a quality profile can serve, in the
-// order the console shows them. It is the one list: validation, the
-// upgrade split, shared-name resolution and the console's media options
-// (PROFILE_MEDIA in web/src/lib/releases.ts) all follow it. Adding a media
-// such as anime means adding its constant here and to PROFILE_MEDIA, plus
-// classifying titles into it (titleMedia in the resolver); nothing else
-// is restructured.
-var ProfileMediaTypes = []string{MediaMovie, MediaTV}
-
-// IsProfileMedia reports whether media is one a profile can serve.
-func IsProfileMedia(media string) bool {
-	for _, m := range ProfileMediaTypes {
-		if m == media {
-			return true
-		}
-	}
-	return false
-}
-
-// FindProfile returns the profile named name that serves media. Names are
-// unique per media, so the same name can serve movies and shows as two
-// profiles; with no media it is the first profile of that name.
-func FindProfile(profiles []QualityProfile, name, media string) (QualityProfile, bool) {
+// FindProfile returns the profile named name.
+func FindProfile(profiles []QualityProfile, name string) (QualityProfile, bool) {
 	if name == "" {
 		return QualityProfile{}, false
 	}
 	for _, p := range profiles {
-		if p.Name == name && MediaApplies(p.MediaType, media) {
+		if p.Name == name {
 			return p, true
 		}
 	}
 	return QualityProfile{}, false
 }
 
-// ProfileServesEveryMedia reports whether a profile named name exists for
-// every profile media, which makes the name shared policy before a title's
-// media is known.
-func ProfileServesEveryMedia(profiles []QualityProfile, name string) bool {
-	for _, m := range ProfileMediaTypes {
-		found := false
-		for _, p := range profiles {
-			if p.Name == name && p.MediaType == m {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-// MediaApplies reports whether a scope (a profile or rule's MediaType)
-// applies when choosing for media. An empty media means the caller has no
-// title context and accepts any scope.
+// MediaApplies reports whether a rule's media scope applies when choosing
+// for media. An empty media means the caller has no title context and
+// accepts any scope.
 func MediaApplies(scope, media string) bool {
 	if media == MediaAny {
 		return true
@@ -502,27 +469,21 @@ func MediaApplies(scope, media string) bool {
 	return scope == MediaAny || scope == media
 }
 
-// MediaTypeForApp maps a Starr app to the media its profiles describe.
-func MediaTypeForApp(app string) string {
-	switch strings.ToLower(strings.TrimSpace(app)) {
-	case "radarr":
-		return MediaMovie
-	case "sonarr":
-		return MediaTV
-	}
-	return MediaAny
-}
-
 // ProfileImport records where a synced quality profile came from. Manual
 // profiles leave it nil; a profile with Import set is updated in place by
 // the guide sync instead of being duplicated.
 type ProfileImport struct {
-	Source   string    `json:"source"`             // "trash" or "dictionarry"
-	App      string    `json:"app"`                // "radarr" or "sonarr"
-	Profile  string    `json:"profile"`            // source profile id/slug
-	TrashID  string    `json:"trashId,omitempty"`  // source trash_id
-	ScoreSet string    `json:"scoreSet,omitempty"` // TRaSH score set
-	Groups   []string  `json:"groups,omitempty"`   // selected cf-group trash IDs
+	Source   string   `json:"source"`             // "trash" or "dictionarry"
+	App      string   `json:"app"`                // "radarr" or "sonarr"
+	Profile  string   `json:"profile"`            // source profile id/slug
+	TrashID  string   `json:"trashId,omitempty"`  // source trash_id
+	ScoreSet string   `json:"scoreSet,omitempty"` // TRaSH score set
+	Groups   []string `json:"groups,omitempty"`   // selected cf-group trash IDs
+	// Database is the custom Profilarr database (config ProfileDatabase.ID)
+	// a "dictionarry" import came from; "" is the official Dictionarry.
+	Database string `json:"database,omitempty"`
+	// NoSync keeps the provenance but stops QualitySync updating the profile.
+	NoSync   bool      `json:"noSync,omitempty"`
 	SyncedAt time.Time `json:"syncedAt,omitempty"`
 }
 
@@ -541,8 +502,9 @@ const (
 	AudioLanguageModePreferred = "preferred"
 )
 
-// QualityProfile is an owner-editable rule set ranking releases for a class
-// of client.
+// QualityProfile is an owner-editable rule set ranking releases for the
+// libraries that choose it. One profile serves films and episodes alike;
+// the Episode* fields only apply to episodes.
 type QualityProfile struct {
 	ReleaseRules []ReleaseRule `json:"releaseRules,omitempty"`
 	// PluginScores lists the plugin ranking steps the profile uses, each
@@ -566,9 +528,8 @@ type QualityProfile struct {
 	// reach this score. Lower scores remain playable. nil sets no preference.
 	MinCustomFormatScore *int           `json:"minCustomFormatScore,omitempty"`
 	Name                 string         `json:"name"`
-	MediaType            string         `json:"mediaType,omitempty"` // "movie" or "tv" (ProfileMediaTypes); empty only in configs saved before profiles were per media
-	Import               *ProfileImport `json:"import,omitempty"`    // set on imported, syncable profiles
-	MaxHeight            int            `json:"maxHeight"`           // cap, e.g. 1080
+	Import               *ProfileImport `json:"import,omitempty"` // set on imported, syncable profiles
+	MaxHeight            int            `json:"maxHeight"`        // cap, e.g. 1080
 	// ConfiguredMaxHeight is MaxHeight as the owner configured it,
 	// before download reshaping or a client's caps clamped the
 	// effective MaxHeight. -1 means the owner set no ceiling ("Any");
@@ -656,9 +617,6 @@ func (p QualityProfile) ComputeSelectionKey() string {
 	// Provenance is not part of the ranking definition: a sync updating
 	// SyncedAt must not change the key that keys resumes and warm entries.
 	p.Import = nil
-	// Neither is the media a profile serves: splitting a shared profile
-	// into its movie and TV copies keeps every remembered release valid.
-	p.MediaType = ""
 	b, err := json.Marshal(p)
 	if err != nil {
 		return ""

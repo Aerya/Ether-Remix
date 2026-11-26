@@ -7,9 +7,9 @@ func testSessionPolicy(p core.Protocol) core.SessionPolicy {
 	case "plex":
 		return core.SessionPolicy{ExternalAdmission: true}
 	case "jellyfin":
-		return core.SessionPolicy{DistributedBindings: true, PlainSourceGone: true}
+		return core.SessionPolicy{DistributedBindings: true, PlainSourceGone: true, ReopenKeepsDirectFile: true}
 	case "emby":
-		return core.SessionPolicy{DistributedBindings: true, MasterMetadata: true}
+		return core.SessionPolicy{DistributedBindings: true, MasterMetadata: true, ReopenKeepsDirectFile: true}
 	}
 	return core.SessionPolicy{}
 }

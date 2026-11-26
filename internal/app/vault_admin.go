@@ -26,6 +26,10 @@ func vaultJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func vaultError(w http.ResponseWriter, err error) {
+	if errors.Is(err, vault.ErrNZBRetained) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if errors.Is(err, vault.ErrNotFound) {
 		http.Error(w, "Release not found", 404)
 		return

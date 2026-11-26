@@ -207,7 +207,7 @@ func noReadWait(ctx context.Context) bool {
 // slot while waiting for child hydrations can exhaust every slot and deadlock
 // discovery. No queue accumulates behind these two jobs; later reads can retry.
 func (c *Catalog) loadSeasonsLater(ctx context.Context, showID int64, seasons []core.Title) {
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		return
 	}
 	c.hydrateMu.Lock()

@@ -39,13 +39,20 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 	}
 	var items []core.Title
 	for start := 0; start < len(shows); start += scheduleBatch {
-		batch := shows[start:min(start+scheduleBatch, len(shows))]
-		args := make([]any, 0, len(batch)+3)
-		for _, k := range batch {
-			args = append(args, int64(k))
+		batch := uniqueRatingKeys(shows[start:min(start+scheduleBatch, len(shows))])
+		if len(batch) == 0 {
+			continue
 		}
-		args = append(args, from.Unix(), until.Unix(), limit)
-		got, err := c.scheduleRows(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND season>0 AND adult=0 AND show_key IN (`+placeholders(len(batch))+`) AND released_ts>=? AND released_ts<? ORDER BY released_ts, key LIMIT ?`, args...)
+		scope, args, err := c.currentEpisodeScope(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, from.Unix(), until.Unix(), orderDateBound(from), orderDateBound(until), limit)
+		got, err := c.scheduleRows(ctx, scope+`SELECT `+prefixedCols("t")+` FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key
+ WHERE e.season>0 AND t.adult=0 AND ((e.uses_layout=0 AND e.air_ts<>0 AND e.air_ts>=? AND e.air_ts<?)
+ OR (e.uses_layout=1 AND e.air_date<>'' AND e.air_date>=? AND e.air_date<?))
+ ORDER BY e.air_ts,e.air_date,e.key LIMIT ?`, args...)
+
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +67,7 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 		return nil, err
 	}
 	for i := range entries {
-		entries[i].SeasonEpisodes = sizes[entries[i].Title.Key.Parent()]
+		entries[i].SeasonEpisodes = sizes[entries[i].Title.ParentKey]
 	}
 	return entries, nil
 }
@@ -68,29 +75,30 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 // seasonSizes reads the highest mirrored episode number of each season
 // the entries belong to.
 func (c *Catalog) seasonSizes(ctx context.Context, entries []ScheduleEntry) (map[core.RatingKey]int, error) {
-	seen := map[core.RatingKey]bool{}
-	var shows []any
-	for _, e := range entries {
-		if k := e.Title.ShowKey; k != 0 && !seen[k] {
-			seen[k] = true
-			shows = append(shows, int64(k))
-		}
+	var shows []core.RatingKey
+	for _, entry := range entries {
+		shows = append(shows, entry.Title.ShowKey)
 	}
+	shows = uniqueRatingKeys(shows)
 	out := map[core.RatingKey]int{}
 	for start := 0; start < len(shows); start += scheduleBatch {
 		batch := shows[start:min(start+scheduleBatch, len(shows))]
-		rows, err := c.db.QueryContext(ctx, `SELECT show_key, season, MAX(episode) FROM catalog_titles WHERE type='episode' AND season>0 AND show_key IN (`+placeholders(len(batch))+`) GROUP BY show_key, season`, batch...)
+		scope, args, err := c.currentEpisodeScope(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := c.db.QueryContext(ctx, scope+`SELECT season_key,MAX(episode) FROM scoped_episodes WHERE season>0 GROUP BY season_key`, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var show int64
-			var season, last int
-			if err := rows.Scan(&show, &season, &last); err != nil {
+			var key core.RatingKey
+			var count int
+			if err := rows.Scan(&key, &count); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			out[core.SeasonKey(core.RatingKey(show).TMDB(), season)] = last
+			out[key] = count
 		}
 		err = rows.Err()
 		rows.Close()
@@ -178,46 +186,139 @@ func (c *Catalog) scheduleRows(ctx context.Context, q string, args ...any) ([]co
 	return out, rows.Err()
 }
 
+type scheduleShowMeta struct {
+	title, contentRating, enforcementRating string
+	certifications                          map[string]string
+	adult                                   bool
+	poster, backdrop                        string
+}
+
+func (c *Catalog) scheduleShowParents(ctx context.Context, items []core.Title) (map[core.RatingKey]*scheduleShowMeta, error) {
+	seen := map[core.RatingKey]bool{}
+	var keys []any
+	for i := range items {
+		if k := items[i].ShowKey; k != 0 && !seen[k] {
+			seen[k] = true
+			keys = append(keys, int64(k))
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	shows := make(map[core.RatingKey]*scheduleShowMeta, len(keys))
+	for start := 0; start < len(keys); start += scheduleBatch {
+		batch := keys[start:min(start+scheduleBatch, len(keys))]
+		rows, err := c.db.QueryContext(ctx, `SELECT key, title, content_rating, enforcement_rating, certifications, adult, poster, backdrop FROM catalog_titles WHERE key IN (`+placeholders(len(batch))+`)`, batch...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key int64
+			var adult int
+			var certsRaw string
+			var meta scheduleShowMeta
+			if err := rows.Scan(&key, &meta.title, &meta.contentRating, &meta.enforcementRating, &certsRaw, &adult, &meta.poster, &meta.backdrop); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			meta.adult = adult != 0
+			meta.certifications = decodeCertifications(certsRaw)
+			shows[core.RatingKey(key)] = &meta
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return shows, nil
+}
+
+// GenresOf reads only the stored genre tags of non-adult mirrored titles.
+// Calendar taste scoring uses it to avoid full title hydration (credits,
+// trailers, aired counts) for hundreds of followed shows and movies.
+func (c *Catalog) GenresOf(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey][]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make(map[core.RatingKey][]string, len(keys))
+	for start := 0; start < len(keys); start += scheduleBatch {
+		batch := keys[start:min(start+scheduleBatch, len(keys))]
+		args := make([]any, len(batch))
+		for i, k := range batch {
+			args[i] = int64(k)
+		}
+		rows, err := c.db.QueryContext(ctx, `SELECT g.key, g.genre FROM catalog_genres g JOIN catalog_titles t ON t.key = g.key WHERE t.adult=0 AND g.key IN (`+placeholders(len(batch))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key int64
+			var genre string
+			if err := rows.Scan(&key, &genre); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rk := core.RatingKey(key)
+			out[rk] = append(out[rk], genre)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (c *Catalog) scheduleEntries(ctx context.Context, items []core.Title) ([]ScheduleEntry, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	if err := c.hydrateSlice(ctx, items); err != nil {
+	if err := c.hydrateVisibilityFacts(ctx, items); err != nil {
 		return nil, err
 	}
-	shows := map[core.RatingKey]*core.Title{}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+
+	shows, err := c.scheduleShowParents(ctx, items)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ScheduleEntry, 0, len(items))
 	for i := range items {
 		t := items[i]
-		if t.ShowKey != 0 {
-			show, ok := shows[t.ShowKey]
-			if !ok {
-				if st, err := c.loadByKey(ctx, t.ShowKey); err == nil {
-					show = &st.t
-				}
-				shows[t.ShowKey] = show
+		if show := shows[t.ShowKey]; show != nil {
+			if t.ContentRating == "" {
+				t.ContentRating = show.contentRating
 			}
-			if show != nil {
-				if t.ContentRating == "" {
-					t.ContentRating = show.ContentRating
-				}
-				if show.Adult {
-					t.Adult = true
-				}
-				if t.ShowTitle == "" {
-					t.ShowTitle = show.Title
-				}
-				if t.BackdropPath == "" {
-					t.BackdropPath = show.BackdropPath
-				}
+			if t.EnforcementRating == "" {
+				t.EnforcementRating = show.enforcementRating
+			}
+			if len(t.ContentRatings) == 0 && len(show.certifications) > 0 {
+				t.ContentRatings = show.certifications
+			}
+			if show.adult {
+				t.Adult = true
+			}
+			if t.ShowTitle == "" {
+				t.ShowTitle = show.title
+			}
+			if t.BackdropPath == "" {
+				t.BackdropPath = show.backdrop
 			}
 		}
 		if t.Adult {
 			continue
 		}
 		e := ScheduleEntry{Title: t, Playable: c.visibleTitle(&t)}
+		if t.Type == core.TypeEpisode && !t.EpisodeAirDate.IsZero() {
+			e.Title.Released = t.EpisodeAirDate
+		}
+
 		if show := shows[t.ShowKey]; show != nil {
-			e.ShowPoster = show.PosterPath
+			e.ShowPoster = show.poster
 		}
 		out = append(out, e)
 	}
@@ -237,6 +338,20 @@ func (c *Catalog) RefreshSchedule(ctx context.Context, show core.RatingKey) erro
 	if show.Kind() != core.KindShow {
 		return nil
 	}
+	parent, err := c.storedTitle(ctx, show)
+	if err == nil {
+		effective, err := c.effectiveEpisodeOrder(ctx, parent)
+		if err != nil {
+			return err
+		}
+		if !parent.Adult && providerLayout(parent, effective.Order) {
+			return c.refreshProviderSchedule(ctx, parent, effective.Order)
+		}
+	}
+	if !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
+		return nil
+	}
+
 	t, err := c.getShow(ctx, show.TMDB())
 	if err != nil {
 		return err

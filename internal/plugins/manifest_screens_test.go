@@ -5,31 +5,13 @@ import "testing"
 func TestValidateScreens(t *testing.T) {
 	valid := func() Manifest {
 		m := baseManifest()
+		m.Ether.Capabilities = append(m.Ether.Capabilities, CapScreens)
 		m.Ether.Contributes.Screens = []ScreenMeta{
 			{
 				ID:    "scores",
 				Title: "Live scores",
 				Icon:  "trophy",
-				Feed:  "scores",
-				Sections: []ScreenSection{
-					{ID: "featured", Type: "hero"},
-					{ID: "leagues", Type: "leagues"},
-					{
-						ID:    "live-now",
-						Type:  "events",
-						Title: "Live now",
-						Query: &ScreenEventQuery{State: []string{"in"}, Window: "today"},
-					},
-					{
-						ID:    "your-teams",
-						Type:  "events",
-						Title: "Your teams",
-						Query: &ScreenEventQuery{Favorites: true, Window: "week"},
-					},
-					{ID: "schedule", Type: "schedule", Title: "Schedule"},
-					{ID: "standings", Type: "table", Title: "Standings", Feed: "scores"},
-					{ID: "picker", Type: "entities", Title: "Follow teams", EntityKind: "team"},
-				},
+				Pages: map[string]DocumentPaths{"index": {"screens/scores.json"}, "game": {"screens/game.json"}},
 			},
 		}
 		return m
@@ -59,60 +41,32 @@ func TestValidateScreens(t *testing.T) {
 			field: "ether.contributes.screens[1].id",
 		},
 		{
-			name: "missing sections",
+			name: "missing pages",
 			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections = nil
+				m.Ether.Contributes.Screens[0].Pages = nil
+			},
+			field: "ether.contributes.screens[0].pages",
+		},
+		{
+			name: "missing index page",
+			mut: func(m *Manifest) {
+				delete(m.Ether.Contributes.Screens[0].Pages, "index")
+			},
+			field: "ether.contributes.screens[0].pages",
+		},
+		{
+			name: "0.3.19 sections refused",
+			mut: func(m *Manifest) {
+				m.Ether.Contributes.Screens[0].Sections = []byte(`[{"type":"hero"}]`)
 			},
 			field: "ether.contributes.screens[0].sections",
 		},
 		{
-			name: "unknown section type",
+			name: "pages need the screens capability",
 			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[0].Type = "carousel"
+				m.Ether.Capabilities = nil
 			},
-			field: "ether.contributes.screens[0].sections[0].type",
-		},
-		{
-			name: "duplicate section id",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[1].ID = "featured"
-			},
-			field: "ether.contributes.screens[0].sections[1].id",
-		},
-		{
-			name: "query on table rejected",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[5].Query = &ScreenEventQuery{Window: "today"}
-			},
-			field: "ether.contributes.screens[0].sections[5].query",
-		},
-		{
-			name: "invalid event state",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[2].Query.State = []string{"live"}
-			},
-			field: "ether.contributes.screens[0].sections[2].query.state[0]",
-		},
-		{
-			name: "duplicate event state",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[2].Query.State = []string{"in", "in"}
-			},
-			field: "ether.contributes.screens[0].sections[2].query.state[1]",
-		},
-		{
-			name: "invalid window",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[2].Query.Window = "month"
-			},
-			field: "ether.contributes.screens[0].sections[2].query.window",
-		},
-		{
-			name: "leagues on non-leagues section",
-			mut: func(m *Manifest) {
-				m.Ether.Contributes.Screens[0].Sections[0].Leagues = []ScreenLeague{{ID: "l1", Name: "League 1"}}
-			},
-			field: "ether.contributes.screens[0].sections[0].leagues",
+			field: "ether.contributes.screens[0].pages",
 		},
 		{
 			name: "unknown frontend",

@@ -199,6 +199,11 @@ func serveSingleRangeBody(w http.ResponseWriter, r *http.Request, status int, st
 			http.Error(w, "source changed; restart playback", http.StatusConflict)
 			return err
 		}
+		if errors.Is(err, core.ErrOriginalLost) {
+			h.Set("X-Ether-Playback-Error", "original_lost")
+			w.WriteHeader(http.StatusConflict)
+			return err
+		}
 		h.Set("Retry-After", "2")
 		http.Error(w, "media source temporarily unavailable", http.StatusServiceUnavailable)
 		return err

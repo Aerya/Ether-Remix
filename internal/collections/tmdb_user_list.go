@@ -46,16 +46,15 @@ func (tmdbUserListKind) Validate(ve *ValidationError, path string, src core.Coll
 	}
 }
 func (tmdbUserListKind) Gather(g *Gather) {
+	if !g.NeedTMDB() {
+		return
+	}
 	id, err := parseTMDBUserList(g.Src.URL)
 	if err != nil {
 		g.Warn("%v", err)
 		return
 	}
 	for page := 1; page <= maxMembers; page++ {
-		if g.Svc.api == nil || g.Svc.api.c == nil {
-			g.Warn("TMDB is not configured")
-			return
-		}
 		p, err := tmdb.GetUserListPage(g.Ctx, g.Svc.api.c, id, page)
 		if err != nil {
 			var he *tmdb.HTTPError

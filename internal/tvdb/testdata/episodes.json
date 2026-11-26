@@ -1,0 +1,91 @@
+{
+  "first": {
+    "status": "success",
+    "data": {
+      "series": {
+        "id": 121361,
+        "originalLanguage": "eng"
+      },
+      "episodes": [
+        {
+          "id": 3254641,
+          "seriesId": 121361,
+          "name": "Winter Is Coming",
+          "aired": "2011-04-17",
+          "runtime": 61,
+          "image": "https://artworks.thetvdb.com/banners/episodes/121361/65970d5bd8d2a.jpg",
+          "number": 1,
+          "absoluteNumber": 1,
+          "seasonNumber": 1
+        }
+      ]
+    },
+    "links": {
+      "next": "https://api4.thetvdb.com/v4/series/121361/episodes/official?season=1&page=1",
+      "total_items": 2
+    }
+  },
+  "second": {
+    "status": "success",
+    "data": {
+      "series": {
+        "id": 121361,
+        "originalLanguage": "eng"
+      },
+      "episodes": [
+        {
+          "id": 3436411,
+          "seriesId": 121361,
+          "name": "The Kingsroad",
+          "aired": "2011-04-24",
+          "runtime": 55,
+          "image": "https://artworks.thetvdb.com/banners/episodes/121361/65970e053d1f0.jpg",
+          "number": 2,
+          "absoluteNumber": 2,
+          "seasonNumber": 1
+        }
+      ]
+    },
+    "links": {
+      "next": null,
+      "total_items": 2
+    }
+  },
+  "updated": {
+    "status": "success",
+    "data": {
+      "series": {
+        "id": 121361,
+        "originalLanguage": "eng"
+      },
+      "episodes": [
+        {
+          "id": 3436411,
+          "seriesId": 121361,
+          "name": "The Kingsroad",
+          "aired": "2011-04-24",
+          "runtime": 55,
+          "image": "https://artworks.thetvdb.com/banners/episodes/121361/65970e053d1f0.jpg",
+          "number": 2,
+          "absoluteNumber": 2,
+          "seasonNumber": 1
+        },
+        {
+          "id": 3436421,
+          "seriesId": 121361,
+          "name": "Lord Snow",
+          "aired": "2011-05-01",
+          "runtime": 57,
+          "image": "https://artworks.thetvdb.com/banners/episodes/121361/65970e276bb38.jpg",
+          "number": 3,
+          "absoluteNumber": 3,
+          "seasonNumber": 1
+        }
+      ]
+    },
+    "links": {
+      "next": null,
+      "total_items": 3
+    }
+  }
+}

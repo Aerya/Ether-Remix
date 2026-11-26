@@ -20,13 +20,13 @@ import (
 func TestSurfaceCapabilitiesApplyQuirksAndOwnerRules(t *testing.T) {
 	a := setupTestApp(t, true)
 	if err := a.cfg.Update(func(c *config.Config) error {
-		c.Quality = config.Quality{Profiles: []core.QualityProfile{{Name: "standard", MaxHeight: 2160}, {Name: "jelly", MaxHeight: 720}, {Name: "remote", MaxHeight: 480}}, Default: "standard", Remote: "remote", Rules: []config.QualityRule{{Protocol: "jellyfin", Profile: "jelly"}}}
+		c.Quality = config.Quality{Profiles: []core.QualityProfile{{Name: "standard", MaxHeight: 2160}, {Name: "jelly", MaxHeight: 720}, {Name: "remote", MaxHeight: 480}}, Default: "standard", DefaultAway: "remote", Rules: []config.QualityRule{{ID: "r_jf", Devices: []config.DeviceMatch{{App: "jellyfin:Swiftfin"}}, Profile: "jelly"}}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	provider := surfaceCapabilities{app: a, surface: "jellyfin"}
-	request := frontend.CapabilityRequest{Viewer: &core.Viewer{ID: 1}, Device: caps.DeviceInfo{Protocol: "plex", Product: "Jellyfin Apple TV", VideoCodecs: []string{"h264"}, DolbyVision: true}, Profile: caps.DeviceProfile{DirectPlayProfiles: []caps.DirectPlayProfile{{Container: "mp4", VideoCodec: "hevc", AudioCodec: "aac"}}}}
+	request := frontend.CapabilityRequest{Viewer: &core.Viewer{ID: 1}, Device: caps.DeviceInfo{Protocol: "plex", Product: "Swiftfin", Platform: "tvOS", VideoCodecs: []string{"h264"}, DolbyVision: true}, Profile: caps.DeviceProfile{DirectPlayProfiles: []caps.DirectPlayProfile{{Container: "mp4", VideoCodec: "hevc", AudioCodec: "aac"}}}}
 	if _, err := provider.Build(context.Background(), request); err == nil {
 		t.Fatal("missing verified peer accepted")
 	}
@@ -58,6 +58,7 @@ func TestSurfaceCapabilitiesApplyQuirksAndOwnerRules(t *testing.T) {
 		t.Fatal(got.Quality, err)
 	}
 	request.Device.Product = "Jellyfin Chrome"
+	request.Device.Platform = ""
 	if _, err := provider.Build(lan, request); err != nil {
 		t.Fatal(err)
 	}
@@ -257,9 +258,9 @@ func TestSourceIPDecidesLocalityAcrossAllFrontendsAndUploadBudget(t *testing.T) 
 	if err := a.cfg.Update(func(c *config.Config) error {
 		c.Server.TrustedProxyCIDRs = []string{"172.16.50.5"}
 		c.Quality = config.Quality{
-			Profiles: []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 720}},
-			Default:  "home",
-			Remote:   "away",
+			Profiles:    []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 720}},
+			Default:     "home",
+			DefaultAway: "away",
 		}
 		return nil
 	}); err != nil {

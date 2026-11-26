@@ -58,7 +58,7 @@ func collectionShelves(rows []model.Hub, section int) (out []model.Hub, renamed 
 			builtIn = append(builtIn, row)
 		case id == "home.playlists":
 			tail = append(tail, row)
-		case strings.HasPrefix(id, "livetv.") || len(row.Metadata) == 0:
+		case id == liveHomeHubID || len(row.Metadata) == 0:
 		default:
 			n := collectionShelfNumber(row)
 			row.HubIdentifier = "custom.collection." + strconv.Itoa(section) + "." + n + "." + n
@@ -73,6 +73,7 @@ func collectionShelves(rows []model.Hub, section int) (out []model.Hub, renamed 
 // pmsBuiltInHub reports PMS's own per-library rows, which such clients
 // recognize by identifier.
 func pmsBuiltInHub(id string) bool {
+	id = rowHubID(id)
 	for _, p := range []string{"movie.recentlyadded.", "tv.recentlyadded.", "movie.inprogress.", "tv.inprogress."} {
 		if strings.HasPrefix(id, p) {
 			return true
@@ -83,8 +84,8 @@ func pmsBuiltInHub(id string) bool {
 
 // collectionShelfNumber is the collection id in a shelf identifier: the
 // backing collection's rating key when the row is one, otherwise a stable
-// number derived from the row's identifier, so a client that remembers
-// shelves by identifier keeps them across refreshes.
+// number derived from the row's producer id (without the block's @lib), so
+// a client that remembers shelves by identifier keeps them across refreshes.
 func collectionShelfNumber(row model.Hub) string {
 	if rest, ok := strings.CutPrefix(row.Key, "/library/collections/"); ok {
 		if k, _, ok := strings.Cut(rest, "/"); ok && k != "" {
@@ -92,7 +93,7 @@ func collectionShelfNumber(row model.Hub) string {
 		}
 	}
 	h := fnv.New32a()
-	h.Write([]byte(row.HubIdentifier))
+	h.Write([]byte(rowHubID(row.HubIdentifier)))
 	return strconv.FormatUint(uint64(h.Sum32()), 10)
 }
 

@@ -15,7 +15,7 @@ const ruleFields = rankingDescriptors.filter(
 const WAIT = { timeout: 4000 };
 
 async function openProfile() {
-  const { fake } = renderApp("/quality/profiles");
+  const { fake } = renderApp("/releases/profiles");
   fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, WAIT));
   const drawer = await screen.findByRole("dialog", { name: "1080p" }, WAIT);
   return { fake, drawer };
@@ -145,23 +145,29 @@ describe("profile rules and custom formats", () => {
     }, WAIT);
   });
 
-  it("sets a movie default without changing the legacy or show defaults", async () => {
-    const { fake } = renderApp("/quality/profiles");
+  it("opens a rule from Used by over the profile drawer and returns to it", async () => {
+    renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
-    const defaults = within(drawer).getByRole("group", { name: "Default for" });
-    // The profile applies to movies, so checking At home writes defaultMovie.
-    fireEvent.click(within(defaults).getByRole("button", { name: "At home" }));
-    fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
-    expect(fake.state.config.quality.defaultMovie).toBe("4K");
-    expect(fake.state.config.quality.default).toBe("1080p");
-    expect(fake.state.config.quality.defaultTv).toBeUndefined();
-    expect(screen.getAllByText("Default at home").length).toBeGreaterThan(0);
+    expect(within(drawer).queryByRole("group", { name: "Default for" })).not.toBeInTheDocument();
+    // An unsaved edit to the profile survives the trip into the rule.
+    fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "UHD" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Rule 1: Living room Apple TV" }));
+    const rule = await screen.findByRole("dialog", { name: "Living room Apple TV" }, WAIT);
+    fireEvent.click(within(rule).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Living room Apple TV" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("UHD");
+    expect(
+      screen.getByRole("button", { name: "Use this profile in a new rule" }),
+    ).toBeInTheDocument();
   });
 
   it("merges a custom format added by a concurrent import", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
     selectTab(drawer, "Scoring");
@@ -184,8 +190,8 @@ describe("profile rules and custom formats", () => {
       customFormats: { trash_id?: string; app?: string }[];
     };
     expect(body.customFormats.map((f) => f.trash_id)).toEqual(["concurrent", "mine"]);
-    // The new definition is tagged for the profile's movie app.
-    expect(body.customFormats[1]).toMatchObject({ app: "radarr" });
+    // A media-neutral profile leaves the definition's app unset.
+    expect(body.customFormats[1]?.app).toBeUndefined();
   });
 
   it("flags conflicting requirements before save", () => {

@@ -355,14 +355,19 @@ func TestPlexRSSFeedImportLifecycle(t *testing.T) {
 	}
 	findFriendsRow := func(u *core.User) *core.CollectionRow {
 		t.Helper()
-		rows, err := cols.HomeRowsFor(ctx, u, core.HubContext{})
+		specs, err := cols.ListSpecs(ctx)
 		if err != nil {
-			t.Fatalf("cols.HomeRowsFor(%s): %v", u.Username, err)
+			t.Fatalf("cols.ListSpecs: %v", err)
 		}
-		for i := range rows {
-			if rows[i].Hub.Title == collections.FriendsWatchlistTitle {
-				return &rows[i]
+		for _, sp := range specs {
+			if sp.Name != collections.FriendsWatchlistTitle {
+				continue
 			}
+			row, err := cols.LayoutRow(ctx, u, core.HubContext{}, sp.ID)
+			if err != nil || row == nil {
+				return nil
+			}
+			return row
 		}
 		return nil
 	}
@@ -397,7 +402,7 @@ func TestPlexRSSFeedImportLifecycle(t *testing.T) {
 		t.Fatalf("show section collection = %+v", showSectionCol)
 	}
 	aliceRow := findFriendsRow(&alice)
-	if aliceRow == nil || !aliceRow.HomeRow || !aliceRow.SectionRow || !aliceRow.Hub.Promoted {
+	if aliceRow == nil || !aliceRow.Hub.Promoted {
 		t.Fatalf("alice Home row = %+v", aliceRow)
 	}
 	if !slices.Equal(pageKeys(aliceRow.Hub.Items), []core.RatingKey{movie1.Key, movie2.Key, show1.Key}) {

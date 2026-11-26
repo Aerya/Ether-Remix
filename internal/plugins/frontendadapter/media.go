@@ -75,7 +75,15 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.refuse(w, http.StatusNotFound, "ticket_invalid", "The media ticket is unknown, expired or out of scope.", err, "")
 		return
 	}
+	h.ServeGrant(w, r, grant)
+}
 
+// ServeGrant serves the item a grant authorizes, exactly as a redeemed ticket
+// would. Callers that authenticated the viewer themselves (a frontend adapter
+// answering with a FrontendMedia descriptor) use it after re-checking that the
+// item belongs to the plugin and that its library is visible to the viewer.
+func (h *MediaHandler) ServeGrant(w http.ResponseWriter, r *http.Request, grant StreamGrant) {
+	var err error
 	var partIdx *int
 	if rawPart := strings.TrimSpace(r.URL.Query().Get("part")); rawPart != "" {
 		n, perr := strconv.Atoi(rawPart)

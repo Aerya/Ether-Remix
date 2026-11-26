@@ -41,13 +41,9 @@ func NewRemoteCache(budget int64, client *http.Client) *RemoteCache {
 	}
 }
 
-// NewBackedRemoteCache puts a bounded memory tier in front of the disk-backed
-// artwork.Images store so immutable TMDB artwork is fetched once and survives
-// memory eviction and restarts without TTL re-fetches.
-func NewBackedRemoteCache(budget int64, store *artwork.Images) *RemoteCache {
-	c := NewRemoteCache(budget, nil)
-	c.store = store
-	return c
+// NewBackedRemoteCache delegates to the shared memory and disk image store.
+func NewBackedRemoteCache(store *artwork.Images) *RemoteCache {
+	return &RemoteCache{store: store}
 }
 
 var ErrRemoteImageNotFound = errors.New("image not found")
@@ -59,46 +55,24 @@ func (c *RemoteCache) IsNotFound(err error) bool {
 // Get returns the image at u, fetching it once for concurrent callers and
 // retaining cached entries without TTL re-fetches.
 func (c *RemoteCache) Get(ctx context.Context, u string, now time.Time) (*RemoteImage, error) {
-	if c.store != nil && !c.store.IsImmutableURL(u) {
+	// The shared image store already caches, coalesces and revalidates these
+	// reads. Keeping another copy here would outlive a title refresh.
+	if c.store != nil {
 		data, ct, err := c.store.GetCachedURL(ctx, u)
+		if errors.Is(err, artwork.ErrNotFound) {
+			return nil, ErrRemoteImageNotFound
+		}
 		if err != nil {
-			if errors.Is(err, artwork.ErrNotFound) {
-				return nil, ErrRemoteImageNotFound
-			}
 			return nil, err
 		}
 		return &RemoteImage{URL: u, Data: data, ContentType: ct, FetchedAt: now}, nil
 	}
-
 	c.mu.Lock()
 	if img, ok := c.items.Get(u); ok {
 		c.mu.Unlock()
 		return img, nil
 	}
 	c.mu.Unlock()
-
-	if c.store != nil {
-		return c.inflight.Do(ctx, u, func(ctx context.Context) (*RemoteImage, error) {
-			c.mu.Lock()
-			if img, ok := c.items.Get(u); ok {
-				c.mu.Unlock()
-				return img, nil
-			}
-			c.mu.Unlock()
-			data, ct, err := c.store.GetCachedURL(ctx, u)
-			if err != nil {
-				if errors.Is(err, artwork.ErrNotFound) {
-					return nil, ErrRemoteImageNotFound
-				}
-				return nil, err
-			}
-			img := &RemoteImage{URL: u, Data: data, ContentType: ct, FetchedAt: now}
-			c.mu.Lock()
-			c.addLocked(img)
-			c.mu.Unlock()
-			return img, nil
-		})
-	}
 
 	// The fetch is shared, so it must not die with the first requester.
 	return c.inflight.DoDetached(ctx, u, func(ctx context.Context) (*RemoteImage, error) {

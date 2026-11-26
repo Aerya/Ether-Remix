@@ -13,6 +13,18 @@ import (
 )
 
 func init() {
+	store.Register("newznab", 7, `
+CREATE TABLE newznab_plugin_refs (ref TEXT PRIMARY KEY, descriptor TEXT NOT NULL);
+`)
+	store.Register("newznab", 6, `
+CREATE TABLE newznab_nzb_refusals (
+  indexer_id TEXT NOT NULL,
+  release_id TEXT NOT NULL,
+  retry_at BIGINT NOT NULL,
+  PRIMARY KEY (indexer_id, release_id)
+);
+CREATE INDEX newznab_nzb_refusals_expiry ON newznab_nzb_refusals(retry_at);
+`)
 	store.Register("newznab", 5, `CREATE TABLE newznab_search_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, mode INTEGER NOT NULL DEFAULT 0, verified INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	store.Register("newznab", 4, `CREATE TABLE newznab_feed_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, unfiltered INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	// endpoint fingerprints the URL and API key the caps were fetched

@@ -26,7 +26,7 @@ describe("⌘K setting jump", () => {
   });
 
   it("highlights a visible setting without opening anything", async () => {
-    renderApp(settingHref("/quality/searching", "start-before-the-health-check-finishes"));
+    renderApp(settingHref("/releases/searching", "start-before-the-health-check-finishes"));
     await waitFor(() => expect(document.querySelector(".setting-focus")).not.toBeNull(), WAIT);
     expect(document.querySelector(".setting-focus")).toHaveTextContent(
       "Start before the health check finishes",

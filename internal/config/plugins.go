@@ -36,13 +36,16 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 // PluginRuntimeLimits are owner-controlled ceilings, not allocations. Zero
 // inherits the default (globally) or the global ceiling (per plugin).
 type PluginRuntimeLimits struct {
-	FetchBytes           int64  `json:"fetchBytes,omitempty"`
-	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
-	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
-	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
-	MaxItems             int    `json:"maxItems,omitempty"`
-	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
-	Deadline             string `json:"deadline,omitempty"`
-	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
-	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
+	FetchBytes           int64 `json:"fetchBytes,omitempty"`
+	ArchiveMemberBytes   int64 `json:"archiveMemberBytes,omitempty"`
+	ArchiveExpandedBytes int64 `json:"archiveExpandedBytes,omitempty"`
+	ArchiveMembers       int   `json:"archiveMembers,omitempty"`
+	MaxItems             int   `json:"maxItems,omitempty"`
+	// ListItems is how many titles one sync of each plugin list reads.
+	// Globally it caps what lists ask for; per plugin it replaces it.
+	ListItems   int    `json:"listItems,omitempty"`
+	MemoryBytes uint64 `json:"memoryBytes,omitempty"`
+	Deadline    string `json:"deadline,omitempty"`
+	UnitBudget  int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
+	PoolSize    int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
 }

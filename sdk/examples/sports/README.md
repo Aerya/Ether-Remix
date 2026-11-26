@@ -25,7 +25,7 @@ NFL, NBA, NHL, MLB, MLS, Premier League (`epl`), La Liga (`laliga`), Bundesliga 
 - **Settings (`settings.schema.json`):**
   - `leagues` (`multiSelect`): leagues included on the Sports screen and live score feed.
   - `region` (`select`): preferred broadcast region (`us`, `ca`, `gb`, `eu`, `au`, or `all`). When an event has no broadcasts for the chosen region, all listed broadcasts are returned as fallback so Live TV matching keeps working.
-- **Network permissions:** `site.api.espn.com` and `site.web.api.espn.com` only.
+- **Network permissions:** `site.api.espn.com` and `site.web.api.espn.com` for data, and `a.espncdn.com` for team and league logos. Ether fetches logos itself through its signed image proxy and only from hosts listed here, so clients never load ESPN URLs.
 
 ## Plugin endpoints
 
@@ -66,7 +66,7 @@ Follow this recipe to open, inspect, customize, and install `org.ether.sports` i
 1. **Import or scaffold the draft:**
    - Pack and install `sdk/examples/sports`, then click **Edit in Studio** on `Sports` (all imports stay inside `src/`, so Studio keeps `src/plugin.ts` and sibling modules editable).
    - Or start a hosted TypeScript draft in Studio and copy `manifest.json`, `settings.schema.json`, `assets/icon.svg`, `i18n/en.json`, `i18n/fr.json`, and `src/**`.
-   - Confirm `ether.permissions.network` lists only `["site.api.espn.com", "site.web.api.espn.com"]`.
+   - Confirm `ether.permissions.network` lists only `["site.api.espn.com", "site.web.api.espn.com", "a.espncdn.com"]`.
 2. **Exercise routes in the Inspector** (enable live network in the sandbox permissions drawer to hit ESPN):
    - `GET /ether/health` → `{ status: "ok", provider: "espn", feed: "sports", leagues: [...], region: "us" }`.
    - `POST /ether/test` → probes the first enabled league on ESPN and returns `{ ok: true, message }`.

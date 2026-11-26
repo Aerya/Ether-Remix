@@ -1,4 +1,12 @@
 export type * from "./types.ts";
+export { asset, entity, event, image, link, record } from "./screens.ts";
+export type {
+  ScreenActionAnswer,
+  ScreenActionRequest,
+  ScreenRecord,
+  ScreenSourceAnswer,
+  ScreenSourceRequest,
+} from "./kinds.ts";
 export { PluginHttpError } from "./types.ts";
 export {
   plugin,
@@ -32,6 +40,7 @@ export {
   PosterBadgeQuotaTitles,
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
+  HEADER_ORIGIN,
   HEADER_IDEMPOTENCY_KEY,
   DefaultAICompletePerMin,
   DefaultAISearchCompletePerMin,
@@ -130,6 +139,7 @@ export {
 } from "./testing.ts";
 export {
   candidateRef,
+  requestNzb,
   streamUrl,
   kindsVisible,
   kindsBrowse,

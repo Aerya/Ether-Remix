@@ -10,16 +10,9 @@ import type {
   CollectionTemplateBundle,
   CollectionTemplateBundleApplyResult,
   CollectionTemplateBundlePreview,
+  CollectionUsage,
   FacetName,
   FacetValue,
-  HomeLayout,
-  LayoutDoc,
-  LibraryLayoutDoc,
-  LayoutPage,
-  TargetSchedule,
-  ViewerLibraryPage,
-  LayoutImpactResult,
-  PreviewContext,
   LookupKind,
   LookupResult,
   RankerInsight,
@@ -31,8 +24,21 @@ import type {
   TitleLibraryStatus,
   Viewer,
   ViewerDetail,
-  ViewerHome,
 } from "./contract";
+import {
+  type FacetValueOption,
+  type PageDoc,
+  type PageImpact,
+  type PageKey,
+  type PagePreview,
+  type PageRow,
+  type PageSummary,
+  type PreviewRequest,
+  type RowPage,
+  type RowPreview,
+  type SourcesDoc,
+  pagePath,
+} from "./pages";
 import type {
   Bootstrap,
   ClusterSetupRequest,
@@ -60,8 +66,9 @@ import type {
   LLMProvider,
   LogEntry,
   QualityAnswer,
-  QualityClient,
+  QualityDevices,
   QualityQuestion,
+  QualitySummary,
   RequestPreview,
   SiteDefinition,
   SiteTestResult,
@@ -71,6 +78,8 @@ import type {
   SourceStartup,
   SystemLoad,
   TestResult,
+  ProviderSpeedResult,
+  UpdateNotes,
   UpdateStatus,
   UsenetProvider,
 } from "./types";
@@ -261,23 +270,24 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       error?: string | { code?: string; message?: string; fields?: FieldError[]; phase?: string };
       fields?: unknown;
     } | null;
-    const err = typeof body?.error === "object" ? body.error : undefined;
-    // Les réglages Remix répondent { error: "texte", fields: { CLÉ: "message" } } :
-    // on affiche le message du premier champ refusé plutôt qu'un simple code.
-    let flat: string | undefined;
-    if (body?.fields && typeof body.fields === "object" && !Array.isArray(body.fields)) {
-      flat = Object.values(body.fields).find((v): v is string => typeof v === "string");
-    }
-    const error = new ApiError(
-      res.status,
-      err?.code ?? body?.code ?? "http",
-      err?.message ??
-        flat ??
-        (typeof body?.error === "string" ? body.error : undefined) ??
-        t("Request failed ({status})", { status: res.status }),
-      err?.fields,
+    const rawErr = body?.error;
+    const errObj = typeof rawErr === "object" && rawErr !== null ? rawErr : null;
+    const flat =
+      body?.fields && typeof body.fields === "object" && !Array.isArray(body.fields)
+        ? Object.values(body.fields).find((v): v is string => typeof v === "string")
+        : undefined;
+    const errMsg =
+      typeof rawErr === "string"
+        ? (flat ?? rawErr)
+        : (errObj?.message ?? t("Request failed ({status})", { status: res.status }));
+    const errCode = errObj?.code ?? body?.code ?? "http";
+    const fields = errObj?.fields?.map((field) =>
+      field.field === "server.trustedProxyCIDRs"
+        ? { ...field, message: t("Enter a specific proxy IP address, subnet, or host name.") }
+        : field,
     );
-    error.phase = err?.phase;
+    const error = new ApiError(res.status, errCode, errMsg, fields);
+    error.phase = errObj?.phase;
     error.body = data;
     throw error;
   }
@@ -401,12 +411,38 @@ export const api = {
     put<{ section: string; value: unknown }>(`/config/${section}`, value),
 
   // ---- Quality: who gets what -------------------------------------------------
-  qualityClients: async () =>
-    (await apiFetch<{ clients: QualityClient[] }>("/quality/clients")).clients,
+  /** Device kinds, device types, apps and seen devices a rule can match. */
+  qualityDevices: async (signal?: AbortSignal): Promise<QualityDevices> => {
+    const [devices, catalogue] = await Promise.all([
+      apiFetch<QualityDevices>("/quality/devices", { signal }),
+      // The app catalogue knows which device types each app runs on, which
+      // tells two rules for different devices apart. Optional: without it
+      // an app is taken to run anywhere.
+      apiFetch<{
+        apps?: { protocol: string; name: string; devices?: string[] | null }[] | null;
+      }>("/playback/policy", { signal }).catch(() => null),
+    ]);
+    const runsOn = new Map(
+      (catalogue?.apps ?? []).map((a) => [`${a.protocol}:${a.name}`, a.devices ?? []]),
+    );
+    return {
+      ...devices,
+      apps:
+        devices.apps?.map((a) =>
+          a.devices?.length || !runsOn.get(a.id)?.length ? a : { ...a, devices: runsOn.get(a.id) },
+        ) ?? null,
+    };
+  },
+  qualitySummary: (
+    params: { viewer?: number | string; device?: string } = {},
+    signal?: AbortSignal,
+  ) => apiFetch<QualitySummary>(`/quality/summary${qs(params)}`, { signal }),
   explainQuality: (question: QualityQuestion, signal?: AbortSignal) =>
     post<QualityAnswer>("/quality/explain", question, signal),
 
   // ---- Integration tests ----------------------------------------------------
+  testProviderSpeed: (kind: "usenet" | "debrid", id: string, signal?: AbortSignal) =>
+    post<ProviderSpeedResult>(`/test/${kind}/${encodeURIComponent(id)}/speed`, {}, signal),
   testUsenet: (p: UsenetProvider) => post<TestResult>("/test/usenet", p),
   testIndexer: (ix: Indexer) => post<TestResult>("/test/indexer", ix),
   previewIndexer: (req: IndexerPreviewRequest) => post<RequestPreview>("/indexer/preview", req),
@@ -416,6 +452,7 @@ export const api = {
       ...(rules ? { rules } : {}),
     }),
   testDebrid: (p: DebridProvider) => post<TestResult>("/test/debrid", p),
+  testTVDB: (key: string) => post<TestResult>("/test/tvdb", { key }),
   testTMDB: (key: string) => post<TestResult>("/test/tmdb", { key }),
   testIntroDB: (apiKey: string) => post<TestResult>("/test/introdb", { apiKey }),
   testOpenSubtitles: (cfg: EtherConfig["openSubtitles"]) =>
@@ -499,7 +536,9 @@ export const api = {
   checkUpdates: () => post<UpdateStatus>("/updates/check", {}),
   updateStatus: () => apiFetch<UpdateStatus>("/updates/"),
   updateNow: (force = false) => post<UpdateStatus>("/updates/apply", { force }),
-  dismissInstalledUpdate: () => post<UpdateStatus>("/updates/dismiss-installed", {}),
+  updateNotes: (version: string, signal?: AbortSignal) =>
+    apiFetch<UpdateNotes>(`/updates/notes${qs({ version })}`, { signal }),
+  dismissUpdateNotes: (version: string) => post<void>("/updates/notes/dismiss", { version }),
 
   // ---- Cluster ---------------------------------------------------------------------
   clusterSetupStatus: (signal?: AbortSignal) =>
@@ -549,6 +588,13 @@ export const api = {
     apiFetch<null>(`/collections/${encodeURIComponent(id)}`, { method: "DELETE" }),
   previewCollection: (spec: CollectionSpec, signal?: AbortSignal, n?: number) =>
     post<CollectionPreview>(`/collections/preview${qs({ n })}`, spec, signal),
+  /** The Recommendations pages and rows that show this collection ("Used on"). */
+  collectionUsage: async (id: string, signal?: AbortSignal) =>
+    (
+      await apiFetch<CollectionUsage | null>(`/collections/${encodeURIComponent(id)}/usage`, {
+        signal,
+      })
+    )?.uses ?? [],
   rebuildCollection: (id: string) =>
     post<{ itemCount: number; lastBuiltAt: string }>(
       `/collections/${encodeURIComponent(id)}/rebuild`,
@@ -662,35 +708,46 @@ export const api = {
   taste: (id: number) => apiFetch<TasteProfile>(`/viewers/${id}/taste`),
   putOverrides: (id: number, overrides: TasteOverride[]) =>
     put<TasteProfile>(`/viewers/${id}/taste/overrides`, { overrides }),
-  viewerHome: (
-    id: number,
-    ctx: { device: string; at: string; section?: string },
-    signal?: AbortSignal,
-  ) => apiFetch<ViewerHome>(`/viewers/${id}/home${qs(ctx)}`, { signal }),
   refreshViewer: (id: number) => post<null>(`/viewers/${id}/refresh`),
 
-  // ---- Home Designer & Library Recommended rows -------------------------------
-  layout: () => apiFetch<LayoutDoc>("/layout"),
-  putLayout: (layout: HomeLayout) => put<LayoutDoc>("/layout", { layout }),
-  libraryLayout: (id: number, signal?: AbortSignal) =>
-    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { signal }),
-  putLibraryLayout: (
-    id: number,
-    body: {
-      page?: LayoutPage;
-      viewerPages?: ViewerLibraryPage[];
-      collectionSchedules?: Record<string, TargetSchedule | null>;
-    },
-  ) => put<LibraryLayoutDoc>(`/layout/libraries/${id}`, body),
-  deleteLibraryLayout: (id: number) =>
-    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
-  /** The Plex Home a viewer (null = the typical viewer) gets with a draft layout (omitted = saved). */
-  previewLayout: (
-    body: PreviewContext & { viewerId: number | null; layout?: HomeLayout; count?: number },
+  // ---- Recommendations: pages of rows ------------------------------------------
+  pages: () => apiFetch<PageSummary[]>("/pages"),
+  page: (key: PageKey, signal?: AbortSignal) => apiFetch<PageDoc>(`${pagePath(key)}`, { signal }),
+  /** Saves the whole page; the server answers 409 when someone else saved it first. */
+  putPage: (page: RowPage) =>
+    apiFetch<PageDoc>(pagePath(page.key), {
+      method: "PUT",
+      body: JSON.stringify(page),
+      headers: { "If-Match": String(page.revision) },
+    }),
+  resetPage: (key: PageKey) => apiFetch<PageDoc>(`${pagePath(key)}`, { method: "DELETE" }),
+  pageSources: (key: PageKey, signal?: AbortSignal) =>
+    apiFetch<SourcesDoc>(`${pagePath(key)}/sources`, { signal }).then((doc) => ({
+      ...doc,
+      sources: doc.sources.map((source) =>
+        source.kind === "collection-cards"
+          ? {
+              ...source,
+              title: t("Collections"),
+              description: t("Show collections as clickable cards."),
+            }
+          : source,
+      ),
+    })),
+  previewPage: (key: PageKey, body: PreviewRequest, signal?: AbortSignal) =>
+    post<PagePreview>(`${pagePath(key)}/preview`, body, signal),
+  previewPageRow: (
+    key: PageKey,
+    body: Omit<PreviewRequest, "page"> & { row: PageRow },
     signal?: AbortSignal,
-  ) => post<ViewerHome>("/layout/preview", body, signal),
-  layoutImpact: (body: PreviewContext & { layout: HomeLayout }, signal?: AbortSignal) =>
-    post<LayoutImpactResult>("/layout/impact", body, signal),
+  ) => post<RowPreview>(`${pagePath(key)}/rows/preview`, body, signal),
+  pageImpact: (key: PageKey, page: RowPage, signal?: AbortSignal) =>
+    post<PageImpact>(`${pagePath(key)}/impact`, { page }, signal),
+  facetValues: (library: number, facet: string, q: string, signal?: AbortSignal) =>
+    apiFetch<{ values: FacetValueOption[] | null }>(
+      `/row-sources/facets/${library}/${encodeURIComponent(facet)}${qs({ q })}`,
+      { signal },
+    ),
 
   // ---- Insights ---------------------------------------------------------------------
   rowInsights: async () =>
@@ -700,8 +757,12 @@ export const api = {
     const r = await apiFetch<RankerInsight | { ranker: RankerInsight }>("/insights/ranker");
     return "ranker" in r ? r.ranker : r;
   },
-  activity: async () =>
-    (await apiFetch<{ days: ActivityDay[] | null }>("/insights/activity")).days ?? [],
+  activity: async () => {
+    const tz = -new Date().getTimezoneOffset();
+    return (
+      (await apiFetch<{ days: ActivityDay[] | null }>(`/insights/activity?tz=${tz}`)).days ?? []
+    );
+  },
 };
 
 /**

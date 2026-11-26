@@ -43,6 +43,7 @@ import { t, tn } from "../../i18n";
 import { relativeTime } from "../../lib/format";
 import { clearDraft, draftKey, listDrafts } from "../../lib/history";
 import { useAsync } from "../../lib/hooks";
+import { addToPageHref } from "../../lib/recommendations";
 import { normalizeSpec } from "../../lib/rules";
 import { CollectionDetail } from "./CollectionDetail";
 import { DescribeDialog } from "./DescribeDialog";
@@ -50,7 +51,7 @@ import { StremioImportDrawer } from "./StremioImportDrawer";
 import { isBlankCollectionSpec, newCollectionHref } from "./links";
 import { bundleDescription, bundleTitle } from "../setup/StarterBundlesCard";
 
-type Tab = "mine" | "rows" | "templates" | "builtin";
+type Tab = "mine" | "templates";
 type Filter = "all" | "live" | "draft";
 
 function loadUnsavedNewDrafts() {
@@ -74,8 +75,7 @@ export default function CollectionsGallery({
   const [routeParams, setParams] = useSearchParams();
   const params = browseSearch === undefined ? routeParams : new URLSearchParams(browseSearch);
   const rawTab = params.get("tab");
-  const tab: Tab =
-    rawTab === "rows" || rawTab === "templates" || rawTab === "builtin" ? rawTab : "mine";
+  const tab: Tab = rawTab === "templates" ? rawTab : "mine";
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [category, setCategory] = useState("all");
@@ -114,16 +114,12 @@ export default function CollectionsGallery({
     }
     wasActive.current = active;
   }, [active, collections.reload]);
-  const mine = (collections.data ?? []).filter((c) => c.targets.collectionsTab);
-  const rowSources = (collections.data ?? []).filter(
-    (c) => c.targets.homeRow || c.targets.sectionRow,
-  );
-  const builtIn = (collections.data ?? []).filter((c) => c.builtIn);
+  const mine = collections.data ?? [];
   const needle = q.trim().toLowerCase();
   const match = (s: { name: string; description?: string; folder?: string }) =>
     !needle || `${s.name} ${s.description ?? ""} ${s.folder ?? ""}`.toLowerCase().includes(needle);
-  const items = (tab === "builtin" ? builtIn : tab === "rows" ? rowSources : mine).filter(
-    (c) => match(c) && (tab !== "mine" || filter === "all" || c.enabled === (filter === "live")),
+  const items = mine.filter(
+    (c) => match(c) && (filter === "all" || c.enabled === (filter === "live")),
   );
   const categories = [...new Set((templates.data ?? []).map((tpl) => tpl.category))];
   const shownTemplates = (templates.data ?? []).filter(
@@ -174,7 +170,6 @@ export default function CollectionsGallery({
         spec: {
           ...c,
           id: undefined,
-          builtIn: undefined,
           addonSync: undefined,
           name: t("{name} (copy)", { name: c.name }),
           enabled: false,
@@ -328,27 +323,15 @@ export default function CollectionsGallery({
                 options={[
                   {
                     value: "mine",
-                    label: t("Library collections"),
+                    label: t("Your collections"),
                     icon: <Layers size={15} />,
                     meta: <ViewCount n={collections.data ? mine.length : undefined} />,
-                  },
-                  {
-                    value: "rows",
-                    label: t("Home & library rows"),
-                    icon: <LayoutGrid size={15} />,
-                    meta: <ViewCount n={rowSources.length} />,
                   },
                   {
                     value: "templates",
                     label: t("Templates"),
                     icon: <LayoutTemplate size={15} />,
                     meta: <ViewCount n={templates.data?.length} />,
-                  },
-                  {
-                    value: "builtin",
-                    label: t("Discovery sources"),
-                    icon: <Globe2 size={15} />,
-                    meta: <ViewCount n={collections.data ? builtIn.length : undefined} />,
                   },
                 ]}
               />
@@ -573,7 +556,7 @@ export default function CollectionsGallery({
               ) : (
                 <>
                   <div className="flex items-center justify-between px-2 text-[11px] text-fg-subtle">
-                    <span>{tab === "builtin" ? t("Managed by Ether") : t("Your library")}</span>
+                    <span>{t("Your library")}</span>
                     <span>{tn(items.length, "{count} collection", "{count} collections")}</span>
                   </div>
                   <CollectionList
@@ -597,10 +580,10 @@ export default function CollectionsGallery({
             </div>
             <div className="mt-auto hidden shrink-0 border-t border-border px-4 py-3 lg:block">
               <Link
-                to="/home"
+                to="/recommendations"
                 className="flex items-center justify-between gap-2 text-xs font-medium text-fg-muted hover:text-primary"
               >
-                <span>{t("Arrange Home rows")}</span>
+                <span>{t("Place rows in Recommendations")}</span>
                 <ArrowRight size={13} />
               </Link>
             </div>
@@ -619,9 +602,7 @@ export default function CollectionsGallery({
           ) : posterView && items.length ? (
             <section className="p-5 sm:p-6" aria-label={t("Collection posters")}>
               <div className="mb-5 flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="text-sm font-semibold text-fg">
-                  {tab === "builtin" ? t("Built-in collections") : t("Your collections")}
-                </h2>
+                <h2 className="text-sm font-semibold text-fg">{t("Your collections")}</h2>
                 <span className="text-xs text-fg-muted">
                   {tn(items.length, "{count} collection", "{count} collections")}
                 </span>
@@ -698,35 +679,28 @@ export default function CollectionsGallery({
                   </Button>
                 ) : (
                   <>
-                    {selected?.builtIn ? (
-                      <Button size="sm" onClick={() => edit(selected, "artwork")}>
-                        <Pencil size={14} /> {t("Customise collection")}
-                      </Button>
-                    ) : (
-                      <>
-                        <Button size="sm" onClick={() => edit(selected!)}>
-                          <Pencil size={14} /> {t("Edit collection")}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => edit(selected!, "artwork")}
-                        >
-                          <LayoutGrid size={14} /> {t("Artwork")}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() =>
-                            void act(selected!, selected!.enabled ? "unpublish" : "publish")
-                          }
-                        >
-                          {selected!.enabled ? <EyeOff size={14} /> : <Globe2 size={14} />}
-                          {selected!.enabled ? t("Unpublish") : t("Publish")}
-                        </Button>
-                      </>
-                    )}
+                    <Button size="sm" onClick={() => edit(selected!)}>
+                      <Pencil size={14} /> {t("Edit collection")}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => edit(selected!, "artwork")}>
+                      <LayoutGrid size={14} /> {t("Artwork")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void act(selected!, selected!.enabled ? "unpublish" : "publish")
+                      }
+                    >
+                      {selected!.enabled ? <EyeOff size={14} /> : <Globe2 size={14} />}
+                      {selected!.enabled ? t("Unpublish") : t("Publish")}
+                    </Button>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to={addToPageHref(selected!.id!)}>
+                        <Plus size={14} /> {t("Add to a page…")}
+                      </Link>
+                    </Button>
                     <PluginActionMenu
                       slot="actionMenu.collection"
                       recordId={String(selected!.id)}
@@ -739,26 +713,22 @@ export default function CollectionsGallery({
                           icon: Copy,
                           onSelect: () => duplicate(selected!),
                         },
-                        ...(!selected?.builtIn
-                          ? [
-                              {
-                                key: "rebuild",
-                                label: t("Rebuild now"),
-                                icon: RefreshCw,
-                                disabled: busy,
-                                onSelect: () => void act(selected!, "rebuild"),
-                              },
-                              { key: "sep", separator: true as const },
-                              {
-                                key: "delete",
-                                label: t("Delete"),
-                                icon: Trash2,
-                                danger: true,
-                                disabled: busy,
-                                onSelect: () => void act(selected!, "delete"),
-                              },
-                            ]
-                          : []),
+                        {
+                          key: "rebuild",
+                          label: t("Rebuild now"),
+                          icon: RefreshCw,
+                          disabled: busy,
+                          onSelect: () => void act(selected!, "rebuild"),
+                        },
+                        { key: "sep", separator: true as const },
+                        {
+                          key: "delete",
+                          label: t("Delete"),
+                          icon: Trash2,
+                          danger: true,
+                          disabled: busy,
+                          onSelect: () => void act(selected!, "delete"),
+                        },
                       ]}
                     />
                   </>

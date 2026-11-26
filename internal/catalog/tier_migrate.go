@@ -721,7 +721,7 @@ func (c *Catalog) sweepTierTouched(ctx context.Context) (int, error) {
 	if len(missing) > 0 {
 		c.log.Warn("catalog: tier migration: touched titles without a row; storing them again", "titles", len(missing))
 		for i, k := range missing {
-			if i >= tierSweepMax || c.tmdb() == nil {
+			if i >= tierSweepMax || !c.TMDBConfigured() {
 				break
 			}
 			if t, err := c.Get(ctx, k); err == nil && t != nil {

@@ -106,7 +106,7 @@ func xtreamPanel(t *testing.T, user, pass string, paths *[]string, streams *stri
 		case q.Get("action") == "get_live_streams":
 			w.Write([]byte(*streams))
 		case q.Get("action") == "":
-			w.Write([]byte(`{"user_info":{"auth":1,"status":"Active","exp_date":"1793913001","is_trial":"1","active_cons":"0","max_connections":"1","allowed_output_formats":["m3u8","ts"]},"server_info":{}}`))
+			w.Write([]byte(`{"user_info":{"auth":1,"status":"Active","exp_date":"1793913001","is_trial":"1","active_cons":"0","max_connections":"1","allowed_output_formats":["m3u8","ts"]},"server_info":{"timezone":"America/Toronto"}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -118,7 +118,7 @@ func xtreamPanel(t *testing.T, user, pass string, paths *[]string, streams *stri
 func TestXtreamSourceImportsTheLiveLineupThroughTheAPI(t *testing.T) {
 	ctx := context.Background()
 	var paths []string
-	streams := `[{"num":2,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"news.us","category_id":"3","is_adult":0},
+	streams := `[{"num":2,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"news.us","category_id":"3","is_adult":0,"tv_archive":1,"tv_archive_duration":2},
 		{"num":"1","name":"Big Event","stream_type":"live","stream_id":"55","epg_channel_id":null,"category_id":"7"},
 		{"num":3,"name":"After Dark","stream_type":"live","stream_id":77,"category_id":"9","is_adult":"1"}]`
 	up := xtreamPanel(t, "u", "p", &paths, &streams)
@@ -144,12 +144,30 @@ func TestXtreamSourceImportsTheLiveLineupThroughTheAPI(t *testing.T) {
 		cs[1].StreamSources[0].URL != up.URL+"/live/u/p/101.ts" {
 		t.Fatalf("channels: %+v", cs)
 	}
+	if cs[1].ArchiveDays() != 2 {
+		t.Fatal("channel archive window was not saved")
+	}
+	summaries, err := s.ChannelSummaries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 2 || summaries[0].ArchiveDays != 0 || summaries[1].ArchiveDays != 2 {
+		t.Fatal("channel summaries did not reflect the imported archive windows")
+	}
+	start := time.Date(2026, 11, 23, 14, 5, 6, 0, time.UTC)
+	if raw, err := s.ArchiveURL(ctx, cs[1], start, 61*time.Second); err != nil ||
+		raw != up.URL+"/timeshift/u/p/2/2026-11-23:09-05/101.ts" {
+		t.Fatal("archive playback did not use the stored provider timezone")
+	}
 	// The owner renumbers News; the provider renumbers Big Event. A group
 	// that first appears on refresh stays out (NewGroups "exclude").
 	news := cs[1]
 	news.Number = "50"
 	if _, err := s.SaveChannel(ctx, news); err != nil {
 		t.Fatal(err)
+	}
+	if saved, err := s.Channel(ctx, news.ID); err != nil || saved.ArchiveDays() != 2 {
+		t.Fatal("saving channel metadata did not preserve the archive")
 	}
 	streams = `[{"num":2,"name":"News Network","stream_id":101,"epg_channel_id":"news.us","category_id":"3"},
 		{"num":9,"name":"Big Event","stream_id":55,"category_id":"7"},
@@ -160,6 +178,9 @@ func TestXtreamSourceImportsTheLiveLineupThroughTheAPI(t *testing.T) {
 	cs, _ = s.Channels(ctx)
 	if len(cs) != 2 || cs[0].Name != "Big Event" || cs[0].Number != "9" || cs[1].Number != "50" || len(got.ExcludeGroups) != 1 || got.ExcludeGroups[0] != "" {
 		t.Fatalf("refresh: %+v excluded=%q", cs, got.ExcludeGroups)
+	}
+	if cs[1].Archive != nil {
+		t.Fatal("a refresh without archive capability did not clear it")
 	}
 	if err := (&SourceAuth{Type: "xtream", Server: "ftp://x", Username: "u", Password: "p"}).validate(); err == nil {
 		t.Fatal("non-HTTP panel accepted")

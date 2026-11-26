@@ -319,22 +319,22 @@
     }
   ],
   "devices": [
-    {"name": "Apple TV", "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"}},
-    {"name": "iOS", "identity": {"product": "Plex for iOS", "platform": "iOS", "device": "iPhone"}},
-    {"name": "Android", "identity": {"product": "Plex for Android (Mobile)", "platform": "Android"}},
-    {"name": "Android TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Android TV"}},
-    {"name": "Google TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Google TV"}},
-    {"name": "NVIDIA Shield", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "SHIELD Android TV"}},
-    {"name": "Roku", "identity": {"product": "Roku"}},
-    {"name": "Fire TV", "identity": {"product": "Fire TV"}},
-    {"name": "LG webOS", "identity": {"product": "LG webOS"}},
-    {"name": "Samsung Tizen", "identity": {"product": "Samsung Tizen"}},
-    {"name": "Xbox", "identity": {"product": "Xbox"}},
-    {"name": "PlayStation", "identity": {"product": "PlayStation"}},
-    {"name": "Home theater PC", "identity": {"product": "HTPC"}},
-    {"name": "Kodi", "identity": {"product": "Kodi"}},
-    {"name": "Mac", "identity": {"product": "Plex for Mac", "platform": "macOS"}},
-    {"name": "Browser", "identity": {"product": "Plex Web"}}
+    {"name": "Apple TV", "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"}, "aliases": ["tvOS", "Apple TV 4K"]},
+    {"name": "iOS", "identity": {"product": "Plex for iOS", "platform": "iOS", "device": "iPhone"}, "aliases": ["iPhone", "iPad", "iPadOS"]},
+    {"name": "Android", "identity": {"product": "Plex for Android (Mobile)", "platform": "Android"}, "aliases": ["Android phone", "Android tablet", "Pixel", "Galaxy"]},
+    {"name": "Android TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Android TV"}, "aliases": ["Android TV box"]},
+    {"name": "Google TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Google TV"}, "aliases": ["Chromecast", "Chromecast with Google TV"]},
+    {"name": "NVIDIA Shield", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "SHIELD Android TV"}, "aliases": ["Shield", "Shield TV"]},
+    {"name": "Roku", "identity": {"product": "Roku"}, "aliases": ["Roku TV", "Roku stick"]},
+    {"name": "Fire TV", "identity": {"product": "Fire TV"}, "aliases": ["Fire Stick", "Fire TV Stick", "Amazon"]},
+    {"name": "LG webOS", "identity": {"product": "LG webOS"}, "aliases": ["LG", "webOS"]},
+    {"name": "Samsung Tizen", "identity": {"product": "Samsung Tizen"}, "aliases": ["Samsung", "Tizen"]},
+    {"name": "Xbox", "identity": {"product": "Xbox"}, "aliases": ["Microsoft"]},
+    {"name": "PlayStation", "identity": {"product": "PlayStation"}, "aliases": ["PS5", "PS4", "Sony"]},
+    {"name": "Home theater PC", "identity": {"product": "HTPC"}, "aliases": ["HTPC", "Windows", "Linux", "PC"]},
+    {"name": "Kodi", "identity": {"product": "Kodi"}, "aliases": ["XBMC", "CoreELEC", "LibreELEC"]},
+    {"name": "Mac", "identity": {"product": "Plex for Mac", "platform": "macOS"}, "aliases": ["macOS", "MacBook", "iMac"]},
+    {"name": "Browser", "identity": {"product": "Plex Web"}, "aliases": ["Web", "Chrome", "Safari", "Firefox", "Edge"]}
   ],
   "presets": {
     "text": {
@@ -427,8 +427,78 @@
   },
   "definitions": [
     {
+      "id": "class-media-apps-tv",
+      "role": "class",
+      "class": "tv",
+      "notes": "Cross-device Jellyfin apps on a TV box: Swiftfin tvOS, Infuse on Apple TV, Findroid or Streamyfin on Android TV and Shield.",
+      "match": {"all": [
+        {"any": [{"field": "product", "op": "contains", "value": "swiftfin"}, {"field": "product", "op": "contains", "value": "infuse"}, {"field": "product", "op": "contains", "value": "findroid"}, {"field": "product", "op": "contains", "value": "streamyfin"}]},
+        {"any": [{"field": "identity", "op": "contains", "value": "tvos"}, {"field": "identity", "op": "contains", "value": "apple tv"}, {"field": "identity", "op": "contains", "value": "appletv"}, {"field": "identity", "op": "contains", "value": "android tv"}, {"field": "identity", "op": "contains", "value": "google tv"}, {"field": "identity", "op": "contains", "value": "shield"}]}
+      ]}
+    },
+    {
+      "id": "class-apple-apps-mobile",
+      "role": "class",
+      "class": "mobile",
+      "notes": "Swiftfin and Infuse on an iPhone or iPad.",
+      "match": {"all": [
+        {"any": [{"field": "product", "op": "contains", "value": "swiftfin"}, {"field": "product", "op": "contains", "value": "infuse"}]},
+        {"any": [{"field": "identity", "op": "contains", "value": "ios"}, {"field": "identity", "op": "contains", "value": "ipados"}, {"field": "identity", "op": "contains", "value": "iphone"}, {"field": "identity", "op": "contains", "value": "ipad"}]}
+      ]}
+    },
+    {
+      "id": "class-infuse-mac",
+      "role": "class",
+      "class": "computer",
+      "notes": "Infuse on a Mac.",
+      "match": {"all": [
+        {"field": "product", "op": "contains", "value": "infuse"},
+        {"any": [{"field": "identity", "op": "contains", "value": "macos"}, {"field": "identity", "op": "contains", "value": "mac os"}]}
+      ]}
+    },
+    {
+      "id": "class-jellyfin-mobile",
+      "role": "class",
+      "class": "mobile",
+      "notes": "Jellyfin phone apps that report no platform: Findroid and Streamyfin. The official Jellyfin Android and iOS apps are placed by the playback records.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "findroid"},
+        {"field": "product", "op": "contains", "value": "streamyfin"}
+      ]}
+    },
+    {
+      "id": "class-kodi",
+      "role": "class",
+      "class": "computer",
+      "notes": "Kodi add-ons (Plex for Kodi, JellyCon) group with Kodi and home theater PCs.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "pm4k"},
+        {"field": "product", "op": "contains", "value": "plex for kodi"},
+        {"field": "product", "op": "contains", "value": "jellycon"},
+        {"field": "product", "op": "contains", "value": "kodi"}
+      ]}
+    },
+    {
+      "id": "class-emby-tv",
+      "role": "class",
+      "class": "tv",
+      "notes": "Emby's TV apps.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "emby for tv"},
+        {"field": "product", "op": "contains", "value": "emby for android tv"}
+      ]}
+    },
+    {
+      "id": "class-emby-web",
+      "role": "class",
+      "class": "computer",
+      "notes": "Emby in a browser.",
+      "match": {"field": "product", "op": "contains", "value": "emby web"}
+    },
+    {
       "id": "stremio-native-desktop",
       "role": "policy",
+      "class": "computer",
       "family": "Stremio desktop (mpv)",
       "preset": "image",
       "notes": "Stremio's desktop shell plays through mpv, which renders HDR and Dolby Vision itself and tone-maps for an SDR display. Profile 7 plays its HDR10 base.",
@@ -441,6 +511,7 @@
     {
       "id": "stremio-native-android",
       "role": "policy",
+      "class": "mobile",
       "family": "Stremio native player (Android)",
       "preset": "image",
       "notes": "Stremio Android, Android TV and Nuvio play through ExoPlayer, libVLC or libmpv. Dolby Vision depends on the device decoder, which Ether cannot see, so it is off by default; profile 7 and 8.1 play their HDR10 base.",
@@ -456,6 +527,7 @@
     {
       "id": "nuvio-ios",
       "role": "policy",
+      "class": "mobile",
       "family": "Nuvio (iOS)",
       "preset": "text",
       "notes": "Nuvio on iOS plays HDR10 natively; Dolby Vision stays off by default.",
@@ -468,6 +540,7 @@
     {
       "id": "pm4k",
       "role": "policy",
+      "class": "tv",
       "family": "Kodi",
       "preset": "image",
       "dolbyVisionProfiles": [5, 7, 8],
@@ -479,6 +552,7 @@
     {
       "id": "apple-tv",
       "role": "policy",
+      "class": "tv",
       "family": "Apple TV",
       "preset": "text",
       "notes": "Dolby Vision profile 7 uses a compatible HDR base layer; TrueHD requires an audio transcode unless declared supported.",
@@ -494,6 +568,7 @@
     {
       "id": "ios",
       "role": "policy",
+      "class": "mobile",
       "family": "iOS",
       "preset": "text",
       "dolbyVisionProfiles": [5, 8],
@@ -507,6 +582,7 @@
     {
       "id": "browser",
       "role": "policy",
+      "class": "computer",
       "family": "Plex Web",
       "preset": "text",
       "notes": "Browser codec declarations govern playback; text subtitles remain sidecars.",
@@ -523,6 +599,7 @@
     {
       "id": "shield",
       "role": "policy",
+      "class": "tv",
       "family": "Android TV (Shield)",
       "preset": "image",
       "dolbyVisionProfiles": [5, 8],
@@ -531,6 +608,7 @@
     {
       "id": "android",
       "role": "policy",
+      "class": "mobile",
       "family": "Android / Google TV",
       "preset": "text",
       "match": {
@@ -543,6 +621,7 @@
     {
       "id": "fire-tv",
       "role": "policy",
+      "class": "tv",
       "family": "Fire TV",
       "preset": "text",
       "match": {"field": "identity", "op": "contains", "value": "fire tv"}
@@ -550,6 +629,7 @@
     {
       "id": "roku",
       "role": "policy",
+      "class": "tv",
       "family": "Roku",
       "preset": "text",
       "match": {"field": "identity", "op": "contains", "value": "roku"}
@@ -557,6 +637,7 @@
     {
       "id": "webos",
       "role": "policy",
+      "class": "tv",
       "family": "LG webOS",
       "preset": "text",
       "match": {
@@ -569,6 +650,7 @@
     {
       "id": "tizen",
       "role": "policy",
+      "class": "tv",
       "family": "Samsung Tizen",
       "preset": "text",
       "match": {
@@ -581,6 +663,7 @@
     {
       "id": "console",
       "role": "policy",
+      "class": "tv",
       "family": "Console",
       "preset": "text",
       "match": {
@@ -593,6 +676,7 @@
     {
       "id": "htpc",
       "role": "policy",
+      "class": "computer",
       "family": "HTPC",
       "preset": "image",
       "dolbyVisionProfiles": [5, 7, 8],
@@ -616,6 +700,7 @@
     {
       "id": "stremio-native-desktop",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "dolbyVision": true,
       "match": {"all": [
@@ -626,6 +711,7 @@
     {
       "id": "stremio-native-android",
       "role": "playback",
+      "class": "mobile",
       "preset": "htpc",
       "audio": ["aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis", "pcm"],
       "match": {"all": [
@@ -639,6 +725,7 @@
     {
       "id": "nuvio-ios",
       "role": "playback",
+      "class": "mobile",
       "preset": "apple",
       "dolbyVision": false,
       "match": {"all": [
@@ -649,6 +736,7 @@
     {
       "id": "pm4k",
       "role": "playback",
+      "class": "tv",
       "preset": "htpc",
       "dolbyVision": true,
       "match": {"any": [
@@ -683,6 +771,7 @@
     {
       "id": "apple-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "apple",
       "match": {
         "any": [
@@ -698,6 +787,7 @@
     {
       "id": "browser-safari",
       "role": "playback",
+      "class": "computer",
       "preset": "browserSafari",
       "match": {
         "all": [
@@ -709,6 +799,7 @@
     {
       "id": "browser-edge",
       "role": "playback",
+      "class": "computer",
       "preset": "browserEdge",
       "match": {
         "all": [
@@ -720,6 +811,7 @@
     {
       "id": "browser-chrome",
       "role": "playback",
+      "class": "computer",
       "preset": "browserChrome",
       "match": {
         "all": [
@@ -737,6 +829,7 @@
     {
       "id": "browser-firefox",
       "role": "playback",
+      "class": "computer",
       "preset": "browserFirefox",
       "match": {
         "all": [
@@ -748,12 +841,14 @@
     {
       "id": "browser",
       "role": "playback",
+      "class": "computer",
       "preset": "browser",
       "match": {"field": "product", "op": "contains", "value": "plex web"}
     },
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -767,6 +862,7 @@
     {
       "id": "ios",
       "role": "playback",
+      "class": "mobile",
       "preset": "apple",
       "match": {
         "any": [
@@ -781,6 +877,7 @@
     {
       "id": "android-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "androidTV",
       "match": {
         "all": [
@@ -808,6 +905,7 @@
     {
       "id": "android",
       "role": "playback",
+      "class": "mobile",
       "preset": "android",
       "match": {
         "any": [
@@ -819,6 +917,7 @@
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -830,6 +929,7 @@
     {
       "id": "roku",
       "role": "playback",
+      "class": "tv",
       "preset": "roku",
       "match": {
         "any": [
@@ -841,6 +941,7 @@
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -860,6 +961,7 @@
     {
       "id": "smart-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "smartTV",
       "match": {
         "any": [
@@ -877,24 +979,28 @@
     {
       "id": "browser-safari",
       "role": "playback",
+      "class": "computer",
       "preset": "browserSafari",
       "match": {"field": "platform", "op": "contains", "value": "safari"}
     },
     {
       "id": "browser-edge",
       "role": "playback",
+      "class": "computer",
       "preset": "browserEdge",
       "match": {"field": "platform", "op": "contains", "value": "edge"}
     },
     {
       "id": "browser-chrome",
       "role": "playback",
+      "class": "computer",
       "preset": "browserChrome",
       "match": {"field": "platform", "op": "contains", "value": "chrome"}
     },
     {
       "id": "browser-firefox",
       "role": "playback",
+      "class": "computer",
       "preset": "browserFirefox",
       "match": {"field": "platform", "op": "contains", "value": "firefox"}
     },
@@ -1101,6 +1207,42 @@
       "match": {
         "any": [
           {"field": "product", "op": "contains", "value": "infuse"}
+        ]
+      }
+    },
+    {
+      "id": "plex-no-coverart-display-image",
+      "role": "quirk",
+      "notes": "Plex Web and desktop/HTML clients built on Plex's web-client bundle overwrite server-supplied Image arrays during metadata normalization and drop coverArt, leaving only coverPoster. Sending Meta.DisplayImage with coverArt makes them size wide cards and resolve an undefined image URL (blank cards); omitting Meta.DisplayImage lets them render ranked portrait posters from thumb.",
+      "quirks": ["plex-no-coverart-display-image"],
+      "match": {
+        "any": [
+          {"field": "product", "op": "contains", "value": "plex web"},
+          {"field": "product", "op": "contains", "value": "plex for mac"},
+          {"field": "product", "op": "contains", "value": "plex for windows"},
+          {"field": "product", "op": "contains", "value": "plex for linux"},
+          {"field": "product", "op": "contains", "value": "plex desktop"},
+          {"field": "product", "op": "contains", "value": "plex htpc"},
+          {"field": "product", "op": "contains", "value": "plex media player"},
+          {"field": "product", "op": "contains", "value": "plex for lg"},
+          {"field": "product", "op": "contains", "value": "plex for samsung"},
+          {"field": "product", "op": "contains", "value": "plex for vizio"},
+          {"field": "product", "op": "contains", "value": "plex for xbox"},
+          {"field": "product", "op": "contains", "value": "plex for playstation"},
+          {
+            "all": [
+              {
+                "any": [
+                  {"field": "platform", "op": "equals", "value": "webos"},
+                  {"field": "platform", "op": "equals", "value": "tizen"},
+                  {"field": "platform", "op": "equals", "value": "vidaa"},
+                  {"field": "platform", "op": "equals", "value": "xbox"},
+                  {"field": "platform", "op": "equals", "value": "playstation"}
+                ]
+              },
+              {"field": "product", "op": "contains", "value": "plex"}
+            ]
+          }
         ]
       }
     },

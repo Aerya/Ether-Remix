@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -162,6 +163,25 @@ func TestSearchRecoversMisspellings(t *testing.T) {
 	}
 }
 
+func TestSearchFoldsCaseAndAccents(t *testing.T) {
+	c, ctx := spellTestCatalog(t)
+	for _, group := range [][]string{
+		{"amelie", "Amélie", "AMÉLIE", "Amelie"},
+		{"the gilded age", "The Gilded Age", "THE GILDED AGE"},
+		{"shogun", "Shōgun", "SHŌGUN"},
+	} {
+		want := searchTitles(t, c, ctx, group[0])
+		if len(want) == 0 {
+			t.Fatalf("Search(%q) found nothing", group[0])
+		}
+		for _, q := range group[1:] {
+			if got := searchTitles(t, c, ctx, q); !slices.Equal(got, want) {
+				t.Errorf("Search(%q) = %v, want the order of %q: %v", q, got, group[0], want)
+			}
+		}
+	}
+}
+
 func TestSearchSpellingKeepsLiteralAndShortQueriesPrecise(t *testing.T) {
 	c, ctx := spellTestCatalog(t)
 	for _, tt := range []struct {
@@ -263,5 +283,61 @@ func TestSearchSpellingTypeFilterAndUnfiltered(t *testing.T) {
 	all, err := c.SearchAll(ctx, "The Guilded Age", nil, 10)
 	if err != nil || len(all) == 0 || all[0].Title != "The Gilded Age" {
 		t.Fatalf("SearchAll = %v, %v", all, err)
+	}
+}
+
+// A franchise's name finds its films, whose own titles never say it, and
+// ranks them above a person of that name and an obscure film called
+// exactly that.
+func TestSearchFranchiseNameFindsItsFilms(t *testing.T) {
+	c := newChunkTestCatalog(t)
+	ctx := context.Background()
+	c.SetNow(func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) })
+	titles := []core.Title{
+		{Key: core.MovieKey(1), Type: core.TypeMovie, Title: "Dr. No", Year: 1962, Popularity: 15, VoteCount: 4273, CollectionID: 645, CollectionName: "James Bond Collection"},
+		{Key: core.MovieKey(2), Type: core.TypeMovie, Title: "Skyfall", Year: 2012, Popularity: 17, VoteCount: 16622, CollectionID: 645, CollectionName: "James Bond Collection"},
+		{Key: core.MovieKey(3), Type: core.TypeMovie, Title: "Goldfinger", Year: 1964, Popularity: 12, VoteCount: 4188, CollectionID: 645, CollectionName: "James Bond Collection"},
+		{Key: core.MovieKey(4), Type: core.TypeMovie, Title: "James Bond", Year: 2015, Popularity: 1, VoteCount: 3},
+		{Key: core.MovieKey(5), Type: core.TypeMovie, Title: "Roger & Me", Year: 1989, Popularity: 6, VoteCount: 600},
+		{Key: core.MovieKey(6), Type: core.TypeMovie, Title: "Bond Street", Year: 1948, Popularity: 1, VoteCount: 10},
+		// A collection of one film is not a franchise.
+		{Key: core.MovieKey(7), Type: core.TypeMovie, Title: "Lone Film", Year: 2000, Popularity: 3, VoteCount: 50, CollectionID: 900, CollectionName: "Solo Saga Collection"},
+	}
+	for i := range titles {
+		titles[i].Released = time.Date(titles[i].Year, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if err := c.upsertMany(ctx, titles, upsertOpts{browsable: true}); err != nil {
+		t.Fatal(err)
+	}
+	waitSearchIndex(t, c, ctx)
+	// Case never changes the order: most people type in lower case.
+	lower := searchTitles(t, c, ctx, "james bond")
+	for _, q := range []string{"James Bond", "JAMES BOND", "jAmEs BoNd"} {
+		if got := searchTitles(t, c, ctx, q); !slices.Equal(got, lower) {
+			t.Errorf("Search(%q) = %v, want the order of %q: %v", q, got, "james bond", lower)
+		}
+	}
+	for _, q := range []string{"james bond", "James Bond", "jamesbond", "james bo"} {
+		got := searchTitles(t, c, ctx, q)
+		if len(got) < 3 {
+			t.Fatalf("Search(%q) = %v, want the Bond films", q, got)
+		}
+		films := map[string]bool{"Dr. No": true, "Skyfall": true, "Goldfinger": true}
+		for _, title := range got[:3] {
+			if !films[title] {
+				t.Errorf("Search(%q) = %v, want the three Bond films first", q, got)
+				break
+			}
+		}
+		if got[0] != "Skyfall" {
+			t.Errorf("Search(%q) = %v, want the best-known film first", q, got)
+		}
+	}
+	// A single word of the franchise's name is not the franchise.
+	if got := searchTitles(t, c, ctx, "bond"); len(got) > 0 && got[0] != "Bond Street" && got[0] != "James Bond" {
+		t.Errorf("Search(bond) = %v, want titles holding the word first", got)
+	}
+	if got := searchTitles(t, c, ctx, "solo saga"); len(got) != 0 {
+		t.Errorf("Search(solo saga) = %v, a one-film collection is not a franchise", got)
 	}
 }

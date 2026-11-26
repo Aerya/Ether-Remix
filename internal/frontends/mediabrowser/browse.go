@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"cmp"
 	"errors"
 	"math/rand/v2"
 	"net/http"
@@ -140,17 +141,10 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 	if i.protocol == "emby" {
 		delete(m, "LocationType")
 	}
-	providers := map[string]string{}
-	if t.IDs.TMDB > 0 {
-		providers["Tmdb"] = strconv.FormatInt(t.IDs.TMDB, 10)
+	if i.protocol == "jellyfin" && i.lyricsLikely(t) {
+		m["HasLyrics"] = true
 	}
-	if t.IDs.IMDB != "" {
-		providers["Imdb"] = t.IDs.IMDB
-	}
-	if t.IDs.TVDB > 0 {
-		providers["Tvdb"] = strconv.FormatInt(t.IDs.TVDB, 10)
-	}
-	m["ProviderIds"] = providers
+	m["ProviderIds"] = nativeProviderIDs(t.IDs)
 	m["ServerId"] = i.info.ID
 	sortName := t.SortTitle
 	if sortName == "" {
@@ -171,8 +165,8 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 	if t.Rating > 0 {
 		m["CommunityRating"] = t.Rating
 	}
-	if !t.Released.IsZero() {
-		m["PremiereDate"] = wireTime(t.Released)
+	if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+		m["PremiereDate"] = wireTime(date)
 	}
 	if len(t.Genres) > 0 {
 		m["Genres"] = t.Genres
@@ -321,6 +315,14 @@ func (i *instance) writeCollectionFolder(w http.ResponseWriter, r *http.Request,
 	if i.discoveryFolderDetail(w, r, viewNum) {
 		return
 	}
+	if viewNum == catchUpViewNumber {
+		if item, ok := i.catchUpView(r, v); ok {
+			jsonReply(w, item)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	if viewNum == collectionsViewNumber {
 		if folder, ok := i.collectionsFolder(r, v); ok {
 			i.replyItems(w, r, folder)
@@ -401,6 +403,9 @@ func (i *instance) browseRoutes() error {
 		}
 		// PSE-HOOK: bibliothèques Vus et notés (Scrob) — voir docs/pse/FORK.fr.md
 		items = i.pseViews(r, v, items)
+		if item, ok := i.catchUpView(r, v); ok {
+			items = append(items, item)
+		}
 		if folder, ok := i.collectionsFolder(r, v); ok {
 			items = append(items, folder)
 		}
@@ -428,7 +433,7 @@ func (i *instance) browseRoutes() error {
 			titles := []frontend.Title{}
 			var series frontend.RatingKey
 			if purpose == frontend.RowNextUp {
-				series = nextUpSeries(r)
+				series = i.nextUpSeries(r, v)
 			}
 			if series != 0 {
 				titles, err = i.seriesNextUp(r, v, series)
@@ -533,6 +538,7 @@ func (i *instance) browseRoutes() error {
 			}
 			i.fillSeriesTitles(r, v, page)
 			i.prefetchParentArtwork(r, page)
+			i.primeTitleLibraries(r, v, page)
 			for _, title := range page {
 				if purpose == frontend.RowNextUp && title.Type == "episode" && i.host.Experience != nil {
 					if stored, ok := i.storedListTitle(r, v, title.Key); ok && stored.Type == "episode" {
@@ -591,6 +597,9 @@ func (i *instance) browseRoutes() error {
 			return
 		}
 		wireID := r.PathValue("id")
+		if i.catchUpDetail(w, r, v, token, wireID) {
+			return
+		}
 		if viewNum, e := ids.ParseGUID(ids.View, wireID); e == nil {
 			i.writeCollectionFolder(w, r, v, viewNum)
 			return
@@ -657,6 +666,7 @@ func (i *instance) browseRoutes() error {
 			return
 		}
 		dto := i.itemDTO(d.Title, d.UserData)
+		i.attachTitleLibrary(r, v, dto, d.Title)
 		if mbIsBookItem(d.Title) && !i.bookReadable(d) {
 			dto["CanDownload"] = false
 			delete(dto, "Path")
@@ -744,10 +754,15 @@ func (i *instance) browseRoutes() error {
 
 		}
 		if i.protocol == "emby" {
+			i.setVideoCanDownload(v, dto, d.Title)
 			i.embyItemDetailDTO(dto, d)
+			i.embyLyricStream(dto, d.Title)
 		}
 		i.markUnreleased(dto, d.Title)
 		i.applyOpenedDetail(r, v, dto, d.Title)
+		if d.Title.Type == "movie" || d.Title.Type == "episode" {
+			i.subtitleLists.note(v, key, dto["MediaSources"], time.Now())
+		}
 		i.replyItems(w, r, dto)
 	}
 	endpoints := []struct {
@@ -1095,6 +1110,7 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	r = i.pageEditions(r, v, keys)
 	r = i.noteLocalUnplayedCounts(r, v, page.Items)
 	i.fillSeriesTitles(r, v, page.Items)
+	i.primeTitleLibraries(r, v, page.Items)
 	for _, title := range page.Items {
 		var editions []jellyfinEdition
 		if !mbIsBookItem(title) {
@@ -1164,9 +1180,12 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	i.replyItems(w, r, result)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.PathValue("id"), false) {
 		return
 	}
 	if i.host.Experience == nil {
@@ -1341,7 +1360,7 @@ hintsBuilt:
 }
 
 func (i *instance) items(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
 		return
@@ -1351,6 +1370,20 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if i.discoveryItems(w, r, v, false) {
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.URL.Query().Get("ParentId"), isCatchUpRecursive(r)) {
+		return
+	}
+	if itemIDs := route.Query(r.URL.Query(), "Ids"); len(itemIDs) == 1 && frontend.IsCatchUpGUID(itemIDs[0]) {
+		lib, ok := i.host.LiveTV.(frontend.CatchUpLibrary)
+		items := []any{}
+		if ok {
+			if item, err := lib.CatchUpItem(r.Context(), v, itemIDs[0]); err == nil {
+				items = append(items, i.catchUpDTO(r, item, token))
+			}
+		}
+		i.replyItems(w, r, i.queryResult(items, len(items), 0))
 		return
 	}
 	q := itemQuery(r)
@@ -1708,6 +1741,7 @@ func (i *instance) ancestors(w http.ResponseWriter, r *http.Request) {
 	items := make([]any, 0, len(titles))
 	paths := i.virtualPaths(r, v, keys)
 	ratingFacts := i.pageRatingFacts(r, v, titles)
+	i.primeTitleLibraries(r, v, titles)
 	for _, t := range titles {
 		item := i.itemDTO(t, state[t.Key])
 		if p := paths[t.Key]; p != "" {
@@ -1721,24 +1755,23 @@ func (i *instance) ancestors(w http.ResponseWriter, r *http.Request) {
 	i.replyItems(w, r, items)
 }
 
-func applySeasonID(show frontend.RatingKey, r *http.Request, q *frontend.ItemQuery) error {
+func (i *instance) selectSeasonID(r *http.Request, viewer *frontend.Viewer, show frontend.RatingKey) (*frontend.Title, error) {
 	values := route.Query(r.URL.Query(), "SeasonId")
 	if len(values) == 0 || (len(values) == 1 && values[0] == "") {
-		return nil
+		return nil, nil
 	}
 	if len(values) != 1 {
-		return errors.New("ambiguous season")
+		return nil, errors.New("ambiguous season")
 	}
 	key, err := ids.ParseRatingKeyGUID(values[0])
 	if err != nil || key.Kind() != frontend.KindSeason {
-		return frontend.ErrNotFound
+		return nil, frontend.ErrNotFound
 	}
-	if show.Kind() == frontend.KindShow && key.TMDB() != show.TMDB() {
-		return frontend.ErrNotFound
+	title, ok := i.storedListTitle(r, viewer, key)
+	if !ok || title.Type != frontend.TypeSeason || parentShowKey(title) != show {
+		return nil, frontend.ErrNotFound
 	}
-	season := key.Season()
-	q.Season = &season
-	return nil
+	return &title, nil
 }
 
 // pluginSeason resolves the season container a client asked for under a plugin
@@ -1775,9 +1808,12 @@ func (i *instance) pluginSeason(r *http.Request, v *frontend.Viewer, show fronte
 }
 
 func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.PathValue("id"), true) {
 		return
 	}
 	if i.host.Experience == nil {
@@ -1791,7 +1827,9 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 		anchors := route.Query(r.URL.Query(), "StartItemId")
 		if len(anchors) == 1 {
 			if anchor, e := ids.ParseRatingKeyGUID(anchors[0]); e == nil && anchor.Kind() == frontend.KindEpisode {
-				showID = ids.RatingKeyGUID(frontend.ShowKey(anchor.TMDB()))
+				if show := i.seriesForItem(r, v, anchor); show != 0 {
+					showID = ids.RatingKeyGUID(show)
+				}
 			}
 		}
 		if showID == "" {
@@ -1853,7 +1891,8 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 	}
 	// SeasonId is the season item Swiftfin asks for. It wins over Season so a
 	// season folder cannot be filled with the rest of the series.
-	if err = applySeasonID(key, r, &q); err != nil {
+	season, err := i.selectSeasonID(r, v, key)
+	if err != nil {
 		if errors.Is(err, frontend.ErrNotFound) {
 			i.page(w, r, v, frontend.Page{}, q.Offset)
 			return
@@ -1862,8 +1901,9 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested := key
-	if q.Season != nil {
-		requested = frontend.SeasonKey(key.TMDB(), *q.Season)
+	if season != nil {
+		requested = season.Key
+		q.Season = &season.Season
 	}
 	page, err := i.host.Experience.Children(frontend.WithColdDetail(r.Context(), requested), v, device(r), key, q)
 	if err != nil {

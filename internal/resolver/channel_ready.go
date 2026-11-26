@@ -40,7 +40,7 @@ func (s *Service) readyChannelFrom(ctx context.Context, req core.ResolveRequest,
 	if req.Title == nil || req.Client.BroadcastBitrateKbps <= 0 {
 		return core.Release{}, false
 	}
-	sreq := searchRequestFor(req.Title)
+	sreq := s.cachedSearchRequest(req.Title)
 	pool := make([]core.Release, 0, 8)
 	for _, r := range results {
 		if len(pool) >= 32 {
@@ -61,7 +61,7 @@ func (s *Service) readyChannelFrom(ctx context.Context, req core.ResolveRequest,
 	if len(pool) == 0 {
 		return core.Release{}, false
 	}
-	profile := SelectProfileForTitle(s.qualityCfg(), req.Client, req.User, req.Title, s.libProfileForTitle(ctx, req.Title))
+	profile := SelectProfileForTitle(s.qualityCfg(), req.Client, req.User, req.Title, s.membershipFor(ctx, req.Title))
 	ranked, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, pool, nil, "", false)
 	if err != nil || len(ranked) == 0 {
 		return core.Release{}, false

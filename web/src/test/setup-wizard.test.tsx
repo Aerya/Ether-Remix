@@ -127,12 +127,12 @@ describe("canAdvance gating", () => {
     ).toBe(false);
     expect(canAdvance("sources", { ...none, debrid: [{ ...rd, enabled: false }] })).toBe(false);
   });
-  it("requires a working TMDB key on the catalogue step", () => {
-    expect(canAdvance("catalog", { ...base, tmdbReady: false })).toBe(false);
-    expect(canAdvance("catalog", { ...base, tmdbReady: true })).toBe(true);
-    expect(canAdvance("catalog", { ...base, tmdbReady: false, skipped: { catalog: true } })).toBe(
-      false,
-    );
+  it("enables Finish setup when a metadata source is ready", () => {
+    expect(canAdvance("catalog", { ...base, metadataReady: false })).toBe(false);
+    expect(canAdvance("catalog", { ...base, metadataReady: true })).toBe(true);
+    expect(
+      canAdvance("catalog", { ...base, metadataReady: false, skipped: { catalog: true } }),
+    ).toBe(false);
   });
   it("app choice and cache never block", () => {
     expect(canAdvance("apps", base)).toBe(true);
@@ -974,7 +974,7 @@ describe("setup wizard", () => {
     expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
   });
 
-  it("deep-links Choose playback quality from the ready screen to Quality profiles", async () => {
+  it("deep-links Choose playback quality from the ready screen to Releases › Profiles", async () => {
     sessionStorage.setItem(SETUP_STEP_KEY, "6");
     renderApp(
       "/setup",
@@ -996,7 +996,7 @@ describe("setup wizard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Playback quality: 1080p at home · change" }),
     );
-    expect(await screen.findByRole("heading", { name: "Quality" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Releases" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
   });
 

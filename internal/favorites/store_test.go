@@ -142,3 +142,23 @@ func TestHasTitlesBatchEnforcesViewerAndSubject(t *testing.T) {
 		t.Fatalf("revoked viewer: %v", err)
 	}
 }
+
+func TestPluginItemsAreTitleFavorites(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	s, err := New(Options{DB: db, Marked: state.New(db, state.Options{}).Playlists().(core.TransactionalMarkedPlaylists),
+		Active:  func(_ context.Context, id int64) (*core.User, error) { return &core.User{ID: id}, nil },
+		Allowed: func(context.Context, *core.User, Subject) bool { return true }, Changed: func(context.Context, int64, Subject) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &core.User{ID: 1}
+	track := core.PluginKey(42)
+	if changed, err := s.Set(ctx, u, Subject{Kind: KindTitle, ID: track.String()}, true); err != nil || !changed {
+		t.Fatalf("plugin item favorite: %v %v", changed, err)
+	}
+	has, err := s.HasTitles(ctx, u, []core.RatingKey{track, core.MovieKey(1)})
+	if err != nil || !has[track] || has[core.MovieKey(1)] {
+		t.Fatalf("batch membership: %v %v", has, err)
+	}
+}

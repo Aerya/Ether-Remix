@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,12 +24,14 @@ import (
 // disk on one background writer per encoder; a slow or stalled disk delays
 // (and, past a bounded queue, drops) only history, never a live segment.
 type continuousStore struct {
-	dir    string
-	token  string
-	ln     net.Listener
-	srv    *http.Server
-	keep   int // segment files retained in memory per container
-	notify func()
+	dir      string
+	token    string
+	ln       net.Listener
+	srv      *http.Server
+	keep     int // segment files retained in memory per container
+	notify   func()
+	dvr      *LiveDVRStore
+	budgeted bool
 
 	mu      sync.Mutex
 	files   map[string]*storeFile
@@ -44,6 +47,7 @@ type continuousStore struct {
 type storeFile struct {
 	data     []byte // nil once only the disk copy remains
 	onDisk   bool
+	dvr      *LiveDVRFile
 	received time.Time
 }
 
@@ -61,6 +65,10 @@ const storeQueue = 64
 const storeMaxBody = 64 << 20
 
 func newContinuousStore(dir string, keep int, notify func()) (*continuousStore, error) {
+	return newBudgetedContinuousStore(dir, keep, notify, nil, false)
+}
+
+func newBudgetedContinuousStore(dir string, keep int, notify func(), cache *LiveDVRCache, rewind bool) (*continuousStore, error) {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -74,8 +82,15 @@ func newContinuousStore(dir string, keep int, notify func()) (*continuousStore, 
 	// ffmpeg keeps its PUT connections open between segments; an idle
 	// close would make it reconnect on the publication path.
 	s.srv = &http.Server{Handler: http.HandlerFunc(s.serveHTTP), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Minute, ErrorLog: log.New(io.Discard, "", 0)}
+	if cache != nil {
+		s.budgeted = true
+		if rewind {
+			s.dvr = cache.Open()
+		}
+	} else {
+		go s.write()
+	}
 	go s.srv.Serve(ln)
-	go s.write()
 	return s, nil
 }
 
@@ -116,16 +131,34 @@ func (s *continuousStore) put(name string, data []byte) {
 		return
 	}
 	f := &storeFile{data: data, received: time.Now()}
+	old := s.files[name]
 	s.files[name] = f
 	if storeSegment(name) {
+		if s.budgeted && old != nil {
+			old.dvr.Forget()
+			for i, n := range s.order {
+				if n == name {
+					s.order = append(s.order[:i], s.order[i+1:]...)
+					break
+				}
+			}
+		}
 		s.order = append(s.order, name)
-		select {
-		case s.queue <- storeJob{name: name, data: data}:
-		default:
-			s.dropped++
+		if s.dvr != nil {
+			_, number, _ := strings.Cut(name, "-")
+			seq, err := strconv.ParseInt(strings.TrimSuffix(number, filepath.Ext(name)), 10, 64)
+			if err == nil {
+				f.dvr = s.dvr.Save(seq, data)
+			}
+		} else if !s.budgeted {
+			select {
+			case s.queue <- storeJob{name: name, data: data}:
+			default:
+				s.dropped++
+			}
 		}
 		s.trimLocked()
-	} else if name == "init.mp4" {
+	} else if name == "init.mp4" && !s.budgeted {
 		// The init section is tiny and needed for the whole DVR window.
 		select {
 		case s.queue <- storeJob{name: name, data: data}:
@@ -144,7 +177,12 @@ func (s *continuousStore) trimLocked() {
 	for len(s.order) > 2*s.keep {
 		name := s.order[0]
 		f := s.files[name]
-		if f != nil && f.data != nil && !f.onDisk {
+		if s.budgeted && f != nil {
+			if f.dvr != nil && !f.dvr.Ready() {
+				s.dvr.DiscardThrough(f.dvr.seq)
+			}
+			f.data = nil
+		} else if f != nil && f.data != nil && !f.onDisk {
 			// Still queued for the disk: keep it until written or dropped.
 			if len(s.order) <= 2*s.keep+storeQueue {
 				return
@@ -186,16 +224,36 @@ func (s *continuousStore) has(name string) (time.Time, bool) {
 	return f.received, true
 }
 
+// retained reports whether a segment can be opened from the live tier or disk.
+func (s *continuousStore) retained(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.files[name]
+	return f != nil && (f.data != nil || f.dvr.Ready())
+}
+
 // open returns name's body from memory, or its DVR copy from disk.
 func (s *continuousStore) open(name string) (io.ReadSeeker, time.Time, func(), error) {
 	s.mu.Lock()
 	f := s.files[name]
-	s.mu.Unlock()
 	if f == nil {
+		s.mu.Unlock()
 		return nil, time.Time{}, nil, os.ErrNotExist
 	}
-	if data := f.data; data != nil {
-		return bytes.NewReader(data), f.received, func() {}, nil
+	data, received, disk := f.data, f.received, f.dvr
+	s.mu.Unlock()
+	if data != nil {
+		return bytes.NewReader(data), received, func() {}, nil
+	}
+	if s.budgeted {
+		if disk == nil {
+			return nil, time.Time{}, nil, os.ErrNotExist
+		}
+		file, err := disk.Open()
+		if err != nil {
+			return nil, time.Time{}, nil, err
+		}
+		return file, received, func() { file.Close() }, nil
 	}
 	file, err := os.Open(filepath.Join(s.dir, name))
 	if err != nil {
@@ -221,6 +279,9 @@ func (s *continuousStore) remove(name string) {
 	defer s.mu.Unlock()
 	f := s.files[name]
 	delete(s.files, name)
+	if f != nil {
+		f.dvr.Forget()
+	}
 	if f != nil && f.onDisk && !s.closed {
 		select {
 		case s.queue <- storeJob{name: name, remove: true}:
@@ -244,6 +305,11 @@ func (s *continuousStore) close() {
 	s.closed = true
 	s.mu.Unlock()
 	_ = s.srv.Close()
-	close(s.queue)
-	<-s.done
+	if s.dvr != nil {
+		s.dvr.Close()
+	}
+	if !s.budgeted {
+		close(s.queue)
+		<-s.done
+	}
 }

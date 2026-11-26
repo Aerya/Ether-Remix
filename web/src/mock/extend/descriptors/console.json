@@ -140,8 +140,8 @@
       "keywords": {},
       "agentSuggestion": true,
       "routePatterns": [
-        "/quality",
-        "/quality/*"
+        "/releases",
+        "/releases/*"
       ]
     }
   },
@@ -549,6 +549,86 @@
   },
   {
     "kind": "navItem",
+    "id": "notifications",
+    "owner": "builtin",
+    "label": {
+      "source": "Notifications"
+    },
+    "hint": {},
+    "icon": "Bell",
+    "group": "automate",
+    "order": 10,
+    "meta": {
+      "route": "/notifications",
+      "page": "notifications"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "automate",
+    "order": 20,
+    "meta": {
+      "route": "/flows",
+      "page": "flows"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "apps",
+    "owner": "builtin",
+    "label": {
+      "source": "Apps"
+    },
+    "hint": {},
+    "icon": "Globe",
+    "group": "connect",
+    "order": 10,
+    "meta": {
+      "route": "/apps",
+      "page": "apps"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "integrations",
+    "owner": "builtin",
+    "label": {
+      "source": "Integrations"
+    },
+    "hint": {},
+    "icon": "Plug",
+    "group": "connect",
+    "order": 20,
+    "meta": {
+      "route": "/services",
+      "page": "integrations"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "plugins",
+    "owner": "builtin",
+    "label": {
+      "source": "Plugins"
+    },
+    "hint": {},
+    "icon": "Puzzle",
+    "group": "connect",
+    "order": 30,
+    "meta": {
+      "route": "/plugins",
+      "page": "plugins"
+    }
+  },
+  {
+    "kind": "navItem",
     "id": "libraries",
     "owner": "builtin",
     "label": {
@@ -582,18 +662,18 @@
   },
   {
     "kind": "navItem",
-    "id": "home",
+    "id": "recommendations",
     "owner": "builtin",
     "label": {
-      "source": "Home"
+      "source": "Recommendations"
     },
     "hint": {},
     "icon": "LayoutTemplate",
     "group": "library",
     "order": 30,
     "meta": {
-      "route": "/home",
-      "page": "home"
+      "route": "/recommendations",
+      "page": "recommendations"
     }
   },
   {
@@ -646,134 +726,6 @@
   },
   {
     "kind": "navItem",
-    "id": "general",
-    "owner": "builtin",
-    "label": {
-      "source": "General"
-    },
-    "hint": {},
-    "icon": "Server",
-    "group": "server",
-    "order": 10,
-    "meta": {
-      "route": "/server",
-      "page": "general"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "apps",
-    "owner": "builtin",
-    "label": {
-      "source": "Apps"
-    },
-    "hint": {},
-    "icon": "Globe",
-    "group": "server",
-    "order": 20,
-    "meta": {
-      "route": "/apps",
-      "page": "apps"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "integrations",
-    "owner": "builtin",
-    "label": {
-      "source": "Integrations"
-    },
-    "hint": {},
-    "icon": "Plug",
-    "group": "server",
-    "order": 30,
-    "meta": {
-      "route": "/services",
-      "page": "integrations"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "plugins",
-    "owner": "builtin",
-    "label": {
-      "source": "Plugins"
-    },
-    "hint": {},
-    "icon": "Puzzle",
-    "group": "server",
-    "order": 40,
-    "meta": {
-      "route": "/plugins",
-      "page": "plugins"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "notifications",
-    "owner": "builtin",
-    "label": {
-      "source": "Notifications"
-    },
-    "hint": {},
-    "icon": "Bell",
-    "group": "server",
-    "order": 50,
-    "meta": {
-      "route": "/notifications",
-      "page": "notifications"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "flows",
-    "owner": "builtin",
-    "label": {
-      "source": "Flows"
-    },
-    "hint": {},
-    "icon": "Workflow",
-    "group": "server",
-    "order": 55,
-    "meta": {
-      "route": "/flows",
-      "page": "flows"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "cluster",
-    "owner": "builtin",
-    "label": {
-      "source": "Cluster"
-    },
-    "hint": {},
-    "icon": "Boxes",
-    "group": "server",
-    "order": 60,
-    "meta": {
-      "route": "/cluster",
-      "page": "cluster"
-    }
-  },
-  {
-    "kind": "navItem",
-    "id": "maintenance",
-    "owner": "builtin",
-    "label": {
-      "source": "Maintenance"
-    },
-    "hint": {},
-    "icon": "LifeBuoy",
-    "group": "server",
-    "order": 70,
-    "meta": {
-      "route": "/maintenance",
-      "page": "maintenance"
-    }
-  },
-  {
-    "kind": "navItem",
     "id": "sources",
     "owner": "builtin",
     "label": {
@@ -809,14 +761,14 @@
     "id": "releases",
     "owner": "builtin",
     "label": {
-      "source": "Quality"
+      "source": "Releases"
     },
     "hint": {},
     "icon": "ListFilter",
     "group": "streaming",
     "order": 20,
     "meta": {
-      "route": "/quality",
+      "route": "/releases",
       "page": "releases"
     }
   },
@@ -834,6 +786,54 @@
     "meta": {
       "route": "/cache",
       "page": "cache"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "general",
+    "owner": "builtin",
+    "label": {
+      "source": "General"
+    },
+    "hint": {},
+    "icon": "Server",
+    "group": "system",
+    "order": 10,
+    "meta": {
+      "route": "/server",
+      "page": "general"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "cluster",
+    "owner": "builtin",
+    "label": {
+      "source": "Cluster"
+    },
+    "hint": {},
+    "icon": "Boxes",
+    "group": "system",
+    "order": 20,
+    "meta": {
+      "route": "/cluster",
+      "page": "cluster"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "maintenance",
+    "owner": "builtin",
+    "label": {
+      "source": "Maintenance"
+    },
+    "hint": {},
+    "icon": "LifeBuoy",
+    "group": "system",
+    "order": 30,
+    "meta": {
+      "route": "/maintenance",
+      "page": "maintenance"
     }
   },
   {
@@ -1005,6 +1005,255 @@
   },
   {
     "kind": "page",
+    "id": "notifications",
+    "owner": "builtin",
+    "label": {
+      "source": "Notifications"
+    },
+    "hint": {},
+    "icon": "Bell",
+    "group": "automate",
+    "order": 10,
+    "meta": {
+      "route": "/notifications",
+      "navGroup": "automate",
+      "inNav": true,
+      "keywords": {},
+      "sections": [
+        {
+          "key": "channels",
+          "label": {
+            "source": "Channels"
+          },
+          "keywords": {
+            "source": "email discord webhook push alerts watchlist"
+          }
+        },
+        {
+          "key": "report",
+          "label": {
+            "source": "Weekly report"
+          },
+          "keywords": {
+            "source": "newsletter digest"
+          }
+        },
+        {
+          "key": "deliveries",
+          "label": {
+            "source": "Delivery history"
+          },
+          "keywords": {}
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "automate",
+    "order": 20,
+    "meta": {
+      "route": "/flows",
+      "navGroup": "automate",
+      "inNav": true,
+      "keywords": {
+        "source": "automations automation workflows triggers actions events rules alerts"
+      },
+      "sections": [
+        {
+          "key": "templates",
+          "label": {
+            "source": "Templates"
+          },
+          "keywords": {
+            "source": "recipes starter tautulli kill stream newsletter"
+          }
+        },
+        {
+          "key": "runs",
+          "label": {
+            "source": "Runs"
+          },
+          "keywords": {
+            "source": "history trace test dry run"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "apps",
+    "owner": "builtin",
+    "label": {
+      "source": "Apps"
+    },
+    "hint": {},
+    "icon": "Globe",
+    "group": "connect",
+    "order": 10,
+    "meta": {
+      "route": "/apps",
+      "navGroup": "connect",
+      "inNav": true,
+      "keywords": {
+        "source": "settings plex apps protocols"
+      },
+      "sections": [
+        {
+          "key": "remote",
+          "label": {
+            "source": "Remote access"
+          },
+          "keywords": {
+            "source": "upnp port forward public"
+          }
+        },
+        {
+          "key": "secure",
+          "label": {
+            "source": "Secure connections"
+          },
+          "keywords": {
+            "source": "certificate plex.direct tls"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "integrations",
+    "owner": "builtin",
+    "label": {
+      "source": "Integrations"
+    },
+    "hint": {},
+    "icon": "Plug",
+    "group": "connect",
+    "order": 20,
+    "meta": {
+      "route": "/services",
+      "navGroup": "connect",
+      "inNav": true,
+      "keywords": {
+        "source": "settings integrations"
+      },
+      "sections": [
+        {
+          "key": "overview",
+          "label": {
+            "source": "Integrations"
+          },
+          "keywords": {
+            "source": "status tmdb debrid prowlarr ratings"
+          }
+        },
+        {
+          "key": "trakt",
+          "label": {
+            "source": "Trakt"
+          },
+          "keywords": {
+            "source": "sync history"
+          }
+        },
+        {
+          "key": "simkl",
+          "label": {
+            "source": "Simkl"
+          },
+          "keywords": {
+            "source": "simkl sync history"
+          }
+        },
+        {
+          "key": "mdblist",
+          "label": {
+            "source": "MDBList"
+          },
+          "keywords": {
+            "source": "mdblist sync history"
+          }
+        },
+        {
+          "key": "llm",
+          "label": {
+            "source": "Language model"
+          },
+          "keywords": {
+            "source": "llm ollama openai recaps search"
+          }
+        },
+        {
+          "key": "subtitle-providers",
+          "label": {
+            "source": "Subtitle providers"
+          },
+          "keywords": {
+            "source": "subtitles providers opensubtitles subdl subsource stremio add-on plugin"
+          },
+          "href": "/services/overview#setting=s=subtitle-providers"
+        },
+        {
+          "key": "opensubtitles",
+          "label": {
+            "source": "OpenSubtitles"
+          },
+          "keywords": {
+            "source": "subtitles"
+          }
+        },
+        {
+          "key": "subdl",
+          "label": {
+            "source": "SubDL"
+          },
+          "keywords": {
+            "source": "subtitles"
+          }
+        },
+        {
+          "key": "subsource",
+          "label": {
+            "source": "SubSource"
+          },
+          "keywords": {
+            "source": "subtitles"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "plugins",
+    "owner": "builtin",
+    "label": {
+      "source": "Plugins"
+    },
+    "hint": {},
+    "icon": "Puzzle",
+    "group": "connect",
+    "order": 30,
+    "meta": {
+      "route": "/plugins",
+      "navGroup": "connect",
+      "inNav": true,
+      "keywords": {
+        "source": "plugins extensions addons studio"
+      }
+    }
+  },
+  {
+    "kind": "page",
     "id": "libraries",
     "owner": "builtin",
     "label": {
@@ -1084,21 +1333,21 @@
   },
   {
     "kind": "page",
-    "id": "home",
+    "id": "recommendations",
     "owner": "builtin",
     "label": {
-      "source": "Home"
+      "source": "Recommendations"
     },
     "hint": {},
     "icon": "LayoutTemplate",
     "group": "library",
     "order": 30,
     "meta": {
-      "route": "/home",
+      "route": "/recommendations",
       "navGroup": "library",
       "inNav": true,
       "keywords": {
-        "source": "designer rows layout overrides plex home"
+        "source": "home rows pages designer layout personalized curated library recommended plex"
       }
     }
   },
@@ -1245,343 +1494,6 @@
   },
   {
     "kind": "page",
-    "id": "general",
-    "owner": "builtin",
-    "label": {
-      "source": "General"
-    },
-    "hint": {},
-    "icon": "Server",
-    "group": "server",
-    "order": 10,
-    "meta": {
-      "route": "/server",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "settings"
-      },
-      "sections": [
-        {
-          "key": "server",
-          "label": {
-            "source": "Server"
-          },
-          "keywords": {
-            "source": "name port listen log level stream limit"
-          }
-        },
-        {
-          "key": "downloads",
-          "label": {
-            "source": "Downloads"
-          },
-          "keywords": {
-            "source": "offline sync friends remux"
-          }
-        },
-        {
-          "key": "personalize",
-          "label": {
-            "source": "Personalization"
-          },
-          "keywords": {
-            "source": "post-play up next match finish time clock"
-          }
-        },
-        {
-          "key": "extras",
-          "label": {
-            "source": "Trailers \u0026 extras"
-          },
-          "keywords": {
-            "source": "cinema trailers yt-dlp resolver"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "kind": "page",
-    "id": "apps",
-    "owner": "builtin",
-    "label": {
-      "source": "Apps"
-    },
-    "hint": {},
-    "icon": "Globe",
-    "group": "server",
-    "order": 20,
-    "meta": {
-      "route": "/apps",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "settings plex apps protocols"
-      },
-      "sections": [
-        {
-          "key": "remote",
-          "label": {
-            "source": "Remote access"
-          },
-          "keywords": {
-            "source": "upnp port forward public"
-          }
-        },
-        {
-          "key": "secure",
-          "label": {
-            "source": "Secure connections"
-          },
-          "keywords": {
-            "source": "certificate plex.direct tls"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "kind": "page",
-    "id": "integrations",
-    "owner": "builtin",
-    "label": {
-      "source": "Integrations"
-    },
-    "hint": {},
-    "icon": "Plug",
-    "group": "server",
-    "order": 30,
-    "meta": {
-      "route": "/services",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "settings integrations"
-      },
-      "sections": [
-        {
-          "key": "overview",
-          "label": {
-            "source": "Integrations"
-          },
-          "keywords": {
-            "source": "status tmdb debrid prowlarr ratings"
-          }
-        },
-        {
-          "key": "trakt",
-          "label": {
-            "source": "Trakt"
-          },
-          "keywords": {
-            "source": "sync history"
-          }
-        },
-        {
-          "key": "simkl",
-          "label": {
-            "source": "Simkl"
-          },
-          "keywords": {
-            "source": "simkl sync history"
-          }
-        },
-        {
-          "key": "mdblist",
-          "label": {
-            "source": "MDBList"
-          },
-          "keywords": {
-            "source": "mdblist sync history"
-          }
-        },
-        {
-          "key": "llm",
-          "label": {
-            "source": "Language model"
-          },
-          "keywords": {
-            "source": "llm ollama openai recaps search"
-          }
-        },
-        {
-          "key": "opensubtitles",
-          "label": {
-            "source": "OpenSubtitles"
-          },
-          "keywords": {
-            "source": "subtitles"
-          }
-        },
-        {
-          "key": "subdl",
-          "label": {
-            "source": "SubDL"
-          },
-          "keywords": {
-            "source": "subtitles"
-          }
-        },
-        {
-          "key": "subsource",
-          "label": {
-            "source": "SubSource"
-          },
-          "keywords": {
-            "source": "subtitles"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "kind": "page",
-    "id": "plugins",
-    "owner": "builtin",
-    "label": {
-      "source": "Plugins"
-    },
-    "hint": {},
-    "icon": "Puzzle",
-    "group": "server",
-    "order": 40,
-    "meta": {
-      "route": "/plugins",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "plugins extensions addons studio"
-      }
-    }
-  },
-  {
-    "kind": "page",
-    "id": "notifications",
-    "owner": "builtin",
-    "label": {
-      "source": "Notifications"
-    },
-    "hint": {},
-    "icon": "Bell",
-    "group": "server",
-    "order": 50,
-    "meta": {
-      "route": "/notifications",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {},
-      "sections": [
-        {
-          "key": "channels",
-          "label": {
-            "source": "Channels"
-          },
-          "keywords": {
-            "source": "email discord webhook push alerts watchlist"
-          }
-        },
-        {
-          "key": "report",
-          "label": {
-            "source": "Weekly report"
-          },
-          "keywords": {
-            "source": "newsletter digest"
-          }
-        },
-        {
-          "key": "deliveries",
-          "label": {
-            "source": "Delivery history"
-          },
-          "keywords": {}
-        }
-      ]
-    }
-  },
-  {
-    "kind": "page",
-    "id": "flows",
-    "owner": "builtin",
-    "label": {
-      "source": "Flows"
-    },
-    "hint": {},
-    "icon": "Workflow",
-    "group": "server",
-    "order": 55,
-    "meta": {
-      "route": "/flows",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "automations automation workflows triggers actions events rules alerts"
-      },
-      "sections": [
-        {
-          "key": "templates",
-          "label": {
-            "source": "Templates"
-          },
-          "keywords": {
-            "source": "recipes starter tautulli kill stream newsletter"
-          }
-        },
-        {
-          "key": "runs",
-          "label": {
-            "source": "Runs"
-          },
-          "keywords": {
-            "source": "history trace test dry run"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "kind": "page",
-    "id": "cluster",
-    "owner": "builtin",
-    "label": {
-      "source": "Cluster"
-    },
-    "hint": {},
-    "icon": "Boxes",
-    "group": "server",
-    "order": 60,
-    "meta": {
-      "route": "/cluster",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "high availability ha nodes failover postgres postgresql join token weight leader"
-      }
-    }
-  },
-  {
-    "kind": "page",
-    "id": "maintenance",
-    "owner": "builtin",
-    "label": {
-      "source": "Maintenance"
-    },
-    "hint": {},
-    "icon": "LifeBuoy",
-    "group": "server",
-    "order": 70,
-    "meta": {
-      "route": "/maintenance",
-      "navGroup": "server",
-      "inNav": true,
-      "keywords": {
-        "source": "server maintenance"
-      }
-    }
-  },
-  {
-    "kind": "page",
     "id": "sources",
     "owner": "builtin",
     "label": {
@@ -1663,12 +1575,30 @@
       "keywords": {},
       "sections": [
         {
-          "key": "transcoding",
+          "key": "audio",
           "label": {
-            "source": "Transcoding"
+            "source": "Audio"
           },
           "keywords": {
-            "source": "ffmpeg hardware gpu bitrate startup race health"
+            "source": "audio languages original dub loudness night mode dialogue household"
+          }
+        },
+        {
+          "key": "subtitles",
+          "label": {
+            "source": "Subtitles"
+          },
+          "keywords": {
+            "source": "subtitles languages appearance style timing sync drift fix corrected copy"
+          }
+        },
+        {
+          "key": "transcoding",
+          "label": {
+            "source": "Streams \u0026 transcoding"
+          },
+          "keywords": {
+            "source": "ffmpeg hardware gpu streams at once limit rtx"
           }
         },
         {
@@ -1681,21 +1611,21 @@
           }
         },
         {
-          "key": "markers",
+          "key": "extras",
           "label": {
-            "source": "Skip buttons"
+            "source": "Extras"
           },
           "keywords": {
-            "source": "intro credits skip chapters"
+            "source": "intro credits skip chapters up next post-play"
           }
         },
         {
-          "key": "subtitles",
+          "key": "prerolls",
           "label": {
-            "source": "Audio \u0026 subtitles"
+            "source": "Pre-rolls"
           },
           "keywords": {
-            "source": "audio languages subtitles timing sync opensubtitles household"
+            "source": "pre-roll preroll intro video before feature trailers cinema yt-dlp"
           }
         }
       ]
@@ -1706,17 +1636,19 @@
     "id": "releases",
     "owner": "builtin",
     "label": {
-      "source": "Quality"
+      "source": "Releases"
     },
     "hint": {},
     "icon": "ListFilter",
     "group": "streaming",
     "order": 20,
     "meta": {
-      "route": "/quality",
+      "route": "/releases",
       "navGroup": "streaming",
       "inNav": true,
-      "keywords": {},
+      "keywords": {
+        "source": "quality"
+      },
       "sections": [
         {
           "key": "profiles",
@@ -1822,6 +1754,66 @@
           }
         }
       ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "general",
+    "owner": "builtin",
+    "label": {
+      "source": "General"
+    },
+    "hint": {},
+    "icon": "Server",
+    "group": "system",
+    "order": 10,
+    "meta": {
+      "route": "/server",
+      "navGroup": "system",
+      "inNav": true,
+      "keywords": {
+        "source": "settings server name app ports local remote URLs listen proxy vpn setup wizard"
+      }
+    }
+  },
+  {
+    "kind": "page",
+    "id": "cluster",
+    "owner": "builtin",
+    "label": {
+      "source": "Cluster"
+    },
+    "hint": {},
+    "icon": "Boxes",
+    "group": "system",
+    "order": 20,
+    "meta": {
+      "route": "/cluster",
+      "navGroup": "system",
+      "inNav": true,
+      "keywords": {
+        "source": "high availability ha nodes failover postgres postgresql join token weight leader"
+      }
+    }
+  },
+  {
+    "kind": "page",
+    "id": "maintenance",
+    "owner": "builtin",
+    "label": {
+      "source": "Maintenance"
+    },
+    "hint": {},
+    "icon": "LifeBuoy",
+    "group": "system",
+    "order": 30,
+    "meta": {
+      "route": "/maintenance",
+      "navGroup": "system",
+      "inNav": true,
+      "keywords": {
+        "source": "server maintenance"
+      }
     }
   }
 ]

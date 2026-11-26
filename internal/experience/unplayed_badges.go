@@ -41,7 +41,10 @@ func (s *Service) LocalUnplayedCounts(ctx context.Context, viewer *core.Viewer, 
 		return s.listedUnplayedCounts(ctx, viewer, keys)
 	}
 	out := make(map[core.RatingKey]int, len(keys))
-	shows := localShows(keys)
+	tree, shows, err := s.localEpisodeTree(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
 	if len(shows) == 0 {
 		return out, nil
 	}
@@ -73,23 +76,23 @@ func (s *Service) LocalUnplayedCounts(ctx context.Context, viewer *core.Viewer, 
 		return nil, err
 	}
 	for _, key := range keys {
-		show, ok := localShowOf(key)
+		parent, ok := tree[key]
 		if !ok {
 			continue
 		}
-		tally := tallies[show]
+		tally := tallies[parent.show]
 		if tally.Total > localEpisodeCap {
 			continue
 		}
 		n := 0
-		if sectionShown && seriesShown[show] {
+		if sectionShown && seriesShown[parent.show] {
 			for season, counted := range tally.Seasons {
-				if key.Kind() != core.KindSeason || season == key.Season() {
+				if key.Kind() != core.KindSeason || season == parent.season {
 					n += counted.Aired - counted.Played
 				}
 			}
-			for _, season := range unplayedJudged[show] {
-				if key.Kind() != core.KindSeason || season == key.Season() {
+			for _, season := range unplayedJudged[parent.show] {
+				if key.Kind() != core.KindSeason || season == parent.season {
 					n++
 				}
 			}

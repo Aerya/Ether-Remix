@@ -36,7 +36,7 @@ func TestDecisionGenerationAcrossNodes(t *testing.T) {
 	a.Disarm(old, key)
 	a.Refresh(now)
 	a.ClearOwn() // A stale refresh must not transfer ownership of the new row.
-	if !a.Armed(fresh, key) || !b.Armed(fresh, key) || !a.Current(fresh, key) {
+	if !a.Armed(fresh, key) || !b.Armed(fresh, key) || !a.Current(fresh, key) || a.Stopped(fresh, key) {
 		t.Fatal("old stop or refresh revoked new generation")
 	}
 	b.Disarm(fresh, key)
@@ -44,6 +44,9 @@ func TestDecisionGenerationAcrossNodes(t *testing.T) {
 	b.Refresh(now)
 	if a.Armed(fresh, key) || b.Armed(fresh, key) {
 		t.Fatal("current stop did not revoke its generation")
+	}
+	if !a.Stopped(fresh, key) || a.Stopped(old, key) {
+		t.Fatal("stop not recorded against its own generation only")
 	}
 	if !a.Armed(fresh, 0) {
 		t.Fatal("stop erased the decision-seen latch")

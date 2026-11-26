@@ -15,16 +15,10 @@ import (
 
 // fakeEngine is a scripted Personalization.
 type fakeEngine struct {
+	fakePages
 	mu        sync.Mutex
-	hc        core.HubContext
-	section   string
-	limit     int
 	overrides []core.TasteOverride
 	refreshed []int64
-	doc       core.HomeLayout
-	draft     core.HomeLayout
-	who       int64
-	writes    int
 	fail      error
 }
 
@@ -62,67 +56,11 @@ func (f *fakeEngine) SetTasteOverrides(ctx context.Context, u *core.User, o []co
 	f.mu.Unlock()
 	return f.Taste(ctx, u)
 }
-func (f *fakeEngine) PreviewHome(_ context.Context, _ *core.User, hc core.HubContext, section string, limit int) (*core.HomePreview, error) {
-	if f.fail != nil {
-		return nil, f.fail
-	}
-	f.mu.Lock()
-	f.hc, f.section, f.limit = hc, section, limit
-	f.mu.Unlock()
-	return &core.HomePreview{GeneratedAt: time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC), Context: hc, Rows: []core.HomeRow{
-		{HubID: "home.top10", Title: "Top 10 for You", Kind: "top-10", Reason: "why", Score: 0.17, Source: core.RowSourceEngine,
-			Items: []core.Title{poster}, ItemReasons: map[core.RatingKey]string{poster.Key: "Matches your taste for Science Fiction"}},
-		{HubID: "home.trending", Title: "Trending", Kind: "trending", Reason: "hidden by you", Hidden: true, Source: core.RowSourceEngine, Items: []core.Title{}},
-	}}, nil
-}
 func (f *fakeEngine) Refresh(_ context.Context, u *core.User) error {
 	f.mu.Lock()
 	f.refreshed = append(f.refreshed, u.ID)
 	f.mu.Unlock()
 	return nil
-}
-func (f *fakeEngine) HomeLayout(context.Context) (core.HomeLayout, error) {
-	d := f.doc
-	if d.Global == nil {
-		d.Global = []core.LayoutPage{}
-	}
-	if d.Viewers == nil {
-		d.Viewers = []core.ViewerLayout{}
-	}
-	return d, nil
-}
-func (f *fakeEngine) SetHomeLayout(_ context.Context, d core.HomeLayout) (core.HomeLayout, error) {
-	for i, p := range d.Global {
-		for j, r := range p.Rows {
-			if r.Status != "always" && r.Status != "eligible" && r.Status != "off" {
-				return d, viewerFieldErr{fmt.Sprintf("layout.global[%d].rows[%d].status", i, j), "must be always, eligible or off"}
-			}
-		}
-	}
-	f.doc = d
-	f.writes++
-	return d, nil
-}
-func (f *fakeEngine) LayoutDefaults() map[string]int {
-	return map[string]int{"home": 14, "library": 10}
-}
-func (f *fakeEngine) PreviewLayout(_ context.Context, u *core.User, hc core.HubContext, sec string, n int, d core.HomeLayout) (*core.HomePreview, error) {
-	f.draft = d
-	f.who = u.ID
-	f.hc = hc
-	f.section = sec
-	f.limit = n
-	p := &core.HomePreview{Context: hc, GeneratedAt: time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC), Rows: []core.HomeRow{{HubID: "a", Title: "A", Kind: "a", Layer: "global", Slot: 1, AnchorSlot: 1, Placement: "global anchor at slot 1", Policy: &core.RowPolicy{Row: "a", Status: "always", Slot: 1}, PolicyLayer: "global", Items: []core.Title{poster}}}}
-	if len(d.Global) > 0 {
-		p.Rows = append(p.Rows, core.HomeRow{HubID: "new", Title: "New", Kind: "new", Layer: "personalized", Slot: 2})
-	}
-	if strings.HasPrefix(sec, "library:") {
-		p.HomeDeduped = 12
-	}
-	return p, nil
-}
-func (f *fakeEngine) AvailableRows(context.Context) ([]core.RowDescriptor, error) {
-	return []core.RowDescriptor{{HubID: "top-10", Title: "Top 10 for You", Kind: "top-10", Description: "d"}}, nil
 }
 func (f *fakeEngine) RowInsights(context.Context, int) ([]core.RowInsight, error) {
 	return []core.RowInsight{{HubID: "top-10", Title: "Top 10 for You", Impressions7d: 20, Plays7d: 5, PlayRate: 0.25}}, nil
@@ -209,85 +147,10 @@ func TestViewersEndpoints(t *testing.T) {
 	}
 }
 
-func TestViewerHomeEndpoint(t *testing.T) {
+func TestInsightsEndpoints(t *testing.T) {
 	eng := &fakeEngine{}
 	h := personalizationHandler(t, eng)
-	rec := serve(h, req(http.MethodGet, "/ether/api/viewers/1/home?device=mobile&at=2026-10-17T20:30:00Z&section=library:1&count=20", ""))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("home: %d %s", rec.Code, rec.Body)
-	}
-	var body struct {
-		Rows []struct {
-			HubID       string            `json:"hubId"`
-			Kind        string            `json:"kind"`
-			Hidden      bool              `json:"hidden"`
-			Source      string            `json:"source"`
-			Score       float64           `json:"score"`
-			Items       []map[string]any  `json:"items"`
-			ItemReasons map[string]string `json:"itemReasons"`
-		} `json:"rows"`
-		GeneratedAt string         `json:"generatedAt"`
-		Context     map[string]any `json:"context"`
-	}
-	decode(t, rec, &body)
-	if eng.hc.Device != "mobile" || !eng.hc.Now.Equal(time.Date(2026, 10, 17, 20, 30, 0, 0, time.UTC)) || eng.section != "library:1" || eng.limit != 20 {
-		t.Fatalf("engine got %+v section %q limit %d", eng.hc, eng.section, eng.limit)
-	}
-	if len(body.Rows) != 2 || body.Rows[0].HubID != "home.top10" || body.Rows[0].Items[0]["title"] != "The Signal" ||
-		body.Rows[0].ItemReasons["1000000000000603"] == "" || !body.Rows[1].Hidden || body.Rows[1].Items == nil {
-		t.Fatalf("rows = %+v", body.Rows)
-	}
-	if body.Context["device"] != "mobile" || body.GeneratedAt != "2026-10-19T01:00:00Z" {
-		t.Fatalf("context = %+v generatedAt %s", body.Context, body.GeneratedAt)
-	}
-	for _, bad := range []string{"device=fridge", "at=yesterday", "count=0"} {
-		if rec := serve(h, req(http.MethodGet, "/ether/api/viewers/1/home?"+bad, "")); rec.Code != http.StatusBadRequest {
-			t.Fatalf("%s: %d", bad, rec.Code)
-		}
-	}
-	// Defaults: TV, now.
-	serve(h, req(http.MethodGet, "/ether/api/viewers/1/home", ""))
-	if eng.hc.Device != core.DeviceTV || time.Since(eng.hc.Now) > time.Minute || eng.limit != 12 {
-		t.Fatalf("defaults = %+v %d", eng.hc, eng.limit)
-	}
-	eng.fail = viewerFieldErr{"section", "must be home, movies, shows or a library section id"}
-	if rec := serve(h, req(http.MethodGet, "/ether/api/viewers/1/home?section=kitchen", "")); rec.Code != http.StatusBadRequest {
-		t.Fatalf("engine validation: %d", rec.Code)
-	}
-}
-
-func TestLayoutAndInsightsEndpoints(t *testing.T) {
-	eng := &fakeEngine{}
-	h := personalizationHandler(t, eng)
-	rec := serve(h, req(http.MethodGet, "/ether/api/layout", ""))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"layout":{"global":[],"viewers":[]`) || !strings.Contains(rec.Body.String(), `"availableRows":[{"hubId":"top-10"`) || strings.Contains(rec.Body.String(), `"rules"`) {
-		t.Fatalf("layout: %d %s", rec.Code, rec.Body)
-	}
-	rec = serve(h, req(http.MethodPut, "/ether/api/layout", `{"layout":{"global":[],"viewers":[{"userId":2,"pages":[{"section":"home","maxRows":8,"rows":[{"row":"short-on-time","status":"always","slot":2,"when":{"days":[1,2,3,4],"fromHour":18}}]}]}]}}`))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("put layout: %d %s", rec.Code, rec.Body)
-	}
-	if len(eng.doc.Viewers) != 1 || eng.doc.Viewers[0].UserID != 2 || eng.doc.Viewers[0].Pages[0].Rows[0].Slot != 2 || *eng.doc.Viewers[0].Pages[0].Rows[0].When.FromHour != 18 {
-		t.Fatalf("layout = %+v", eng.doc)
-	}
-	if !strings.Contains(rec.Body.String(), `"userId":2`) || !strings.Contains(rec.Body.String(), `"defaults":{"maxRows":{"home":14`) {
-		t.Fatalf("put layout response: %s", rec.Body)
-	}
-	rec = serve(h, req(http.MethodPut, "/ether/api/layout", `{"layout":{"global":[{"section":"home","rows":[{"row":"x","status":"explode"}]}],"viewers":[]}}`))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "rows[0].status") {
-		t.Fatalf("invalid layout: %d %s", rec.Code, rec.Body)
-	}
-	// Only the document is accepted; a rules list is an unknown field.
-	rec = serve(h, req(http.MethodPut, "/ether/api/layout", `{"rules":[{"scope":"all","rows":[]}]}`))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `rules`) {
-		t.Fatalf("rules body: %d %s", rec.Code, rec.Body)
-	}
-	rec = serve(h, req(http.MethodPut, "/ether/api/layout", `{}`))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"field":"layout"`) {
-		t.Fatalf("missing layout: %d %s", rec.Code, rec.Body)
-	}
-
-	rec = serve(h, req(http.MethodGet, "/ether/api/insights/rows", ""))
+	rec := serve(h, req(http.MethodGet, "/ether/api/insights/rows", ""))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"impressions7d":20`) || !strings.Contains(rec.Body.String(), `"playRate":0.25`) {
 		t.Fatalf("insights rows: %d %s", rec.Code, rec.Body)
 	}
@@ -341,7 +204,7 @@ func TestImportedViewersRemainVisibleOutsideActiveMembership(t *testing.T) {
 			t.Fatalf("missing status: %s", rec.Body)
 		}
 	}
-	for _, path := range []string{"/ether/api/viewers/32/taste", "/ether/api/viewers/32/home"} {
+	for _, path := range []string{"/ether/api/viewers/32/taste"} {
 		rec := serve(h, req(http.MethodGet, path, ""))
 		if rec.Code != 200 {
 			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
@@ -369,5 +232,40 @@ func TestViewerDirectoryMembershipStatuses(t *testing.T) {
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"accessStatus":"`+status+`"`) {
 			t.Fatalf("%s: %d %s", status, rec.Code, rec.Body)
 		}
+	}
+}
+
+type fakeActivityStats struct {
+	gotDays int
+	gotTZ   []int
+	days    []core.ActivityDay
+}
+
+func (f *fakeActivityStats) Activity(_ context.Context, days int, tzMinutes ...int) ([]core.ActivityDay, error) {
+	f.gotDays = days
+	f.gotTZ = append([]int(nil), tzMinutes...)
+	return f.days, nil
+}
+
+func TestInsightsActivityUsesStatsAndTimezone(t *testing.T) {
+	store := newStore(t, nil)
+	act := &fakeActivityStats{
+		days: []core.ActivityDay{{Date: "2026-11-24", Plays: 1027, Hours: 28.1, WatchedMS: 101_160_000, UniqueViewers: 5}},
+	}
+	h := admin.NewHandler(admin.Deps{
+		Config:          store,
+		IsOwnerToken:    storedOwner(store),
+		Personalization: &fakeEngine{},
+		ActivityStats:   act,
+	})
+	rec := serve(h, req(http.MethodGet, "/ether/api/insights/activity?tz=-300", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if act.gotDays != 30 || len(act.gotTZ) != 1 || act.gotTZ[0] != -300 {
+		t.Fatalf("ActivityStats called with days=%d tz=%v, want days=30 tz=[-300]", act.gotDays, act.gotTZ)
+	}
+	if !strings.Contains(rec.Body.String(), `"plays":1027,"hours":28.1,"watchedMs":101160000,"uniqueViewers":5`) {
+		t.Fatalf("unexpected body: %s", rec.Body)
 	}
 }

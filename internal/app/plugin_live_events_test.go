@@ -121,7 +121,7 @@ func TestPluginLiveEventsConsoleEndpoint(t *testing.T) {
 		"ether": {
 			"protocol": 1,
 			"kind": "extension",
-			"capabilities": ["live_events"],
+			"capabilities": ["live_events", "screens"],
 			"summary": "$t:summary",
 			"runtime": {"kind": "hosted", "entry": "plugin.js"},
 			"strings": {"en": "i18n/en.json"},
@@ -131,8 +131,7 @@ func TestPluginLiveEventsConsoleEndpoint(t *testing.T) {
 					"id": "live-screen",
 					"title": "$t:screen_title",
 					"icon": "radio",
-					"feed": "main",
-					"sections": [{"id": "live", "type": "events", "title": "$t:section_live", "feed": "main"}]
+					"pages": {"index": "screens/live.json"}
 				}]
 			}
 		}
@@ -143,8 +142,9 @@ func TestPluginLiveEventsConsoleEndpoint(t *testing.T) {
 		Kind:     "studio",
 		Manifest: manifestJSON,
 		Files: map[string][]byte{
-			"plugin.js":    []byte(`export default function(){}`),
-			"i18n/en.json": stringsJSON,
+			"plugin.js":         []byte(`export default function(){}`),
+			"i18n/en.json":      stringsJSON,
+			"screens/live.json": []byte(`{"schema":1,"kind":"screen","renderer":19,"sources":{"live":{"from":"liveEvents","feed":"main","query":{"state":["in"]}}},"tree":{"type":"box"}}`),
 		},
 	})
 	if err != nil {

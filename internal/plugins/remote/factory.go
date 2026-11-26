@@ -34,6 +34,7 @@ type Factory struct {
 	TrustedLAN func(pluginID string) bool
 	// LocalHosts returns the owner-granted local network hosts for one plugin.
 	LocalHosts func(pluginID string) []string
+	CheckHost  func(string) error
 	// Credential returns the credential Ether presents to the plugin
 	// on URL calls, or "" for none (plain Stremio add-ons).
 	Credential func(pluginID string) string
@@ -73,6 +74,7 @@ func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 		case endpointURL:
 			opts := URLOptions{
 				Base:                 base,
+				CheckHost:            f.CheckHost,
 				AllowPublicRedirects: inst.Manifest.IsStremioOnly(),
 				Plain:                inst.Manifest.IsStremioOnly(),
 				Guard:                f.Guard,
@@ -599,6 +601,27 @@ func (a HostAdapter) StreamPartURL(ctx context.Context, pluginID string, viewerI
 }
 
 func (a HostAdapter) StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
+	if tok := streamViewerToken(ctx); tok != "" {
+		if a.ResolveAdapterCallToken == nil {
+			return "", ErrPermissionDenied
+		}
+		info, ok := a.ResolveAdapterCallToken(pluginID, tok)
+		if !ok {
+			return "", ErrPermissionDenied
+		}
+		if viewerID > 0 && info.ViewerID > 0 && info.ViewerID != viewerID {
+			return "", ErrPermissionDenied
+		}
+		if viewerID == 0 && info.ViewerID > 0 {
+			viewerID = info.ViewerID
+		}
+		if info.Path != "" {
+			ctx = plugins.WithCallContext(ctx, info.Path, info.SearchQuery)
+		}
+		if info.Origin != "" {
+			ctx = plugins.WithAdapterOrigin(ctx, info.Origin)
+		}
+	}
 	h, err := a.host(pluginID)
 	if err != nil {
 		return "", err
@@ -629,6 +652,24 @@ func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, pay
 		return err
 	}
 	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
+}
+
+func (a HostAdapter) ScreensInvalidate(ctx context.Context, pluginID string) (int, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := h.ScreensInvalidate(ctx)
+	return n, mapHostErr(err)
+}
+
+func (a HostAdapter) ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := h.ScreensPutRecords(ctx, records)
+	return n, mapHostErr(err)
 }
 
 func (a HostAdapter) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {

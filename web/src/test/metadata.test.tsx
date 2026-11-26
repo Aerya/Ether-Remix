@@ -39,7 +39,20 @@ describe("Metadata episode orders", () => {
     const overrides = new Map<number, { groupId: string; specials: string }>();
     const { fake } = renderAppWith("/metadata/episodes", (method, path, body) => {
       if (path === "/catalog/search")
-        return { items: [{ key: SHOW, title: "Fixture Show", type: "show" }] };
+        return {
+          items: [
+            {
+              key: SHOW,
+              title: "Fixture Show",
+              type: "show",
+              episodeOrder: {
+                effective: { source: "tmdb", kind: "aired" },
+                libraryDefault: { source: "tmdb", kind: "aired" },
+                libraryName: "TV Shows",
+              },
+            },
+          ],
+        };
       if (!path.startsWith(`/metadata/shows/${SHOW}`)) return undefined;
       if (path.endsWith("/groups"))
         return [{ id: "dvd", name: "DVD order", type: 3, episode_count: 2 }];
@@ -475,9 +488,14 @@ describe("Metadata artwork studio", () => {
     expect(calls(fake, "PUT", "/config/plex")[0]!.body).toEqual({ usePlexMetadata: true });
   });
 
-  it("opens Home at /home", async () => {
-    renderAppWith("/home", () => undefined);
-    expect(await screen.findByRole("heading", { name: "Home" }, WAIT)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "/home");
+  it("opens Recommendations at /recommendations", async () => {
+    renderAppWith("/recommendations", () => undefined);
+    expect(
+      await screen.findByRole("heading", { name: "Recommendations" }, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Recommendations" })).toHaveAttribute(
+      "href",
+      "/recommendations",
+    );
   });
 });

@@ -54,7 +54,7 @@ func (q *VariantsQueue) Get(title *core.Title, language string) (*frontend.Artwo
 		return nil, false
 	}
 	// discoveryPath needs only these fields. Do not retain caller-owned slices.
-	copy := core.Title{Key: title.Key, Type: title.Type, IDs: title.IDs, ShowKey: title.ShowKey, Season: title.Season, Episode: title.Episode}
+	copy := core.Title{Key: title.Key, Type: title.Type, IDs: title.IDs, ShowKey: title.ShowKey, ShowIDs: title.ShowIDs, Season: title.Season, Episode: title.Episode}
 	select {
 	case q.jobs <- artworkVariantJob{key: key, title: copy}:
 		q.pending[key] = true

@@ -2,25 +2,32 @@ package app
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/plugins"
 	"net/http"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 type catalogueSource struct {
-	ID         string             `json:"id"`
-	Logo       string             `json:"logo,omitempty"`
-	LastError  string             `json:"lastError,omitempty"`
-	Name       string             `json:"name"`
-	Owner      string             `json:"owner"`
-	Group      string             `json:"group"`
-	MediaTypes []string           `json:"mediaTypes"`
-	ItemCount  *int               `json:"itemCount,omitempty"`
-	Health     string             `json:"health"`
-	PluginID   string             `json:"pluginId,omitempty"`
-	KindKey    string             `json:"kindKey,omitempty"`
-	Libraries  []catalogueLibrary `json:"libraries"`
+	ID         string   `json:"id"`
+	Logo       string   `json:"logo,omitempty"`
+	LastError  string   `json:"lastError,omitempty"`
+	Name       string   `json:"name"`
+	Owner      string   `json:"owner"`
+	Group      string   `json:"group"`
+	MediaTypes []string `json:"mediaTypes"`
+	ItemCount  *int     `json:"itemCount,omitempty"`
+	// Listed is how many items the last sync read from the list and
+	// Limit the most it could read; Listed reaching Limit means the list
+	// was cut off at the plugin's "Titles per list" limit.
+	Listed    int                `json:"listed,omitempty"`
+	Limit     int                `json:"limit,omitempty"`
+	Health    string             `json:"health"`
+	Enabled   bool               `json:"enabled"`
+	PluginID  string             `json:"pluginId,omitempty"`
+	KindKey   string             `json:"kindKey,omitempty"`
+	Libraries []catalogueLibrary `json:"libraries"`
 }
 type catalogueLibrary struct {
 	ID   core.LibraryID `json:"id"`
@@ -30,9 +37,11 @@ type catalogueLibrary struct {
 // Registry enumeration reads library and plugin declarations only. It never
 // fetches remote catalogues or counts title rows on the owner request path.
 func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http.Request) {
+	cfg := c.app.cfg.Get().Catalog
 	out := []catalogueSource{
-		{ID: "tmdb-movies", Name: "TMDB Movies", Owner: "Built in", Group: "builtin", MediaTypes: []string{"movie"}, Health: "ok", Libraries: []catalogueLibrary{}},
-		{ID: "tmdb-tv", Name: "TMDB TV shows", Owner: "Built in", Group: "builtin", MediaTypes: []string{"show"}, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tmdb-movies", Name: "TMDB Movies", Owner: "Built in", Group: "builtin", MediaTypes: []string{"movie"}, Enabled: !cfg.TMDBDisabled, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tmdb-tv", Name: "TMDB TV shows", Owner: "Built in", Group: "builtin", MediaTypes: []string{"show"}, Enabled: !cfg.TMDBDisabled, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tvdb", Name: "TheTVDB", Owner: "TheTVDB", Group: "builtin", MediaTypes: []string{"show"}, Enabled: strings.TrimSpace(cfg.TVDBKey) != "", Health: "unknown", Libraries: []catalogueLibrary{}},
 	}
 	if c.app.catalog != nil {
 		if stats, err := c.app.catalog.Stats(r.Context()); err == nil {
@@ -50,27 +59,23 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 		}
 	}
 	if c.app.pluginsRT != nil && c.app.pluginsRT.mgr != nil {
+		includeDisabled := r.URL.Query().Get("includeDisabled") == "true"
 		recs, err := c.app.pluginsRT.mgr.List(r.Context())
 		if err != nil {
 			libError(w, 500, "Could not list plugins")
 			return
 		}
 		for _, rec := range recs {
-			health := "unknown"
-			if h, err := c.app.pluginsRT.mgr.HealthOf(r.Context(), rec.ID); err == nil && h.Status != "" {
-				health = h.Status
-			}
-			if !rec.Enabled {
+			if !rec.Enabled && !includeDisabled {
 				continue
 			}
 			if e := rec.Manifest.EffectiveEther(); e != nil {
 				for _, kind := range e.Contributes.MediaKinds {
-					src := catalogueSource{ID: "plugin:" + rec.ID + ":" + kind.Key, Name: c.catalogueLabel(r.Context(), rec.ID, kind.Label, rec.Name), Owner: rec.Name, Group: "plugin", PluginID: rec.ID, KindKey: kind.Key, MediaTypes: []string{kind.Key}, Health: health, Libraries: []catalogueLibrary{}}
+					src := catalogueSource{ID: "plugin:" + rec.ID + ":" + kind.Key, Name: c.catalogueLabel(r.Context(), rec.ID, kind.Label, rec.Name), Owner: rec.Name, Group: "plugin", PluginID: rec.ID, KindKey: kind.Key, MediaTypes: []string{kind.Key}, Enabled: rec.Enabled, Health: "unknown", Libraries: []catalogueLibrary{}}
 					if kind.Library.Name != "" {
 						src.Name = c.catalogueLabel(r.Context(), rec.ID, kind.Library.Name, src.Name)
 					}
 					src.Logo = rec.Manifest.Logo
-					src.Health = "unknown"
 					if c.app.pluginsRT.pluginitems != nil {
 						if state, err := c.app.pluginsRT.pluginitems.SyncStateOf(r.Context(), rec.ID, kind.Key); err == nil {
 							if state.DeleteGuard != nil {
@@ -98,32 +103,27 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					out = append(out, src)
 				}
 			}
-			if !rec.Manifest.HasCapability(plugins.CapListSource) {
-				continue
-			}
-			for _, cat := range rec.Manifest.Stremio().Catalogs {
-				if !cat.Standalone() {
-					continue
-				}
+			// Offer exactly the lists the plugin registers as list sources, so
+			// every source listed here syncs (resolveCatalogueSource).
+			for _, cl := range rec.Manifest.CatalogueLists() {
+				cat := cl.Catalog
 				typ := "movie"
 				if cat.Type == "series" {
 					typ = "show"
-				} else if cat.Type != "movie" {
-					continue
 				}
 				name := cat.Name
 				if name == "" {
-					name = cat.ID
+					name = c.catalogueLabel(r.Context(), rec.ID, cl.Label, cat.ID)
 				}
-				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + plugins.StremioCatalogKey(cat), Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
+				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + cl.Key, Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Enabled: rec.Enabled, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
 			}
 		}
 	}
 	for i := range out {
-		if out[i].Group == "stremio" {
+		if materializedCatalogueSource(out[i].ID) {
 			var count int
 			var refreshed int64
-			if err := c.app.db.QueryRowContext(r.Context(), `SELECT item_count,refreshed,last_error FROM libraries_catalogue_state WHERE source_id=?`, out[i].ID).Scan(&count, &refreshed, &out[i].LastError); err == nil {
+			if err := c.app.db.QueryRowContext(r.Context(), `SELECT item_count,refreshed,last_error,listed,item_limit FROM libraries_catalogue_state WHERE source_id=?`, out[i].ID).Scan(&count, &refreshed, &out[i].LastError, &out[i].Listed, &out[i].Limit); err == nil {
 				if refreshed > 0 {
 					out[i].ItemCount = &count
 					out[i].Health = "ok"
@@ -134,6 +134,10 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					out[i].Health = "error"
 				}
 			}
+		}
+		if out[i].ID == "tvdb" && !out[i].Enabled {
+			out[i].Health = "error"
+			out[i].LastError = tvdb.ErrKeyRequired.Error()
 		}
 		for _, lib := range libs {
 			if out[i].Group == "plugin" && lib.PluginID == out[i].PluginID && lib.KindKey == out[i].KindKey {
@@ -153,8 +157,8 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 
 func (c *librariesConsole) handleCatalogueSourceSync(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("source")
-	if !strings.HasPrefix(id, "stremio:") {
-		libError(w, 400, "Only Stremio catalogues use this refresh")
+	if !materializedCatalogueSource(id) {
+		libError(w, 400, "This catalogue source cannot be refreshed")
 		return
 	}
 	if _, err := c.app.catalogueSourceType(r.Context(), id); err != nil {
@@ -191,6 +195,9 @@ func (c *librariesConsole) catalogueLabel(ctx context.Context, pluginID, value, 
 
 func (c *librariesConsole) handleCatalogueSourceSyncStatus(w http.ResponseWriter, r *http.Request) {
 	status := c.app.catalogueSync.status(r.URL.Query().Get("source"))
+	if !status.Running && status.Error == "" {
+		_ = c.app.db.QueryRowContext(r.Context(), `SELECT item_count,listed,item_limit FROM libraries_catalogue_state WHERE source_id=?`, r.URL.Query().Get("source")).Scan(&status.ItemCount, &status.Listed, &status.Limit)
+	}
 	if status.Started == 0 {
 		libError(w, http.StatusNotFound, "Synchronization not found; start a new synchronization")
 		return

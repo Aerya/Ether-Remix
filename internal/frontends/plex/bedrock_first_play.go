@@ -9,11 +9,17 @@ import (
 )
 
 const (
-	// playIntentProbeWait matches plezyPlayProbeWait: explicit play intent
-	// waits bounded on the shared foreground resolve+probe flight so the
-	// pre-play queue/metadata row carries real probed tracks and the viewer's
-	// selected audio/subtitle track before direct play begins (#618, #670, #758).
-	playIntentProbeWait = 12 * time.Second
+	// playIntentProbeWait bounds how long explicit play intent waits on the
+	// shared foreground resolve+probe flight so the pre-play queue/metadata
+	// row carries real probed tracks and the viewer's selected audio/subtitle
+	// track before direct play begins (#618, #670, #758). The playback
+	// manager waits only briefly while the source is still being searched,
+	// and up to this bound for the probe of a source it found: a queue or
+	// metadata request never waits out a slow search.
+	playIntentProbeWait = 4 * time.Second
+	// playIntentVersionWait bounds the extra wait for header probes on other
+	// versions after Auto's probe, on queue and pre-play metadata reads.
+	playIntentVersionWait = 1500 * time.Millisecond
 	// playIntentActiveQueueWindow bounds how long a client's active PlayQueue
 	// classifies a lean pre-play /library/metadata/<id> fetch as play intent
 	// for the selected or upcoming queue item.
@@ -58,7 +64,7 @@ func (s *Server) probePlayIntent(ctx context.Context, pr *Request, t *frontend.T
 			return prober.ProbePlayMetadata(c, pr.User, t.Key, caps)
 		}
 	}
-	s.runPlayIntentProbes(ctx, pr, t, exact, playIntentProbeWait, plezyVersionProbeWait, autoProbe)
+	s.runPlayIntentProbes(ctx, pr, t, exact, playIntentProbeWait, playIntentVersionWait, autoProbe)
 	return true
 }
 

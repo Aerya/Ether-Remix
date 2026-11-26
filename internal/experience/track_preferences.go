@@ -25,10 +25,8 @@ func (p TrackPreferences) Select(ctx context.Context, viewer *core.User, key cor
 	if p.Source == nil || viewer == nil {
 		return selected, nil
 	}
-	if original == "" && key.Kind() == core.KindEpisode && p.GetTitle != nil {
-		if show, err := p.GetTitle(ctx, core.ShowKey(key.TMDB())); err == nil && show != nil {
-			original = show.Language
-		}
+	if original == "" {
+		original = p.originalSeriesLanguage(ctx, key)
 	}
 	preferred, err := p.Source.Select(ctx, viewer.ID, key, info, original)
 	if err != nil {
@@ -41,6 +39,24 @@ func (p TrackPreferences) Select(ctx context.Context, viewer *core.User, key cor
 		selected.Subtitle, selected.SubtitleSet = preferred.Subtitle, true
 	}
 	return selected, nil
+}
+
+func (p TrackPreferences) originalSeriesLanguage(ctx context.Context, key core.RatingKey) string {
+	if key.Kind() != core.KindEpisode || p.GetTitle == nil {
+		return ""
+	}
+	show := key.Parent().Parent()
+	if show == 0 {
+		if episode, err := p.GetTitle(ctx, key); err == nil && episode != nil {
+			show = seriesOfTitle(*episode)
+		}
+	}
+	if show != 0 {
+		if title, err := p.GetTitle(ctx, show); err == nil && title != nil {
+			return title.Language
+		}
+	}
+	return ""
 }
 
 // AudioFilters applies the viewer's rules for the selected stream's channel
@@ -100,10 +116,8 @@ func (p TrackPreferences) SelectScoped(ctx context.Context, viewer *core.User, k
 	if p.Source == nil || viewer == nil {
 		return selected, nil
 	}
-	if original == "" && key.Kind() == core.KindEpisode && p.GetTitle != nil {
-		if show, err := p.GetTitle(ctx, core.ShowKey(key.TMDB())); err == nil && show != nil {
-			original = show.Language
-		}
+	if original == "" {
+		original = p.originalSeriesLanguage(ctx, key)
 	}
 	var preferred trackprefs.Selection
 	var err error

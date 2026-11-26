@@ -14,20 +14,34 @@ func init() {
 	store.Register("livetv", 4, `CREATE TABLE IF NOT EXISTS livetv_numbers (source_id TEXT NOT NULL, channel_id TEXT NOT NULL, group_name TEXT NOT NULL, number TEXT NOT NULL, seen_ms BIGINT NOT NULL, PRIMARY KEY(source_id,channel_id));`)
 }
 
+// numberReserve is how long a number stays reserved after its channel was
+// last seen; numberSeenRefresh is how stale a present channel's sighting
+// may get before an import records it again. Refreshing at most twice a day
+// keeps an unchanged hourly refresh from rewriting a row per channel, and
+// the expiry adds those hours so a number still stays reserved for at least
+// seven days after its channel disappears.
+const (
+	numberReserve     = 7 * 24 * time.Hour
+	numberSeenRefresh = 12 * time.Hour
+)
+
 // assignImportedNumbers reserves numbers for seven days after a channel disappears.
 // With lineupUnique (plugin sources), a new channel whose number another
 // source already uses takes the next free number above it instead, so a
 // plugin's 101 never lands on top of a playlist's 101.
 func assignImportedNumbers(ctx context.Context, tx *sql.Tx, source string, cs []Channel, old map[string]Channel, all []Channel, now time.Time, lineupUnique bool) error {
-	cutoff := now.Add(-7 * 24 * time.Hour).UnixMilli()
+	cutoff := now.Add(-numberReserve - numberSeenRefresh).UnixMilli()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM livetv_numbers WHERE seen_ms < ?`, cutoff); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_id, channel_id, group_name, number FROM livetv_numbers`)
+	rows, err := tx.QueryContext(ctx, `SELECT source_id, channel_id, group_name, number, seen_ms FROM livetv_numbers`)
 	if err != nil {
 		return err
 	}
-	type reservation struct{ group, number string }
+	type reservation struct {
+		group, number string
+		seen          int64
+	}
 	saved := map[string]reservation{}
 	used := map[string]map[string]bool{}
 	reserve := func(group, number string) {
@@ -41,12 +55,13 @@ func assignImportedNumbers(ctx context.Context, tx *sql.Tx, source string, cs []
 	}
 	for rows.Next() {
 		var sourceID, id, group, number string
-		if err := rows.Scan(&sourceID, &id, &group, &number); err != nil {
+		var seen int64
+		if err := rows.Scan(&sourceID, &id, &group, &number, &seen); err != nil {
 			rows.Close()
 			return err
 		}
 		if sourceID == source {
-			saved[id] = reservation{group, number}
+			saved[id] = reservation{group, number, seen}
 		}
 		reserve(group, number)
 	}
@@ -121,6 +136,9 @@ func assignImportedNumbers(ctx context.Context, tx *sql.Tx, source string, cs []
 		}
 		reserve(c.Group, c.Number)
 		taken[c.Number] = true
+		if v, ok := saved[c.ID]; ok && v.group == c.Group && v.number == c.Number && now.UnixMilli()-v.seen < numberSeenRefresh.Milliseconds() {
+			continue
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO livetv_numbers(source_id,channel_id,group_name,number,seen_ms) VALUES(?,?,?,?,?) ON CONFLICT(source_id,channel_id) DO UPDATE SET group_name=excluded.group_name,number=excluded.number,seen_ms=excluded.seen_ms`, source, c.ID, c.Group, c.Number, now.UnixMilli())
 		if err != nil {
 			return err

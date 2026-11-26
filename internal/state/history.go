@@ -92,7 +92,18 @@ func (s *State) QueryHistory(ctx context.Context, q core.HistoryQuery) ([]core.H
 		add("user_id=?", q.UserID)
 	}
 	if q.Kind != 0 {
-		add("rating_key/1000000000000000=?", int(q.Kind))
+		if q.Kind == core.KindEpisode || q.Kind == core.KindLocal {
+			physical := "rating_key/1000000000000000=?"
+			allocated := "(rating_key>? AND rating_key<?)"
+			if q.Kind == core.KindEpisode {
+				where = append(where, "("+physical+" OR "+allocated+")")
+			} else {
+				where = append(where, "("+physical+" AND NOT "+allocated+")")
+			}
+			args = append(args, int(q.Kind), core.AllocatedEpisodeBase, core.AllocatedEpisodeBase+core.AllocatedKeyMaxSeq)
+		} else {
+			add("rating_key/1000000000000000=?", int(q.Kind))
+		}
 	}
 	if q.Key != 0 {
 		add("rating_key=?", int64(q.Key))

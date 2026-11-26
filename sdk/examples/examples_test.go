@@ -157,7 +157,7 @@ func TestExamplesPackAndRunHosted(t *testing.T) {
 }
 
 func TestStudioExamplesPackAndConform(t *testing.T) {
-	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night", "english-dubs", "smart-lights", "sports"} {
+	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night", "english-dubs", "smart-lights", "sports", "news-desk"} {
 		t.Run(name, func(t *testing.T) {
 			pkg, err := kit.LoadDir(name)
 			if err != nil {
@@ -193,4 +193,49 @@ func (fixtureHost) FoldersHashPoll(context.Context, string) (plugins.FolderHashJ
 
 func (fixtureHost) FoldersHashCancel(context.Context, string) (plugins.FolderHashJob, error) {
 	return plugins.FolderHashJob{}, nil
+}
+
+// The news desk answers its screen's sources and action inside the real
+// hosted runtime: images as package assets, follows kept per viewer.
+func TestNewsDeskScreenRoutes(t *testing.T) {
+	pkg, err := kit.LoadDir("news-desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := kit.Pack(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packed, err := kit.LoadPkgBytes(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &fixtureHost{kv: map[string][]byte{}}
+	engine := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer engine.Close()
+	rt, err := plugins.HostedRuntimeFactory(engine)(plugins.Installed{ID: packed.Manifest.ID, Manifest: packed.Manifest, Host: h, Files: func(p string) ([]byte, bool) { v, ok := packed.Files[p]; return v, ok }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	call := func(path, body string) string {
+		t.Helper()
+		r, e := rt.Call(context.Background(), plugins.Request{Method: "POST", Path: path, Body: json.RawMessage(body), Headers: map[string]string{"X-Ether-Viewer": "7"}})
+		if e != nil || r.Status != 200 {
+			t.Fatalf("%s: %d %s %v", path, r.Status, r.Body, e)
+		}
+		return string(r.Body)
+	}
+	front := call("/ether/v1/screens/desk/sources/front", `{"args":{"topic":"tech"},"page":"index","locale":"en","tz":"UTC"}`)
+	if !strings.Contains(front, `"$image":"asset:assets/story.svg"`) || !strings.Contains(front, "Technology") {
+		t.Fatalf("front = %s", front)
+	}
+	act := call("/ether/v1/screens/desk/actions/follow-topic", `{"args":{"topic":"tech","on":true},"page":"index","params":{"topic":"tech"},"locale":"en","tz":"UTC"}`)
+	if !strings.Contains(act, `"followsTopic":true`) {
+		t.Fatalf("action = %s", act)
+	}
+	mine := call("/ether/v1/screens/desk/sources/following", `{"args":{"topic":"tech"},"page":"index","locale":"en","tz":"UTC"}`)
+	if !strings.Contains(mine, `"followsTopic":true`) {
+		t.Fatalf("following = %s", mine)
+	}
 }

@@ -67,3 +67,20 @@ func TestPickAudioPenalizesCommentaryAndVisualImpaired(t *testing.T) {
 		t.Fatalf("PickAudio = %d, want 2 (main track over commentary/AD)", got)
 	}
 }
+
+// A wanted language heard only as commentary loses to the file's main
+// tracks (default-flagged first); it plays only when nothing else exists.
+func TestPickAudioWantedCommentaryIsLastResort(t *testing.T) {
+	info := core.MediaInfo{Streams: []core.StreamInfo{
+		{Type: "audio", Language: "spa"},
+		{Type: "audio", Language: "eng", Title: "Commentary by the director"},
+		{Type: "audio", Language: "ita", Default: true},
+	}}
+	if got := PickAudio(info, []string{"en"}); got != 2 {
+		t.Fatalf("PickAudio = %d, want 2 (default main track over English commentary)", got)
+	}
+	only := core.MediaInfo{Streams: []core.StreamInfo{{Type: "audio", Language: "eng", Title: "Commentary"}}}
+	if got := PickAudio(only, []string{"en"}); got != 0 {
+		t.Fatalf("commentary only = %d, want 0", got)
+	}
+}

@@ -175,7 +175,6 @@ func TestViewerWatchRulesAndAudienceStayIndependent(t *testing.T) {
 	st := &fakeState{watched: map[int64]map[core.RatingKey]bool{1: {a: true}, 3: {b: true}}}
 	e := newEnv(t, withOpts(collections.WithState(st)))
 	sp := spec("Viewer audit", "movie", []core.CollectionSource{{Kind: "titles", Keys: []string{a.String(), b.String()}}}, rl("watched", "is", true))
-	sp.Targets.Users = core.UserTargets{IDs: []int64{1, 3}}
 	created, err := e.svc.CreateSpec(e.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
@@ -189,9 +188,6 @@ func TestViewerWatchRulesAndAudienceStayIndependent(t *testing.T) {
 		if err != nil || len(page.Items) != 1 || page.Items[0].Key != tc.want {
 			t.Fatalf("viewer %d: %+v %v", tc.user.ID, page, err)
 		}
-	}
-	if _, err := e.svc.Items(e.ctx, kid, key, 0, 10); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("untargeted viewer: %v", err)
 	}
 	st.mu.Lock()
 	st.watched[1] = map[core.RatingKey]bool{b: true}

@@ -27,13 +27,39 @@ type hlsTextSubtitles interface {
 }
 
 // hlsTextRenditionClient reports a Jellyfin client that takes WebVTT as HLS
-// renditions. Profiles are in the client's order of preference: one that
-// declares an External text profile first keeps its sidecars.
+// renditions in a server HLS stream. That is a client whose only text
+// delivery is HLS, or one that asks for subtitles in the manifest
+// (EnableSubtitlesInManifest) and lists a WebVTT Hls profile, as Jellyfin
+// itself requires, even when it also lists External. A sidecar of an
+// embedded track has to extract the whole track from the remote source
+// first: Wholphin's subtitle in a transcode of a 16 GB debrid remux timed out
+// (502) on every retry, while the rendition rides the input the encoder
+// already reads. Direct play keeps its embedded and sidecar delivery.
 func hlsTextRenditionClient(protocol string, caps core.ClientCaps) bool {
-	if caps.HLSTextRenditions {
+	if caps.HLSTextRenditions || hlsOnlyTextClient(protocol, caps) {
 		return true
 	}
-	return hlsOnlyTextClient(protocol, caps)
+	if protocol != "jellyfin" || caps.Profiles == nil {
+		return false
+	}
+	manifest := false
+	for _, t := range caps.Profiles.Transcoding {
+		if t.SubtitlesInManifest && strings.EqualFold(t.Delivery, "hls") && (t.MediaType == "" || t.MediaType == "video") {
+			manifest = true
+		}
+	}
+	if !manifest {
+		return false
+	}
+	for _, p := range caps.Profiles.Subtitles {
+		switch strings.ToLower(p.Format) {
+		case "vtt", "webvtt":
+			if strings.EqualFold(p.Method, "hls") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hlsOnlyTextClient is a Jellyfin client whose only way to show an embedded

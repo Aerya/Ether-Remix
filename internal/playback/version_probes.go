@@ -476,10 +476,9 @@ func (m *Manager) CachedReleaseProbe(rel core.Release) (core.MediaInfo, bool) {
 	return core.MediaInfo{}, false
 }
 
-// enrichEstimatedFromDebridMeta merges concrete languages or size learned from
-// an already-fetched debrid file path into an estimated variant without
-// pretending the container itself was probed.
-func enrichEstimatedFromDebridMeta(v *core.ReleaseVariant, filePath string, size int64) {
+// enrichEstimatedFromDebridMeta uses the selected debrid file's name and size
+// to refine an estimate before a container probe is available.
+func enrichEstimatedFromDebridMeta(v *core.ReleaseVariant, title *core.Title, filePath string, size int64) {
 	if v == nil || !v.Info.Estimated {
 		return
 	}
@@ -490,6 +489,23 @@ func enrichEstimatedFromDebridMeta(v *core.ReleaseVariant, filePath string, size
 		return
 	}
 	parsed := releaseparse.Parse(filePath)
+	if container, codec := core.AudioFileHint(filePath); container != "" && isAudioOnlyTitle(title) {
+		v.Info.Container = container
+		if size > 0 {
+			v.Info.Size = size
+			if v.Info.Duration > 0 {
+				v.Info.BitrateKbps = int(float64(size) * 8 / v.Info.Duration.Seconds() / 1000)
+			}
+		}
+		if codec == "" {
+			codec = parsed.AudioCodec
+		}
+		if codec != "" {
+			// Format evidence from the actual selected file outranks a release
+			// name or a client-based estimate. Other stream facts remain unknown.
+			v.Info.Streams = []core.StreamInfo{{Type: "audio", Codec: codec}}
+		}
+	}
 	var extra []string
 	for _, lang := range parsed.Languages {
 		if lang == "" || lang == releaseparse.LanguageMulti || lang == releaseparse.LanguageDual {

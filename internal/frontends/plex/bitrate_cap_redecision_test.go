@@ -48,7 +48,7 @@ func newW10Fixture(t *testing.T) *w10Fixture {
 	t.Helper()
 	cfg := config.Defaults(t.TempDir())
 	cfg.Quality.Default = "4K"
-	cfg.Quality.Remote = "4K"
+	cfg.Quality.DefaultAway = "4K"
 	cfg.Transcode.RemoteMaxBitrateKbps = 8000
 	cfg.Resolver.SameQualityAlternatives = 1
 

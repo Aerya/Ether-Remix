@@ -539,3 +539,57 @@ func TestIntegrationToneMap(t *testing.T) {
 		})
 	}
 }
+
+func TestArchiveRemuxRetuneKeepsVodClock(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	e := newRealEnv(t, WithoutHWDetection(), withNow(func() time.Time { return now }),
+		WithBuffering(4*time.Second, 2*time.Second, 2*time.Second), WithSegmentTimeout(8*time.Second))
+	e.gen(t, "archive.ts", 8, "-c:v", "libx264", "-preset", "ultrafast", "-g", "24", "-sc_threshold", "0", "-c:a", "aac")
+	media, err := os.ReadFile(filepath.Join(e.dir, "archive.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := e.m.Probe(t.Context(), filepath.Join(e.dir, "archive.ts"))
+	if err != nil {
+		t.Fatal("fixture probe failed")
+	}
+	info.Duration, info.Keyframes = 32*time.Second, nil
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		_, _ = w.Write(media)
+		if r.URL.Path == "/initial" {
+			_ = http.NewResponseController(w).Flush()
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(up.Close)
+	req := core.HLSRequest{
+		SessionID: "archive-remux", InputURL: up.URL + "/initial", ArchiveInput: true,
+		Info: *info, SegmentDuration: 2 * time.Second,
+		Decision: core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true,
+			Container: ContainerMPEGTS, AudioStream: pickAudio(*info, -1).Index},
+		OpenArchiveRange: func(_ context.Context, offset time.Duration) (core.ArchiveRangeInput, error) {
+			switch offset {
+			case 0:
+				return core.ArchiveRangeInput{URL: up.URL + "/initial"}, nil
+			case 26 * time.Second:
+				return core.ArchiveRangeInput{URL: up.URL + "/sought", Trim: 2 * time.Second}, nil
+			default:
+				return core.ArchiveRangeInput{}, errors.New("unexpected archive offset")
+			}
+		},
+	}
+	session := startSession(t, e.m, req)
+	t.Cleanup(func() { _ = session.Close() })
+	if first := get(t, session, 0); first.Code != http.StatusOK {
+		t.Fatalf("first segment status = %d", first.Code)
+	}
+	sought := get(t, session, 13)
+	if sought.Code != http.StatusOK {
+		t.Fatalf("sought segment status = %d", sought.Code)
+	}
+	first, end := e.videoSpan(t, ContainerMPEGTS, nil, sought.Body.Bytes(), "sought-archive")
+	if math.Abs(first-26) > 0.2 || math.Abs(end-28) > 0.2 {
+		t.Fatalf("sought segment spans %.3f–%.3f seconds, want 26–28", first, end)
+	}
+}

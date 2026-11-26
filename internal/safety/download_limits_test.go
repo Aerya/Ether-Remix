@@ -174,3 +174,44 @@ func TestDownloadLimitReservationReconcileReleaseAndRollover(t *testing.T) {
 		t.Fatalf("new-month admit = %+v, want allowed", ok)
 	}
 }
+
+// A grant takes ownership of the shared reservation even if an earlier Plex
+// or Jellyfin attempt later cancels. Its receipt survives the quota reset.
+func TestOfflineDownloadSharesReservationAcrossReset(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	s, err := New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 25, 23, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	s.SetDownloadDefaults(func() core.DownloadAllowance {
+		return core.DownloadAllowance{LimitUnit: "titles", LimitAmount: 1, LimitPeriod: "day"}
+	})
+	viewer := &core.User{ID: 2}
+	title, other := core.MovieKey(101), core.MovieKey(102)
+	if decision := s.AdmitDownload(ctx, viewer, title, 10); !decision.Reserved {
+		t.Fatalf("initial reservation = %+v", decision)
+	}
+	binding := core.OfflineDownloadBinding{Release: "release", VersionID: "version", ETag: `"original"`}
+	grant := func() {
+		t.Helper()
+		if decision, err := s.AdmitOfflineDownload(ctx, viewer, title, "receipt", binding, 20); err != nil || !decision.Allowed {
+			t.Fatalf("grant = %+v, %v", decision, err)
+		}
+	}
+	grant()
+	s.ReleaseDownloadReservation(ctx, viewer, title)
+	if decision := s.AdmitDownload(ctx, viewer, other, 10); decision.Allowed {
+		t.Fatalf("canceling another protocol's attempt erased the grant: %+v", decision)
+	}
+	now = now.AddDate(0, 0, 1)
+	grant()
+	if got, err := s.OfflineDownloadReceipt(ctx, viewer, "receipt"); err != nil || got != binding {
+		t.Fatalf("replayed binding = %+v, %v", got, err)
+	}
+	if decision := s.AdmitDownload(ctx, viewer, other, 10); !decision.Allowed {
+		t.Fatalf("renewing the ticket consumed the next day's quota: %+v", decision)
+	}
+}

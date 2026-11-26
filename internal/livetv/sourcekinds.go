@@ -389,11 +389,10 @@ func playlistGuideHeaders(src Source, guideURL string) http.Header {
 // lists (all of them for a guide-only source). When the owner has not set a
 // guide, playlistGuides discovered in #EXTM3U (x-tvg-url / url-tvg) are used.
 func fetchSourceGuide(ctx context.Context, s *Service, src *Source, cs []Channel, hasChannels bool, playlistGuides []string) (XMLGuide, error) {
-	allow, err := s.guideAllow(ctx, *src, cs, hasChannels)
+	filter, err := s.sourceGuideFilter(ctx, *src, cs, hasChannels)
 	if err != nil {
 		return XMLGuide{}, err
 	}
-	filter := guideFilter{From: s.o.Now().Add(-guideLookback), Until: s.o.Now().Add(guideLookahead), IDs: allow}
 	nameCandidateCount := 0
 	if len(cs) > 0 {
 		filter.Resolve = func(channels map[string]Channel, names map[string][]string) map[string]struct{} {

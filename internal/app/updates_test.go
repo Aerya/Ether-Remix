@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/updater"
 )
@@ -128,5 +129,48 @@ func TestUpdatesHandlerAndRestart(t *testing.T) {
 	}
 	if err := a.runResult(); !errors.Is(err, service.ErrRestartRequested) || !strings.Contains(err.Error(), "2.0.0") {
 		t.Fatalf("runResult = %v", err)
+	}
+}
+
+func TestUpdateNotesOwnerDismissal(t *testing.T) {
+	version := updater.Version
+	updater.Version = "0.3.21"
+	t.Cleanup(func() { updater.Version = version })
+	a := setupTestAppOwner(t)
+	const path = "/api/updates/notes"
+	unauthenticated := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://localhost/ether"+path, nil)
+	r.RemoteAddr = "127.0.0.1:1000"
+	a.Handler().ServeHTTP(unauthenticated, r)
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated notes status = %d", unauthenticated.Code)
+	}
+
+	get := func() updateNotes {
+		t.Helper()
+		r := doAdminAPI(t, a, http.MethodGet, path+"?version=v0.3.21", "")
+		var notes updateNotes
+		if err := json.Unmarshal(r.Body.Bytes(), &notes); err != nil || r.Code != http.StatusOK {
+			t.Fatalf("GET notes: status=%d, error=%v", r.Code, err)
+		}
+		return notes
+	}
+	if notes := get(); !notes.Unseen || !strings.HasPrefix(notes.Markdown, "# Ether v0.3.21") {
+		t.Fatal("expected unseen, embedded release notes")
+	}
+	if r := doAdminAPI(t, a, http.MethodPost, path+"/dismiss", `{"version":"0.3.20"}`); r.Code != http.StatusConflict {
+		t.Fatalf("stale dismissal status = %d", r.Code)
+	}
+	if r := doAdminAPI(t, a, http.MethodPost, path+"/dismiss", `{"version":"0.3.21"}`); r.Code != http.StatusNoContent {
+		t.Fatalf("dismissal status = %d", r.Code)
+	}
+	if notes := get(); notes.Unseen || notes.Markdown == "" {
+		t.Fatal("dismissed notes should still be available on demand")
+	}
+	if err := a.users.SetOwner(t.Context(), plextv.Account{ID: 43, Username: "next-owner"}, "test-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if !get().Unseen {
+		t.Fatal("a different owner should have their own dismissal")
 	}
 }

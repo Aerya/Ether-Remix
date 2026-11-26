@@ -808,12 +808,13 @@ func console() Client {
 		{Name: "catalog facets decade", Class: classConsole, Path: "/catalog/facets?type=movie&facet=decade"},
 		{Name: "catalog search", Class: classConsole, Path: "/catalog/search?q=star&limit=20"},
 		{Name: "viewers", Class: classConsole, Path: "/viewers"},
-		{Name: "viewer home", Class: classConsole, Path: "/viewers/{viewerId}/home"},
 		{Name: "insights rows", Class: classConsole, Path: "/insights/rows"},
 		{Name: "insights activity", Class: classConsole, Path: "/insights/activity"},
 		{Name: "collections", Class: classConsole, Path: "/collections"},
 		{Name: "frontends", Class: classConsole, Path: "/frontends"},
-		{Name: "layout", Class: classConsole, Path: "/layout"},
+		{Name: "pages", Class: classConsole, Path: "/pages"},
+		{Name: "page home", Class: classConsole, Path: "/pages/home"},
+		{Name: "page home sources", Class: classConsole, Path: "/pages/home/sources"},
 	}, consoleLibrarySteps()...)}
 }
 

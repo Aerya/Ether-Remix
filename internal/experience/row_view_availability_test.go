@@ -13,7 +13,7 @@ import (
 
 func TestRowViewCurrentAvailabilityUsesOneSnapshotBatch(t *testing.T) {
 	db := store.OpenTest(t)
-	for _, ddl := range []string{`CREATE TABLE IF NOT EXISTS personalize_home_layout(id INTEGER PRIMARY KEY,document TEXT)`, `CREATE TABLE IF NOT EXISTS favorites_mirror(viewer_id INTEGER PRIMARY KEY,updated_at INTEGER)`, `CREATE TABLE IF NOT EXISTS notinterested_revisions(viewer_id INTEGER PRIMARY KEY,revision INTEGER)`} {
+	for _, ddl := range []string{`CREATE TABLE IF NOT EXISTS personalize_pages(page TEXT PRIMARY KEY,document TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1)`, `CREATE TABLE IF NOT EXISTS favorites_mirror(viewer_id INTEGER PRIMARY KEY,updated_at INTEGER)`, `CREATE TABLE IF NOT EXISTS notinterested_revisions(viewer_id INTEGER PRIMARY KEY,revision INTEGER)`} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}

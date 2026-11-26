@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +30,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -96,12 +99,16 @@ const (
 
 // KindResolverDeps configures a KindResolver.
 type KindResolverDeps struct {
-	Manager       *plugins.Manager
-	Libraries     *libraries.Service
-	Items         *pluginitems.Service
-	Blobs         *blobcache.Cache
-	Catalog       *KindCatalog
-	Indexer       core.Indexer
+	Manager    *plugins.Manager
+	Libraries  *libraries.Service
+	Items      *pluginitems.Service
+	Blobs      *blobcache.Cache
+	Catalog    *KindCatalog
+	Indexer    core.Indexer
+	PluginNZBs PluginNZBStore
+	// Sources, when set, accounts plugin-release opens (#792) against the
+	// source plugin's grab limits.
+	Sources       *StreamSources
 	Resolver      *resolver.Service
 	Debrid        DebridSourceBackend
 	Engine        core.Engine
@@ -116,6 +123,10 @@ type KindResolverDeps struct {
 	NZBFetchTimeout      time.Duration
 	EngineOpenTimeout    time.Duration
 	CandidateOpenTimeout time.Duration
+	// PreparingWait bounds how long an open waits server-side while a
+	// plugin's staged resolve answers pending (W348); 0 answers preparing
+	// at once. The app sets DefaultKindPreparingWait.
+	PreparingWait time.Duration
 }
 
 const (
@@ -127,9 +138,10 @@ const (
 )
 
 type resolveFlightKey struct {
-	ref    core.ItemRef
-	part   int
-	source string
+	ref        core.ItemRef
+	part       int
+	source     string
+	background bool
 }
 
 type resolveFlight struct {
@@ -155,6 +167,8 @@ type KindResolver struct {
 	blobs                *blobcache.Cache
 	catalog              *KindCatalog
 	indexer              core.Indexer
+	pluginNZBs           PluginNZBStore
+	sources              *StreamSources
 	resolver             *resolver.Service
 	debrid               DebridSourceBackend
 	engine               core.Engine
@@ -169,6 +183,10 @@ type KindResolver struct {
 	nzbFetchTimeout      time.Duration
 	engineOpenTimeout    time.Duration
 	candidateOpenTimeout time.Duration
+	preparingWait        time.Duration
+
+	unitMu    sync.Mutex
+	unitGates map[resolveUnitKey]*resolveUnitGate
 
 	flightMu sync.Mutex
 	flights  map[resolveFlightKey]*resolveFlight
@@ -181,6 +199,7 @@ type KindResolver struct {
 	specBudgetUntil map[string]time.Time
 
 	usenetVerdicts *resolver.UsenetVerdictCache
+	grabRejects    kindGrabRejects
 
 	streamMu           sync.Mutex
 	streamSearches     map[string]*streamSearchSession
@@ -192,6 +211,18 @@ type KindResolver struct {
 	streamMaxWait      time.Duration
 	streamCeiling      time.Duration
 	streamWG           sync.WaitGroup
+
+	sourceFlightMu      sync.Mutex
+	sourceFlights       map[string]*sourceWorkFlight
+	sourceFlightsClosed bool
+	sourceFlightWG      sync.WaitGroup
+
+	releaseFilesMu    sync.Mutex
+	releaseFilesCache map[string]cachedReleaseFiles
+	sourceHandoffs    map[string]sourceHandoffEntry
+
+	progressMu      sync.Mutex
+	resolveProgress map[resolveFlightKey]*resolveProgressEntry
 }
 
 var (
@@ -247,6 +278,8 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		blobs:                deps.Blobs,
 		catalog:              deps.Catalog,
 		indexer:              deps.Indexer,
+		pluginNZBs:           deps.PluginNZBs,
+		sources:              deps.Sources,
 		resolver:             deps.Resolver,
 		debrid:               deps.Debrid,
 		engine:               deps.Engine,
@@ -262,6 +295,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		nzbFetchTimeout:      nzbFetchTimeout,
 		engineOpenTimeout:    engineOpenTimeout,
 		candidateOpenTimeout: candidateOpenTimeout,
+		preparingWait:        deps.PreparingWait,
 		flights:              make(map[resolveFlightKey]*resolveFlight),
 		candCache:            make(map[resolveFlightKey]cachedKindCandidates),
 		detailMissUntil:      make(map[resolveFlightKey]time.Time),
@@ -315,6 +349,7 @@ func (r *KindResolver) InvalidatePlugin(pluginID string) {
 	}
 	r.candMu.Unlock()
 
+	r.clearPluginResolveProgress(pluginID)
 	r.cancelPluginStreamingSearches(pluginID)
 }
 
@@ -338,7 +373,7 @@ func (r *KindResolver) ResolveForMatch(ctx context.Context, lib core.Library, re
 	if !ok || !lv.Playable || !item.Playable {
 		return nil, nil
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	var partIdx *int
@@ -484,13 +519,18 @@ func matchPlayableSource(sources []core.PlayableSource, defaultTitle, sourceID s
 // release id (a version-slot pick) or PlayableSource.ID. It reuses the
 // in-memory and persisted resolution candidate caches so a warm list does not
 // re-run the plugin, opens only the matching candidate, and leaves the shared
-// default winner untouched. A source id not among the current non-expired
-// candidates returns ErrNotAvailable.
+// default winner untouched. A previously opened NZB can also be reused
+// from the vault after the candidate cache expires.
 func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindSource(ctx, viewer, key, sourceID, accept)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	var forcedPart *int
@@ -524,6 +564,10 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 			return nil, core.ErrNotAvailable
 		}
 	}
+	if media, err := r.openSavedKindSource(ctx, rec, lib, item, partIdx, sourceID); media != nil || err != nil {
+		return media, err
+	}
+
 	sources, err := r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
 	if err != nil {
 		return nil, err
@@ -544,13 +588,18 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 // matching PlayableSource.ID from the response, or returns ErrNotAvailable if
 // it is absent.
 func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex *int, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindPartSource(ctx, viewer, key, partIndex, sourceID, accept)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
 	if partIndex != nil && *partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
@@ -616,6 +665,10 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 		r.deleteCandidates(fk)
 	}
 
+	if media, err := r.openSavedKindSource(ctx, rec, lib, targetItem, effectivePart, sourceID); media != nil || err != nil {
+		return media, err
+	}
+
 	sources, err := r.resolveItemSourcesForSource(ctx, rec, lib, targetItem, effectivePart, sourceID, accept)
 	if err != nil {
 		return nil, err
@@ -636,9 +689,9 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 }
 
 // KindVersions lists the playable version menu of a plugin kind item in the
-// same W152 shape catalogue VersionSlots uses: index 0 is the synthetic Auto
-// slot (backed by the viewer's remembered choice when matched, else the
-// plugin's first source), followed by the remaining distinct /resolve sources.
+// W152 shape: index 0 is the synthetic Auto slot (backed by the viewer's
+// remembered choice when matched, else the plugin's first source), followed by
+// every distinct /resolve source as an explicit row, Auto's pick included.
 // When allowResolve is false or ctx carries LocalResponse, only cached
 // candidates are inspected and the plugin's /resolve endpoint is never called.
 func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string, allowResolve bool) ([]core.ReleaseVariant, error) {
@@ -701,6 +754,9 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 		}
 	}
 	if err != nil {
+		if !speculative && errors.As(err, new(*core.IndexersPausedError)) {
+			return nil, err
+		}
 		if errors.Is(err, core.ErrNotAvailable) || errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrSourceUnavailable) {
 			return nil, nil
 		}
@@ -751,7 +807,7 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 	if lbl := strings.TrimSpace(autoEntry.Label); lbl != "" {
 		autoLabel = "Auto · " + lbl
 	}
-	capLen := min(len(entries), core.MaxVariants)
+	capLen := min(len(entries)+1, core.MaxVariants)
 	variants := make([]core.ReleaseVariant, 0, capLen)
 	variants = append(variants, core.ReleaseVariant{
 		ID:               core.KindAutoVersionID,
@@ -764,14 +820,18 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 		Release:          autoEntry.Release,
 		Info:             autoEntry.Info,
 	})
-	for i, e := range entries {
-		if i == autoIdx {
-			continue
-		}
+	// Every source, Auto's current pick included, stays its own explicit
+	// row: picking it forces that release, while Auto keeps failing over
+	// (a 4K pick whose articles are gone must not hide the 4K choice).
+	for _, e := range entries {
 		if len(variants) >= core.MaxVariants {
 			break
 		}
 		variants = append(variants, e.variant)
+	}
+	if autoIdx >= len(variants)-1 && len(variants) == core.MaxVariants {
+		// A remembered pick past the menu bound keeps its explicit row.
+		variants[len(variants)-1] = entries[autoIdx].variant
 	}
 	return variants, nil
 }
@@ -788,8 +848,34 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 	if src.DurationSec > 0 {
 		dur = time.Duration(src.DurationSec * float64(time.Second))
 	}
+	path := src.Path
+	if path == "" && src.Release != nil {
+		path = firstNonEmpty(src.Release.File, src.Release.FileHint)
+	}
+	if path == "" && src.Container != nil {
+		path = src.Container.Member
+	}
+	if path == "" {
+		if u, err := url.Parse(src.URL); err == nil {
+			path = u.Path
+		}
+	}
+	audioContainer, audioCodec := core.AudioFileHint(firstNonEmpty(path, rel.Name))
+	mime, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(src.MIME)), ";")
+	switch strings.TrimSpace(mime) {
+	case "audio/flac", "audio/x-flac":
+		audioContainer, audioCodec = "flac", "flac"
+	case "audio/mpeg":
+		audioContainer, audioCodec = "mp3", "mp3"
+	case "audio/opus":
+		audioContainer, audioCodec = "ogg", "opus"
+	case "audio/alac", "audio/x-alac":
+		audioContainer, audioCodec = "mp4", "alac"
+	case "audio/ogg":
+		audioContainer = "ogg"
+	}
 	info := core.MediaInfo{
-		Container: kindContainerFromMIME(src.MIME, firstNonEmpty(rel.Name, src.Path, src.URL)),
+		Container: kindContainerFromMIME(src.MIME, firstNonEmpty(rel.Name, path)),
 		Duration:  dur,
 		Size:      size,
 		Estimated: true,
@@ -799,7 +885,9 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 			info.BitrateKbps = int((size * 8) / sec / 1000)
 		}
 	}
-	if rel.Info.Height > 0 || rel.Info.VideoCodec != "" {
+	if audioContainer != "" {
+		info.Container = audioContainer
+	} else if rel.Info.Height > 0 || rel.Info.VideoCodec != "" {
 		w := 0
 		if rel.Info.Height > 0 {
 			w = (rel.Info.Height * 16) / 9
@@ -817,11 +905,11 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 		}
 		info.Streams = append(info.Streams, vs)
 	}
-	if rel.Info.AudioCodec != "" {
+	if audioCodec = firstNonEmpty(audioCodec, rel.Info.AudioCodec); audioCodec != "" {
 		info.Streams = append(info.Streams, core.StreamInfo{
 			Index:    len(info.Streams),
 			Type:     "audio",
-			Codec:    rel.Info.AudioCodec,
+			Codec:    audioCodec,
 			Channels: kindChannelsFromString(rel.Info.Channels),
 		})
 	}
@@ -871,10 +959,6 @@ func kindContainerFromMIME(mime, name string) string {
 		return "mpegts"
 	case "video/quicktime":
 		return "mov"
-	case "audio/mpeg":
-		return "mp3"
-	case "audio/flac":
-		return "flac"
 	}
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(name))) {
 	case ".mkv":
@@ -935,10 +1019,15 @@ func kindReleaseSource(raw string) core.Source {
 // falling back to a fresh plugin re-resolve when exhausted or expired, and
 // respecting provider backoff.
 func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept, exclude []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindExcluding(ctx, viewer, key, accept, exclude)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
@@ -1052,10 +1141,15 @@ func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, ke
 // OpenKindPartExcluding opens one zero-based part of a multi-part plugin kind
 // item while skipping candidate release IDs listed in exclude.
 func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept, exclude []string) (*frontend.KindMedia, error) {
+	if r.waitsPreparing(ctx) {
+		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
+			return r.OpenKindPartExcluding(ctx, viewer, key, partIndex, accept, exclude)
+		})
+	}
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	if parentKey, _, isPart := key.PluginPart(); isPart {
@@ -1162,10 +1256,12 @@ func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec plu
 	}
 	nowUnix := r.now().Unix()
 	var baseSrc *core.PlayableSource
-	if cached, ok, err := r.items.GetPartResolution(ctx, parent.Ref, nil); err == nil && ok {
-		if strings.EqualFold(strings.TrimSpace(cached.Pattern), kindstream.PatternRelease) && cached.Release != nil && (cached.ExpiresAt == 0 || nowUnix < cached.ExpiresAt) {
-			cp := cached
-			baseSrc = &cp
+	var vaultedOnly bool
+	if cached, ok, expired, err := r.items.GetPartResolutionForOpen(ctx, parent.Ref, nil); err == nil && ok {
+		if !expired && strings.EqualFold(strings.TrimSpace(cached.Pattern), kindstream.PatternRelease) && cached.Release != nil && (cached.ExpiresAt == 0 || nowUnix < cached.ExpiresAt) {
+			baseSrc = &cached
+		} else if expired && r.canReuseVaultedSource(cached) {
+			baseSrc, vaultedOnly = &cached, true
 		}
 	}
 	if baseSrc == nil {
@@ -1207,11 +1303,18 @@ func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec plu
 	}
 	rel := playableSourceRelease(partSrc, firstNonEmpty(part.Name, parent.Title))
 	if slices.Contains(exclude, rel.ID) {
-		return nil, true, core.ErrNotAvailable
+		return nil, !vaultedOnly, core.ErrNotAvailable
 	}
 	idx := partIndex
-	media, err := r.openSingleSource(ctx, rec, lib, parent, &idx, partSrc, true)
+	openCtx := ctx
+	if vaultedOnly {
+		openCtx = newznab.WithVaultedPluginNZB(ctx)
+	}
+	media, err := r.openSingleSource(openCtx, rec, lib, parent, &idx, partSrc, !vaultedOnly)
 	if err != nil {
+		if vaultedOnly && ctx.Err() == nil && errors.Is(err, core.ErrSourceUnavailable) {
+			return nil, false, nil
+		}
 		return nil, true, err
 	}
 	if part.Name != "" {
@@ -1547,6 +1650,11 @@ func (r *KindResolver) RefsForKeys(ctx context.Context, viewer *core.Viewer, key
 		if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
 			continue
 		}
+		if r.authorize != nil {
+			if err := r.authorize(ctx, viewer, item.Key); err != nil {
+				continue
+			}
+		}
 		out[key] = item.Ref
 	}
 	return out, nil
@@ -1629,10 +1737,15 @@ func singleIndexerSkipped(name string, skip, only []string) bool {
 type resolveSearchStateKey struct{}
 
 type resolveSearchState struct {
-	mu              sync.Mutex
-	oneShotPending  bool
-	pendingBySearch map[string]bool
-	budgetSkipped   bool
+	mu               sync.Mutex
+	oneShotPending   bool
+	pendingBySearch  map[string]bool
+	budgetSkipped    bool
+	indexerAnswered  bool
+	pausedIndexers   map[string]string
+	inFlight         int
+	sliceSourceCalls int
+	sliceWorkKeys    map[string]struct{}
 }
 
 func withResolveSearchState(ctx context.Context) (context.Context, *resolveSearchState) {
@@ -1646,6 +1759,84 @@ func resolveSearchStateFrom(ctx context.Context) *resolveSearchState {
 	}
 	st, _ := ctx.Value(resolveSearchStateKey{}).(*resolveSearchState)
 	return st
+}
+
+func (s *resolveSearchState) beginSlice() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.sliceSourceCalls = 0
+	s.sliceWorkKeys = nil
+	s.mu.Unlock()
+}
+
+func beginResolveSourceWork(ctx context.Context, workKey string) func() {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return func() {}
+	}
+	st.mu.Lock()
+	st.inFlight++
+	st.sliceSourceCalls++
+	if workKey != "" {
+		if st.sliceWorkKeys == nil {
+			st.sliceWorkKeys = make(map[string]struct{})
+		}
+		st.sliceWorkKeys[workKey] = struct{}{}
+	}
+	st.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			st.mu.Lock()
+			if st.inFlight > 0 {
+				st.inFlight--
+			}
+			st.mu.Unlock()
+		})
+	}
+}
+
+func noteResolveSourceWork(ctx context.Context, workKey string, cached bool) {
+	st := resolveSearchStateFrom(ctx)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	st.sliceSourceCalls++
+	if !cached && workKey != "" {
+		if st.sliceWorkKeys == nil {
+			st.sliceWorkKeys = make(map[string]struct{})
+		}
+		st.sliceWorkKeys[workKey] = struct{}{}
+	}
+	st.mu.Unlock()
+}
+
+func (s *resolveSearchState) timeoutProgressSnapshot() (hasPending, hasActivity bool, workKeys []string) {
+	if s == nil {
+		return false, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hasPending = s.oneShotPending
+	if !hasPending {
+		for _, pending := range s.pendingBySearch {
+			if pending {
+				hasPending = true
+				break
+			}
+		}
+	}
+	hasActivity = s.inFlight > 0 || s.sliceSourceCalls > 0
+	if len(s.sliceWorkKeys) > 0 {
+		workKeys = make([]string, 0, len(s.sliceWorkKeys))
+		for wk := range s.sliceWorkKeys {
+			workKeys = append(workKeys, wk)
+		}
+	}
+	return hasPending, hasActivity, workKeys
 }
 
 func noteResolveSearchResult(ctx context.Context, res core.SourceResolveResult) {
@@ -1663,7 +1854,29 @@ func noteResolveSearchResult(ctx context.Context, res core.SourceResolveResult) 
 	} else if hasPending {
 		st.oneShotPending = true
 	}
+	for _, status := range res.Indexers {
+		switch {
+		case status.Status == core.IndexerStatusAnswered:
+			st.indexerAnswered = true
+		case status.Status == core.IndexerStatusSkipped && status.Reason == core.IndexerSkipReasonPaused:
+			if st.pausedIndexers == nil {
+				st.pausedIndexers = make(map[string]string)
+			}
+			st.pausedIndexers[status.IndexerID] = status.ConfiguredName
+		}
+	}
 	st.mu.Unlock()
+}
+
+func (s *resolveSearchState) indexerPause() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.indexerAnswered || len(s.pausedIndexers) == 0 {
+		return nil
+	}
+	names := slices.Collect(maps.Values(s.pausedIndexers))
+	slices.Sort(names)
+	return &core.IndexersPausedError{Names: slices.Compact(names)}
 }
 
 func noteResolveSearchCanceled(ctx context.Context, searchID string) {
@@ -1716,9 +1929,6 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 	if q.Stream {
 		return r.startStreamingIndexerSearch(ctx, pluginID, q)
 	}
-	if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
-		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
-	}
 	query, category, err := r.validateIndexerSearchQuery(ctx, q)
 	if err != nil {
 		return core.SourceResolveResult{}, err
@@ -1742,6 +1952,7 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 	searchReq := core.SearchRequest{
 		Title:    query,
 		Category: category,
+		Lookup:   q.Lookup,
 	}
 	opts := core.IndexerSearchOptions{
 		FirstResults:      q.FirstResults,
@@ -1891,17 +2102,29 @@ func (r *KindResolver) ResolveSourcesWithResult(ctx context.Context, pluginID st
 	if r == nil {
 		return core.SourceResolveResult{}, core.ErrNotAvailable
 	}
+	if wasm.IsBackgroundCall(ctx) {
+		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
+	}
 	switch q.Kind {
 	case "indexer_search":
+		workKey := fmt.Sprintf("indexer_search:%s|%s|%t", strings.TrimSpace(q.Query), strings.TrimSpace(q.Category), q.Stream)
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
 		res, err := r.resolveIndexerSearch(ctx, pluginID, q)
 		if err == nil {
 			noteResolveSearchResult(ctx, res)
 		}
 		return res, err
 	case "indexer_search_results":
+		endWork := beginResolveSourceWork(ctx, "")
+		defer endWork()
 		res, err := r.pollStreamingIndexerSearch(ctx, pluginID, q)
 		if err == nil {
 			noteResolveSearchResult(ctx, res)
+			if len(res.Candidates) > 0 {
+				first := res.Candidates[0]
+				noteResolveSourceWork(ctx, fmt.Sprintf("indexer_search_results:%s:%s:%s:%s:%d", res.SearchID, first.NZBURL, first.InfoHash, first.Title, len(res.Candidates)), false)
+			}
 		}
 		return res, err
 	case "indexer_search_cancel":
@@ -1936,8 +2159,6 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		return res.Candidates, nil
 
 	case "debrid_check":
-		ctx, cancel := withHardTimeout(ctx, sourceDebridCheckTimeout)
-		defer cancel()
 		if r.debrid == nil {
 			return []core.SourceCandidate{}, nil
 		}
@@ -1957,38 +2178,83 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		if len(hashes) == 0 {
 			return []core.SourceCandidate{}, nil
 		}
-		out := make([]core.SourceCandidate, len(hashes))
-		if byBackend, ok := r.debrid.(debridCachedByBackend); ok {
-			by, _ := byBackend.CheckCachedBy(ctx, hashes)
+		sortedHashes := slices.Clone(hashes)
+		slices.Sort(sortedHashes)
+		workKey := "debrid_check:" + strings.Join(sortedHashes, ",")
+		reorder := func(in []core.SourceCandidate) []core.SourceCandidate {
+			byHash := make(map[string]core.SourceCandidate, len(in))
+			for _, c := range in {
+				byHash[c.InfoHash] = c
+			}
+			out := make([]core.SourceCandidate, len(hashes))
 			for i, h := range hashes {
-				services := by[h]
+				if c, ok := byHash[h]; ok {
+					out[i] = c
+				} else {
+					out[i] = core.SourceCandidate{InfoHash: h}
+				}
+			}
+			return out
+		}
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return reorder(handed), nil
+		}
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceDebridCheckTimeout, func(workCtx context.Context) (any, error) {
+			out := make([]core.SourceCandidate, len(sortedHashes))
+			if byBackend, ok := r.debrid.(debridCachedByBackend); ok {
+				by, _ := byBackend.CheckCachedBy(workCtx, sortedHashes)
+				for i, h := range sortedHashes {
+					services := by[h]
+					out[i] = core.SourceCandidate{
+						InfoHash: h,
+						Cached:   len(services) > 0,
+						CachedBy: services,
+					}
+				}
+				return out, nil
+			}
+			cached, _ := r.debrid.CheckCached(workCtx, sortedHashes)
+			for i, h := range sortedHashes {
 				out[i] = core.SourceCandidate{
 					InfoHash: h,
-					Cached:   len(services) > 0,
-					CachedBy: services,
+					Cached:   cached[h],
 				}
 			}
 			return out, nil
-		}
-		cached, _ := r.debrid.CheckCached(ctx, hashes)
-		for i, h := range hashes {
-			out[i] = core.SourceCandidate{
-				InfoHash: h,
-				Cached:   cached[h],
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
 			}
+		})
+		if err != nil {
+			return nil, err
 		}
-		return out, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return reorder(cloneSourceCandidates(cands)), nil
+
+	case "nzb_request":
+		return r.requestPluginNZB(ctx, q)
 
 	case "release_files":
-		ctx, cancel := withHardTimeout(ctx, sourceReleaseFilesTimeout)
-		defer cancel()
 		cand := core.SourceCandidate{
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
 			TorrentURL: strings.TrimSpace(q.TorrentURL),
+			TorrentRef: strings.TrimSpace(q.TorrentRef),
+			NZBURL:     strings.TrimSpace(q.NZBURL),
+			NZBRef:     strings.TrimSpace(q.NZBRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
+			if q.NZBURL != "" {
+				cand.NZBURL = strings.TrimSpace(q.NZBURL)
+			}
+			if q.NZBRef != "" {
+				cand.NZBRef = strings.TrimSpace(q.NZBRef)
+			}
 			cand.InfoHash = strings.ToLower(strings.TrimSpace(cand.InfoHash))
 			cand.Magnet = strings.TrimSpace(cand.Magnet)
 			cand.TorrentURL = strings.TrimSpace(cand.TorrentURL)
@@ -1999,9 +2265,17 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if q.Magnet != "" {
 				cand.Magnet = strings.TrimSpace(q.Magnet)
 			}
+			if q.TorrentRef != "" {
+				cand.TorrentRef = strings.TrimSpace(q.TorrentRef)
+			}
 			if q.TorrentURL != "" {
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
+		}
+		if cand.PluginRelease != nil && cand.InfoHash == "" && cand.Magnet == "" && cand.TorrentURL == "" && cand.TorrentRef == "" && cand.NZBURL == "" && cand.NZBRef == "" {
+			cand.FileIndex = nil
+			cand.Files = nil
+			return r.pluginReleaseFiles(ctx, cand)
 		}
 		// The listing answers for the whole release; any file choice the
 		// candidate already carries does not narrow it.
@@ -2016,78 +2290,125 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		}
 		if rel.Protocol == core.ProtocolUsenet {
 			if r.indexer == nil {
-				return []core.SourceCandidate{cand}, nil
+				return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 			}
-			// Fetching through the originating indexer is the same call
-			// playback makes, so the NZB lands in the vault and playback
-			// does not fetch it again.
-			data, err := r.indexer.FetchNZB(ctx, rel)
-			if err != nil {
-				return nil, err
+			releaseKey := candidateNZBKey(cand)
+			workKey := "release_files:" + releaseKey
+			if files, ok := r.lookupUsenetReleaseFiles(releaseKey); ok {
+				noteResolveSourceWork(ctx, workKey, true)
+				cand.Files = files
+				return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 			}
-			files, err := r.listNZBFiles(ctx, rel.ID, data)
-			if err != nil {
-				return nil, err
-			}
-			cand.Files = files
-			if lister, ok := r.engine.(interface {
-				ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
-			}); ok && lister != nil {
-				if byVol, lerr := lister.ListArchiveMembers(ctx, data); lerr == nil && len(byVol) > 0 {
-					for idx, members := range byVol {
-						if idx >= 0 && idx < len(cand.Files) {
-							cand.Files[idx].Members = members
+			endWork := beginResolveSourceWork(ctx, workKey)
+			defer endWork()
+			raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceReleaseFilesTimeout, func(workCtx context.Context) (any, error) {
+				// Fetching through the originating indexer is the same call
+				// playback makes, so the NZB lands in the vault and playback
+				// does not fetch it again.
+				data, err := r.fetchPluginNZB(workCtx, rel)
+				if err != nil {
+					return nil, err
+				}
+				files, err := r.listNZBFiles(workCtx, rel.ID, data)
+				if err != nil {
+					return nil, err
+				}
+				archiveOK := true
+				if lister, ok := r.engine.(interface {
+					ListArchiveMembers(context.Context, []byte) (map[int][]core.ReleaseMember, error)
+				}); ok && lister != nil {
+					byVol, lerr := lister.ListArchiveMembers(workCtx, data)
+					if lerr != nil {
+						archiveOK = false
+					} else if len(byVol) > 0 {
+						for idx, members := range byVol {
+							if idx >= 0 && idx < len(files) {
+								files[idx].Members = members
+							}
 						}
 					}
 				}
-			}
-			return []core.SourceCandidate{cand}, nil
-		}
-		if rel.Protocol != core.ProtocolTorrent {
-			return []core.SourceCandidate{cand}, nil
-		}
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
-			resolved, err := r.resolveTorrent(ctx, rel)
+				if archiveOK && workCtx.Err() == nil && len(files) > 0 {
+					r.storeUsenetReleaseFiles(releaseKey, files)
+				}
+				return files, nil
+			}, nil)
 			if err != nil {
 				return nil, err
 			}
-			rel = resolved
-			if rel.InfoHash != "" {
-				cand.InfoHash = rel.InfoHash
-			}
-			if rel.MagnetURL != "" {
-				cand.Magnet = rel.MagnetURL
-			}
+			files, _ := raw.([]core.ReleaseFile)
+			cand.Files = cloneReleaseFiles(files)
+			return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 		}
-		if r.debrid != nil {
-			files, err := r.debrid.ListReleaseFiles(ctx, rel)
-			if err == nil {
-				cand.Cached = true
-				if knownLookup, ok := r.debrid.(debridKnownCachedByBackend); ok && cand.InfoHash != "" {
-					cand.CachedBy = knownLookup.KnownCachedBy(cand.InfoHash, nil)
+		if rel.Protocol != core.ProtocolTorrent {
+			return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
+		}
+		workKey := "release_files:torrent:" + rel.ID
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return handed, nil
+		}
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceReleaseFilesTimeout, func(workCtx context.Context) (any, error) {
+			outCand := cand
+			outRel := rel
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && (outRel.NZBURL != "" || outRel.TorrentRef != "") {
+				resolved, err := r.resolveTorrent(workCtx, outRel)
+				if err != nil {
+					return nil, err
 				}
-				cand.Files = files
-				cand.FileCount = len(files)
-				return []core.SourceCandidate{cand}, nil
+				outRel = resolved
+				if outRel.InfoHash != "" {
+					outCand.InfoHash = outRel.InfoHash
+				}
+				if outRel.MagnetURL != "" {
+					outCand.Magnet = outRel.MagnetURL
+				}
 			}
-			if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
-				return nil, err
+			if r.debrid != nil {
+				files, err := r.debrid.ListReleaseFiles(workCtx, outRel)
+				if err == nil {
+					outCand.Cached = true
+					if knownLookup, ok := r.debrid.(debridKnownCachedByBackend); ok && outCand.InfoHash != "" {
+						outCand.CachedBy = knownLookup.KnownCachedBy(outCand.InfoHash, nil)
+					}
+					outCand.Files = files
+					outCand.FileCount = len(files)
+					return []core.SourceCandidate{r.publicReleaseLinks(outCand)}, nil
+				}
+				if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
+					return nil, err
+				}
+				outCand.Cached = false
+				outCand.CachedBy = nil
 			}
-			cand.Cached = false
-			cand.CachedBy = nil
+			if len(outRel.TorrentFiles) > 0 {
+				outCand.Files = slices.Clone(outRel.TorrentFiles)
+				outCand.FileCount = len(outCand.Files)
+			}
+			return []core.SourceCandidate{r.publicReleaseLinks(outCand)}, nil
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
+			}
+		})
+		if err != nil {
+			return nil, err
 		}
-		if len(rel.TorrentFiles) > 0 {
-			cand.Files = slices.Clone(rel.TorrentFiles)
-			cand.FileCount = len(cand.Files)
-		}
-		return []core.SourceCandidate{cand}, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return cloneSourceCandidates(cands), nil
 
 	case "usenet_check":
 		cand := core.SourceCandidate{
 			NZBURL: strings.TrimSpace(q.NZBURL),
+			NZBRef: strings.TrimSpace(q.NZBRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
+			if q.NZBRef != "" {
+				cand.NZBRef = strings.TrimSpace(q.NZBRef)
+			}
 			cand.NZBURL = strings.TrimSpace(cand.NZBURL)
 			if strings.TrimSpace(q.NZBURL) != "" {
 				cand.NZBURL = strings.TrimSpace(q.NZBURL)
@@ -2099,11 +2420,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		cand.UsenetCheck = &res
-		return []core.SourceCandidate{cand}, nil
+		return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 
 	case "debrid_acquire":
-		ctx, cancel := withHardTimeout(ctx, sourceDebridAcquireTimeout)
-		defer cancel()
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
 		}
@@ -2111,6 +2430,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
 			TorrentURL: strings.TrimSpace(q.TorrentURL),
+			TorrentRef: strings.TrimSpace(q.TorrentRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
@@ -2123,6 +2443,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if q.Magnet != "" {
 				cand.Magnet = strings.TrimSpace(q.Magnet)
 			}
+			if q.TorrentRef != "" {
+				cand.TorrentRef = strings.TrimSpace(q.TorrentRef)
+			}
 			if q.TorrentURL != "" {
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
@@ -2134,34 +2457,54 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		rel.Protocol = core.ProtocolTorrent
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
-			resolved, err := r.resolveTorrent(ctx, rel)
+		workKey := "debrid_acquire:" + rel.ID
+		if handed, ok := r.takeSourceHandoff(workKey); ok {
+			noteResolveSourceWork(ctx, workKey, true)
+			return handed, nil
+		}
+		endWork := beginResolveSourceWork(ctx, workKey)
+		defer endWork()
+		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceDebridAcquireTimeout, func(workCtx context.Context) (any, error) {
+			outRel := rel
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && (outRel.NZBURL != "" || outRel.TorrentRef != "") {
+				resolved, err := r.resolveTorrent(workCtx, outRel)
+				if err != nil {
+					return nil, err
+				}
+				outRel = resolved
+			}
+			payloadBytes, err := r.debrid.Acquire(workCtx, outRel)
 			if err != nil {
 				return nil, err
 			}
-			rel = resolved
-		}
-		payloadBytes, err := r.debrid.Acquire(ctx, rel)
+			var cachedBy []core.DebridServiceRef
+			if p, err := debrid.DecodePayload(payloadBytes); err == nil && p.Provider != "" {
+				if refLookup, ok := r.debrid.(debridServiceRefBackend); ok {
+					if ref, ok := refLookup.ServiceRef(p.Provider, p.Kind); ok {
+						cachedBy = []core.DebridServiceRef{ref}
+					}
+				} else {
+					cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
+				}
+			}
+			return []core.SourceCandidate{r.publicReleaseLinks(core.SourceCandidate{
+				InfoHash:   outRel.InfoHash,
+				Magnet:     outRel.MagnetURL,
+				TorrentURL: cand.TorrentURL,
+				TorrentRef: cand.TorrentRef,
+				Cached:     true,
+				CachedBy:   cachedBy,
+			})}, nil
+		}, func(res any) {
+			if cands, ok := res.([]core.SourceCandidate); ok {
+				r.storeSourceHandoff(workKey, cands)
+			}
+		})
 		if err != nil {
 			return nil, err
 		}
-		var cachedBy []core.DebridServiceRef
-		if p, err := debrid.DecodePayload(payloadBytes); err == nil && p.Provider != "" {
-			if refLookup, ok := r.debrid.(debridServiceRefBackend); ok {
-				if ref, ok := refLookup.ServiceRef(p.Provider, p.Kind); ok {
-					cachedBy = []core.DebridServiceRef{ref}
-				}
-			} else {
-				cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
-			}
-		}
-		return []core.SourceCandidate{{
-			InfoHash:   rel.InfoHash,
-			Magnet:     rel.MagnetURL,
-			TorrentURL: cand.TorrentURL,
-			Cached:     true,
-			CachedBy:   cachedBy,
-		}}, nil
+		cands, _ := raw.([]core.SourceCandidate)
+		return cloneSourceCandidates(cands), nil
 
 	default:
 		return nil, fmt.Errorf("kindresolver: unknown source query kind %q", q.Kind)
@@ -2406,8 +2749,8 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 				"item", item.ID,
 				"attempt", attempt,
 				"candidates", total,
-				"source", src.ID,
-				"pattern", src.Pattern,
+				"source", logredact.Source(src.ID),
+				"pattern", logredact.Source(src.Pattern),
 				"took", took.Round(time.Millisecond),
 				"err", err,
 			)
@@ -2424,9 +2767,9 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 					"plugin", rec.PluginID,
 					"library", lib.Key,
 					"item", item.ID,
-					"source", f.Source.ID,
-					"pattern", f.Source.Pattern,
-					"winning", winning.ID,
+					"source", logredact.Source(f.Source.ID),
+					"pattern", logredact.Source(f.Source.Pattern),
+					"winning", logredact.Source(winning.ID),
 					"err", f.Err,
 				)
 			}
@@ -2492,23 +2835,27 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	}
 
 	// 1. Check persisted positive/negative resolution cache first so repeat
-	// opens never call into the plugin runtime while the resolution is fresh,
-	// unless the cached candidate was excluded by failover or its provider is
-	// currently backing off.
+	// opens reuse a fresh source, or a previously opened NZB that the vault
+	// still has. Respect explicit exclusions and provider backoff.
 	var backingOffCached *core.PlayableSource
-	cachedSrc, ok, err := r.items.GetPartResolution(ctx, item.Ref, partIdx)
+	cachedSrc, ok, expired, err := r.items.GetPartResolutionForOpen(ctx, item.Ref, partIdx)
 	if err != nil {
 		return nil, core.PlayableSource{}, err
 	}
-	if ok {
+	if ok && (!expired || r.canReuseVaultedSource(cachedSrc)) {
 		cachedID := playableSourceRelease(cachedSrc, item.Title).ID
 		if slices.Contains(exclude, cachedID) {
 			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
 		} else if r.isSourceBackingOff(cachedSrc) {
-			c := cachedSrc
-			backingOffCached = &c
+			if !expired {
+				c := cachedSrc
+				backingOffCached = &c
+			}
 		} else {
 			openCtx, openCancel := withHardTimeout(ctx, r.candidateOpenTimeout)
+			if expired {
+				openCtx = newznab.WithVaultedPluginNZB(openCtx)
+			}
 			cachedStart := time.Now()
 			bs, oerr := kindstream.Open(openCtx, cachedSrc, ksDeps)
 			openCancel()
@@ -2518,7 +2865,9 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					if cachedSrc.MIME == "" {
 						cachedSrc.MIME = bs.MIME()
 					}
-					_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
+					if !expired {
+						_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
+					}
 				}
 				return bs, cachedSrc, nil
 			}
@@ -2530,15 +2879,20 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					"plugin", rec.PluginID,
 					"library", lib.Key,
 					"item", item.ID,
-					"source", cachedSrc.ID,
-					"pattern", cachedSrc.Pattern,
+					"source", logredact.Source(cachedSrc.ID),
+					"pattern", logredact.Source(cachedSrc.Pattern),
 					"took", time.Since(cachedStart).Round(time.Millisecond),
 					"err", oerr,
 				)
 			}
-			// Cached source went stale upstream: invalidate and fall through.
-			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
-			r.deleteCandidates(fk)
+			if !expired {
+				// Cached source went stale upstream: invalidate and fall through.
+				_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+				var grabRefusal *newznab.GrabRefusal
+				if !errors.As(oerr, &grabRefusal) {
+					r.deleteCandidates(fk)
+				}
+			}
 		}
 	}
 
@@ -2678,13 +3032,13 @@ func isTorrentReleaseSource(src core.PlayableSource) bool {
 		return false
 	}
 	rel := src.Release
-	if strings.TrimSpace(rel.InfoHash) != "" || strings.TrimSpace(rel.Magnet) != "" || strings.TrimSpace(rel.TorrentURL) != "" {
+	if strings.TrimSpace(rel.InfoHash) != "" || strings.TrimSpace(rel.Magnet) != "" || strings.TrimSpace(rel.TorrentURL) != "" || rel.TorrentRef != "" {
 		return true
 	}
 	if rel.Candidate != nil {
 		return strings.TrimSpace(rel.Candidate.InfoHash) != "" ||
 			strings.TrimSpace(rel.Candidate.Magnet) != "" ||
-			strings.TrimSpace(rel.Candidate.TorrentURL) != ""
+			strings.TrimSpace(rel.Candidate.TorrentURL) != "" || rel.Candidate.TorrentRef != ""
 	}
 	return false
 }
@@ -3090,6 +3444,8 @@ func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec plug
 		return nil, core.ErrSourceUnavailable
 	}
 	fk := flightKeyForItemSource(item.Ref, partIdx, sourceID)
+	flightKey := fk
+	flightKey.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	var partCopy *int
 	if partIdx != nil {
 		v := *partIdx
@@ -3097,19 +3453,19 @@ func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec plug
 	}
 
 	r.flightMu.Lock()
-	fl, ok := r.flights[fk]
+	fl, ok := r.flights[flightKey]
 	if !ok {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
-		r.flights[fk] = fl
+		r.flights[flightKey] = fl
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
 					fl.err = fmt.Errorf("kindresolver: resolve panic: %v", p)
 				}
 				r.flightMu.Lock()
-				if r.flights[fk] == fl {
-					delete(r.flights, fk)
+				if r.flights[flightKey] == fl {
+					delete(r.flights, flightKey)
 				}
 				r.flightMu.Unlock()
 				close(fl.done)
@@ -3136,6 +3492,8 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 		return nil, core.ErrSourceUnavailable
 	}
 	fk := flightKeyForItem(item.Ref, partIdx)
+	flightKey := fk
+	flightKey.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	var partCopy *int
 	if partIdx != nil {
 		v := *partIdx
@@ -3143,14 +3501,14 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 	}
 
 	r.flightMu.Lock()
-	fl, ok := r.flights[fk]
+	fl, ok := r.flights[flightKey]
 	if !ok {
 		// Give the detached flight slightly more headroom than Manager.Call's
 		// ResolverTotal so pending expiry returns HTTP 202 (ErrPreparing)
 		// rather than racing parent context cancellation (#580).
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
-		r.flights[fk] = fl
+		r.flights[flightKey] = fl
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
@@ -3160,8 +3518,8 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 				// after a waiter returns must start a new resolve, never
 				// join this finished flight and reuse its result.
 				r.flightMu.Lock()
-				if r.flights[fk] == fl {
-					delete(r.flights, fk)
+				if r.flights[flightKey] == fl {
+					delete(r.flights, flightKey)
 				}
 				r.flightMu.Unlock()
 				close(fl.done)
@@ -3194,7 +3552,8 @@ func parsePreparingReply(body []byte) error {
 	return core.PreparingFromPending(pending.RetryInMS)
 }
 
-func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) ([]core.PlayableSource, error) {
+func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) (_ []core.PlayableSource, err error) {
+	defer func() { err = logredact.SourceError(err) }()
 	pr, err := r.mgr.Get(ctx, rec.PluginID)
 	if err != nil || !pr.Enabled || !pr.Manifest.HasCapability(plugins.CapKindResolver) {
 		return nil, core.ErrSourceUnavailable
@@ -3206,7 +3565,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			clientMap["accept"] = accept
 		}
 		if len(exclude) > 0 {
-			clientMap["exclude"] = exclude
+			clientMap["exclude"] = slices.DeleteFunc(slices.Clone(exclude), func(id string) bool {
+				return strings.HasPrefix(id, "kind:http://") || strings.HasPrefix(id, "kind:https://")
+			})
 		}
 	}
 	body, err := json.Marshal(core.KindResolveRequest{
@@ -3219,12 +3580,33 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	if err != nil {
 		return nil, err
 	}
+	body, err = r.NormalizeStoredReleaseLinks(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	fk := flightKeyForItemSource(item.Ref, partIdx, source)
+	fk.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	ctx, searchState := withResolveSearchState(ctx)
+	ctx = plugins.WithResolveSliceHook(ctx, searchState.beginSlice)
+	unit := resolveUnitKey{pluginID: rec.PluginID, library: lib.Key, parent: item.ParentID}
+	if !item.Playable {
+		unit.parent = ""
+	}
+	releaseUnit, err := r.acquireResolveUnit(ctx, unit)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		// A sibling's resolve of the same unit outlasted this call's
+		// budget: the unit is still resolving, not unavailable.
+		return nil, &core.PreparingError{RetryAfter: time.Second}
+	}
 	resp, err := r.mgr.Call(ctx, rec.PluginID, plugins.Request{
 		Method: "POST",
 		Path:   "/ether/v1/kinds/" + rec.KindKey + "/resolve",
 		Body:   body,
 	})
+	releaseUnit()
 	if err != nil {
 		if errors.Is(err, core.ErrJobsBusy) {
 			return nil, err
@@ -3233,7 +3615,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			return nil, fmt.Errorf("%w: %w", core.ErrSourceUnavailable, err)
 		}
 		var we *wasm.Error
-		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &we) && we.Status == wasm.StatusTimeout && searchState.hasPending()) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
+		}
+		if errors.As(err, &we) && we.Status == wasm.StatusTimeout && r.allowTimeoutPreparing(fk, searchState) {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
 		return nil, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, err)
@@ -3245,9 +3630,14 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if searchState.hasPending() {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
-		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
+		if err := searchState.indexerPause(); err != nil {
+			r.clearResolveProgress(fk)
+			return nil, err
+		}
+		if source == "" && !fk.background && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
+		r.clearResolveProgress(fk)
 		return nil, core.ErrNotAvailable
 	}
 	if resp.Status != http.StatusOK {
@@ -3284,9 +3674,14 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if searchState.hasPending() {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
-		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
+		if err := searchState.indexerPause(); err != nil {
+			r.clearResolveProgress(fk)
+			return nil, err
+		}
+		if source == "" && !fk.background && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
+		r.clearResolveProgress(fk)
 		return nil, core.ErrNotAvailable
 	}
 	if err := r.validateNoRawSecretsInHeaders(ctx, pr.ID, pr.Manifest.Ether.Permissions.Secrets, resolved.Sources); err != nil {
@@ -3300,6 +3695,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			}
 		}
 	}
+	r.clearResolveProgress(fk)
 	return resolved.Sources, nil
 }
 
@@ -3362,7 +3758,9 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.InfoHash = strings.ToLower(strings.TrimSpace(hint.Candidate.InfoHash))
 		rel.MagnetURL = strings.TrimSpace(hint.Candidate.Magnet)
 		torrentURL = strings.TrimSpace(hint.Candidate.TorrentURL)
+		rel.TorrentRef = hint.Candidate.TorrentRef
 		rel.NZBURL = strings.TrimSpace(hint.Candidate.NZBURL)
+		rel.NZBRef = strings.TrimSpace(hint.Candidate.NZBRef)
 		rel.Name = hint.Candidate.Title
 		rel.Size = hint.Candidate.Size
 		rel.Seeders = hint.Candidate.Seeders
@@ -3380,8 +3778,14 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 	if m := strings.TrimSpace(hint.Magnet); m != "" {
 		rel.MagnetURL = m
 	}
+	if hint.TorrentRef != "" {
+		rel.TorrentRef = hint.TorrentRef
+	}
 	if t := strings.TrimSpace(hint.TorrentURL); t != "" {
 		torrentURL = t
+	}
+	if ref := strings.TrimSpace(hint.NZBRef); ref != "" {
+		rel.NZBRef = ref
 	}
 	if u := strings.TrimSpace(hint.NZBURL); u != "" {
 		rel.NZBURL = u
@@ -3398,7 +3802,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		}
 	}
 	switch {
-	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "" || rel.TorrentRef != "":
 		rel.Protocol = core.ProtocolTorrent
 		if torrentURL != "" {
 			// Core's torrent resolvers (newznab/cardigann) read the torrent
@@ -3407,23 +3811,35 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		} else {
 			rel.NZBURL = ""
 		}
-	case rel.NZBURL != "":
+	case rel.NZBURL != "" || rel.NZBRef != "":
 		rel.Protocol = core.ProtocolUsenet
+	case pluginReleaseOf(&hint) != nil:
+		ref := hint.Candidate.PluginRelease
+		rel.Protocol = "direct"
+		rel.GUID = fmt.Sprintf("plugin:%s:lazy:%s", ref.Plugin, ref.ID)
 	}
-	rel.ID = releaseIDWithTarget(rel)
+	assignKindReleaseID(&rel)
 	if rel.Name == "" {
 		rel.Name = firstNonEmpty(hint.FileHint, defaultTitle, rel.InfoHash, "kind-release")
 	}
 	return rel, nil
 }
 
-func releaseIDWithTarget(rel core.Release) string {
-	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
-	if rel.Target != nil {
-		selection, _ := json.Marshal(rel.Target)
-		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+func assignKindReleaseID(rel *core.Release) {
+	identity := firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
+	if ref := firstNonEmpty(rel.NZBRef, rel.TorrentRef); identity == "" && ref != "" {
+		identity = fmt.Sprintf("%x", sha256.Sum256([]byte(ref)))
 	}
-	return id
+	rel.ID = "kind:" + identity
+	if rel.Target != nil {
+		target := *rel.Target
+		// Keep the existing file selection hash independent of the pack alias.
+		target.PackID = ""
+		selection, _ := json.Marshal(&target)
+		target.PackID = rel.ID
+		rel.Target = &target
+		rel.ID += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+	}
 }
 
 func kindDefaultCategoryForLevel(decl plugins.MediaKindMeta, level string) int {
@@ -3531,6 +3947,7 @@ func kindDefaultMIME(decl plugins.MediaKindMeta) string {
 }
 
 func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME string) (core.Release, error) {
+	src = kindstream.NormalizeNZBSource(src)
 	if src.Release == nil {
 		return core.Release{}, core.ErrSourceUnavailable
 	}
@@ -3587,7 +4004,7 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 		}
 	}
 	if rel.Target != nil {
-		rel.ID = releaseIDWithTarget(rel)
+		assignKindReleaseID(&rel)
 	}
 	return rel, nil
 }
@@ -3651,6 +4068,9 @@ func (r *KindResolver) openReleaseWithCategory(ctx context.Context, hint core.Re
 	if err != nil {
 		return nil, err
 	}
+	if ref := pluginReleaseOf(&hint); ref != nil && rel.Protocol == "direct" {
+		return r.openPluginRelease(ctx, *ref, rel, "")
+	}
 	if rel.Category == 0 && fallbackCategory != 0 {
 		rel.Category = fallbackCategory
 	}
@@ -3671,6 +4091,9 @@ func (r *KindResolver) openReleaseForSourceWithCategory(ctx context.Context, src
 	rel, err := releaseFromSource(src, "", fallbackMIME)
 	if err != nil {
 		return nil, err
+	}
+	if ref := pluginReleaseOf(src.Release); ref != nil && rel.Protocol == "direct" {
+		return r.openPluginRelease(ctx, *ref, rel, firstNonEmpty(src.MIME, fallbackMIME))
 	}
 	if rel.Category == 0 && fallbackCategory != 0 {
 		rel.Category = fallbackCategory
@@ -3722,14 +4145,17 @@ func (r *KindResolver) listNZBFiles(ctx context.Context, releaseID string, data 
 }
 
 func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (core.Release, error) {
-	if r.indexer == nil {
-		return rel, core.ErrSourceUnavailable
+	var resolved core.Release
+	var err error
+	if r.pluginNZBs != nil {
+		resolved, err = r.pluginNZBs.ResolvePluginTorrent(ctx, rel)
+	} else {
+		tr, ok := r.indexer.(debrid.TorrentResolver)
+		if !ok {
+			return rel, fmt.Errorf("kindresolver: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
+		}
+		resolved, err = tr.ResolveTorrent(ctx, rel)
 	}
-	tr, ok := r.indexer.(debrid.TorrentResolver)
-	if !ok {
-		return rel, fmt.Errorf("kindresolver: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
-	}
-	resolved, err := tr.ResolveTorrent(ctx, rel)
 	if err != nil {
 		return rel, err
 	}
@@ -3738,7 +4164,7 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 		resolved.FileCount = rel.FileCount
 	}
 	if resolved.InfoHash != "" {
-		resolved.ID = releaseIDWithTarget(resolved)
+		assignKindReleaseID(&resolved)
 	}
 	return resolved, nil
 }
@@ -3748,7 +4174,7 @@ type linkAuthStripper interface {
 }
 
 // stripReleaseAuth removes indexer-owned credentials from rel.NZBURL and
-// recomputes rel.ID so release IDs, logs, vault aliases, and Usenet-check
+// recomputes the release and pack IDs so logs, vault aliases, and Usenet-check
 // caches stay key-less even when a plugin hands back a legacy keyed link.
 func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
 	if r == nil || r.indexer == nil || strings.TrimSpace(rel.NZBURL) == "" {
@@ -3760,7 +4186,7 @@ func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
 	}
 	stripped := s.StripLinkAuth(rel)
 	if stripped.NZBURL != rel.NZBURL {
-		stripped.ID = releaseIDWithTarget(stripped)
+		assignKindReleaseID(&stripped)
 	}
 	return stripped
 }
@@ -3794,7 +4220,8 @@ func (r *KindResolver) stripCandidateAuth(cand core.SourceCandidate) core.Source
 	return cand
 }
 
-func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
+func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (_ core.MediaSource, err error) {
+	defer func() { err = logredact.SourceError(err) }()
 	start := time.Now()
 	rel = r.stripReleaseAuth(rel)
 	if rel.Protocol == core.ProtocolTorrent || rel.InfoHash != "" || rel.MagnetURL != "" {
@@ -3804,15 +4231,15 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		rel.Protocol = core.ProtocolTorrent
 		queueMode := isReleaseQueueMode(ctx)
 		if r.log != nil {
-			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "queue", queueMode)
+			r.log.Info("kindresolver: opening release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "queue", queueMode)
 		}
 		acqCtx, acqCancel := withHardTimeout(ctx, r.engineOpenTimeout)
 		defer acqCancel()
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
+		if rel.InfoHash == "" && rel.MagnetURL == "" && (rel.NZBURL != "" || rel.TorrentRef != "") {
 			resolved, err := r.resolveTorrent(acqCtx, rel)
 			if err != nil {
 				if r.log != nil {
-					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "resolve_torrent", "took", time.Since(start).Round(time.Millisecond), "err", err)
+					r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "resolve_torrent", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 				}
 				return nil, err
 			}
@@ -3831,9 +4258,9 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			if err != nil {
 				if r.log != nil {
 					if errors.Is(err, core.ErrDownloadQueued) {
-						r.log.Info("kindresolver: release download queued", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Info("kindresolver: release download queued", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					} else {
-						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_queue", "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "debrid_queue", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					}
 				}
 				return nil, err
@@ -3843,9 +4270,9 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			if err != nil {
 				if r.log != nil {
 					if errors.Is(err, core.ErrDownloadQueued) {
-						r.log.Info("kindresolver: queued release still downloading", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Info("kindresolver: queued release still downloading", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					} else {
-						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					}
 				}
 				return nil, err
@@ -3857,32 +4284,45 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		ms, err := r.engine.Open(openCtx, rel.ID, payload)
 		if err != nil {
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "engine_open", "took", time.Since(start).Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "engine_open", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "open_took", time.Since(openStart).Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
+			r.log.Info("kindresolver: opened release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "open_took", time.Since(openStart).Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
 		return ms, nil
 	}
-	if rel.NZBURL != "" {
-		if r.indexer == nil {
+	if rel.NZBURL != "" || rel.NZBRef != "" {
+		if r.indexer == nil && r.pluginNZBs == nil {
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolUsenet
-		releaseKey := normalizeNZBKey(rel.NZBURL)
+		releaseKey := candidateNZBKey(core.SourceCandidate{NZBURL: rel.NZBURL, NZBRef: rel.NZBRef})
+		rejectKey := kindGrabRejectKey(rel)
+		if r.pluginNZBs == nil {
+			if refusal := r.grabRejects.lookup(rejectKey, r.now()); refusal != nil {
+				return nil, refusal
+			}
+		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer)
+			r.log.Info("kindresolver: opening release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol)
 		}
 		fetchStart := time.Now()
 		fetchCtx, fetchCancel := withHardTimeout(ctx, r.nzbFetchTimeout)
-		nzbData, err := r.indexer.FetchNZB(fetchCtx, rel)
+		nzbData, err := r.fetchPluginNZB(fetchCtx, rel)
 		fetchCancel()
 		fetchTook := time.Since(fetchStart)
 		if err != nil {
+			now := r.now()
+			if refusal := newznab.ClassifyGrabRefusal(err, now); refusal != nil {
+				if r.pluginNZBs == nil {
+					r.grabRejects.record(rejectKey, now, refusal.RetryAt)
+				}
+				return nil, refusal
+			}
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "fetch_nzb", "took", fetchTook.Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "fetch_nzb", "took", fetchTook.Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
@@ -3907,7 +4347,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			}
 			if perr != nil {
 				if r.log != nil {
-					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", perr)
+					r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(perr))
 				}
 				return nil, perr
 			}
@@ -3921,12 +4361,12 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		if err != nil {
 			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID, err)
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
+			r.log.Info("kindresolver: opened release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
 		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash, contentID), nil
 	}

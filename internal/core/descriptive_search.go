@@ -1,6 +1,13 @@
 package core
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNothingDescribed is the Describe agent finding nothing a description
+// could mean ("zxqvjk"): a description search answers it with no titles.
+var ErrNothingDescribed = errors.New("the description names nothing to match")
 
 // DescriptiveResult is an AI-generated collection search. Pending requests
 // have no invented results. Partial results are provisional; clients keep polling

@@ -151,6 +151,10 @@ type sectionPrep struct {
 
 func (i *instance) sectionCards(r *http.Request, v *frontend.Viewer, credential string, row frontend.Row) ([]any, error) {
 	titles := rowTitles(row)
+	// A Numbered row is a top ten.
+	if row.RankedTop10 && len(titles) > 10 {
+		titles = titles[:10]
+	}
 	keys := make([]frontend.RatingKey, 0, len(titles))
 	for _, t := range titles {
 		keys = append(keys, t.Key)

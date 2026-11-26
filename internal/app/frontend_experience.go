@@ -211,7 +211,20 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	source := experience.CandidateRowSource{Kind: a.personalize.SemanticRowKind, Load: func(ctx context.Context, req frontend.RowRequest) ([]experience.RankedCandidate, error) {
 		return a.productionExperienceRows(ctx, req, liveLibraries(), rowVis, stepAside)
 	}, Additional: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
-		return a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
+		rows, err := a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
+		if err != nil || req.Placement != frontend.PlacementHome || req.Purpose != "" && req.Purpose != frontend.RowCollection {
+			return rows, err
+		}
+		switch protocol {
+		case "plex", "jellyfin", "emby", "silo", "vela":
+			sit, ok := ctx.Value(experienceSituationKey{}).(core.HomeSituation)
+			if ok {
+				hubs := a.personalize.CollectionCardHubs(ctx, req.Viewer, candidateHubContext(sit), req.Limit)
+				cards, _ := rankedCandidates(hubs, nil)
+				rows = append(rows, experience.CandidateRows(cards)...)
+			}
+		}
+		return rows, nil
 	}}
 	var cols core.Collections
 	if a.collections != nil {
@@ -256,6 +269,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
+	// watchedTitles is set once the experience service below exists; row
+	// layout runs only on requests, after construction.
+	var watchedTitles func(context.Context, *core.User, []core.Title) (map[core.RatingKey]bool, error)
 	rows, err := experience.NewRowsService(experience.RowServiceDeps{Source: source, Visibility: rowVis, Receipts: receipts, PrefetchTitles: a.catalog.PreloadStored, PrepareRows: entryPolicy.PrepareRows, RankedSource: true, HomeFallback: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 		if protocol == "plex" {
 			return nil, nil
@@ -281,6 +297,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		arranged, err := experience.LayoutRows(ctx, layout, liveLibraries(), req, sit, rows)
+		if err == nil {
+			arranged = experience.DropWatched(ctx, req.Viewer, arranged, watchedTitles)
+		}
 		if !extrasEnabled {
 			for n := range arranged {
 				arranged[n].PreviewOnFocus = false
@@ -362,7 +381,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			out = append(out, frontend.NotInterestedEntry{Key: entry.Key, AddedAt: entry.AddedAt})
 		}
 		return out, nil
-	}, ByExternalID: a.catalog.ByExternalID, KeysByProviderID: a.catalog.KeysByProviderID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: liveLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, WatchedTitles: a.catalog.WatchedTitles, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonMetadata: a.catalog.PersonMetadata, LibraryMembers: a.libraryRecommendationMembers, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
+	}, ByExternalID: a.catalog.ByExternalID, ResolveEpisode: a.catalog.ResolveEpisode, KeysByProviderID: a.catalog.KeysByProviderID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: liveLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, WatchedTitles: a.catalog.WatchedTitles, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonMetadata: a.catalog.PersonMetadata, LibraryMembers: a.libraryRecommendationMembers, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
 		if a.availability == nil {
 			return time.Time{}
 		}
@@ -382,7 +401,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		return a.catalog.RecentAirFiltered(ctx, typ, f, offset, limit)
-	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Franchises: a.catalog, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Franchises: a.catalog, CollectionMemberCounts: a.catalog.CollectionMemberCounts, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
 		return a.catalog.ResolveShowParents(ctx, keys)
 	}, Get: func(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
 		if a.episodeorder != nil {
@@ -449,7 +468,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
-				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title)
+				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title, a.membershipFor(ctx, title))
 			}
 			resumedInfo, resumedRel, resumedSelector, hasResumed = a.playback.ResumedVersion(ctx, u, title.Key, caps)
 			info := resumedInfo
@@ -483,7 +502,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
-				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title)
+				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title, a.membershipFor(ctx, title))
 			}
 			versions, err := scorecardVariants(ctx, a, u, title, caps)
 			if err != nil {
@@ -546,6 +565,22 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		return a.favorites.Has(ctx, u, favorites.Subject{Kind: favorites.KindTitle, ID: k.String()})
 	}, IsFavoriteMany: func(ctx context.Context, u *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
 		return a.favorites.HasTitles(ctx, u, keys)
+	}, HistoryPlays: a.historyPlays(), RecordingPreferences: a.recordingPrefs().get, SetRecordingPreference: a.recordingPrefs().set, HiddenRecordingCopies: a.recordingPrefs().hidden, FavoritePage: func(ctx context.Context, u *core.User, role, cursor string, limit int) ([]core.RatingKey, []time.Time, string, int, error) {
+		page, err := a.favorites.Page(ctx, u, favorites.PageQuery{Role: role, Cursor: cursor, Limit: limit})
+		if errors.Is(err, favorites.ErrBadCursor) {
+			return nil, nil, "", 0, frontend.ErrBadFavoritesCursor
+		}
+		if err != nil {
+			return nil, nil, "", 0, err
+		}
+		keys := make([]core.RatingKey, 0, len(page.Entries))
+		at := make([]time.Time, 0, len(page.Entries))
+		for _, e := range page.Entries {
+			if k, err := core.ParseRatingKey(e.Subject.ID); err == nil {
+				keys, at = append(keys, k), append(at, e.AddedAt)
+			}
+		}
+		return keys, at, page.Next, page.Total, nil
 	}, FavoriteTitleKeys: func(ctx context.Context, u *core.User, n int) ([]core.RatingKey, bool, error) {
 		return a.favorites.TitleKeys(ctx, u, n)
 	}, IsNotInterestedMany: func(ctx context.Context, u *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
@@ -732,7 +767,12 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.db != nil {
 		db := a.db
 		deps.HomeRevision = func(ctx context.Context, u *core.User) (frontend.HomeRevision, error) {
-			return experience.ReadHomeRevision(ctx, db, u)
+			pending := a.state.PendingWatchRevision(u.ID)
+			revision, err := experience.ReadHomeRevision(ctx, db, u)
+			if pending != 0 {
+				revision.Viewer += "." + strconv.FormatUint(pending, 36)
+			}
+			return revision, err
 		}
 		deps.NoProviderWait = func(ctx context.Context) context.Context {
 			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
@@ -746,6 +786,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
+	watchedTitles = service.TitlesWatched
 	var artworkSource frontend.Artwork
 	if len(artwork) > 0 {
 		artworkSource = artwork[0]
@@ -783,6 +824,8 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			gen = gen*1099511628211 ^ a.pluginsRT.pluginitems.Generation()
 		}
 		return gen
+	}, rowWatch: func(ctx context.Context, id int64) (experience.WatchRevision, error) {
+		return experience.ReadWatchRevision(ctx, a.db, id, a.state.PendingWatchRevision(id))
 	}, rowGen: func() uint64 {
 		if stepAside == nil {
 			return 0
@@ -847,6 +890,7 @@ type surfaceExperience struct {
 	generation   func(context.Context) (int64, error)
 	catalogGen   func() uint64
 	rowGen       func() uint64
+	rowWatch     func(context.Context, int64) (experience.WatchRevision, error)
 	posters      func(context.Context, core.MediaType, int) ([]core.Title, error)
 	modelReady   func(int64) bool
 	rowMu        sync.Mutex
@@ -982,6 +1026,13 @@ func (s *surfaceExperience) ResolveRowViews(ctx context.Context, reqs []frontend
 		return nil, core.ErrUnauthorized
 	}
 	return s.rowViews.ResolveRowViews(ctx, reqs)
+}
+
+func (s *surfaceExperience) ValidateRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) error {
+	if s.rowViews == nil || (len(reqs) > 0 && reqs[0].Protocol != s.protocol) {
+		return core.ErrUnauthorized
+	}
+	return s.rowViews.ValidateRowViews(ctx, reqs)
 }
 
 func (s *surfaceExperience) ResolveRowView(ctx context.Context, req frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
@@ -1132,6 +1183,7 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			titleKeys = append(titleKeys, k)
 		}
 	}
+	var collections []core.Collection
 	if len(smartKeys) > 0 && s.artwork != nil {
 		cols, err := s.PageArtworkSmartCollections(ctx, viewer, smartKeys)
 		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
@@ -1146,12 +1198,13 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			if !ok {
 				continue
 			}
-			listCtx := ctx
-			if !col.Upcoming && col.PosterPath != "" {
-				c := col
-				listCtx = frontend.WithArtworkCollection(ctx, &c)
+			if col.Key == k {
+				collections = append(collections, col)
+				continue
 			}
-			imgs, _, err := s.artwork.List(listCtx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
+			// A promoted ephemeral collection can still be addressed
+			// by its original key. Keep that key on the artwork request.
+			imgs, _, err := s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
 			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
 				continue
 			}
@@ -1173,19 +1226,9 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 		}
 		if handled {
 			for _, k := range franchiseKeys {
-				col, ok := cols[k]
-				if !ok {
-					continue
+				if col, ok := cols[k]; ok {
+					collections = append(collections, col)
 				}
-				c := col
-				imgs, _, err := s.artwork.List(frontend.WithArtworkCollection(ctx, &c), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
-				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
-					continue
-				}
-				if err != nil {
-					return nil, err
-				}
-				out[k] = imgs
 			}
 		} else {
 			for _, k := range franchiseKeys {
@@ -1199,6 +1242,35 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 				if ok {
 					out[k] = imgs
 				}
+			}
+		}
+	}
+	if len(collections) > 0 {
+		if batch, ok := s.artwork.(interface {
+			ListCollectionPage(context.Context, *core.Viewer, core.Device, []core.Collection) (map[core.RatingKey][]frontend.Image, error)
+		}); ok {
+			listed, err := batch.ListCollectionPage(ctx, viewer, device, collections)
+			if err != nil {
+				return nil, err
+			}
+			for key, images := range listed {
+				out[key] = images
+			}
+		} else {
+			for i := range collections {
+				col := &collections[i]
+				listCtx := ctx
+				if col.Key.Kind() == core.KindCollection || (!col.Upcoming && col.PosterPath != "") {
+					listCtx = frontend.WithArtworkCollection(ctx, col)
+				}
+				imgs, _, err := s.artwork.List(listCtx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: col.Key})
+				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				out[col.Key] = imgs
 			}
 		}
 	}
@@ -1279,7 +1351,7 @@ func (s *surfaceExperience) ItemArtwork(ctx context.Context, viewer *core.Viewer
 }
 
 func (s *surfaceExperience) RelatedArtwork(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey) (frontend.RelatedArtwork, error) {
-	service, err := experience.NewRelatedArtworkService(experience.RelatedArtworkDeps{Authorize: s.Service.AuthorizeArtwork, List: func(ctx context.Context, active *core.Viewer, device core.Device, key core.RatingKey) ([]frontend.Image, bool, error) {
+	service, err := experience.NewRelatedArtworkService(experience.RelatedArtworkDeps{Authorize: s.Service.AuthorizeArtwork, StoredItem: s.Service.StoredItem, List: func(ctx context.Context, active *core.Viewer, device core.Device, key core.RatingKey) ([]frontend.Image, bool, error) {
 		if s.artwork == nil {
 			if key.IsPluginKey() && s.pluginLibs != nil {
 				piv, err := s.pluginLibs.Item(ctx, key)
@@ -1362,8 +1434,13 @@ func (s *surfaceExperience) Item(ctx context.Context, req frontend.ItemRequest) 
 	return detail, nil
 }
 
+type rowCacheRevision struct {
+	stepAside uint64
+	watch     experience.WatchRevision
+}
+
 type rowCacheSlot struct {
-	gen   uint64
+	gen   rowCacheRevision
 	at    time.Time
 	rows  []frontend.Row
 	ready bool
@@ -1387,7 +1464,15 @@ func (s *surfaceExperience) cachedRows(ctx context.Context, req frontend.RowRequ
 	if issue || req.HomeFallbackOnly || (req.Placement != frontend.PlacementHome && req.Placement != frontend.PlacementLibrary) {
 		return s.loadRows(ctx, req, issue)
 	}
-	key, gen := s.rowCacheKey(req)
+	key, stepAside := s.rowCacheKey(req)
+	gen := rowCacheRevision{stepAside: stepAside}
+	if s.rowWatch != nil && req.Viewer != nil {
+		watch, err := s.rowWatch(ctx, req.Viewer.ID)
+		if err != nil {
+			return nil, err
+		}
+		gen.watch = watch
+	}
 	s.rowMu.Lock()
 	slot := s.rowCache[key]
 	fresh := slot.ready && slot.gen == gen && time.Since(slot.at) < homeRowCacheTTL
@@ -1414,7 +1499,7 @@ func (s *surfaceExperience) cachedRows(ctx context.Context, req frontend.RowRequ
 	return rows, nil
 }
 
-func (s *surfaceExperience) refreshRows(key string, gen uint64, req frontend.RowRequest, issue bool) {
+func (s *surfaceExperience) refreshRows(key string, gen rowCacheRevision, req frontend.RowRequest, issue bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	defer func() {
@@ -1431,7 +1516,7 @@ func (s *surfaceExperience) refreshRows(key string, gen uint64, req frontend.Row
 	s.storeRows(key, gen, rows)
 }
 
-func (s *surfaceExperience) storeRows(key string, gen uint64, rows []frontend.Row) {
+func (s *surfaceExperience) storeRows(key string, gen rowCacheRevision, rows []frontend.Row) {
 	s.rowMu.Lock()
 	defer s.rowMu.Unlock()
 	if s.rowCache == nil {
@@ -1571,6 +1656,14 @@ func (s *surfaceExperience) Search(ctx context.Context, viewer *core.Viewer, dev
 		ctx = core.WithSearchSummaryFacts(ctx)
 	}
 	page, err := s.Service.Search(ctx, viewer, device, query, options)
+	if err == nil {
+		s.warmArtwork(page.Page.Items, device)
+	}
+	return page, err
+}
+
+func (s *surfaceExperience) UnifiedSearch(ctx context.Context, viewer *core.Viewer, device core.Device, query string, options frontend.ItemQuery) (frontend.UnifiedSearchPage, error) {
+	page, err := s.Service.UnifiedSearch(ctx, viewer, device, query, options)
 	if err == nil {
 		s.warmArtwork(page.Page.Items, device)
 	}

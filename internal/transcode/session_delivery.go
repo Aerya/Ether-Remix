@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+// HasBufferedPosition reports whether a seek can reuse an already published segment.
+func (s *Session) HasBufferedPosition(at time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.segmentPublishedLocked(0, s.segForOffsetLocked(at))
+}
+
+// ArchiveRangeComplete reports whether a subsequent provider range can be
+// opened without interrupting production of this range.
+func (s *Session) ArchiveRangeComplete() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total > 0 && s.segmentPublishedLocked(0, s.total-1)
+}
+
 // ServeSegment implements core.HLSSession. n == InitSegment serves the fMP4
 // init segment. For DASH sessions it serves the first representation.
 func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
@@ -36,8 +51,22 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 			s.Touch()
 		}
 	}
-	if warm := s.resumeSession(n); warm != nil {
+	warm := s.resumeSession(n)
+	if r != nil && r.Method == http.MethodGet {
+		s.mu.Lock()
+		s.resumePlayhead = warm != nil
+		s.mu.Unlock()
+	}
+	if warm != nil {
 		warm.serveSegment(w, r, t, n)
+		// The resume session serves this session's player. Its delivered
+		// output is this session's evidence, and stays so after the child
+		// is retired (#780: Plex dropped every timeline of a resumed copy).
+		if warm.PlaybackDelivered() {
+			s.mu.Lock()
+			s.playbackDelivered = true
+			s.mu.Unlock()
+		}
 		return
 	}
 	if t < 0 || t >= len(s.done) || n < 0 || (s.total > 0 && n >= s.total) {
@@ -47,7 +76,7 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 	// A long wait keeps bytes flowing to the player (segment_padding.go).
 	var pw *paddedSegmentWriter
 	var padC <-chan time.Time
-	if unit := segmentPadding(s.container); unit != nil && !s.isDASH() && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
+	if unit := segmentPadding(s.container); unit != nil && !s.archiveInput && !s.isDASH() && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
 		pw = &paddedSegmentWriter{ResponseWriter: w, unit: unit}
 		w = pw
 		defer pw.finish()
@@ -256,7 +285,8 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 // positive size when placeholders exist, 0 when aliases duplicate the
 // covering segment directly (MPEG-TS, DASH). The fMP4 placeholder's exact
 // size varies with the track, so it is matched structurally (isEmptyFMP4),
-// not by size.
+// not by size; only a file larger than emptyFMP4MaxSize is taken as a real
+// segment without parsing it.
 func (s *Session) emptyAliasSize() int64 {
 	if s.isDASH() {
 		return 0
@@ -342,6 +372,9 @@ func (s *Session) coveringSegLocked(t, n int) int {
 				return k
 			}
 		case ContainerFMP4:
+			if st.Size() > emptyFMP4MaxSize {
+				return k
+			}
 			b, err := os.ReadFile(path)
 			if err != nil {
 				return -1
@@ -410,23 +443,36 @@ func (s *Session) endFetchLocked(n int) {
 
 // blockedSeekLocked reports that fetch n is where the player now is,
 // although the encoder-head rule would hold the playhead: no track has
-// published n, nothing older is open, and n is past the playhead's restart
-// window. A seek that lands inside a copy's lead is served from disk and
-// leaves the playhead behind; the first segment the paused run has not
-// written is then the one the player waits on. Holding the playhead there
-// keeps the throttle pausing the run that must write it, and the fetch
-// never completes. A published head fetch (the client still on an earlier
-// segment) does not qualify, so it still cannot evict the playhead.
+// published n, no older open fetch waits on the encoder, and n is past the
+// playhead's restart window. A seek that lands inside a copy's lead is
+// served from disk and leaves the playhead behind; the first segment the
+// paused run has not written is then the one the player waits on. Holding
+// the playhead there keeps the throttle pausing the run that must write it,
+// and the fetch never completes. An older fetch of published media is
+// delivery, not a wait: AVPlayer stops reading the body of the newest
+// segment once its forward buffer is full and already asks for the next one
+// (#778). A published head fetch (the client still on an earlier segment)
+// does not qualify, so it still cannot evict the playhead.
 func (s *Session) blockedSeekLocked(n int) bool {
-	if n <= s.lastReq+s.restartLimit() || n != s.oldestFetchLocked() {
+	if n <= s.lastReq+s.restartLimit() || s.publishedAnyLocked(n) {
 		return false
 	}
-	for t := range s.done {
-		if s.segmentPublishedLocked(t, n) {
+	for m, c := range s.inflight {
+		if c > 0 && m < n && !s.publishedAnyLocked(m) {
 			return false
 		}
 	}
 	return true
+}
+
+// publishedAnyLocked reports that some track has published segment n.
+func (s *Session) publishedAnyLocked(n int) bool {
+	for t := range s.done {
+		if s.segmentPublishedLocked(t, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // notePlayheadLocked follows the oldest fetch still open. A segment the

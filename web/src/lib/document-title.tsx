@@ -151,11 +151,7 @@ function resolveBuiltinSubparts(
     case "collections": {
       if (tab === "new") return [t("New collection")];
       if (tab) return [t("Edit collection")];
-      const qTab = query.get("tab");
-      if (qTab === "rows") return [t("Home & library rows")];
-      if (qTab === "templates") return [t("Templates")];
-      if (qTab === "builtin") return [t("Discovery sources")];
-      return [];
+      return query.get("tab") === "templates" ? [t("Templates")] : [];
     }
     case "livetv": {
       if (tab === "library") return [t("Library")];
@@ -215,7 +211,7 @@ function resolveBuiltinSubparts(
         {
           profiles: () => t("Profiles"),
           rules: () => t("Rules"),
-          check: () => t("Check quality"),
+          check: () => t("Who gets what"),
           searching: () => t("Searching"),
           blocklist: () => t("Blocklist"),
           pinned: () => t("Pinned"),
@@ -238,13 +234,14 @@ function resolveBuiltinSubparts(
       const tabLabel = resolveTab(
         tab,
         {
-          subtitles: () => t("Audio & subtitles"),
+          audio: () => t("Audio"),
+          subtitles: () => t("Subtitles"),
           transcoding: () => t("Streams & transcoding"),
           devices: () => t("App compatibility"),
           extras: () => t("Extras"),
           prerolls: () => t("Pre-rolls"),
         },
-        "subtitles",
+        "audio",
       );
       const parts = tabLabel ? [tabLabel] : [];
       if (tab === "devices") {
@@ -462,8 +459,8 @@ export function resolveRouteTitle(
   }
 
   if (options.registryLoading) {
-    if (descriptors.length === 0 && path === "/home") {
-      return { matched: true, parts: [t("Home")] };
+    if (descriptors.length === 0 && path === "/recommendations") {
+      return { matched: true, parts: [t("Recommendations")] };
     }
     return { matched: false, parts: [] };
   }

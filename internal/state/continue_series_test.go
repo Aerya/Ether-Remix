@@ -33,6 +33,31 @@ func TestContinueSeriesHistoryKeepsOldShowsAfterBinges(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Key != recent {
 		t.Fatalf("limit: %+v %v", rows, err)
 	}
+	providerShow, _ := core.AllocatedKey(core.KindShow, 1)
+	olderEpisode, _ := core.AllocatedKey(core.KindEpisode, 1)
+	newerEpisode, _ := core.AllocatedKey(core.KindEpisode, 2)
+	s.ancestry = func(_ context.Context, keys []core.RatingKey) (map[core.RatingKey]Ancestry, error) {
+		parents := map[core.RatingKey]Ancestry{}
+		for _, key := range keys {
+			if key == olderEpisode || key == newerEpisode {
+				parents[key] = Ancestry{ShowKey: providerShow}
+			}
+		}
+		return parents, nil
+	}
+	err = s.ImportTransaction(ctx, func(*sql.Tx) (ImportBatch, error) {
+		return ImportBatch{Records: []ImportRecord{
+			{Views: 1, UserID: 1, Key: olderEpisode, ViewedAt: now.Add(time.Hour)},
+			{Views: 1, UserID: 1, Key: newerEpisode, ViewedAt: now.Add(2 * time.Hour)},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ContinueSeriesHistory(ctx, 1, 50)
+	if err != nil || len(rows) != 3 || rows[0].Key != newerEpisode || rows[1].Key != recent || rows[2].Key != old {
+		t.Fatalf("allocated and packed series anchors: %+v %v", rows, err)
+	}
 	rows, err = s.ContinueSeriesHistory(ctx, 0, 50)
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("anonymous leaked history: %+v %v", rows, err)

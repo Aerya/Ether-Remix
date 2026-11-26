@@ -372,21 +372,8 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
-func TestCRUDAndBuiltIns(t *testing.T) {
+func TestCRUD(t *testing.T) {
 	e := newEnv(t)
-	all, err := e.svc.ListSpecs(e.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	builtins := 0
-	for _, s := range all {
-		if s.BuiltIn {
-			builtins++
-		}
-	}
-	if builtins < 10 {
-		t.Fatalf("built-ins missing: %d", builtins)
-	}
 	created, err := e.svc.CreateSpec(e.ctx, spec("Mine", "movie", catalogSource(), rl("genre", "is", "Drama")))
 	if err != nil {
 		t.Fatal(err)
@@ -399,26 +386,6 @@ func TestCRUDAndBuiltIns(t *testing.T) {
 	}
 	if updated.Name != "Mine, renamed" || updated.ItemCount != 2 { // Family Business 8.7, Prison Hope 8.7
 		t.Fatalf("update: %+v", updated)
-	}
-	// Built-ins: only targets, artwork, rotation and enabled change.
-	b, err := e.svc.GetSpec(e.ctx, "top-rated-movie")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b.Name = "Hacked"
-	b.Enabled = false
-	b.Targets.HomeRow = true
-	b2, err := e.svc.UpdateSpec(e.ctx, "top-rated-movie", *b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b2.Name != "Top Rated Movies" || b2.Enabled || !b2.Targets.HomeRow {
-		t.Fatalf("built-in update: %+v", b2)
-	}
-	if err := e.svc.DeleteSpec(e.ctx, "top-rated-movie"); err == nil {
-		t.Fatal("built-ins cannot be deleted")
-	} else if c, ok := err.(interface{ Conflict() bool }); !ok || !c.Conflict() {
-		t.Fatalf("delete built-in: want a conflict, got %v", err)
 	}
 	rebuilt, err := e.svc.Rebuild(e.ctx, created.ID)
 	if err != nil || rebuilt.LastBuiltAt == nil {

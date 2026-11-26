@@ -5,6 +5,11 @@ import { useAppOptional } from "../../app-context";
 import { CopyButton } from "../../components/CopyButton";
 import { ErrorPanel, LoadingInline, LoadingRows } from "../../components/feedback";
 import { LevelBadge } from "../../components/status";
+import {
+  releaseNotesLink,
+  releaseVersion,
+  UpdateNotesDrawer,
+} from "../../components/UpdateNotesDrawer";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t, tn } from "../../i18n";
 import { api, ApiError, errorMessage } from "../../lib/api";
@@ -321,6 +326,7 @@ export function UpdatesStatus({
 } = {}) {
   const status = useAsync(() => api.updateStatus(), []);
   const [busy, setBusy] = useState(false);
+  const [notes, setNotes] = useState<{ version: string; available?: boolean } | null>(null);
   const s = status.data;
   useEffect(() => {
     onStatus?.(s ?? null);
@@ -338,14 +344,6 @@ export function UpdatesStatus({
     const timer = setInterval(() => void status.reload(), 5000);
     return () => clearInterval(timer);
   }, [starting, reconnecting, status.reload]);
-  useEffect(() => {
-    if (!s?.enabled) return;
-    void api
-      .checkUpdates()
-      .then(status.setData)
-      .catch(() => {});
-    // Check once on entry; subsequent checks are manual.
-  }, [s?.enabled]);
   useEffect(() => {
     if (!s || !(s.checking || s.requested || s.state === "downloading" || s.state === "applying"))
       return;
@@ -407,29 +405,15 @@ export function UpdatesStatus({
   else if (lastError) availableText = lastError;
   else if (!s.lastCheck) availableText = t("Not checked yet");
 
-  const dismissInstalled = async () => {
-    try {
-      status.setData(await api.dismissInstalledUpdate());
-    } catch (e) {
-      toast.error(describeUpdaterMessage((e as Error).message));
-    }
-  };
   const plan = installPlanText(s);
+  const availableLink = releaseNotesLink(s.available?.notesUrl);
+  const availableVersion = s.available?.version;
+  const hasAvailableNotes = s.available?.notes?.trim();
 
   return (
     <SettingsSection title={t("Status")}>
-      {s.installed ? (
-        <SettingsRow
-          title={t("Updated to {version}", { version: s.installed.to })}
-          description={t("Ether installed it by itself on {time}, while nobody was watching.", {
-            time: formatDateTime(s.installed.at),
-          })}
-          control={
-            <Button size="sm" variant="outline" onClick={() => void dismissInstalled()}>
-              {t("Dismiss")}
-            </Button>
-          }
-        />
+      {notes ? (
+        <UpdateNotesDrawer key={notes.version} {...notes} onClose={() => setNotes(null)} />
       ) : null}
       <SettingsRow
         title={t("Installed")}
@@ -439,14 +423,21 @@ export function UpdatesStatus({
             : t("Version {version}", { version: s.current })
         }
         control={
-          s.state === "rolled-back" ? (
-            <LevelBadge level="warn" label={t("Rolled back")} />
-          ) : (
-            <LevelBadge
-              level={s.lastError ? "warn" : "ok"}
-              label={s.lastError ? t("Issue") : t("OK")}
-            />
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            {s.current && s.current !== "dev" ? (
+              <Button size="sm" variant="outline" onClick={() => setNotes({ version: s.current })}>
+                {t("What's new in {version}", { version: releaseVersion(s.current) })}
+              </Button>
+            ) : null}
+            {s.state === "rolled-back" ? (
+              <LevelBadge level="warn" label={t("Rolled back")} />
+            ) : (
+              <LevelBadge
+                level={s.lastError ? "warn" : "ok"}
+                label={s.lastError ? t("Issue") : t("OK")}
+              />
+            )}
+          </div>
         }
       />
       <SettingsRow
@@ -454,18 +445,22 @@ export function UpdatesStatus({
         description={
           <>
             {availableText}
-            {s.available?.notesUrl ? (
-              <>
-                {" · "}
-                <a
+            {availableVersion && hasAvailableNotes ? (
+              <span className="block">
+                <button
+                  type="button"
                   className="underline"
-                  href={s.available.notesUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                  onClick={() => setNotes({ version: availableVersion, available: true })}
                 >
                   {t("Release notes")}
+                </button>
+              </span>
+            ) : availableLink ? (
+              <span className="block">
+                <a className="underline" href={availableLink} target="_blank" rel="noreferrer">
+                  {t("Release notes on GitHub")}
                 </a>
-              </>
+              </span>
             ) : null}
             {plan ? <span className="block">{plan}</span> : null}
             {s.capability === "notify-only" ? <ManualUpdate s={s} /> : null}
@@ -521,7 +516,11 @@ export function UpdatesStatus({
         } · ${tn(s.activeSessions, "{count} active stream", "{count} active streams")}`}
       />
       <SettingsRow
-        title={t("Last check")}
+        title={
+          s.lastCheck
+            ? t("Last checked {time}", { time: formatDateTime(s.lastCheck) })
+            : t("Last check")
+        }
         control={
           <Button
             size="sm"
@@ -542,18 +541,13 @@ export function UpdatesStatus({
                 .finally(() => setBusy(false));
             }}
           >
-            {s.checking ? t("Checking…") : t("Check for updates")}
+            {s.checking ? t("Checking…") : t("Check now")}
           </Button>
         }
         description={
           <>
-            {lastError
-              ? lastError
-              : s.lastCheck
-                ? relativeTime(s.lastCheck)
-                : s.enabled
-                  ? t("Not checked yet")
-                  : t("Never")}
+            {!s.lastCheck ? (s.enabled ? t("Not checked yet") : t("Never")) : null}
+            {lastError ? <span className="block">{lastError}</span> : null}
             {s.enabled && s.nextCheck && !s.checking ? (
               <span className="block">
                 {t("Next check: {time}", { time: formatDateTime(s.nextCheck) })}

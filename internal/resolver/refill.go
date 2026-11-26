@@ -129,12 +129,19 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 			close(done)
 			s.bgMu.Unlock()
 		}()
+		// Search as Play does (cour mapping, owner-chosen episode group), so
+		// the answer is the one Play reads under the same key. The lookups
+		// may load their data, so they run here, never on the caller's path.
+		lookupCtx, cancelLookup := context.WithTimeout(s.bgCtx, searchRefillBudget)
+		sreq := s.explicitNumberedRequest(lookupCtx, s.searchRequest(lookupCtx, title))
+		cancelLookup()
+		ls.retarget(sreq)
 		// Recheck the cache: a foreground search may have filled it since
 		// admission. No admin-console discovery/observation side effects.
 		var results []core.Release
-		results, _, err = s.searchCached(ctx, req, false)
+		results, _, err = s.searchCached(ctx, sreq, false)
 		if !unattended && err == nil && len(results) > 0 {
-			s.warmReleaseTitlesForSearch(title, req, results)
+			s.warmReleaseTitlesForSearch(title, sreq, results)
 		}
 	}()
 	return done

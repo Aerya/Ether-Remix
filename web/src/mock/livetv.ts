@@ -324,6 +324,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       enabled: i !== 16,
       favorite: i === 0 || i === 5,
       sourceId: "demo-fast",
+      archiveDays: i < 2 ? 7 - i * 4 : undefined,
       guideId: i % 6 === 4 ? "" : `${name!.toLowerCase().replace(/[^a-z0-9]+/g, "")}.us`,
       streamUrl: `https://iptv.example/live/${i}.m3u8`,
       epoch: "1970-01-01T00:00:00Z",

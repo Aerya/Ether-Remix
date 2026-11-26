@@ -1,0 +1,5 @@
+{
+  "summary": "Search and stream releases from your own release server.",
+  "server": "Server address",
+  "serverHint": "The web address of your own release server"
+}

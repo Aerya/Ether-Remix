@@ -50,6 +50,9 @@ func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest
 			continue
 		}
 		r := vault.ReleaseFor(e)
+		if e.OwnerMatch && e.TMDB != 0 && int64(e.TMDB) == search.IDs.TMDB {
+			r.TitleIDs = core.IDs{TMDB: int64(e.TMDB)}
+		}
 		r.Private = e.Private
 		r.PubDate = time.Time{}
 		releases = append(releases, r)

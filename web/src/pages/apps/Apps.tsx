@@ -17,7 +17,7 @@ import { MoreOptions } from "../../components/ConfigSection";
 import { DomainPage, useRouteTab } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
-import { t } from "../../i18n";
+import { t, tx } from "../../i18n";
 import { useOwnerViewerPath } from "../../components/pickers";
 import { api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
 import { usePageTitle } from "../../lib/document-title";
@@ -74,9 +74,7 @@ type Settings = {
   wordmark?: VelaWordmark | null;
   livePreview?: VelaLivePreviewMode;
   appIcon?: VelaAppIcon | null;
-  homeRows?: boolean;
   homeRowCount?: number;
-  homeRowKinds?: string[];
 };
 
 const VELA_MAX_APP_NAME_CHARS = 40;
@@ -88,16 +86,6 @@ function isSupportedWordmarkFile(file: File): boolean {
   return /\.(png|svg|webp)$/i.test(file.name);
 }
 
-const HOME_ROW_KINDS = [
-  ["because-you-watched", () => t("Because you watched")],
-  ["trending", () => t("Trending")],
-  ["top-10", () => t("Top 10 for you")],
-  ["fans-also-loved", () => t("Fans also loved")],
-  ["new-releases", () => t("New releases")],
-  ["hidden-gems", () => t("Hidden gems")],
-  ["more-from-person", () => t("People you watch")],
-  ["popular-on-server", () => t("Popular on this server")],
-] as const;
 const pathFor = appPath;
 const protocolFor = (tab: string) => (tab === "files" ? "webdav" : tab);
 const nameFor = (info: FrontendInfo) => appLabel(info.descriptor.id, info.descriptor.name);
@@ -1009,80 +997,48 @@ function ProtocolSettings({
         ) : null}
         {(id === "jellyfin" || id === "emby") && !hidden ? <APIKeysSection id={id} /> : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
+        {id.startsWith("plugin:") &&
+        info?.enabled &&
+        info.descriptor.auth === "query_credentials" ? (
+          <XtreamLogins
+            surface={id}
+            title={t("App logins")}
+            description={t("Each viewer signs in to {app} apps with their own app login.", {
+              app: info.descriptor.name || id,
+            })}
+          />
+        ) : null}
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection
             title={t("Home")}
-            description={t("{app} apps show this viewer's For You rows.", {
-              app: protocolName(id),
-            })}
+            description={t("{app} apps show the first rows of Home.", { app: protocolName(id) })}
           >
             <SettingsRow
-              title={t("Personalized rows")}
-              description={t("Each viewer gets their own rows, filled from what they watch.")}
+              title={<label htmlFor={`${id}-home-rows`}>{t("Home rows shown")}</label>}
+              description={tx(
+                "About four is enough for a home screen. Set 0 to show only the app's own sections. Choose the rows in {link}.",
+                {
+                  link: (
+                    <Link to="/recommendations?page=home" className="text-primary hover:underline">
+                      {t("Recommendations")}
+                    </Link>
+                  ),
+                },
+              )}
               control={
-                <Switch
-                  checked={draft.homeRows !== false}
-                  aria-label={t("Personalized rows")}
-                  onChange={(e) => setDraft({ ...draft, homeRows: e.currentTarget.checked })}
+                <Input
+                  id={`${id}-home-rows`}
+                  aria-label={t("Home rows shown")}
+                  type="number"
+                  min={0}
+                  max={12}
+                  value={draft.homeRowCount ?? 4}
+                  onChange={(e) =>
+                    setDraft({ ...draft, homeRowCount: Number(e.currentTarget.value) })
+                  }
                 />
               }
             />
-            <MoreOptions label={t("More options: {title}", { title: t("Home") })}>
-              <SettingsRow
-                title={<label htmlFor={`${id}-home-rows`}>{t("How many rows")}</label>}
-                description={t(
-                  "About four is enough for a home screen. The most relevant rows come first.",
-                )}
-                control={
-                  <Input
-                    id={`${id}-home-rows`}
-                    aria-label={t("How many rows")}
-                    type="number"
-                    min={0}
-                    max={12}
-                    value={draft.homeRowCount ?? 4}
-                    onChange={(e) =>
-                      setDraft({ ...draft, homeRowCount: Number(e.currentTarget.value) })
-                    }
-                  />
-                }
-              />
-              <SettingsRow
-                title={t("Which rows")}
-                description={t(
-                  "Leave them all on to use every personalized row. Turn one off to hide that kind.",
-                )}
-              />
-              {HOME_ROW_KINDS.map(([kind, label]) => {
-                const selected = draft.homeRowKinds ?? HOME_ROW_KINDS.map(([id]) => id);
-                return (
-                  <SettingsRow
-                    key={kind}
-                    title={label()}
-                    control={
-                      <Switch
-                        checked={selected.includes(kind)}
-                        aria-label={label()}
-                        onChange={(e) => {
-                          const current = new Set(
-                            draft.homeRowKinds ?? HOME_ROW_KINDS.map(([id]) => id),
-                          );
-                          if (e.currentTarget.checked) current.add(kind);
-                          else current.delete(kind);
-                          const next = HOME_ROW_KINDS.map(([id]) => id).filter((id) =>
-                            current.has(id),
-                          );
-                          setDraft({
-                            ...draft,
-                            homeRowKinds: next.length === HOME_ROW_KINDS.length ? undefined : next,
-                          });
-                        }}
-                      />
-                    }
-                  />
-                );
-              })}
-            </MoreOptions>
           </SettingsSection>
         ) : null}
         {lanViewer && id !== "dlna" ? (

@@ -164,28 +164,19 @@ func (s *Service) snapshotForServe(ctx context.Context, keys []core.RatingKey, i
 	if snap == nil {
 		snap = &snapshot{entries: map[core.RatingKey]*entry{}}
 	}
-	if includeFuture {
-		titles, err := s.mirror.ServeTitles(ctx, keys, true)
-		if err != nil {
-			return nil, err
-		}
-		in := newInterner()
-		entries := make([]*entry, 0, len(titles))
-		for _, t := range titles {
-			entries = append(entries, entryFromTitle(t, in))
-		}
-		return mergeEntries(snap, entries), nil
-	}
-	var missing []core.RatingKey
-	for _, k := range keys {
-		if snap.entries[k] == nil {
-			missing = append(missing, k)
+	missing := keys
+	if !includeFuture {
+		missing = nil
+		for _, k := range keys {
+			if snap.entries[k] == nil {
+				missing = append(missing, k)
+			}
 		}
 	}
 	if len(missing) == 0 {
 		return snap, nil
 	}
-	titles, err := s.mirror.ServeTitles(ctx, missing, false)
+	titles, err := s.mirror.ServeTitles(ctx, missing, includeFuture)
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +184,16 @@ func (s *Service) snapshotForServe(ctx context.Context, keys []core.RatingKey, i
 		return snap, nil
 	}
 	in := newInterner()
-	entries := make([]*entry, 0, len(titles))
-	for _, t := range titles {
-		entries = append(entries, entryFromTitle(t, in))
+	// Serving consults entries for the requested members only. Overlay the
+	// hydrated facts on that subset without copying the catalogue index.
+	out := &snapshot{entries: make(map[core.RatingKey]*entry, len(keys))}
+	for _, key := range keys {
+		if e := snap.entries[key]; e != nil {
+			out.entries[key] = e
+		}
 	}
-	return mergeEntries(snap, entries), nil
+	for _, t := range titles {
+		out.entries[t.Key] = entryFromTitle(t, in)
+	}
+	return out, nil
 }

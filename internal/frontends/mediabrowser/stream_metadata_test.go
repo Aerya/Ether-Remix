@@ -127,7 +127,9 @@ func TestStreamMetadataMountedSourceFacts(t *testing.T) {
 							t.Fatal("Emby gained a Jellyfin-only field", source)
 						}
 					} else if tc.estimated {
-						if _, present := dto["MediaStreams"]; present {
+						value, present := dto["MediaStreams"]
+						streams, array := value.([]any)
+						if (protocol == "jellyfin" && (!array || len(streams) != 0)) || (protocol == "emby" && present) {
 							t.Fatal("estimated top-level tracks exposed", dto)
 						}
 					} else {

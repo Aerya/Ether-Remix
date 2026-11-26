@@ -35,7 +35,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	var err error
 	// Usenet, cache, stream engine. The dialer reads the live proxy policy.
 	a.applyOutbound(cfg)
-	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, DialContext: egress.Dial, OnStateChange: a.publishDashboard, Events: a.eventBus})
+	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, Balanced: cfg.Usenet.Balanced(), DialContext: egress.Dial, OnStateChange: a.publishDashboard, Events: a.eventBus})
 	a.closers = append(a.closers, func() { a.fetcher.Close() })
 	if cfg.Cache.Storage == "shared" {
 		if cfg.SharedCache == nil {
@@ -121,10 +121,11 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		},
 	})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
-		Logger:         log.With("component", "newznab"),
-		Events:         a.eventBus,
-		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
-		Vault:          a.vault,
+		PluginReferences: a.cfg,
+		Logger:           log.With("component", "newznab"),
+		Events:           a.eventBus,
+		SearchCacheTTL:   cfg.Resolver.SearchCacheTTL.D(),
+		Vault:            a.vault,
 		LegacyNZBDir: func() string {
 			if migrated.Load() {
 				return ""
@@ -173,7 +174,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			a.publishDashboard()
 		}
 	})
-	a.debrid = debrid.NewService(cfg.Debrid, debrid.Options{AcquireStreamProvider: func(ctx context.Context, id string) (func(), error) {
+	a.debrid = debrid.NewService(cfg.Debrid, debrid.Options{IsIndexerHost: a.isConfiguredIndexerHost, AcquireStreamProvider: func(ctx context.Context, id string) (func(), error) {
 		if a.livetv == nil {
 			return nil, core.ErrSourceUnavailable
 		}
@@ -221,6 +222,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
+	a.libProfiles = newLibraryProfiles(a)
 	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{QuickSearch: a.searchQuickSource, ReferenceAdmission: strictReferenceAdmission, PrepareReferenceRequest: func(ctx context.Context, req core.SearchRequest) core.SearchRequest {
 		return releasedb.CheckSeriesIdentity(ctx, a.db, req)
 	}, Vault: a.vault, Events: a.eventBus, Verifier: a.vaultVerifier(), EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
@@ -249,7 +251,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			}
 			return sceneNumbers.Lookup(ctx, req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 		}
-	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, ReleaseTitleIDs: releaseTitleIDs, VerifyTitleIDs: verifyTitleIDs, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
+	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, ReleaseTitleIDs: releaseTitleIDs, VerifyTitleIDs: verifyTitleIDs, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: a.libProfiles, UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
 	a.resolver.SetSubtitled(a.pseSubtitled)
 	a.closers = append(a.closers, func() { a.resolver.Close() })

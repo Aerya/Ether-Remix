@@ -12,7 +12,7 @@ func TestExperienceDetailRowsFilterBeforeLimitsAndDeduplicate(t *testing.T) {
 	ctx := context.Background()
 	viewer := &core.User{ID: 1}
 	key := core.EpisodeKey(42, 1, 1)
-	next := core.Title{Key: core.EpisodeKey(42, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(42)}
+	next := core.Title{Key: core.EpisodeKey(42, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(42), Season: 1, Episode: 2}
 	hidden := core.Title{Key: core.MovieKey(1), Adult: true, Type: core.TypeMovie}
 	a := core.Title{Key: core.MovieKey(2), Type: core.TypeMovie}
 	b := core.Title{Key: core.MovieKey(3), Type: core.TypeMovie}
@@ -42,7 +42,7 @@ func TestExperienceDetailRowsFilterBeforeLimitsAndDeduplicate(t *testing.T) {
 func TestExperienceDetailRowsRejectsRestrictedParent(t *testing.T) {
 	ctx := context.Background()
 	key := core.EpisodeKey(42, 1, 1)
-	next := core.Title{Key: core.EpisodeKey(42, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(42)}
+	next := core.Title{Key: core.EpisodeKey(42, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(42), Season: 1, Episode: 2}
 	vis := experience.Visibility{GetTitle: func(context.Context, core.RatingKey) (*core.Title, error) {
 		return &core.Title{Key: core.ShowKey(42), Type: core.TypeShow, Adult: true}, nil
 	}}

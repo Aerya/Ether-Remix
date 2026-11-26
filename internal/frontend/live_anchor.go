@@ -16,6 +16,8 @@ type LiveAnchor struct {
 type LiveWindow struct {
 	Anchor          LiveAnchor
 	LiveEdgeSeconds float64
+	// TimeshiftMinutes is the rewind limit when the output has playable history.
+	TimeshiftMinutes int
 }
 
 // LiveWindowReader is an internal session-owner capability. Callers must already

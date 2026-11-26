@@ -20,6 +20,10 @@ func writeStartError(w http.ResponseWriter, err error) {
 		http.Error(w, "session stopped", http.StatusGone)
 		return
 	}
+	if errors.Is(err, core.ErrStreamLimit) {
+		http.Error(w, "provider_busy", http.StatusTooManyRequests)
+		return
+	}
 	if errors.Is(err, errInputExhausted) || errors.Is(err, core.ErrEncoderExhausted) {
 		http.Error(w, "source unavailable", http.StatusBadGateway)
 		return

@@ -17,7 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
-const libraryTabsScopeNote = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs."
+const libraryTabsScopeNote = "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page."
 
 var catalogueTabSortOptions = []string{
 	"popularity",
@@ -294,7 +294,7 @@ func (c *librariesConsole) buildLibraryTabsDTO(ctx context.Context, lib core.Lib
 	} else {
 		hasStudios := c.app != nil && c.app.catalog != nil && c.app.catalog.HasStudioData(ctx, libraryScopeFilter(lib, core.Filter{}))
 		facets.Collections = []tabFacetOptionDTO{
-			{ID: "", Label: "Owner collections", Category: "essentials"},
+			{ID: "", Label: "Your collections", Category: "essentials"},
 			{ID: "genre", Label: "Genres", Category: "essentials"},
 		}
 		switch lib.MediaType {

@@ -46,6 +46,8 @@ type Source struct {
 type Preview struct {
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
+	// ListItems is how many titles one sync of each of its lists reads.
+	ListItems *ListItemsGrant `json:"listItems,omitempty"`
 	// Summary is the manifest summary with any "$t:" reference resolved
 	// from the package's own strings.
 	Summary string `json:"summary,omitempty"`
@@ -238,6 +240,11 @@ func (m *Manager) fetchSiblings(ctx context.Context, manURL string, manRaw []byt
 	if icon := man.Ether.Icon; icon != "" && !strings.HasPrefix(icon, "http://") && !strings.HasPrefix(icon, "https://") {
 		paths = append(paths, icon)
 	}
+	for _, a := range man.Ether.Contributes.FrontendAdapters {
+		if ValidAdapterIconPath(a.Icon) {
+			paths = append(paths, a.Icon)
+		}
+	}
 	if man.Ether.Runtime.Entry != "" {
 		paths = append(paths, man.Ether.Runtime.Entry)
 	}
@@ -422,6 +429,12 @@ func (p *Preview) resolve() error {
 			}
 		}
 	}
+	if ScreensUseDocuments(man) {
+		english := func(key string) (string, bool) { t, ok := p.resolvedStrings["en"][key]; return t, ok }
+		if _, err := CompileScreenDocuments(man, p.files, english); err != nil {
+			return err
+		}
+	}
 	if man := p.Manifest; man.Ether != nil {
 		p.Summary = pluginText(p.resolvedStrings, man.Ether.Summary)
 	}
@@ -580,6 +593,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		return nil, fmt.Errorf("plugins: manifest version %q does not match catalogue version %q", man.Version, src.Version)
 	}
 	p := &Preview{Manifest: man, RuntimeLimits: m.grantedRuntimeLimits(man), source: src, files: files, manifestRaw: raw, Verified: src.Verified, StremioOnly: man.IsStremioOnly()}
+	p.ListItems = m.ListItemsGrant(man.ID, man)
 	p.PermissionLines, p.NeedsViewers, p.NeedsFolders = PermissionSheet(man)
 	p.LocalHosts = DeclaredLocalHosts(man)
 	if err := p.resolve(); err != nil {
@@ -677,8 +691,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			if p.source.reviewed == nil || current.URL != p.source.URL || !strings.EqualFold(current.SHA256, p.source.SHA256) {
 				return Record{}, fmt.Errorf("plugins: catalogue entry changed since the package was reviewed")
 			}
-			approved := Manifest{Ether: &EtherBlock{Permissions: current.Permissions, Capabilities: current.Capabilities}}
-			if man.Ether == nil || man.Ether.Kind != current.Kind || len(PermissionDiff(approved, man)) != 0 {
+			if man.Ether == nil || man.Ether.Kind != current.Kind || len(catalogueReviewDiff(current, man)) != 0 {
 				return Record{}, fmt.Errorf("plugins: catalogue review changed since the package was reviewed")
 			}
 		} else if _, err := cat.Resolve(ctx, man.ID, ""); err != nil && errors.Is(err, ErrRevoked) {
@@ -843,6 +856,10 @@ func sourceKindOf(s Source) string {
 	return "url"
 }
 
+// ErrNoUpdateSource reports a plugin with nowhere to fetch updates from: a
+// Studio build, or a package file the marketplace does not list.
+var ErrNoUpdateSource = errors.New("this plugin was installed from a file and the marketplace does not list it, so Ether cannot check it for updates")
+
 // PermissionIncreaseError reports an update that asks for more access.
 type PermissionIncreaseError struct{ Added []string }
 
@@ -858,13 +875,27 @@ func (m *Manager) CheckUpdate(ctx context.Context, id string) (*Preview, bool, e
 	if err != nil {
 		return nil, false, err
 	}
-	if (r.SourceURL == "" && r.SourceKind != "catalogue") || r.SourceKind == "studio" {
+	if r.SourceKind == "studio" {
 		// A Studio build's link (an edited add-on's) is not an update source.
-		return nil, false, fmt.Errorf("plugins: %s has no update source", id)
+		return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+	}
+	sourceKind := r.SourceKind
+	if r.SourceURL == "" && sourceKind != "catalogue" {
+		// Installed from a package file: the signed marketplace is the update
+		// source when it lists this plugin. The catalogue review still gates
+		// the update, and added permissions still need the owner's consent.
+		cat := m.getCatalogue()
+		if cat == nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		if _, err := cat.Resolve(ctx, id, ""); err != nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		sourceKind = "catalogue"
 	}
 	g, _ := m.store.grants(ctx, id)
-	src := Source{Kind: r.SourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
-	if r.SourceKind == "catalogue" {
+	src := Source{Kind: sourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
+	if sourceKind == "catalogue" {
 		src.ID = r.ID
 	}
 	p, err := m.PreviewInstall(ctx, src)

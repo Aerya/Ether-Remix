@@ -22,7 +22,7 @@ type scheduledCatalog struct {
 }
 
 func (c *scheduledCatalog) ScheduledEpisodes(_ context.Context, k core.RatingKey) ([]core.Title, error) {
-	if k != c.future.Key.Parent() {
+	if k != c.future.Key && k != c.future.Key.Parent() {
 		return nil, core.ErrNotFound
 	}
 	return []core.Title{c.future}, nil

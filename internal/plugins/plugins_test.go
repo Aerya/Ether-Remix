@@ -404,7 +404,7 @@ func TestJournalShadowAndUndo(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	watched := map[string]bool{}
-	env.m.deps.Backends.SetWatchState = func(_ context.Context, _ int64, title string, w bool) (bool, error) {
+	env.m.deps.Backends.SetWatchState = func(_ context.Context, _ string, _ int64, title string, w bool) (bool, error) {
 		prev := watched[title]
 		watched[title] = w
 		return prev, nil

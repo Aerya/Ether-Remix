@@ -227,12 +227,21 @@ func (s *Service) Apply(ctx context.Context, req Request) (Result, error) {
 		}
 		if found == nil {
 			visible := req.Mode != "libraries"
-			sp := core.CollectionSpec{Name: strings.TrimSpace(c.Name), Description: "Sélection Xperience", TemplateID: tid, MediaType: typ, Sources: []core.CollectionSource{src}, Match: "all", Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{}, Sort: "source", Refresh: refreshSchedule(req.CollectionRefreshHours), ReleaseMode: "released", Enabled: true, Artwork: core.CollectionArtwork{Mode: "auto"}, Targets: core.CollectionTargets{CollectionsTab: visible, HomeRow: visible, SectionRow: visible, Users: core.AllUsers()}}
+			sp := core.CollectionSpec{Name: strings.TrimSpace(c.Name), Description: "Sélection Xperience", TemplateID: tid, MediaType: typ, Sources: []core.CollectionSource{src}, Match: "all", Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{}, Sort: "source", Refresh: refreshSchedule(req.CollectionRefreshHours), ReleaseMode: "released", Enabled: true, Artwork: core.CollectionArtwork{Mode: "auto"}, BrowseInApps: visible}
 			found, err = s.cols.CreateSpec(ctx, sp)
 			if err != nil {
 				return out, fmt.Errorf("création de la collection impossible ; réessayez sans dupliquer les éléments déjà créés")
 			}
 			specs = append(specs, *found)
+		}
+		if req.Mode != "libraries" {
+			if publisher, ok := s.cols.(interface {
+				PublishRemixRows(context.Context, core.CollectionSpec) error
+			}); ok {
+				if err := publisher.PublishRemixRows(ctx, *found); err != nil {
+					return out, err
+				}
+			}
 		}
 		out.Collections = append(out.Collections, found.ID)
 		if req.Mode == "collections" {

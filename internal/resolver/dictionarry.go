@@ -25,6 +25,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
 	"github.com/braedonsaunders/ether/internal/httpclient"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,6 +53,7 @@ var (
 // DictionarryOptions configures a Dictionarry client. Zero values use GitHub.
 type DictionarryOptions struct {
 	ArchiveURL string // default https://codeload.github.com/Dictionarry-Hub/database/tar.gz/refs/heads/v2
+	DatabaseID string // custom database ID scoping compiled format IDs; "" is official Dictionarry
 	Client     *http.Client
 	UserAgent  string
 	TTL        time.Duration // cache lifetime, default 1h
@@ -67,6 +69,7 @@ type Dictionarry struct {
 	cached *dictionarryCatalog
 	at     time.Time
 	flight flight.Group[struct{}, *dictionarryCatalog]
+	forks  map[string]*Dictionarry
 }
 
 type dictionarryCatalog struct {
@@ -94,6 +97,42 @@ func NewDictionarry(o DictionarryOptions) *Dictionarry {
 		o.Now = time.Now
 	}
 	return &Dictionarry{o: o}
+}
+
+// ForArchive returns a cached Dictionarry client for a custom database archive
+// URL, sharing this client's HTTP settings and TTL so the last good catalogue
+// survives temporary GitHub outages.
+func (d *Dictionarry) ForArchive(archiveURL string) *Dictionarry {
+	return d.ForDatabase("", archiveURL)
+}
+
+// ForDatabase returns a cached Dictionarry client for a custom database ID and
+// archive URL, scoping custom format IDs under dbID so fork formats never
+// collide with official Dictionarry formats.
+func (d *Dictionarry) ForDatabase(dbID, archiveURL string) *Dictionarry {
+	u := strings.TrimSpace(archiveURL)
+	id := strings.TrimSpace(dbID)
+	if (u == "" || u == d.o.ArchiveURL) && id == d.o.DatabaseID {
+		return d
+	}
+	if u == "" {
+		u = d.o.ArchiveURL
+	}
+	key := id + "\x00" + u
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.forks == nil {
+		d.forks = map[string]*Dictionarry{}
+	}
+	if existing, ok := d.forks[key]; ok {
+		return existing
+	}
+	opts := d.o
+	opts.ArchiveURL = u
+	opts.DatabaseID = id
+	child := NewDictionarry(opts)
+	d.forks[key] = child
+	return child
 }
 
 // Profiles lists app's Dictionarry quality profiles.
@@ -194,7 +233,10 @@ func (d *Dictionarry) fetchAndCompile(ctx context.Context) (*dictionarryCatalog,
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("%w: could not reach GitHub", ErrDictionarryUnavailable)
+		if errors.Is(err, safefetch.ErrBlocked) {
+			return nil, fmt.Errorf("%w: archive URL points to a local or private address", ErrDictionarryUnavailable)
+		}
+		return nil, fmt.Errorf("%w: could not reach archive host", ErrDictionarryUnavailable)
 	}
 	defer resp.Body.Close()
 
@@ -215,7 +257,7 @@ func (d *Dictionarry) fetchAndCompile(ctx context.Context) (*dictionarryCatalog,
 	if int64(len(raw)) > dictionarryArchiveLimit {
 		return nil, fmt.Errorf("%w: archive exceeds size limit", ErrDictionarryUnavailable)
 	}
-	return compileDictionarryArchive(ctx, raw)
+	return compileDictionarryArchiveForDB(ctx, raw, d.o.DatabaseID)
 }
 
 type dictionarryOp struct {
@@ -225,6 +267,10 @@ type dictionarryOp struct {
 }
 
 func compileDictionarryArchive(ctx context.Context, archiveBytes []byte) (*dictionarryCatalog, error) {
+	return compileDictionarryArchiveForDB(ctx, archiveBytes, "")
+}
+
+func compileDictionarryArchiveForDB(ctx context.Context, archiveBytes []byte, dbID string) (*dictionarryCatalog, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archiveBytes))
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid gzip archive", ErrDictionarryUnavailable)
@@ -339,7 +385,7 @@ func compileDictionarryArchive(ctx context.Context, archiveBytes []byte) (*dicti
 			return nil, fmt.Errorf("%w: operation %s failed: %v", ErrDictionarryUnavailable, op.name, err)
 		}
 	}
-	return extractDictionarryCatalog(ctx, db)
+	return extractDictionarryCatalog(ctx, db, dbID)
 }
 
 func validateDictionarrySQL(name, sqlText string) error {
@@ -407,7 +453,7 @@ type dictionarryQualityItem struct {
 	members []string
 }
 
-func extractDictionarryCatalog(ctx context.Context, db *sql.DB) (*dictionarryCatalog, error) {
+func extractDictionarryCatalog(ctx context.Context, db *sql.DB, dbID string) (*dictionarryCatalog, error) {
 	// 1. Load quality_api_mappings: app -> canonical quality_name -> api_name.
 	apiNames := map[string]map[string]string{
 		AppRadarr: {},
@@ -543,7 +589,7 @@ func extractDictionarryCatalog(ctx context.Context, db *sql.DB) (*dictionarryCat
 	nameRows.Close()
 	formatIDs := map[string]map[string]string{}
 	for _, app := range []string{AppRadarr, AppSonarr} {
-		formatIDs[app] = dictionarryFormatIDs(app, formatNames)
+		formatIDs[app] = dictionarryFormatIDsForDB(dbID, app, formatNames)
 	}
 
 	// Compile custom formats for both apps.
@@ -580,7 +626,7 @@ func extractDictionarryCatalog(ctx context.Context, db *sql.DB) (*dictionarryCat
 		group := dictionarryProfileGroup(p.name, p.tags)
 
 		for _, app := range []string{AppRadarr, AppSonarr} {
-			imp, ok := buildDictionarryImport(app, id, p, qItems, apiNames[app], profileScores[app][p.name], formatIDs[app])
+			imp, ok := buildDictionarryImport(dbID, app, id, p, qItems, apiNames[app], profileScores[app][p.name], formatIDs[app])
 			if !ok {
 				continue
 			}
@@ -661,7 +707,7 @@ func extractDictionarryQualities(ctx context.Context, db *sql.DB, profileName st
 }
 
 func buildDictionarryImport(
-	app, id string,
+	dbID, app, id string,
 	p dictionarryProfileRow,
 	qItems []dictionarryQualityItem,
 	apiMap map[string]string,
@@ -712,7 +758,7 @@ func buildDictionarryImport(
 
 	payload := map[string]any{
 		"name":                  p.name,
-		"trash_id":              "dictionarry-" + app + "-" + id,
+		"trash_id":              dictionarryPrefix(dbID, app) + id,
 		"upgradeAllowed":        p.upgradesAllowed,
 		"minFormatScore":        p.minScore,
 		"cutoffFormatScore":     p.cutoffScore,
@@ -758,18 +804,30 @@ func buildDictionarryImport(
 // its exact UTF-8 name encoded after a colon. Slugs cannot contain a colon,
 // and hex is lossless, so neither another slug nor another name can alias it.
 // Both definitions and profile references use this same catalog-wide mapping.
+func dictionarryPrefix(dbID, app string) string {
+	if strings.TrimSpace(dbID) != "" {
+		return "dictionarry-" + strings.TrimSpace(dbID) + "-" + app + "-"
+	}
+	return "dictionarry-" + app + "-"
+}
+
 func dictionarryFormatIDs(app string, names []string) map[string]string {
+	return dictionarryFormatIDsForDB("", app, names)
+}
+
+func dictionarryFormatIDsForDB(dbID, app string, names []string) map[string]string {
 	counts := map[string]int{}
 	for _, name := range names {
 		counts[trashSlug(name)]++
 	}
+	prefix := dictionarryPrefix(dbID, app)
 	ids := make(map[string]string, len(names))
 	for _, name := range names {
 		slug := trashSlug(name)
 		if counts[slug] > 1 {
 			slug += ":" + hex.EncodeToString([]byte(name))
 		}
-		ids[name] = "dictionarry-" + app + "-" + slug
+		ids[name] = prefix + slug
 	}
 	return ids
 }

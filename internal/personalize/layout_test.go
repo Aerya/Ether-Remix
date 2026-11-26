@@ -3,56 +3,7 @@ package personalize
 import (
 	"math"
 	"testing"
-	"time"
-
-	"github.com/braedonsaunders/ether/internal/core"
 )
-
-func ip(v int) *int { return &v }
-
-func TestValidateWhen(t *testing.T) {
-	ve := &ValidationError{}
-	validateWhen(ve, "global[0].rows[0].when", &core.LayoutWhen{Days: []int{9}, FromHour: ip(30), ToHour: ip(25), Devices: []string{"fridge"}})
-	fields := map[string]bool{}
-	for _, f := range ve.InvalidFields() {
-		fields[f[0]] = true
-	}
-	for _, want := range []string{"global[0].rows[0].when.days", "global[0].rows[0].when.fromHour",
-		"global[0].rows[0].when.toHour", "global[0].rows[0].when.devices"} {
-		if !fields[want] {
-			t.Errorf("missing problem for %s (got %v)", want, ve.InvalidFields())
-		}
-	}
-	ok := &ValidationError{}
-	validateWhen(ok, "w", &core.LayoutWhen{Days: []int{0, 6}, FromHour: ip(18), ToHour: ip(24), Devices: []string{core.DeviceTV}})
-	if ok.orNil() != nil {
-		t.Fatalf("valid schedule rejected: %v", ok)
-	}
-}
-
-func TestWhenMatches(t *testing.T) {
-	wed21 := core.NewHubContext(time.Date(2026, 10, 14, 21, 0, 0, 0, time.UTC), "Plex for Roku", "Roku", "")
-	sat10 := core.NewHubContext(time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC), "Plex for iOS", "iOS", "")
-	weeknights := &core.LayoutWhen{Days: []int{1, 2, 3, 4}}
-	if !whenMatches(weeknights, wed21) || whenMatches(weeknights, sat10) {
-		t.Fatal("days")
-	}
-	evening := &core.LayoutWhen{FromHour: ip(18), ToHour: ip(23)}
-	if !whenMatches(evening, wed21) || whenMatches(evening, sat10) {
-		t.Fatal("hours")
-	}
-	overnight := &core.LayoutWhen{FromHour: ip(20), ToHour: ip(6)} // wraps midnight
-	if !whenMatches(overnight, wed21) || whenMatches(overnight, sat10) {
-		t.Fatal("wrapping hours")
-	}
-	tvOnly := &core.LayoutWhen{Devices: []string{"tv"}}
-	if !whenMatches(tvOnly, wed21) || whenMatches(tvOnly, sat10) {
-		t.Fatal("devices")
-	}
-	if !whenMatches(nil, sat10) {
-		t.Fatal("nil when")
-	}
-}
 
 func TestPlacePinned(t *testing.T) {
 	got := placePinned([]string{"a", "b", "c"}, []string{"z@9", "x@0", "y@2"}, func(s string) int {

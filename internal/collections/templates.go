@@ -52,8 +52,8 @@ func tpl(name, media string, sources []core.CollectionSource, rules ...core.Coll
 	return core.CollectionSpec{
 		Name: name, MediaType: media, Sources: sources, Match: MatchAll, Rules: rules, Exclude: []core.CollectionRule{},
 		Sort: "popularity", SortDesc: true, Limit: 100, Refresh: RefreshDaily, Enabled: true,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
+		BrowseInApps: true,
 	}
 }
 
@@ -131,10 +131,6 @@ func accent(hex string) func(*core.CollectionSpec) {
 
 func rotateDaily(n int) func(*core.CollectionSpec) {
 	return func(sp *core.CollectionSpec) { sp.Rotate = &core.CollectionRotate{Size: n, Every: "daily"} }
-}
-
-func homeRow() func(*core.CollectionSpec) {
-	return func(sp *core.CollectionSpec) { sp.Targets.HomeRow = true }
 }
 
 var (
@@ -467,7 +463,7 @@ var templateDefs = []templateDef{
 	// --- For each viewer -------------------------------------------------------
 	{"for-you-unseen-acclaimed", extend.T("Acclaimed and Unwatched").Source, extend.T("Highly rated films each viewer hasn't seen, ordered by their taste.").Source, catForYou,
 		with(tpl(extend.T("Acclaimed Films You Haven't Seen").Source, MediaMovie, catalogSrc(), mkRule("rating", "gte", 7.8), mkRule("votes", "gte", 2000), mkRule("watched", "is", false)),
-			sortBy("personal", true), limit(50), homeRow())},
+			sortBy("personal", true), limit(50))},
 	{"for-you-comfort-rewatches", extend.T("Comfort Rewatches").Source, extend.T("Favourites each viewer has already loved, ready to watch again.").Source, catForYou,
 		with(tpl(extend.T("Comfort Rewatches").Source, MediaMixed, catalogSrc(), mkRule("watched", "is", true), mkRule("rating", "gte", 7.0), mkRule("votes", "gte", 200)),
 			sortBy("personal", true), limit(40), excl(notTV))},

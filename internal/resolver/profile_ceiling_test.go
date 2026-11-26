@@ -24,7 +24,7 @@ func TestProfileCeilingBlocksTallerVariants(t *testing.T) {
 	cfg := testCfg()
 	cfg.Quality.Rules = nil
 	cfg.Quality.Default = "1080p"
-	cfg.Quality.Remote = "1080p"
+	cfg.Quality.DefaultAway = "1080p"
 	svc := New(&fakeIndexer{releases: releases}, fakeHealth{}, nil, cfg, Options{})
 	defer svc.Close()
 	ctx := context.Background()
@@ -121,7 +121,7 @@ func Test720pProfileDoesNotOfferTallerPlayback(t *testing.T) {
 	cfg := testCfg()
 	cfg.Quality.Rules = nil
 	cfg.Quality.Default = "720p"
-	cfg.Quality.Remote = "720p"
+	cfg.Quality.DefaultAway = "720p"
 	caps := core.ClientCaps{
 		Product: "Plex Web", MaxHeight: 2160,
 		VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"},

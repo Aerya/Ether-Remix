@@ -1,7 +1,6 @@
 package plex
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -48,6 +47,9 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 	if s.handleExtraPlayback(w, r) {
 		return
 	}
+	if !s.admitStart(w, r) {
+		return
+	}
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	unlockOwner, locked := s.lockPlaybackRequest(w, r)
@@ -67,6 +69,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logPlaybackStart(r, p)
 	if !s.decisionArmed(pr, p.key) {
+		// admitStart decided; a stop since then ended this delivery.
 		writePlaybackStatus(w, http.StatusBadRequest)
 		return
 	}
@@ -163,7 +166,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		s.stopPlexHLS(p.sessionID)
 	}
 	firstSegmentAt := s.resumeStartHint(ctx, pr, p, entry, priorEntry)
-	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
+	hs, err := s.startPlexHLS(ctx, pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
 		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,

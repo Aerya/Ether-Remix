@@ -1,11 +1,13 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sync/atomic"
@@ -89,6 +91,10 @@ func (e *Engine) ListArchiveMembers(ctx context.Context, nzbData []byte) (map[in
 			return nil, ctx.Err()
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		e.archiveListMu.Unlock()
+		return nil, err
+	}
 	if e.archiveListFlights == nil {
 		e.archiveListFlights = map[string]*archiveListFlight{}
 	}
@@ -96,45 +102,88 @@ func (e *Engine) ListArchiveMembers(ctx context.Context, nzbData []byte) (map[in
 	e.archiveListFlights[key] = fl
 	e.archiveListMu.Unlock()
 
-	members, err := e.scanArchiveMembers(ctx, nzbData)
+	// Run the archive scan detached from the caller's deadline (e.g. a 5 s
+	// plugin /resolve slice) so multi-volume RAR probes finish within
+	// archiveListTimeout and cache the full member list for the next slice
+	// instead of caching a caller-truncated partial scan.
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		e.archiveListMu.Lock()
+		if e.archiveListFlights[key] == fl {
+			delete(e.archiveListFlights, key)
+		}
+		fl.err = ErrClosed
+		close(fl.done)
+		e.archiveListMu.Unlock()
+		return nil, ErrClosed
+	}
+	e.wg.Add(1)
+	e.mu.Unlock()
 
-	e.archiveListMu.Lock()
-	delete(e.archiveListFlights, key)
-	if err == nil {
-		if e.archiveList == nil {
-			e.archiveList = map[string]*archiveListCacheEntry{}
-		}
-		now = time.Now()
-		for k, ent := range e.archiveList {
-			if !ent.expiresAt.After(now) {
-				delete(e.archiveList, k)
+	scanCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(e.ctx, cancel)
+	dataCopy := bytes.Clone(nzbData)
+	go func() {
+		defer e.wg.Done()
+		defer stop()
+		defer cancel()
+		var (
+			members map[int][]core.ReleaseMember
+			err     error
+		)
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("stream: archive member listing panic: %v", p)
 			}
-		}
-		for len(e.archiveList) >= archiveListCacheMax {
-			var oldestKey string
-			var oldest *archiveListCacheEntry
-			for k, ent := range e.archiveList {
-				if oldest == nil || ent.lastUsed.Before(oldest.lastUsed) {
-					oldestKey = k
-					oldest = ent
+			e.archiveListMu.Lock()
+			if e.archiveListFlights[key] == fl {
+				delete(e.archiveListFlights, key)
+			}
+			if err == nil && e.ctx.Err() == nil {
+				if e.archiveList == nil {
+					e.archiveList = map[string]*archiveListCacheEntry{}
+				}
+				now := time.Now()
+				for k, ent := range e.archiveList {
+					if !ent.expiresAt.After(now) {
+						delete(e.archiveList, k)
+					}
+				}
+				for len(e.archiveList) >= archiveListCacheMax {
+					var oldestKey string
+					var oldest *archiveListCacheEntry
+					for k, ent := range e.archiveList {
+						if oldest == nil || ent.lastUsed.Before(oldest.lastUsed) {
+							oldestKey = k
+							oldest = ent
+						}
+					}
+					if oldest == nil {
+						break
+					}
+					delete(e.archiveList, oldestKey)
+				}
+				e.archiveList[key] = &archiveListCacheEntry{
+					members:   cloneReleaseMembersMap(members),
+					expiresAt: now.Add(archiveListCacheTTL),
+					lastUsed:  now,
 				}
 			}
-			if oldest == nil {
-				break
-			}
-			delete(e.archiveList, oldestKey)
-		}
-		e.archiveList[key] = &archiveListCacheEntry{
-			members:   cloneReleaseMembersMap(members),
-			expiresAt: now.Add(archiveListCacheTTL),
-			lastUsed:  now,
-		}
+			fl.members = members
+			fl.err = err
+			close(fl.done)
+			e.archiveListMu.Unlock()
+		}()
+		members, err = e.scanArchiveMembers(scanCtx, dataCopy)
+	}()
+
+	select {
+	case <-fl.done:
+		return cloneReleaseMembersMap(fl.members), fl.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	fl.members = members
-	fl.err = err
-	close(fl.done)
-	e.archiveListMu.Unlock()
-	return cloneReleaseMembersMap(members), err
 }
 
 func (e *Engine) scanArchiveMembers(ctx context.Context, nzbData []byte) (map[int][]core.ReleaseMember, error) {

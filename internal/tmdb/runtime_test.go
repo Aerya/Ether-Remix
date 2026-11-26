@@ -43,4 +43,8 @@ func TestRuntimeCredentialsAndLocale(t *testing.T) {
 	if calls.Load() != 2 || c.Region() != "CA" {
 		t.Fatal("config update reused stale cache")
 	}
+	c.UpdateConfig(config.Catalog{TMDBDisabled: true, TMDBKey: "new.bearer.key"})
+	if c.HasKey() {
+		t.Fatal("disabled TMDB continued using an API key")
+	}
 }

@@ -163,7 +163,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // overlap. A 404 is remembered and skipped for the life of the process.
 // It returns how many titles it stored.
 func (c *Catalog) fillByID(ctx context.Context, tv bool, ids []uint64) (int, error) {
-	if len(ids) == 0 || c.tmdb() == nil {
+	if len(ids) == 0 || !c.TMDBConfigured() {
 		return 0, nil
 	}
 	ctx, cancel := context.WithCancel(ctx)

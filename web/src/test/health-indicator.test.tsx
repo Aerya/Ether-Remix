@@ -2,11 +2,17 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "./harness";
 
+/** Open the full health detail from the header pill. */
+async function openHealthDetail(status: string): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("button", { name: `Server health: ${status}` }));
+  return screen.findByRole("dialog");
+}
+
 describe("health reporting", () => {
   it("shows a verified plex.direct certificate as valid", async () => {
     renderApp("/");
     const trigger = await screen.findByRole("button", {
-      name: "Server health: All systems normal",
+      name: "Server health: All healthy",
     });
     const health = screen.getByText("Health").closest("section")!;
     expect(within(health).getByText("Valid")).toBeInTheDocument();
@@ -14,10 +20,12 @@ describe("health reporting", () => {
     expect(within(health).getByText("All healthy")).toBeInTheDocument();
     expect(within(health).queryByText("Operational")).toBeNull();
     expect(screen.queryByText("Status incomplete")).toBeNull();
-    expect(screen.getByText(/Everything is healthy/)).toBeInTheDocument();
+    // The header pill and the Overview pill give the same verdict.
+    expect(trigger).toHaveTextContent("All healthy");
     fireEvent.click(trigger);
-    const popover = screen.getByText("Server health").parentElement!;
-    const certificate = within(popover).getByText("plex.direct").closest("a")!;
+    const detail = await screen.findByRole("dialog");
+    expect(within(detail).getByText("Server health")).toBeInTheDocument();
+    const certificate = within(detail).getByText("plex.direct").closest("a")!;
     expect(within(certificate).getByText("Valid")).toBeInTheDocument();
     expect(within(certificate).getByText("Trusted by Plex apps")).toBeInTheDocument();
     expect(within(certificate).queryByText("Healthy")).toBeNull();
@@ -50,7 +58,7 @@ describe("health reporting", () => {
       release();
     }
     expect(
-      await screen.findByRole("button", { name: "Server health: All systems normal" }),
+      await screen.findByRole("button", { name: "Server health: All healthy" }),
     ).toBeInTheDocument();
   });
 
@@ -80,7 +88,7 @@ describe("health reporting", () => {
       };
     });
     expect(
-      await screen.findByRole("button", { name: "Server health: Problem" }),
+      await screen.findByRole("button", { name: "Server health: 1 to fix" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Certificate expired")).toBeInTheDocument();
   });
@@ -100,11 +108,9 @@ describe("health reporting", () => {
         return new Response(JSON.stringify(body), { status: 200 });
       };
     });
-    expect(
-      await screen.findByRole("button", { name: "Server health: All systems normal" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Custom connection published")).toBeInTheDocument();
-    expect(screen.getByText("Valid")).toBeInTheDocument();
+    const detail = await openHealthDetail("All healthy");
+    expect(within(detail).getByText("Custom connection published")).toBeInTheDocument();
+    expect(within(detail).getByText("Valid")).toBeInTheDocument();
     expect(screen.queryByText("Local network only")).toBeNull();
     expect(screen.queryByText("Reachable outside your network")).toBeNull();
   });
@@ -124,10 +130,8 @@ describe("health reporting", () => {
         return new Response(JSON.stringify(body), { status: 200 });
       };
     });
-    expect(
-      await screen.findByRole("button", { name: "Server health: All systems normal" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Local network only")).toBeInTheDocument();
+    const detail = await openHealthDetail("All healthy");
+    expect(within(detail).getByText("Local network only")).toBeInTheDocument();
     expect(screen.queryByText("Status incomplete")).toBeNull();
   });
 
@@ -160,7 +164,7 @@ describe("health reporting", () => {
       };
     });
     expect(
-      await screen.findByRole("button", { name: "Server health: Problem" }),
+      await screen.findByRole("button", { name: "Server health: 1 to fix" }),
     ).toBeInTheDocument();
     expect(screen.getByText("plex.tv rejects this server's sign-in")).toBeInTheDocument();
   });
@@ -180,10 +184,8 @@ describe("health reporting", () => {
         return new Response(JSON.stringify(body), { status: 200 });
       };
     });
-    expect(
-      await screen.findByRole("button", { name: "Server health: All systems normal" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Local network only")).toBeInTheDocument();
+    const detail = await openHealthDetail("All healthy");
+    expect(within(detail).getByText("Local network only")).toBeInTheDocument();
     expect(screen.queryByText("Custom connection published")).toBeNull();
   });
 
@@ -219,7 +221,7 @@ describe("health reporting", () => {
       };
     });
     expect(
-      await screen.findByRole("button", { name: "Server health: Needs attention" }),
+      await screen.findByRole("button", { name: "Server health: 1 to fix" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Certificate is not valid yet")).toBeInTheDocument();
     expect(screen.queryByText("Not verified")).toBeNull();
@@ -241,11 +243,8 @@ describe("health reporting", () => {
         return new Response(JSON.stringify(body), { status: 200 });
       };
     });
-    expect(
-      await screen.findByRole("button", { name: "Server health: Getting started" }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Server health: Getting started" }));
-    expect(screen.getAllByText("2 things to set up").length).toBeGreaterThan(0);
+    const detail = await openHealthDetail("2 things to set up");
+    expect(within(detail).getByRole("region", { name: "To set up" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Server health: Problem" })).toBeNull();
   });
 });

@@ -135,6 +135,12 @@ type upgradeColumnRename struct {
 // upgradeRenamedColumns are delivered columns a later migration renamed;
 // their values must survive under the new name once that migration applies
 // (and under the original name when a PostgreSQL transaction rolls back).
+// upgradeRetiredTables are delivered tables a later migration moved into
+// new ones and dropped (their data is checked by that migration's tests).
+var upgradeRetiredTables = map[string]upgradeColumnRename{
+	"personalize_home_layout": {to: "personalize_pages", component: "personalize", version: 6}, // Recommendations pages (rows-pages-v1)
+}
+
 var upgradeRenamedColumns = map[string]map[string]upgradeColumnRename{
 	"auth_users": {"allowed_sections": {to: "allowed_libraries", component: "auth", version: 9}}, // auth/9 (v0.3.8 libraries)
 }
@@ -146,6 +152,9 @@ func assertUpgradeTables(t *testing.T, db *sql.DB, before map[string]upgradeTabl
 		t.Fatal(err)
 	}
 	for name, table := range before {
+		if retired, ok := upgradeRetiredTables[name]; ok && applied[retired.component] >= retired.version {
+			continue
+		}
 		columns := append([]string(nil), table.columns...)
 		for i, col := range columns {
 			if rename, ok := upgradeRenamedColumns[name][col]; ok && applied[rename.component] >= rename.version {

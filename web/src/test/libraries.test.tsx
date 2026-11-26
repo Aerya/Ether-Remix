@@ -366,16 +366,63 @@ describe("Libraries workspace", () => {
     });
   });
 
-  it("sets the quality profile on a library from its settings", async () => {
+  it("shows Releases summary, applicable rules, and adds a library-locked rule in place", async () => {
     const { fake } = renderApp("/libraries/1/settings");
-    await screen.findByText("Quality profile", {}, { timeout: 15000 });
-    fireEvent.click(screen.getByRole("button", { name: "Quality profile" }));
-    fireEvent.click(await screen.findByRole("option", { name: "4K" }, { timeout: 15000 }));
-    expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    const section = await screen.findByTestId("library-releases", {}, { timeout: 15000 });
     await settleUi(() => {
-      const patch = calls(fake, "PATCH", "/libraries/1").at(-1);
-      expect(patch?.body).toMatchObject({ qualityProfile: "4K" });
+      expect(within(section).getByTestId("library-releases-home")).toHaveTextContent("1080p");
+      expect(within(section).getByText("Living room Apple TV")).toBeInTheDocument();
     });
+    expect(screen.queryByText("Quality profile")).not.toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Add a rule for Movies" }));
+    const dialog = await screen.findByRole("dialog", {}, { timeout: 15000 });
+    expect(within(dialog).getByText("Only Movies")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Profile" }));
+    fireEvent.click(await screen.findByRole("option", { name: "4K" }, { timeout: 15000 }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save rule" }));
+
+    await settleUi(() => {
+      const put = calls(fake, "PUT", "/config/quality").at(-1);
+      expect(put?.body).toMatchObject({
+        rules: expect.arrayContaining([expect.objectContaining({ libraries: [1], profile: "4K" })]),
+      });
+      expect(within(section).getByTestId("library-releases-home")).toHaveTextContent("4K");
+      expect(within(section).getByTestId("library-releases-home")).toHaveTextContent("Rule 2");
+    });
+  });
+
+  it("shows plugin-chosen release notice and only limit rules on plugin libraries", async () => {
+    renderApp("/libraries/3/settings", {}, (fake) => {
+      fake.state.config.quality.rules = [
+        {
+          id: "r_profile_only",
+          name: "Living room Apple TV",
+          devices: [{ app: "plex:Plex for Apple TV", label: "Plex for Apple TV" }],
+          profile: "4K",
+        },
+        {
+          id: "r_mobile_cap",
+          devices: [{ group: "mobile", label: "Phones & tablets" }],
+          profile: "",
+          maxHeight: 1080,
+        },
+      ];
+    });
+    const section = await screen.findByTestId("library-releases", {}, { timeout: 15000 });
+    await settleUi(() => {
+      expect(
+        within(section).getByText(
+          "Releases are chosen by Demo books. Only limits from rules apply.",
+        ),
+      ).toBeInTheDocument();
+      expect(within(section).getByTestId("library-releases-home")).toHaveTextContent("No limits");
+      expect(within(section).getByText("Phones & tablets")).toBeInTheDocument();
+    });
+    expect(
+      within(section).queryByRole("button", { name: /Add a rule for/ }),
+    ).not.toBeInTheDocument();
+    expect(within(section).queryByText("Living room Apple TV")).not.toBeInTheDocument();
   });
 });

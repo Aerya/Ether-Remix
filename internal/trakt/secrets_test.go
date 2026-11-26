@@ -94,8 +94,8 @@ func TestStoredTokensBoundToUserAndKey(t *testing.T) {
 		t.Fatal("token replayed into another user's row opened")
 	}
 	// The failure propagates and never disconnects the user or rewrites the row.
-	if _, err := c.accessToken(ctx, 2); err == nil {
-		t.Fatal("accessToken ignored an unreadable row")
+	if _, err := c.tokensForLink(ctx, 2, nil); err == nil {
+		t.Fatal("tokensForLink ignored an unreadable row")
 	}
 	if n, err := c.MigrateSecrets(ctx); err == nil || n != 0 {
 		t.Fatalf("migration over an unreadable row: %d %v", n, err)

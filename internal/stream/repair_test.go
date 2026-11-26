@@ -296,20 +296,29 @@ func TestRepairLiveDeadlineIncludesMetadataLock(t *testing.T) {
 }
 
 func TestRepairedSpanCacheVersion(t *testing.T) {
-	s := &segData{begin: 10, fileSize: 100, total: 4, name: "test", data: []byte("recovered"), repairedSpan: true}
-	b := encodeSegment(s)
-	if string(b[:4]) != "ETS3" {
-		t.Fatal("old binaries would mistake a span for one article")
-	}
-	d, ok := decodeSegment(b)
-	if !ok || !d.repairedSpan || d.rangeExact || !bytes.Equal(d.data, s.data) {
-		t.Fatal(d, ok)
-	}
-	s.repairedSpan = false
-	s.rangeExact = true
-	b = encodeSegment(s)
-	if string(b[:4]) != "ETS2" {
-		t.Fatal("ordinary cache entries changed version")
+	s := &segData{begin: 10, fileSize: 100, total: 4, name: "test", data: []byte("recovered")}
+	for _, tc := range []struct {
+		current, previous string
+		repaired          bool
+	}{
+		{segMagic, oldSegMagic, false},
+		{repairedSegMagic, oldRepairedSegMagic, true},
+	} {
+		s.repairedSpan = tc.repaired
+		s.rangeExact = !tc.repaired
+		s.untrustedMeta = true
+		b := encodeSegment(s)
+		if string(b[:4]) != tc.current {
+			t.Fatalf("cache magic = %q, want %q", b[:4], tc.current)
+		}
+		for _, magic := range []string{tc.current, tc.previous} {
+			copy(b[:4], magic)
+			d, ok := decodeSegment(b)
+			if !ok || d.repairedSpan != s.repairedSpan || d.rangeExact != s.rangeExact ||
+				d.untrustedMeta != (magic == tc.current) || !bytes.Equal(d.data, s.data) {
+				t.Fatalf("decode %s = %+v, %v", magic, d, ok)
+			}
+		}
 	}
 }
 

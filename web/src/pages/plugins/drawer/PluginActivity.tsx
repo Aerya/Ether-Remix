@@ -289,7 +289,11 @@ function Changes({
     }
   };
   return (
-    <Section title={t("Changes it made")} bodyClassName="p-0">
+    <Section
+      title={t("Changes it made")}
+      description={t("Undo keeps up to 30 days, 10,000 changes, or 256 MiB per plugin.")}
+      bodyClassName="p-0"
+    >
       <ul className="divide-y divide-border">
         {journal.map((entry) => (
           <li key={entry.id} className="flex items-center justify-between gap-3 px-5 py-3">

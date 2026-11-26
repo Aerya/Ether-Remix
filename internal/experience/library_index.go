@@ -210,6 +210,15 @@ func (s *Service) watchedTotal(ctx context.Context, v *core.User, filter core.Fi
 // hidden keys, blocked genres and keywords, the tightest rating cap and the
 // plex.tv share predicate. fits is false when the exclusions are too large
 // for one predicate; none reports that no title can match.
+// CollectionCardFilter applies the same SQL visibility rules as a library page.
+func CollectionCardFilter(u *core.User, ex LibraryPageExclusions, typ core.MediaType) (core.Filter, bool, error) {
+	if ex.Err != nil {
+		return core.Filter{}, false, ex.Err
+	}
+	f, fits, none := viewerBrowseFilter(core.Filter{Type: typ, LocalOnly: true}, u, ex, typ)
+	return f, fits && !none, nil
+}
+
 func viewerBrowseFilter(filter core.Filter, v *core.User, ex LibraryPageExclusions, typ core.MediaType) (out core.Filter, fits, none bool) {
 	if len(ex.Keys) > maxIndexedExclusionSet || len(ex.ExcludeGenres) > 64 || len(ex.ExcludeKeywords) > 64 {
 		return filter, false, false

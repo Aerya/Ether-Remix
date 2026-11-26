@@ -198,7 +198,7 @@ func TestPluginContinueExclusionLocalizationAndLevelDelegation(t *testing.T) {
 	// 1. Music media class excludes Continue shelf completely, while still
 	// evaluating declared shelves with Level + TabFilter + SortLastViewed.
 	fake.media = core.MediaClassMusic
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Language: "fr"}, "55")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Language: "fr"}, "55", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows(music): %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPluginContinueExclusionLocalizationAndLevelDelegation(t *testing.T) {
 	// out individual track-role items marked SkipContinue.
 	fake.media = core.MediaClassBook
 	fake.skipContinue[item2.Key] = true
-	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{Language: "fr-FR"}, "55")
+	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{Language: "fr-FR"}, "55", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows(book): %v", err)
 	}
@@ -231,7 +231,7 @@ func TestPluginContinueExclusionLocalizationAndLevelDelegation(t *testing.T) {
 
 	// 3. Audiobook media class shows localized "Continue Listening".
 	fake.media = core.MediaClassAudiobook
-	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{Language: "es"}, "55")
+	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{Language: "es"}, "55", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows(audiobook): %v", err)
 	}

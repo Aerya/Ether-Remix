@@ -225,13 +225,10 @@ func untrustedBodyProbeSlots(n int) (map[int]bool, int) {
 // catch mid-body truncation, CRC mismatches, or stub bodies behind STAT 223.
 func (e *Engine) probeFullSampleBody(ctx context.Context, ref slotRef, id string) error {
 	prio := healthPriority(ctx)
-	data, part, err := e.fetcher.BodyPart(ctx, id, ref.pf.groups, prio)
-	e.noteBodyOutcome(id, err, ctx)
+	data, part, err := e.bodyPart(ctx, ref.pf, ref.slot, id, prio, fetchOpts{})
 	if err != nil {
 		return err
 	}
-	e.fetches.Add(1)
-	e.fetchedBytes.Add(int64(len(data)))
 	if _, err := e.normalize(ref.pf, ref.slot, data, part); err != nil {
 		return err
 	}

@@ -68,11 +68,6 @@ func surfaceKey(surface, kind string) string { return surface + "|" + kind }
 // surface is the assembly's surface name.
 func (a *assembly) surface() string { return sectionName(a.section) }
 
-// layoutTarget is the assembly's layout page ("home" or "library:<id>").
-func (a *assembly) layoutTarget() string {
-	return layoutTargetForContext(a.section, a.hc)
-}
-
 // surfaceWeight is the row's prior weight on this surface; 0 = not a
 // default member. Owner collection rows carry their own targeting
 // (ownerCandidate) and weigh 1 wherever they arrive.
@@ -94,33 +89,24 @@ func (a *assembly) admit(c *candRow, hubID string, newViewer bool) (float64, boo
 	if a.section == "" && newViewer && c.coldHome {
 		return 1, true
 	}
-	if (a.ownerPlaced(c, hubID) || a.ownerAlways(c, hubID)) && fitsSurface(c.kind, a.surface()) {
+	if a.ownerPlaced(c, hubID) && (pageRow(hubID) || fitsSurface(c.kind, a.surface())) {
 		return 1, true
 	}
 	return 0, false
 }
 
-// ownerPlaced reports whether the effective layout names this row on this
-// page explicitly (by kind, hub id or stem; not a wildcard) and does not
-// switch it off.
+// ownerPlaced reports whether the page places this row (a page row that
+// isn't hidden): it is admitted wherever it fits, whatever its kind's
+// default surfaces.
 func (a *assembly) ownerPlaced(c *candRow, hubID string) bool {
-	if a.layout == nil {
-		return false
-	}
-	target := a.layoutTarget()
-	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: hubID, Kind: c.kind})
-	return p != nil && p.Status != "off" && !strings.ContainsAny(p.Row, "*?[")
+	p := a.plan.match(core.HomeRow{HubID: hubID, Kind: c.kind})
+	return p != nil && p.Status != "off"
 }
 
-// ownerAlways reports whether an active layout policy sets Status "always"
-// for this row on this page (including glob patterns).
+// ownerAlways reports whether the page pins or shows this row right now.
 func (a *assembly) ownerAlways(c *candRow, hubID string) bool {
-	if a.layout == nil {
-		return false
-	}
-	target := a.layoutTarget()
-	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: hubID, Kind: c.kind})
-	return p != nil && p.Status == "always" && whenMatches(p.When, a.hc) && weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
+	p := a.plan.match(core.HomeRow{HubID: hubID, Kind: c.kind})
+	return p != nil && p.Status == "always" && p.active(a.user.ID, a.hc)
 }
 
 // surfacePriorStrength is how many row-days of the kind-level estimate a
@@ -222,4 +208,10 @@ func (a *assembly) kindCap(kind string) int {
 		return info.sectionCap
 	}
 	return info.cap
+}
+
+// pageRow reports a row built for a page (its hub id is a page row id).
+func pageRow(hubID string) bool {
+	_, _, ok := pageRowID(hubID)
+	return ok
 }

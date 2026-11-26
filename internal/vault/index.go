@@ -41,16 +41,24 @@ CREATE TABLE vault_tracks(
 );
 CREATE INDEX vault_tracks_updated ON vault_tracks(updated_at);
 `)
+	store.Register("vault", 4, `
+CREATE INDEX vault_nzb_name_size ON vault_releases(name,size) WHERE kind='usenet';
+`)
+	store.Register("vault", 5, `
+CREATE INDEX vault_speed_sample ON vault_releases(added DESC, key) WHERE kind='usenet' AND dead=0 AND segments>0;
+`)
+	store.Register("vault", 6, `ALTER TABLE vault_releases ADD COLUMN owner_match INTEGER NOT NULL DEFAULT 0;`)
 }
 
-const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
+const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id,owner_match"
 
 func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	var x Entry
 	var added, used, health int64
 	var raw string
-	var private int
-	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw, &x.CacheID)
+	var private, ownerMatch int
+	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw, &x.CacheID, &ownerMatch)
+	x.OwnerMatch = ownerMatch != 0
 	if errors.Is(e, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}
@@ -66,6 +74,29 @@ func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	e = json.Unmarshal([]byte(raw), &x.Info)
 	return x, e
 }
+
+// SpeedSampleKeys returns a bounded window of recent NZBs, largest first.
+func (v *library) SpeedSampleKeys(ctx context.Context) ([]Key, error) {
+	rows, err := v.DB.QueryContext(ctx, `SELECT key FROM (
+        SELECT key,size,added FROM vault_releases
+        WHERE kind='usenet' AND dead=0 AND segments>0
+        ORDER BY added DESC,key LIMIT 32
+    ) recent ORDER BY size DESC,added DESC,key LIMIT 4`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []Key
+	for rows.Next() {
+		var k Key
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 func (v *library) Entry(ctx context.Context, k Key) (Entry, error) {
 	return scan(v.DB.QueryRowContext(ctx, "SELECT "+columns+" FROM vault_releases WHERE key=? AND dead=0", k))
 }
@@ -93,7 +124,7 @@ func (v *library) Search(ctx context.Context, r core.SearchRequest) ([]Entry, er
 		q += " AND ((season=? AND episode=?) OR EXISTS(SELECT 1 FROM vault_members m WHERE m.key=r.key AND m.season=? AND m.episode=?))"
 		a = append(a, r.Season, r.Episode, r.Season, r.Episode)
 	} else {
-		q += " AND season=0 AND episode=0 AND (?=0 OR year=? OR (tmdb<>0 AND tmdb=?))"
+		q += " AND season=0 AND episode=0 AND NOT EXISTS(SELECT 1 FROM vault_members m WHERE m.key=r.key AND m.episode>0) AND (?=0 OR year=? OR (tmdb<>0 AND tmdb=?))"
 		a = append(a, r.Year, r.Year, r.IDs.TMDB)
 	}
 	return v.entries(ctx, q+" ORDER BY last_used DESC,key", a...)
@@ -120,12 +151,22 @@ func (v *library) List(ctx context.Context, q string, k Kind, h *Health, limit i
 }
 func (v *library) ByAlias(ctx context.Context, i, id string) (Key, bool, error) {
 	var k Key
-	e := v.DB.QueryRowContext(ctx, `SELECT a.key FROM vault_aliases a JOIN vault_releases r ON a.key=r.key WHERE a.indexer_id=? AND a.release_id=? AND r.dead=0`, i, id).Scan(&k)
+	e := v.DB.QueryRowContext(ctx, `SELECT a.key FROM vault_aliases a JOIN vault_releases r ON a.key=r.key WHERE a.indexer_id=? AND a.release_id=? AND (r.dead=0 OR r.kind='usenet')`, i, id).Scan(&k)
 	if errors.Is(e, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	return k, e == nil, e
 }
+
+// Include historical tombstones so a missing pack cannot trigger another grab.
+func (v *library) ByNZBName(ctx context.Context, name string, size int64) (Key, bool, error) {
+	var key Key
+	var matches int
+	err := v.DB.QueryRowContext(ctx, `SELECT COALESCE(min(key),''),count(*) FROM
+		(SELECT key FROM vault_releases WHERE kind='usenet' AND name=? AND size=? LIMIT 2) matches`, name, size).Scan(&key, &matches)
+	return key, err == nil && matches == 1, err
+}
+
 func (v *library) Kept(ctx context.Context, rels []core.Release) (map[string]bool, error) {
 	keys, err := v.KeysFor(ctx, rels)
 	if err != nil {
@@ -363,6 +404,13 @@ func (v *library) Touch(ctx context.Context, k Key, avoided bool) error {
 	return v.update(ctx, k, "uses=uses+1,last_used=?,avoided=avoided+?", v.Now().Unix(), flag(avoided))
 }
 func (v *library) Purge(ctx context.Context, k Key) error {
+	entry, err := v.Entry(ctx, k)
+	if err != nil {
+		return err
+	}
+	if entry.Kind == KindUsenet {
+		return ErrNZBRetained
+	}
 	if err := v.update(ctx, k, "dead=1"); err != nil {
 		return err
 	}

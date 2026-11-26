@@ -400,3 +400,33 @@ func TestPickPenalizesCommentaryAndVisualImpaired(t *testing.T) {
 		t.Fatalf("pick = %d, want 2 (main track over default commentary/AD)", got)
 	}
 }
+
+// The When Evil Lurks remux an English viewer got: Spanish original,
+// Italian dub flagged default, and the only English audio is a commentary.
+// The commentary must not play as the film's audio, and the original beats
+// the default-flagged dub because the viewer asked for a language the file
+// lacks.
+func TestWantedLanguageCommentaryLosesToOriginal(t *testing.T) {
+	streams := []core.StreamInfo{
+		{Type: "audio", Language: "spa", Codec: "dts"},
+		{Type: "audio", Language: "eng", Codec: "ac3", Title: "Commentary by author Gabriel Eljaiek-Rodriguez"},
+		{Type: "audio", Language: "ita", Codec: "dts", Default: true},
+	}
+	if got := pick(streams, "audio", []string{"en"}, "", false, nil, "es"); got != 0 {
+		t.Fatalf("pick = %d, want 0 (Spanish original)", got)
+	}
+	// A remembered English choice does not lift the commentary either.
+	memory := &Choice{Language: "en"}
+	if got := pick(streams, "audio", []string{"en"}, "", false, memory, "es"); got != 0 {
+		t.Fatalf("remembered: pick = %d, want 0", got)
+	}
+	// With no language preference at all, the default flag still decides.
+	if got := pick(streams, "audio", nil, "", false, nil, "es"); got != 2 {
+		t.Fatalf("no preference: pick = %d, want 2 (default flag)", got)
+	}
+	// A file whose only audio is commentary still plays it.
+	only := []core.StreamInfo{{Type: "audio", Language: "eng", Title: "Commentary"}}
+	if got := pick(only, "audio", []string{"en"}, "", false, nil, "es"); got != 0 {
+		t.Fatalf("commentary only: pick = %d, want 0", got)
+	}
+}

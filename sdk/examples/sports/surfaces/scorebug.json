@@ -1,0 +1,859 @@
+{
+  "schema": 1,
+  "kind": "screen",
+  "renderer": 19,
+  "screen": "sports.scorebug",
+  "page": "main",
+  "version": "2.0.3",
+  "title": "{s:title}",
+  "presentation": "playerOverlay",
+  "sources": { "game": { "from": "liveEvent", "feed": "sports", "id": "{context.event}" } },
+  "actions": { "ether.reveal": {} },
+  "strings": {
+    "title": "Score",
+    "live": "Live",
+    "final": "Final",
+    "vs": "vs",
+    "at": "@",
+    "possession": "Has the ball",
+    "scoresHidden": "Scores hidden",
+    "reveal": "Reveal",
+    "revealScore": "Reveal the score",
+    "behindLive": "Scores hidden while behind live",
+    "delayed": "Delayed",
+    "postponed": "Postponed",
+    "canceled": "Canceled"
+  },
+  "palette": { "bug": "#0b0f1a", "glass": "#0b0f1ad9", "final": "#1d222bdd" },
+  "templates": {
+    "team": {
+      "type": "box",
+      "style": { "background-color": "$palette.glass", "flex-direction": "row", "align-items": "center", "justify-content": "center", "flex-grow": "1", "flex-shrink": "0", "gap": "6px", "padding": "7px 12px" },
+      "below": { "440": { "gap": "3pt", "padding": "4pt 5pt" } },
+      "children": [
+        { "type": "use", "template": "ball", "when": [{ "test": "arg.trailing" }, { "test": "arg.ball" }] },
+        { "type": "use", "template": "crest", "with": { "logo": "{arg.logo}", "color": "{arg.color}" }, "when": [{ "test": "arg.trailing", "not": true }] },
+        {
+          "type": "text",
+          "text": "{arg.abbr}",
+          "style": { "font-size": "15px", "font-weight": "750", "color": "$ui.ink", "flex-shrink": "0" },
+          "below": { "440": { "font-size": "12px" } },
+          "tv": { "letter-spacing": "0.4px" },
+          "states": [{ "when": [{ "test": "arg.loser" }], "style": { "opacity": "0.6" } }]
+        },
+        { "type": "use", "template": "crest", "with": { "logo": "{arg.logo}", "color": "{arg.color}" }, "when": [{ "test": "arg.trailing" }] },
+        { "type": "use", "template": "ball", "when": [{ "test": "arg.trailing", "not": true }, { "test": "arg.ball" }] },
+        {
+          "type": "box",
+          "when": [{ "test": "arg.color" }],
+          "a11y": { "hidden": true },
+          "style": { "position": "absolute", "left": "0px", "right": "0px", "bottom": "0px", "height": "3px", "background-color": "{arg.color}" },
+          "below": { "440": { "height": "2px" } }
+        }
+      ]
+    },
+    "crest": {
+      "type": "image",
+      "src": "{arg.logo}",
+      "alt": "",
+      "style": { "width": "22px", "height": "22px", "object-fit": "contain", "flex-shrink": "0" },
+      "below": { "440": { "width": "14pt", "height": "14pt" } },
+      "fallback": {
+        "type": "box",
+        "style": { "width": "22px", "height": "22px", "align-items": "center", "justify-content": "center", "flex-shrink": "0" },
+        "below": { "440": { "width": "14pt", "height": "14pt" } },
+        "children": [{
+          "type": "box",
+          "style": { "width": "62%", "height": "62%", "border-radius": "22px", "background-color": "$ui.inkQuiet" },
+          "states": [{ "when": [{ "test": "arg.color" }], "style": { "background-color": "{arg.color}" } }]
+        }]
+      }
+    },
+    "ball": {
+      "type": "box",
+      "role": "image",
+      "label": "{s:possession}",
+      "style": { "width": "6px", "height": "6px", "border-radius": "3px", "background-color": "$ui.accent", "flex-shrink": "0" }
+    },
+    "cap": {
+      "type": "box",
+      "when": [{ "test": "arg.text" }],
+      "style": { "background-color": "$palette.glass", "flex-direction": "row", "align-items": "center", "justify-content": "center", "flex-grow": "1", "max-width": "100%", "gap": "6px", "padding": "7px 12px" },
+      "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+      "states": [
+        { "when": [{ "test": "arg.state", "is": "eq", "value": "in" }], "style": { "background-color": "color-mix(in srgb, $ui.live 75%, #000000)" } },
+        { "when": [{ "test": "arg.state", "is": "eq", "value": "post" }], "style": { "background-color": "$palette.final" } }
+      ],
+      "children": [
+        {
+          "type": "box",
+          "when": [{ "test": "arg.state", "is": "eq", "value": "in" }],
+          "motion": "breathe",
+          "a11y": { "hidden": true },
+          "style": { "width": "7px", "height": "7px", "border-radius": "7px", "background-color": "#ffffff", "flex-shrink": "0" },
+          "below": { "440": { "width": "5px", "height": "5px", "border-radius": "5px" } }
+        },
+        {
+          "type": "text",
+          "text": "{arg.text}",
+          "style": { "font-size": "13px", "font-weight": "700", "color": "$ui.inkSecondary", "font-variant-numeric": "tabular-nums" },
+          "below": { "440": { "font-size": "11px" } },
+          "states": [
+            { "when": [{ "test": "arg.state", "is": "eq", "value": "in" }], "style": { "color": "#ffffff" } },
+            { "when": [{ "test": "arg.state", "is": "eq", "value": "post" }], "style": { "color": "$ui.ink" } }
+          ]
+        }
+      ]
+    },
+    "score": {
+      "type": "text",
+      "text": "{arg.value}",
+      "onChange": { "value": "{arg.value}", "motion": "roll" },
+      "style": { "font-size": "17px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+      "below": { "440": { "font-size": "13px" } },
+      "states": [{ "when": [{ "test": "arg.loser" }], "style": { "opacity": "0.55" } }]
+    }
+  },
+  "motion": {
+    "enter": {
+      "keyframes": "doc:enter",
+      "duration": 260,
+      "easing": "cubic-bezier(0.16, 1, 0.3, 1)",
+      "fill": "both",
+      "still": { "keyframes": "none", "duration": 0 }
+    },
+    "breathe": {
+      "keyframes": "doc:breathe",
+      "duration": 1400,
+      "easing": "cubic-bezier(0.45, 0, 0.55, 1)",
+      "iterations": "infinite",
+      "still": { "keyframes": "none", "duration": 0 }
+    },
+    "roll": { "keyframes": "doc:roll", "duration": 520, "easing": "cubic-bezier(0.16, 1, 0.3, 1)", "fill": "both", "still": { "keyframes": "none", "duration": 0 } },
+    "swell": { "keyframes": "doc:swell", "duration": 900, "easing": "cubic-bezier(0.2, 0.7, 0.3, 1)", "still": { "keyframes": "none", "duration": 0 } }
+  },
+  "keyframes": {
+    "enter": { "0%": { "opacity": 0, "translate": "-18px 0px", "scale": 0.96 }, "100%": { "opacity": 1, "translate": "0px 0px", "scale": 1 } },
+    "breathe": { "0%": { "opacity": 1 }, "50%": { "opacity": 0.3 }, "100%": { "opacity": 1 } },
+    "roll": { "0%": { "opacity": 0, "translate": "0px 70%" }, "100%": { "opacity": 1, "translate": "0px 0px" } },
+    "swell": { "0%": { "scale": 1 }, "22%": { "scale": 1.06 }, "100%": { "scale": 1 } }
+  },
+  "tree": {
+    "type": "box",
+    "testId": "player-score-bug",
+    "when": [{ "test": "src.game.event.id" }],
+    "motion": "enter",
+    "style": { "font-family": "$ui.font", "align-items": "flex-start", "gap": "5px" },
+    "children": [
+      {
+        "type": "box",
+        "when": [{ "test": "src.game.event.sides" }],
+        "onChange": { "value": "{src.game.event.sides.0.score}-{src.game.event.sides.1.score}", "motion": "swell" },
+        "style": { "border-radius": "min($ui.radiusControl, 10px)", "background-color": "$palette.bug", "box-shadow": "0px 4px 14px #00000080" },
+        "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+        "children": [
+          {
+            "type": "box",
+            "style": {
+              "flex-direction": "row",
+              "align-items": "stretch",
+              "flex-wrap": "wrap",
+              "border-radius": "min($ui.radiusControl, 10px)",
+              "overflow": "hidden",
+              "border": "1px solid #ffffff14"
+            },
+            "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+            "tv": { "border-width": "0px" },
+            "children": [
+              {
+                "type": "use",
+                "template": "team",
+                "when": [{ "test": "context.delayed", "not": true }],
+                "with": {
+                  "abbr": "{src.game.event.sides.0.abbr}",
+                  "logo": "{src.game.event.sides.0.logo}",
+                  "color": "{src.game.event.sides.0.color}",
+                  "loser": "{src.game.event.sides.0.loser}",
+                  "ball": "{src.game.event.sides.0.possession}"
+                }
+              },
+              {
+                "type": "use",
+                "template": "team",
+                "when": [{ "test": "context.delayed" }],
+                "with": { "abbr": "{src.game.event.sides.0.abbr}", "logo": "{src.game.event.sides.0.logo}", "color": "{src.game.event.sides.0.color}" }
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed", "not": true }, { "test": "src.game.event.spoiler", "not": true }, { "test": "src.game.event.scored" }],
+                "style": { "background-color": "$ui.ink", "padding": "7px 12px", "flex-direction": "row", "align-items": "center", "flex-shrink": "0", "gap": "8px" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "3pt" } },
+                "children": [
+                  {
+                    "type": "use",
+                    "template": "score",
+                    "with": { "value": "{src.game.event.sides.0.score}", "loser": "{src.game.event.sides.0.loser}" }
+                  },
+                  {
+                    "type": "text",
+                    "text": "–",
+                    "style": { "font-size": "17px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "13px" } }
+                  },
+                  {
+                    "type": "use",
+                    "template": "score",
+                    "with": { "value": "{src.game.event.sides.1.score}", "loser": "{src.game.event.sides.1.loser}" }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.detail.plays|asOf:at,at" }
+                ],
+                "style": { "background-color": "$ui.ink", "padding": "7px 12px", "flex-direction": "row", "align-items": "center", "flex-shrink": "0", "gap": "8px" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "3pt" } },
+                "children": [
+                  { "type": "use", "template": "score", "with": { "value": "{src.game.detail.plays|asOf:at,scores.0}", "loser": "" } },
+                  {
+                    "type": "text",
+                    "text": "–",
+                    "style": { "font-size": "17px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "13px" } }
+                  },
+                  { "type": "use", "template": "score", "with": { "value": "{src.game.detail.plays|asOf:at,scores.1}", "loser": "" } }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.detail.plays|asOf:at,at", "not": true }
+                ],
+                "style": { "background-color": "$ui.ink", "padding": "7px 12px", "flex-direction": "row", "align-items": "center", "flex-shrink": "0", "gap": "8px" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "3pt" } },
+                "children": [
+                  { "type": "use", "template": "score", "with": { "value": "0", "loser": "" } },
+                  {
+                    "type": "text",
+                    "text": "–",
+                    "style": { "font-size": "17px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "13px" } }
+                  },
+                  { "type": "use", "template": "score", "with": { "value": "0", "loser": "" } }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.scored", "not": true }
+                ],
+                "style": { "background-color": "$palette.glass", "padding": "4px 6px", "justify-content": "center", "flex-shrink": "0" },
+                "below": { "440": { "padding": "4px" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.state|eq:pre|then:s:at,s:vs}",
+                    "style": { "font-size": "13px", "font-weight": "600", "color": "$ui.inkQuiet", "text-transform": "lowercase" },
+                    "below": { "440": { "font-size": "11px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed", "not": true }, { "test": "src.game.event.spoiler" }],
+                "style": { "background-color": "$palette.glass", "padding": "4px 6px", "justify-content": "center", "flex-shrink": "0" },
+                "below": { "440": { "padding": "4px" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.state|eq:pre|then:s:at,s:vs}",
+                    "style": { "font-size": "13px", "font-weight": "600", "color": "$ui.inkQuiet", "text-transform": "lowercase" },
+                    "below": { "440": { "font-size": "11px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at" }, { "test": "src.game.event.spoiler" }],
+                "style": { "background-color": "$palette.glass", "padding": "4px 6px", "justify-content": "center", "flex-shrink": "0" },
+                "below": { "440": { "padding": "4px" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.state|eq:pre|then:s:at,s:vs}",
+                    "style": { "font-size": "13px", "font-weight": "600", "color": "$ui.inkQuiet", "text-transform": "lowercase" },
+                    "below": { "440": { "font-size": "11px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at", "not": true }],
+                "style": { "background-color": "$palette.glass", "padding": "4px 6px", "justify-content": "center", "flex-shrink": "0" },
+                "below": { "440": { "padding": "4px" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.state|eq:pre|then:s:at,s:vs}",
+                    "style": { "font-size": "13px", "font-weight": "600", "color": "$ui.inkQuiet", "text-transform": "lowercase" },
+                    "below": { "440": { "font-size": "11px" } }
+                  }
+                ]
+              },
+              {
+                "type": "use",
+                "template": "team",
+                "when": [{ "test": "context.delayed", "not": true }],
+                "with": {
+                  "abbr": "{src.game.event.sides.1.abbr}",
+                  "logo": "{src.game.event.sides.1.logo}",
+                  "color": "{src.game.event.sides.1.color}",
+                  "loser": "{src.game.event.sides.1.loser}",
+                  "ball": "{src.game.event.sides.1.possession}",
+                  "trailing": "true"
+                }
+              },
+              {
+                "type": "use",
+                "template": "team",
+                "when": [{ "test": "context.delayed" }],
+                "with": {
+                  "abbr": "{src.game.event.sides.1.abbr}",
+                  "logo": "{src.game.event.sides.1.logo}",
+                  "color": "{src.game.event.sides.1.color}",
+                  "trailing": "true"
+                }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [{ "test": "context.delayed", "not": true }, { "test": "src.game.event.spoiler", "not": true }, { "test": "src.game.event.detail" }],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.detail}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "delayed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:delayed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "postponed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:postponed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "canceled" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:canceled}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "ne", "value": "pre" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.state|eq:in|then:s:live,s:final}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.detail}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "delayed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:delayed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "postponed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:postponed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "canceled" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:canceled}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "ne", "value": "pre" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.state|eq:in|then:s:live,s:final}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.detail}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "delayed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:delayed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "postponed" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:postponed}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "pre" },
+                  { "test": "src.game.event.detail", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "canceled" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:canceled}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at" }, { "test": "src.game.event.spoiler" }],
+                "with": { "state": "in", "text": "{s:live}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.detail.plays|asOf:at,clock" },
+                  { "test": "src.game.detail.plays|asOf:at,period" }
+                ],
+                "with": { "state": "in", "text": "P{src.game.detail.plays|asOf:at,period} · {src.game.detail.plays|asOf:at,clock}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.detail.plays|asOf:at,clock" },
+                  { "test": "src.game.detail.plays|asOf:at,period", "not": true }
+                ],
+                "with": { "state": "in", "text": "{src.game.detail.plays|asOf:at,clock}" }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "when": [{ "test": "src.game.event.sides", "not": true }],
+        "onChange": { "value": "{src.game.event.ranking.0.abbr}", "motion": "swell" },
+        "style": { "border-radius": "min($ui.radiusControl, 10px)", "background-color": "$palette.bug", "box-shadow": "0px 4px 14px #00000080" },
+        "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+        "children": [
+          {
+            "type": "box",
+            "style": {
+              "flex-direction": "row",
+              "align-items": "stretch",
+              "flex-wrap": "wrap",
+              "border-radius": "min($ui.radiusControl, 10px)",
+              "overflow": "hidden",
+              "border": "1px solid #ffffff14"
+            },
+            "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+            "tv": { "border-width": "0px" },
+            "children": [
+              {
+                "type": "box",
+                "when": [{ "test": "src.game.event.title" }],
+                "style": { "background-color": "$palette.glass", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.league.label}{src.game.event.title| · }",
+                    "style": { "font-size": "15px", "font-weight": "700", "color": "$ui.ink" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "src.game.event.title", "not": true }],
+                "style": { "background-color": "$palette.glass", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.league.label}{src.game.event.league.name| · }",
+                    "style": { "font-size": "15px", "font-weight": "700", "color": "$ui.ink" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed", "not": true }, { "test": "src.game.event.detail" }],
+                "style": { "background-color": "$ui.ink", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.detail}",
+                    "style": { "font-size": "16px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at", "not": true }, { "test": "src.game.event.detail" }],
+                "style": { "background-color": "$ui.ink", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.event.detail}",
+                    "style": { "font-size": "16px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.detail.plays|asOf:at,clock" },
+                  { "test": "src.game.detail.plays|asOf:at,period" }
+                ],
+                "style": { "background-color": "$ui.ink", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "P{src.game.detail.plays|asOf:at,period} · {src.game.detail.plays|asOf:at,clock}",
+                    "style": { "font-size": "16px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.detail.plays|asOf:at,clock" },
+                  { "test": "src.game.detail.plays|asOf:at,period", "not": true }
+                ],
+                "style": { "background-color": "$ui.ink", "justify-content": "center", "padding": "7px 12px", "max-width": "100%" },
+                "below": { "440": { "padding": "4pt 5pt", "gap": "4pt" } },
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "{src.game.detail.plays|asOf:at,clock}",
+                    "style": { "font-size": "16px", "font-weight": "800", "color": "$ui.inkInverse", "font-variant-numeric": "tabular-nums" },
+                    "below": { "440": { "font-size": "12px" } }
+                  }
+                ]
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.ranking" },
+                  { "test": "src.game.event.ranking.0.abbr" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.ranking.0.abbr} P{src.game.event.ranking.0.pos}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.ranking" },
+                  { "test": "src.game.event.ranking.0.abbr", "not": true }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{src.game.event.ranking.0.name} P{src.game.event.ranking.0.pos}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.ranking", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "in" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:live}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler", "not": true },
+                  { "test": "src.game.event.ranking", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "post" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:final}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "in" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:live}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed", "not": true },
+                  { "test": "src.game.event.spoiler" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "post" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:final}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "in" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:live}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at", "not": true },
+                  { "test": "src.game.event.state", "is": "eq", "value": "post" }
+                ],
+                "with": { "state": "{src.game.event.state}", "text": "{s:final}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "in" }
+                ],
+                "with": { "state": "in", "text": "{s:live}" }
+              },
+              {
+                "type": "use",
+                "template": "cap",
+                "when": [
+                  { "test": "context.delayed" },
+                  { "test": "src.game.detail.playsNewest.0.at" },
+                  { "test": "src.game.event.state", "is": "eq", "value": "post" }
+                ],
+                "with": { "state": "in", "text": "{s:live}" }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "when": [
+          { "test": "context.delayed", "not": true },
+          { "test": "src.game.event.spoiler", "not": true },
+          { "test": "src.game.event.state", "is": "eq", "value": "in" },
+          { "test": "src.game.event.sides" },
+          { "test": "src.game.event.situation" }
+        ],
+        "style": {
+          "flex-direction": "row",
+          "align-items": "center",
+          "flex-wrap": "wrap",
+          "gap": "10px",
+          "padding": "4px 10px",
+          "border-radius": "min($ui.radiusControl, 10px)",
+          "background-color": "$palette.glass"
+        },
+        "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+        "children": [
+          {
+            "type": "repeat",
+            "over": "src.game.event.situation",
+            "as": "entry",
+            "limit": 2,
+            "key": "{entry.label}",
+            "item": {
+              "type": "box",
+              "style": { "flex-direction": "row", "align-items": "baseline", "gap": "5px" },
+              "children": [
+                {
+                  "type": "text",
+                  "text": "{entry.label}",
+                  "style": { "font-size": "10px", "font-weight": "700", "color": "$ui.inkQuiet", "text-transform": "uppercase", "letter-spacing": "1px" }
+                },
+                {
+                  "type": "text",
+                  "text": "{entry.value}",
+                  "style": { "font-size": "12px", "font-weight": "600", "color": "$ui.ink", "font-variant-numeric": "tabular-nums" }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "when": [{ "test": "context.delayed", "not": true }, { "test": "src.game.event.spoiler" }],
+        "role": "button",
+        "label": "{s:revealScore}",
+        "testId": "score-bug-reveal",
+        "group": true,
+        "press": { "action": "plugin", "args": { "name": "ether.reveal", "event": "{src.game.event.$key}" } },
+        "style": {
+          "flex-direction": "row",
+          "align-items": "center",
+          "gap": "8px",
+          "padding": "5px 10px",
+          "min-height": "44pt",
+          "border-radius": "min($ui.radiusControl, 10px)",
+          "background-color": "$palette.glass"
+        },
+        "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+        "focus": { "outline": "2px solid $ui.accent" },
+        "tv": { "transition": "scale 160ms, background-color 160ms" },
+        "children": [
+          { "type": "text", "text": "{s:scoresHidden}", "style": { "font-size": "12px", "font-weight": "500", "color": "$ui.inkSecondary" } },
+          { "type": "text", "text": "{s:reveal}", "style": { "font-size": "12px", "font-weight": "700", "color": "$ui.accent" } }
+        ]
+      },
+      {
+        "type": "box",
+        "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at" }, { "test": "src.game.event.spoiler" }],
+        "role": "button",
+        "label": "{s:revealScore}",
+        "testId": "score-bug-reveal",
+        "group": true,
+        "press": { "action": "plugin", "args": { "name": "ether.reveal", "event": "{src.game.event.$key}" } },
+        "style": {
+          "flex-direction": "row",
+          "align-items": "center",
+          "gap": "8px",
+          "padding": "5px 10px",
+          "min-height": "44pt",
+          "border-radius": "min($ui.radiusControl, 10px)",
+          "background-color": "$palette.glass"
+        },
+        "below": { "440": { "border-radius": "min($ui.radiusControl, 7px)" } },
+        "focus": { "outline": "2px solid $ui.accent" },
+        "tv": { "transition": "scale 160ms, background-color 160ms" },
+        "children": [
+          { "type": "text", "text": "{s:scoresHidden}", "style": { "font-size": "12px", "font-weight": "500", "color": "$ui.inkSecondary" } },
+          { "type": "text", "text": "{s:reveal}", "style": { "font-size": "12px", "font-weight": "700", "color": "$ui.accent" } }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "{s:behindLive}",
+        "testId": "player-scores-hidden",
+        "when": [{ "test": "context.delayed" }, { "test": "src.game.detail.playsNewest.0.at", "not": true }],
+        "style": {
+          "font-size": "12px",
+          "font-weight": "500",
+          "color": "$ui.inkSecondary",
+          "margin-top": "1px",
+          "padding": "3px 8px",
+          "border-radius": "6px",
+          "background-color": "$ui.scrim",
+          "align-self": "flex-start",
+          "overflow": "hidden"
+        }
+      }
+    ]
+  }
+}

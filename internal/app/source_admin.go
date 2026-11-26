@@ -15,6 +15,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/nodewire"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/sourceadmin"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 	"github.com/braedonsaunders/ether/internal/usenet"
 )
 
@@ -83,7 +84,7 @@ func (a *App) buildSourceAdmin() error {
 		if owner != local || a.privateMemberRole(ctx, caller, config.RoleServer) != nil || a.privateMemberRole(ctx, owner, config.RoleSource) != nil {
 			return sourceadmin.ErrDenied
 		}
-		if q.Operation == sourceadmin.TestProvider || q.Operation == sourceadmin.TestIndexer || q.Operation == sourceadmin.TestDebrid {
+		if q.Operation == sourceadmin.TestProvider || q.Operation == sourceadmin.TestIndexer || q.Operation == sourceadmin.TestDebrid || q.Operation == sourceadmin.SpeedUsenet || q.Operation == sourceadmin.SpeedDebrid {
 			if a.privateEligible(ctx, caller, config.RoleServer) != nil || a.privateEligible(ctx, owner, config.RoleSource) != nil {
 				return sourceadmin.ErrDenied
 			}
@@ -99,7 +100,7 @@ func (a *App) buildSourceAdmin() error {
 func (a *App) authorizeSourceResource(q sourceadmin.Request) error {
 	cfg := a.cfg.Get()
 	switch q.Operation {
-	case sourceadmin.TestProvider:
+	case sourceadmin.TestProvider, sourceadmin.SpeedUsenet:
 		for _, v := range cfg.Usenet.Providers {
 			if v.ID != "" && v.ID == q.ResourceID {
 				return nil
@@ -111,7 +112,7 @@ func (a *App) authorizeSourceResource(q sourceadmin.Request) error {
 				return nil
 			}
 		}
-	case sourceadmin.TestDebrid:
+	case sourceadmin.TestDebrid, sourceadmin.SpeedDebrid:
 		for _, v := range cfg.Debrid.Providers {
 			if v.ID != "" && v.ID == q.ResourceID {
 				return nil
@@ -186,6 +187,9 @@ func (a *App) sourceAdminServices() sourceadmin.Services {
 		}
 	}
 	if a.fetcher != nil {
+		s.SpeedUsenet = func(ctx context.Context, id string) speedtest.Result {
+			return a.testProviderSpeed(ctx, "usenet", id)
+		}
 		s.TestProvider = func(ctx context.Context, id string) error {
 			for _, v := range a.cfg.Get().Usenet.Providers {
 				if id != "" && v.ID == id {
@@ -215,6 +219,9 @@ func (a *App) sourceAdminServices() sourceadmin.Services {
 		}
 	}
 	if a.debrid != nil {
+		s.SpeedDebrid = func(ctx context.Context, id string) speedtest.Result {
+			return a.testProviderSpeed(ctx, "debrid", id)
+		}
 		s.TestDebrid = func(ctx context.Context, id string) error {
 			for _, v := range a.cfg.Get().Debrid.Providers {
 				if id != "" && v.ID == id {

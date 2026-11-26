@@ -97,7 +97,7 @@ func packEpisodeKey(filePath string, targetSeason, targetCour int) (key int, spa
 
 	seasons := baseInfo.Seasons
 	if len(seasons) == 0 {
-		seasons = fullInfo.Seasons
+		seasons = FolderSeasons(normPath)
 	}
 	if len(seasons) > 0 && !slices.Contains(seasons, targetSeason) {
 		return 0, 0, false

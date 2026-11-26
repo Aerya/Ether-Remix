@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -28,7 +29,7 @@ func (s *Service) ListOwnedComplete(ctx context.Context, user *core.User, typ co
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
 	out := make([]core.Collection, 0)
 	for _, row := range rows {
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, typ) {
 			continue
 		}
 		keys, err := s.serve(ctx, row, user, true)
@@ -42,6 +43,165 @@ func (s *Service) ListOwnedComplete(ctx context.Context, user *core.User, typ co
 	out = append(out, s.listEphemeral(user, typ)...)
 	hideFranchises := s.catCfg != nil && s.catCfg().HideFranchiseCollections
 	return out, !hideFranchises && (typ == "" || typ == core.TypeMovie), nil
+}
+
+// VisitOwned evaluates non-franchise collections in display order, stopping
+// when visit has enough visible results for the requested page.
+func (s *Service) VisitOwned(ctx context.Context, user *core.User, typ core.MediaType, query string, batchSize int, visit func([]core.Collection) (bool, error)) (bool, error) {
+	rows, err := s.loadRows(ctx)
+	if err != nil {
+		return false, err
+	}
+	// loadRows is request-memoized and other consumers use its display order.
+	rows = append([]*specRow(nil), rows...)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
+	batchSize = max(1, batchSize)
+	batchRows := make([]*specRow, 0, min(batchSize, len(rows)))
+	flush := func() (bool, error) {
+		if len(batchRows) == 0 {
+			return false, nil
+		}
+		cols, err := s.collectionHeaders(ctx, batchRows, user, typ)
+		batchRows = batchRows[:0]
+		if err != nil {
+			return false, err
+		}
+		nonempty := cols[:0]
+		for _, col := range cols {
+			if col.ChildCount > 0 {
+				nonempty = append(nonempty, col)
+			}
+		}
+		return visit(nonempty)
+	}
+	for _, row := range rows {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, typ) ||
+			(query != "" && !strings.Contains(strings.ToLower(row.spec.Name), query)) {
+			continue
+		}
+		batchRows = append(batchRows, row)
+		if len(batchRows) == batchSize {
+			if stop, err := flush(); stop || err != nil {
+				return false, err
+			}
+		}
+	}
+	if stop, err := flush(); stop || err != nil {
+		return false, err
+	}
+	if stop, err := visit(s.listEphemeral(user, typ)); stop || err != nil {
+		return false, err
+	}
+	hideFranchises := s.catCfg != nil && s.catCfg().HideFranchiseCollections
+	return !hideFranchises && (typ == "" || typ == core.TypeMovie), nil
+}
+
+func (s *Service) collectionHeaders(ctx context.Context, rows []*specRow, user *core.User, typ core.MediaType) ([]core.Collection, error) {
+	if err := s.preloadMembers(ctx, rows); err != nil {
+		return nil, err
+	}
+	members := make([]*memberSet, len(rows))
+	var all [2][]core.RatingKey
+	var seen [2]map[core.RatingKey]bool
+	groups := make([]int, len(rows))
+	for i, row := range rows {
+		ms, err := s.membersFor(ctx, row, true)
+		if err != nil {
+			return nil, fmt.Errorf("collections: complete list: %w", err)
+		}
+		members[i] = ms
+		if row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed" {
+			groups[i] = 1
+		}
+		g := groups[i]
+		if seen[g] == nil {
+			seen[g] = make(map[core.RatingKey]bool)
+		}
+		for _, key := range ms.keys {
+			if !seen[g][key] {
+				seen[g][key] = true
+				all[g] = append(all[g], key)
+			}
+		}
+	}
+	var snapshots [2]*snapshot
+	for g, keys := range all {
+		if len(keys) > 0 {
+			snap, err := s.snapshotForServe(ctx, keys, g == 1)
+			if err != nil {
+				return nil, err
+			}
+			snapshots[g] = snap
+		}
+	}
+	served := make([][]core.RatingKey, len(rows))
+	var artKeys []core.RatingKey
+	artSeen := make(map[core.RatingKey]bool)
+	for i, row := range rows {
+		if len(members[i].keys) == 0 {
+			continue
+		}
+		keys := s.serveMembers(ctx, row, user, members[i], snapshots[groups[i]])
+		if s.pseDiscovery != nil && row.spec.ReleaseMode != "upcoming" && row.spec.ReleaseMode != "mixed" {
+			var err error
+			keys, err = s.pseDiscovery(core.WithPSECollection(ctx, pseRowID(row)), keys)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		served[i] = keys
+		if row.spec.MediaType == MediaMixed && typ != "" {
+			keys = sectionKeys(keys, typ)
+		}
+		for _, key := range keys[:min(len(keys), 4)] {
+			if !artSeen[key] {
+				artSeen[key] = true
+				artKeys = append(artKeys, key)
+			}
+		}
+	}
+	titles, _ := s.mirror.ArtSummary(ctx, artKeys)
+	art := make(map[core.RatingKey]core.Title, len(titles))
+	for _, title := range titles {
+		art[title.Key] = title
+	}
+	out := make([]core.Collection, 0, len(rows))
+	for i, row := range rows {
+		keys := served[i]
+		out = append(out, s.collectionWithArt(ctx, row, typ, keys, art))
+	}
+	return out, nil
+}
+
+// preloadMembers fills cold persisted membership in one batch. Live and
+// unbuilt specs still follow their normal refresh policy in membersFor.
+func (s *Service) preloadMembers(ctx context.Context, rows []*specRow) error {
+	var missing []*specRow
+	var ids []int64
+	for _, row := range rows {
+		_, facet := localFacetSpec(row.spec)
+		if !facet && !row.lastBuilt.IsZero() && row.buildHash != "" && s.cached(row.id) == nil {
+			missing = append(missing, row)
+			ids = append(ids, row.id)
+		}
+	}
+	keys, unshared, err := s.loadMembersMany(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for _, row := range missing {
+		ms := s.newMemberSet(row.spec, keys[row.id], unshared[row.id], row.lastBuilt, row.buildHash)
+		if row.spec.Refresh == RefreshLive {
+			ms.loadedAt = row.lastBuilt
+		}
+		s.mu.Lock()
+		if s.members[row.id] == nil {
+			s.members[row.id] = ms
+		}
+		s.mu.Unlock()
+	}
+	return nil
 }
 
 // FindVisible stops evaluating collections as soon as accept finds a visible
@@ -71,7 +231,7 @@ func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ co
 		if navigation && row.spec.NavigationGroup == "" {
 			continue
 		}
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, typ) {
 			continue
 		}
 		keys, err := s.serve(ctx, row, user, !navigation)

@@ -38,7 +38,9 @@ func TestPreviewContinueUsesSharedNextEpisodes(t *testing.T) {
 	if !found {
 		t.Fatal("Continue Watching missing")
 	}
-	if _, err := h.e.SetHomeLayout(context.Background(), core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindContinue, Status: "off"}}}}}); err != nil {
+	page := DefaultPage(core.PageHome)
+	page.Rows = []core.Row{{Source: core.RowSource{Kind: KindContinue}, Placement: core.RowPlacement{Mode: core.PlacementHide}}}
+	if _, err := h.e.SavePage(context.Background(), page); err != nil {
 		t.Fatal(err)
 	}
 	p = preview(t, h, u, hubContext(testNow, core.DeviceDesktop), "home")

@@ -47,8 +47,9 @@ type Manager struct {
 	detachedCount int
 	bgWG          sync.WaitGroup
 
-	flightMu sync.Mutex
-	flights  map[string]*searchFlight
+	flightMu   sync.Mutex
+	flights    map[string]*searchFlight
+	pluginRefs sync.Map // standalone managers without a database
 }
 
 // Close cancels any detached background cache-fill searches started by
@@ -431,7 +432,7 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 				dur := time.Since(searchStart)
 				slots[i].duration = dur
 				slots[i].err = ctx.Err()
-				core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, nil, slots[i].err, dur))
+				core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, cfg.Name, nil, slots[i].err, dur))
 				m.recordIndexerTiming(id, dur, slots[i].err)
 				return
 			}
@@ -451,7 +452,7 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 			dur := time.Since(started)
 			slots[i].duration = dur
 			slots[i].results, slots[i].err = res, err
-			core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, res, err, dur))
+			core.ObserveIndexerStatus(ctx, buildIndexerStatus(ctx, id, name, cfg.Name, res, err, dur))
 			m.recordIndexerTiming(id, dur, err)
 		}(i, cl, id, name)
 	}

@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // MigrationError reports a migration pass that left NZBs behind.
@@ -177,6 +179,18 @@ type liveFrame struct {
 	copy bool
 }
 
+var packRemoval sync.Mutex
+
+// PinPacks postpones compaction unlinks while a backup captures the database
+// and the packs it references. Appends and pointer relocation can continue.
+func PinPacks(ctx context.Context, db *sql.DB) (func(), error) {
+	if store.DialectOf(db) == store.Postgres {
+		return store.SessionLock(ctx, db, "vault:pack-removal")
+	}
+	packRemoval.Lock()
+	return packRemoval.Unlock, nil
+}
+
 // Compact serializes relocation with every node's writer. Old packs are
 // unlinked only after the new pointers commit, with a second reference check.
 func (v *library) Compact(ctx context.Context) error {
@@ -261,6 +275,10 @@ func (v *library) Compact(ctx context.Context) error {
 			return e
 		}
 		if rewrite {
+			unpin, err := PinPacks(ctx, v.DB)
+			if err != nil {
+				return err
+			}
 			removed := false
 			e = v.write(ctx, func(tx *sql.Tx) error {
 				var n int
@@ -277,6 +295,7 @@ func (v *library) Compact(ctx context.Context) error {
 				}
 				return e
 			})
+			unpin()
 			if e != nil {
 				return e
 			}

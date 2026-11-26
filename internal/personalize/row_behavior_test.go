@@ -112,10 +112,7 @@ func TestNeutralPrecomposedHomeMatchesLegacyConfiguredLayout(t *testing.T) {
 	ctx := context.Background()
 	viewer := &core.User{ID: 1}
 	hc := hubContext(testNow, core.DeviceTV)
-	_, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: "home.continue", Status: "always", Slot: 1}, {Row: "movie.trending", Status: "always"}}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	mustSavePage(t, h.e, rpage(core.PageHome, prow(KindContinue, core.PlacementPinned, 1), prow(KindTrending, core.PlacementShow, 0)))
 	hubs := []core.Hub{{ID: "movie.trending", Title: "first", ItemCount: 1}, {ID: "home.continue", Title: "Continue", ItemCount: 1}, {ID: "movie.trending", Title: "last", ItemCount: 1}}
 	legacy, err := h.e.FinalizeHome(ctx, viewer, hc, "home", hubs)
 	if err != nil {
@@ -144,10 +141,9 @@ func TestNeutralPrecomposedHomeMatchesLegacyConfiguredLayout(t *testing.T) {
 func TestHomeRowEnabledHonorsViewerOverrideWithoutRequiringSlot(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
-	doc := core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindContinue, Status: "off"}}}}, Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: "home.continue", Status: "always", Slot: 3}}}}}}}
-	if _, err := h.e.SetHomeLayout(ctx, doc); err != nil {
-		t.Fatal(err)
-	}
+	doc := rpage(core.PageHome, prow(KindContinue, core.PlacementHide, 0))
+	viewerOverride(&doc, 2, doc.Rows[0].ID, core.PlacementPinned, 3)
+	mustSavePage(t, h.e, doc)
 	hc := hubContext(testNow, core.DeviceTV)
 	if h.e.HomeRowEnabled(ctx, &core.User{ID: 1}, hc, "home.continue") {
 		t.Fatal("global disabled row enabled")

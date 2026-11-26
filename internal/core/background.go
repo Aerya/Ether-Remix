@@ -13,7 +13,9 @@ var ErrForegroundOnly = errors.New("background check cannot decide this source")
 
 // BackgroundBudget is an optional admission hook for speculative work. Ordinary
 // playback has no hook. Implementations must be concurrency safe; denied work
-// returns ErrBudgetExhausted and is never evidence of source absence.
+// returns ErrBudgetExhausted and is never evidence of source absence. A
+// negative amount (from SettleBackground) returns admitted units the work
+// did not use; it is never refused.
 type BackgroundBudget func(ctx context.Context, resource, source string, amount int64) error
 
 type backgroundBudgetKey struct{}
@@ -27,6 +29,20 @@ func SpendBackground(ctx context.Context, resource, source string, amount int64)
 		return b(ctx, resource, source, amount)
 	}
 	return nil
+}
+
+// SettleBackground settles a reservation SpendBackground admitted for
+// amounts only known afterwards (NNTP BODY bytes, reserved at the
+// provider's maximum article size): the part of reserved that used did not
+// consume goes back to the allowance. It runs even when ctx is cancelled.
+func SettleBackground(ctx context.Context, resource, source string, reserved, used int64) {
+	unused := reserved - max(used, 0)
+	if unused <= 0 {
+		return
+	}
+	if b, ok := ctx.Value(backgroundBudgetKey{}).(BackgroundBudget); ok {
+		_ = b(context.WithoutCancel(ctx), resource, source, -unused)
+	}
 }
 
 // ReleaseFeed describes an indexer's recent-release discovery capability.

@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 type providerBackoffWaiter interface {
@@ -123,7 +125,7 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 
 	if id == "" {
 		if fo.cacheID != "" && e.cache != nil {
-			if seg, ok := e.cachedSegment(fo.cacheID, key.seg); ok {
+			if seg, ok := e.cachedSegment(fo.cacheID, key.seg, pf, i); ok {
 				e.learnHot(rel, pf, i, seg)
 				return seg, false, nil
 			}
@@ -406,8 +408,17 @@ func (e *Engine) hedgeSpeculative(ctx context.Context, rel *release, pf *postedF
 // them (a fetch finishing after its release was trimmed), so a fresh state
 // for the same NZB would otherwise locate offsets from estimates forever.
 func (e *Engine) learnHot(rel *release, pf *postedFile, i int, seg *segData) {
-	if seg.repairedSpan || pf.slotKnown(i) {
+	if !pf.slotKnown(i) {
+		e.learnSegment(rel, pf, i, seg)
+	}
+}
+
+func (e *Engine) learnSegment(rel *release, pf *postedFile, i int, seg *segData) {
+	if seg.repairedSpan {
 		return
+	}
+	if seg.untrustedMeta {
+		pf.markUntrustedMeta()
 	}
 	pf.learn(i, seg.begin, seg.end(), seg.fileSize, seg.total)
 	rel.notePartSize(pf)
@@ -460,10 +471,7 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 		if !fromCache && prio == core.PriorityLive && rel.feedbackID != "" && !fo.layoutProbe {
 			rel.liveArticles.Add(1)
 		}
-		if !seg.repairedSpan {
-			pf.learn(i, seg.begin, seg.end(), seg.fileSize, seg.total)
-			rel.notePartSize(pf)
-		}
+		e.learnSegment(rel, pf, i, seg)
 		if !fo.noHot {
 			e.hot.put(key.segKey, seg)
 		}
@@ -509,7 +517,7 @@ func (e *Engine) load(ctx context.Context, pf *postedFile, i int, id string, glo
 
 func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i int, id string, global int, prio core.Priority, fo fetchOpts) (*segData, bool, error) {
 	if fo.cacheID != "" && e.cache != nil {
-		if seg, ok := e.cachedSegment(fo.cacheID, global); ok {
+		if seg, ok := e.cachedSegment(fo.cacheID, global, pf, i); ok {
 			e.cacheHits.Add(1)
 			return seg, true, nil
 		}
@@ -531,7 +539,7 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 			case <-t.C:
 			}
 		}
-		data, part, err := e.bodyPart(ctx, pf, id, prio, fo)
+		data, part, err := e.bodyPart(ctx, pf, i, id, prio, fo)
 		if err == nil {
 			seg, err := e.normalize(pf, i, data, part)
 			return seg, false, err
@@ -556,7 +564,7 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 						return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, err)
 					}
 					e.setFlightBackoff(fl, nil)
-					data, part, err = e.bodyPart(ctx, pf, id, prio, fo)
+					data, part, err = e.bodyPart(ctx, pf, i, id, prio, fo)
 					if err == nil {
 						seg, nerr := e.normalize(pf, i, data, part)
 						return seg, false, nerr
@@ -588,7 +596,7 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 }
 
 // bodyPart fetches and decodes one article, counting what it transferred.
-func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio core.Priority, fo fetchOpts) ([]byte, core.ArticlePart, error) {
+func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, i int, id string, prio core.Priority, fo fetchOpts) ([]byte, core.ArticlePart, error) {
 	var data []byte
 	var part core.ArticlePart
 	var err error
@@ -598,10 +606,17 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio c
 	}
 	defer release()
 	started := fo.meter.begin()
+	ctx = core.WithProviderMissHint(ctx, &pf.misses)
+	ctx = core.WithArticlePartValidator(ctx, func(data []byte, part core.ArticlePart) error {
+		return pf.validateArticleIdentity(i, data, part)
+	})
 	if burst, ok := e.fetcher.(core.BurstArticleFetcher); ok && time.Now().Before(fo.burstUntil) {
 		data, part, err = burst.BodyPartBurst(ctx, id, pf.groups, prio, fo.burstUntil)
 	} else {
 		data, part, err = e.fetcher.BodyPart(ctx, id, pf.groups, prio)
+	}
+	if err == nil {
+		err = pf.validateArticleIdentity(i, data, part)
 	}
 	fo.meter.end(started, len(data), err == nil, prio)
 	e.noteBodyOutcome(id, err, ctx)
@@ -620,7 +635,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio c
 // an error only when ctx ended or the budget ran out.
 func (e *Engine) loadAlternate(ctx context.Context, pf *postedFile, i int, prio core.Priority, fo fetchOpts) (*segData, error) {
 	for _, alt := range pf.alternates(i) {
-		data, part, err := e.bodyPart(ctx, pf, alt, prio, fo)
+		data, part, err := e.bodyPart(ctx, pf, i, alt, prio, fo)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -645,6 +660,55 @@ func (e *Engine) loadAlternate(ctx context.Context, pf *postedFile, i int, prio 
 // Real Usenet articles are well under a few MiB.
 const maxArticleBytes = 32 << 20
 
+// perSegmentWrapper recognizes a complete, single-part yEnc envelope around
+// each segment of a multi-segment post. Its name, numbering and size describe
+// the envelope rather than the posted file.
+func (pf *postedFile) perSegmentWrapper(data []byte, part core.ArticlePart) bool {
+	return part.Part == 1 && part.Total == 1 && part.Begin == 1 &&
+		part.End == int64(len(data)) && part.FileSize <= part.End && pf.numSlots() > 1
+}
+
+// archiveChunkPart recognizes numbering for an entire archive split
+// across multiple NZB files. The RAR planner checks the chunks' contiguity,
+// even when a missing chunk makes the advertised part count too low.
+func (pf *postedFile) archiveChunkPart(i int, part core.ArticlePart) bool {
+	listed := pf.file.SegmentCount()
+	return part.Total > listed &&
+		(part.Part > i+1 || part.Total > listed*2+maxTailGrowth || (i == 0 && part.Begin > 1)) &&
+		nzb.Classify(pf.Name()).Kind.IsArchive()
+}
+
+func (pf *postedFile) validateArticleIdentity(i int, data []byte, part core.ArticlePart) error {
+	want := pf.expectedPart(i)
+	listed := pf.file.SegmentCount()
+	// NZB subjects can rename valid posts, and yEnc offsets describe the
+	// article's placement, which the archive planner may reorder.
+	switch {
+	case pf.perSegmentWrapper(data, part):
+		return nil
+	case want.FileSize > 0 && part.FileSize > 0 && want.FileSize != part.FileSize:
+	case pf.archiveChunkPart(i, part):
+		return nil
+	case part.Total > 0 && (part.Total < listed || part.Part > part.Total):
+	case part.Part > 0 && part.Part != want.Part:
+		// Some obfuscated posts randomize the entire ybegin envelope.
+		// Accept only when the preceding parts corroborate its position;
+		// normalize discards the envelope's range.
+		if part.Total > listed*2+maxTailGrowth && nzb.IsObfuscated(pf.Name()) &&
+			pf.learnedPartSize() > 0 {
+			begin, _, _ := pf.rangeOf(i)
+			if part.Begin == begin+1 && part.End-part.Begin+1 == int64(len(data)) {
+				return nil
+			}
+		}
+	case i == 0 && part.Begin > 1:
+	case part.Total > listed*2+maxTailGrowth && !nzb.IsObfuscated(pf.Name()):
+	default:
+		return nil
+	}
+	return fmt.Errorf("stream: yEnc identity does not match file slot %d: %w: %w", i+1, core.ErrArticleMissing, ErrCorrupt)
+}
+
 // normalize places decoded article bytes in the posted file using the yEnc
 // header, tolerating headers that are absent or inconsistent.
 func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.ArticlePart) (*segData, error) {
@@ -655,7 +719,7 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 	// standalone single-part yEnc article (=ybegin size=<segLen>, no =ypart).
 	// Treat that per-segment wrapper as unranged so it neither pins slot i>0 at
 	// offset 0 nor poisons pf.Size() with one segment's byte count.
-	perSegSingle := pf.numSlots() > 1 && part.Part == 1 && part.Total == 1 && part.Begin == 1 && part.End == int64(len(data)) && part.FileSize <= part.End
+	perSegSingle := pf.perSegmentWrapper(data, part)
 	seg := &segData{fileSize: part.FileSize, total: part.Total, name: part.Name}
 	if !perSegSingle && part.Begin >= 1 && part.End >= part.Begin {
 		seg.begin = part.Begin - 1
@@ -663,18 +727,23 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 		if int64(len(data)) != want {
 			return nil, fmt.Errorf("stream: %s part %d decoded length %d differs from yEnc range %d: %w", pf.Name(), i+1, len(data), want, ErrCorrupt)
 		}
-		if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
+		if pf.archiveChunkPart(i, part) {
+			// This offset is relative to the whole archive. Drop the
+			// archive's file metadata before indexing the individual chunk.
 			seg.fileSize, seg.total, seg.name = 0, 0, ""
-			pf.markUntrustedMeta()
+		} else if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
+			seg.fileSize, seg.total, seg.name = 0, 0, ""
+			seg.begin, _, _ = pf.rangeOf(i)
+			seg.untrustedMeta = true
 		} else if part.FileSize == 0 {
-			pf.markUntrustedMeta()
+			seg.untrustedMeta = true
 		} else {
 			seg.rangeExact = part.Part == i+1 && part.Total >= part.Part && part.FileSize >= part.End
 		}
 	} else {
 		// No multipart range header: trust the index estimate.
 		if perSegSingle {
-			seg.fileSize, seg.total = 0, 0
+			seg.fileSize, seg.total, seg.name = 0, 0, ""
 		}
 		seg.begin, _, _ = pf.rangeOf(i)
 		if !perSegSingle && !pf.validFileMeta(i, seg.begin, seg.begin+int64(len(data)), seg.fileSize, part.Part, seg.total) {
@@ -691,10 +760,15 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 // Disk cache encoding: a small header so a cached segment restores its
 // position in the posted file without the article.
 //
-//	"ETS2" | begin u64 | fileSize u64 | total u32 | nameLen u16 | flags u8 | name | data
+//	"ETS4" | begin u64 | fileSize u64 | total u32 | nameLen u16 | flags u8 | name | data
 //
-// Multi-article repaired spans use ETS3 so older binaries ignore those entries.
-const segMagic = "ETS2"
+// Multi-article repaired spans use ETS5 so older binaries ignore those entries.
+const (
+	segMagic            = "ETS4"
+	repairedSegMagic    = "ETS5"
+	oldSegMagic         = "ETS2"
+	oldRepairedSegMagic = "ETS3"
+)
 
 func encodeSegment(s *segData) []byte {
 	name := s.name
@@ -711,8 +785,11 @@ func encodeSegment(s *segData) []byte {
 		b[26] = 1
 	}
 	if s.repairedSpan {
-		copy(b, "ETS3")
+		copy(b, repairedSegMagic)
 		b[26] |= 2
+	}
+	if s.untrustedMeta {
+		b[26] |= 4
 	}
 	copy(b[27:], name)
 	copy(b[27+len(name):], s.data)
@@ -734,44 +811,82 @@ func encodeSpanRef(target int, s *segData) []byte {
 	return b
 }
 
-// cachedSegment reads global from the disk cache, following a repaired-span
-// reference to the slot that stores the span.
-func (e *Engine) cachedSegment(cacheID string, global int) (*segData, bool) {
+// cachedSegment reads and validates a disk record before it can teach the
+// slot's range. A rejected entry is a cache miss and a successful fetch
+// replaces it through the normal persistence path.
+func (e *Engine) cachedSegment(cacheID string, global int, pf *postedFile, i int) (*segData, bool) {
 	b, ok := e.cache.Get(cacheID, global)
 	if !ok {
 		return nil, false
 	}
-	if len(b) != 28 || string(b[:4]) != spanRefMagic {
-		return decodeSegment(b)
-	}
-	target := int(binary.LittleEndian.Uint64(b[4:]))
-	begin := int64(binary.LittleEndian.Uint64(b[12:]))
-	n := int(binary.LittleEndian.Uint64(b[20:]))
-	if target == global {
-		return nil, false
-	}
-	if b, ok = e.cache.Get(cacheID, target); !ok {
-		return nil, false
+	if len(b) == 28 && string(b[:4]) == spanRefMagic {
+		target := int(binary.LittleEndian.Uint64(b[4:]))
+		begin := int64(binary.LittleEndian.Uint64(b[12:]))
+		n := int(binary.LittleEndian.Uint64(b[20:]))
+		// A span reference always points back to its first slot in this file.
+		if target < pf.segBase || target >= global {
+			return nil, false
+		}
+		b, ok = e.cache.Get(cacheID, target)
+		if !ok {
+			return nil, false
+		}
+		seg, ok := decodeSegment(b)
+		if !ok || !seg.repairedSpan || seg.begin != begin || len(seg.data) != n || !pf.acceptCachedSegment(i, seg) {
+			return nil, false
+		}
+		return seg, true
 	}
 	seg, ok := decodeSegment(b)
-	if !ok || !seg.repairedSpan || seg.begin != begin || len(seg.data) != n {
+	if !ok || !pf.acceptCachedSegment(i, seg) {
 		return nil, false
 	}
 	return seg, true
 }
 
+func (pf *postedFile) acceptCachedSegment(i int, seg *segData) bool {
+	// The cache stores a total but no independently reported article number.
+	if seg.total > 0 && seg.total <= i {
+		return false
+	}
+	if seg.repairedSpan {
+		// Verified PAR2 spans can cover several slots. Check containment
+		// rather than requiring their range to equal exactly one slot.
+		want := pf.expectedPart(i)
+		return (want.FileSize == 0 || seg.fileSize == want.FileSize) &&
+			(want.Begin == 0 || (seg.begin < want.Begin && seg.end() >= want.End))
+	}
+	if i == 0 && seg.begin > 0 && seg.fileSize == 0 && seg.total == 0 && nzb.Classify(pf.Name()).Kind.IsArchive() {
+		// Normalization retains the archive-relative offset of a chunk
+		// but strips the whole archive's size and part count.
+		return true
+	}
+	part := core.ArticlePart{
+		Name: seg.name, FileSize: seg.fileSize, Total: seg.total, Begin: seg.begin + 1, End: seg.end(),
+	}
+	return pf.validateArticleIdentity(i, seg.data, part) == nil
+}
+
 func decodeSegment(b []byte) (*segData, bool) {
-	if len(b) < 27 || (string(b[:4]) != segMagic && string(b[:4]) != "ETS3") {
+	if len(b) < 27 {
+		return nil, false
+	}
+	hasUntrustedFlag := false
+	switch string(b[:4]) {
+	case segMagic, repairedSegMagic:
+		hasUntrustedFlag = true
+	case oldSegMagic, oldRepairedSegMagic:
+	default:
 		return nil, false
 	}
 	begin := int64(binary.LittleEndian.Uint64(b[4:]))
 	size := int64(binary.LittleEndian.Uint64(b[12:]))
 	total := int(binary.LittleEndian.Uint32(b[20:]))
 	nl := int(binary.LittleEndian.Uint16(b[24:]))
-	if begin < 0 || size < 0 || 27+nl > len(b) {
+	if begin < 0 || size < 0 || 27+nl > len(b) || begin >= math.MaxInt64-int64(len(b)-(27+nl)) {
 		return nil, false
 	}
-	return &segData{begin: begin, fileSize: size, total: total, name: string(b[27 : 27+nl]), data: b[27+nl:], rangeExact: b[26]&1 != 0, repairedSpan: b[26]&2 != 0}, true
+	return &segData{begin: begin, fileSize: size, total: total, name: string(b[27 : 27+nl]), data: b[27+nl:], rangeExact: b[26]&1 != 0, repairedSpan: b[26]&2 != 0, untrustedMeta: hasUntrustedFlag && b[26]&4 != 0}, true
 }
 
 // readFile fills p from posted file pf at off, fetching the covering

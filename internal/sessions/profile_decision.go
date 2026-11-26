@@ -409,14 +409,33 @@ func stampEncodedVideoRange(s *core.StreamInfo, d core.Decision) {
 // it and leaves display mapping to the client. Treat it as HDR10-capable, so
 // its declared conditions (evaluated for direct play) decide instead of a
 // forced SDR tone-map encode.
+//
+// Dolby Vision inference applies only to profiles that express range support
+// via VideoRangeType conditions (Wholphin, Jellyfin Android TV, Streamyfin)
+// while leaving the DV profile list implicit. It must never override an
+// explicit client declaration (Vela), an owner/host override
+// (DolbyVisionBaseOnly), or an explicit DV profile list (DVProfilesExplicit).
 func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 	if caps.Profiles == nil {
 		return caps
 	}
 	listed := false
+	hasRangeCond := false
 	for _, codec := range caps.Profiles.Codecs {
+		videoCodec := codec.MediaType == "" || strings.EqualFold(codec.MediaType, "video")
 		for _, cond := range codec.Conditions {
+			if videoCodec && strings.EqualFold(cond.Property, "VideoRangeType") {
+				hasRangeCond = true
+			}
 			listed = noteProfileRange(&caps, cond) || listed
+		}
+		if videoCodec && !hasRangeCond {
+			for _, cond := range codec.ApplyConditions {
+				if strings.EqualFold(cond.Property, "VideoRangeType") {
+					hasRangeCond = true
+					break
+				}
+			}
 		}
 		// ApplyConditions say when a codec profile applies (Wholphin lists
 		// the ranges it cannot play there), not which ranges are playable.
@@ -439,16 +458,15 @@ func applyProfileRangeCaps(caps core.ClientCaps) core.ClientCaps {
 			}
 		}
 		if hasVideo {
-			if !caps.HDR10 && profileAllowsVideoRange(caps.Profiles, "HDR10") {
+			if caps.Protocol != "vela" && !caps.HDR10 && profileAllowsVideoRange(caps.Profiles, "HDR10") {
 				caps.HDR10 = true
 			}
-			// A client that excludes only unsupported ranges (Wholphin,
-			// Jellyfin Android TV, Streamyfin) or declares no codec
-			// conditions (Fladder) accepts every unexcluded DV range in
-			// Jellyfin. Leaving DolbyVision false made Android's
-			// hdr10BaseReason force a remux/encode even when the profile
-			// allows DV direct play.
-			if !caps.DolbyVision && len(caps.DVProfiles) == 0 {
+			// A profile that excludes only unsupported VideoRangeType values
+			// (Wholphin, Jellyfin Android TV, Streamyfin) accepts every
+			// unexcluded DV range in Jellyfin. Range-less profiles (including
+			// Vela's synthetic profile), explicit client declarations, owner
+			// overrides, and explicit DV profile lists must not be overridden.
+			if hasRangeCond && caps.Protocol != "vela" && !caps.DolbyVision && !caps.DolbyVisionBaseOnly && !caps.DVProfilesExplicit && len(caps.DVProfiles) == 0 {
 				var dvProfiles []int
 				if profileAllowsVideoRange(caps.Profiles, "DOVI") {
 					dvProfiles = append(dvProfiles, 5)
@@ -534,15 +552,25 @@ func noteProfileRange(caps *core.ClientCaps, cond core.ClientProfileCondition) b
 	default:
 		return false
 	}
+	allowHDR := !caps.ExplicitNoHDR
+	allowDV := allowHDR && !caps.DolbyVisionBaseOnly && !(caps.DVProfilesExplicit && len(caps.DVProfiles) == 0)
 	for _, part := range strings.Split(cond.Value, "|") {
 		switch strings.ToUpper(strings.TrimSpace(part)) {
 		case "HDR10", "HLG", "HDR10PLUS":
-			caps.HDR10 = true
+			if allowHDR {
+				caps.HDR10 = true
+			}
 		case "DOVI", "DOVIWITHSDR", "DOVIWITHEL":
-			caps.DolbyVision = true
+			if allowDV {
+				caps.DolbyVision = true
+			}
 		case "DOVIWITHHDR10", "DOVIWITHHLG", "DOVIWITHHDR10PLUS", "DOVIWITHELHDR10PLUS":
-			caps.HDR10 = true
-			caps.DolbyVision = true
+			if allowHDR {
+				caps.HDR10 = true
+			}
+			if allowDV {
+				caps.DolbyVision = true
+			}
 		}
 	}
 	return true
@@ -1553,6 +1581,9 @@ func (b *Broker) originalBudgetRejection(info core.MediaInfo, req frontend.PlanR
 		reasons = append(reasons, "owner policy requires video encoding")
 	}
 	if v := info.Video(); v != nil {
+		if reason := transcode.DirectPlayDolbyVisionRejection(v, req.Caps, req.Intent.Options); reason != "" {
+			reasons = append(reasons, reason)
+		}
 		if req.Intent.Options.MaxHeight > 0 && v.Height > req.Intent.Options.MaxHeight {
 			reasons = append(reasons, fmt.Sprintf("%dp exceeds client %dp limit", v.Height, req.Intent.Options.MaxHeight))
 		}

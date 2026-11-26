@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,9 @@ func TestIncrementalVaultSnapshot(t *testing.T) {
 	}
 	dir := filepath.Join(root, "backups")
 	s := New(db, conf, dir, 2)
+	if _, err = db.ExecContext(ctx, `UPDATE backup_settings SET retain=2 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
 	name := "202611/0123456789abcdef0123456789abcdef.pack"
 	payload := []byte("private record for encrypted export")
 	src := filepath.Join(root, packPrefix, name)
@@ -52,6 +56,12 @@ func TestIncrementalVaultSnapshot(t *testing.T) {
 	if err != nil || !os.SameFile(a, b) {
 		t.Fatal("sealed pack was not reused", err)
 	}
+	if _, err = s.Create(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(companion(first)); !os.IsNotExist(err) {
+		t.Fatal("retention left the oldest companion", err)
+	}
 	raw, err := os.ReadFile(companion(second))
 	if err != nil || bytes.Contains(raw, payload) {
 		t.Fatal("unprotected companion", err)
@@ -62,7 +72,7 @@ func TestIncrementalVaultSnapshot(t *testing.T) {
 	}
 	defer f.Close()
 	var bundle bytes.Buffer
-	if err = exportSnapshot(f, &bundle); err != nil {
+	if err = exportSnapshot(ctx, f, &bundle); err != nil {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(root, "restored")
@@ -73,10 +83,18 @@ func TestIncrementalVaultSnapshot(t *testing.T) {
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatal("missing restored payload", err)
 	}
+	staged, err := s.StageSnapshot(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = os.ReadFile(filepath.Join(staged.Path, packPrefix, name))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("missing staged payload", err)
+	}
 	if err = os.Remove(companion(second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.StageSnapshot(ctx, second.Name); err != nil {
-		t.Fatal("unavailable pack prevented DB restore", err)
+	if _, err = s.StageSnapshot(ctx, second.Name); !errors.Is(err, errMissingVaultPack) {
+		t.Fatal("expected restore to reject a missing pack", err)
 	}
 }

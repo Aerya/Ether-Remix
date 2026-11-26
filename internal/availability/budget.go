@@ -40,6 +40,10 @@ func (s *Service) budgetContext(ctx context.Context, kind requestKind) context.C
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposeAvailability)
 	ctx = core.WithForegroundReserve(ctx, cfg.ReservePercent)
 	return core.WithBackgroundBudget(ctx, func(ctx context.Context, resource, source string, n int64) error {
+		if n < 0 {
+			s.settle(ctx, resource, -n)
+			return nil
+		}
 		live := s.cfg().Availability
 		if s.d.Active != nil && s.d.Active() && !feed {
 			return context.Canceled
@@ -208,6 +212,14 @@ func (s *Service) pace(ctx context.Context, id string) error {
 	return nil
 }
 
+// settle returns n reserved units a background read did not use. Only the
+// byte allowance is reserved ahead of an unknown cost.
+func (s *Service) settle(ctx context.Context, resource string, n int64) {
+	if resource == "bytes" {
+		s.refund(ctx, "bytes", n)
+	}
+}
+
 // refund returns n admitted requests that were not made after all.
 func (s *Service) refund(ctx context.Context, kind string, n int64) {
 	day := s.now().UTC().Format("2006-01-02")
@@ -275,6 +287,10 @@ func (s *Service) AdmitPluginUsenetCheck(ctx context.Context, pluginID string) (
 	outCtx = core.WithIndexerPurpose(ctx, core.IndexerPurposeAvailability)
 	outCtx = core.WithForegroundReserve(outCtx, cfg.ReservePercent)
 	outCtx = core.WithBackgroundBudget(outCtx, func(ctx context.Context, resource, _ string, n int64) error {
+		if n < 0 {
+			s.settle(ctx, resource, -n)
+			return nil
+		}
 		live := s.cfg().Availability
 		if resource == "bytes" && live.CheckBytes > 0 {
 			return s.spend(ctx, "bytes", n, live.CheckBytes)

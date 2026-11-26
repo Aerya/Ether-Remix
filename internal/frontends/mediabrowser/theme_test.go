@@ -17,11 +17,11 @@ import (
 type themeCache struct{ scheduled, served int }
 
 func (*themeCache) ThemeEnabled() bool { return true }
-func (c *themeCache) Theme(_ frontend.Title, schedule bool) bool {
+func (c *themeCache) Theme(_ frontend.Title, schedule bool) string {
 	if schedule {
 		c.scheduled++
 	}
-	return true
+	return "m4a"
 }
 func (c *themeCache) ServeTheme(w http.ResponseWriter, r *http.Request, _ frontend.Title) {
 	c.served++

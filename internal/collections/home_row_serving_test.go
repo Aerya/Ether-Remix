@@ -51,7 +51,7 @@ func TestLiveCollectionColdRestartServesPersistedMembersOnRefreshError(t *testin
 	}
 	sp := spec("Live Trending", "movie", []core.CollectionSource{{Kind: "tmdbList", List: "trending_week", MediaType: "movie"}})
 	sp.Refresh = collections.RefreshLive
-	sp.Targets = core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()}
+	sp.BrowseInApps = true
 	created, err := svc.CreateSpec(base.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestLiveCollectionColdRestartServesPersistedMembersOnRefreshError(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := cold.HomeRowsFor(base.ctx, owner, core.HubContext{})
+	rows, err := collections.PageRowsForTest(base.ctx, cold, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestUpdateSpecNonMembershipEditPreservesBuild(t *testing.T) {
 	}
 	sp := spec("Trending Toggle", "movie", []core.CollectionSource{{Kind: "tmdbList", List: "trending_week", MediaType: "movie"}})
 	sp.Refresh = collections.RefreshDaily
-	sp.Targets = core.CollectionTargets{CollectionsTab: true, HomeRow: false, Users: core.AllUsers()}
+	sp.BrowseInApps = false
 	created, err := svc.CreateSpec(base.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestUpdateSpecNonMembershipEditPreservesBuild(t *testing.T) {
 	// Make TMDB fail so any unnecessary rebuild would fail or alter state.
 	tmdbProxy.failing.Store(true)
 	updatedSpec := *created
-	updatedSpec.Targets.HomeRow = true
+	updatedSpec.BrowseInApps = true
 	updated, err := svc.UpdateSpec(base.ctx, created.ID, updatedSpec)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestUpdateSpecNonMembershipEditPreservesBuild(t *testing.T) {
 		t.Fatalf("non-membership UpdateSpec triggered unexpected remote fetch")
 	}
 
-	rows, err := svc.HomeRowsFor(base.ctx, owner, core.HubContext{})
+	rows, err := collections.PageRowsForTest(base.ctx, svc, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,14 +149,14 @@ func TestCustomAllowedLibraryViewerSeesMatchingCollectionItems(t *testing.T) {
 	})))
 	sp := spec("Mixed Picks", "mixed", []core.CollectionSource{{Kind: "catalog"}})
 	sp.LocalOnly = true
-	sp.Targets = core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()}
+	sp.BrowseInApps = true
 	created, err := e.svc.CreateSpec(e.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	viewer := &core.User{ID: 7, Username: "custom-movies", AllowedLibraries: []core.LibraryID{3}}
-	rows, err := e.svc.HomeRowsFor(e.ctx, viewer, core.HubContext{})
+	rows, err := collections.PageRowsForTest(e.ctx, e.svc, viewer)
 	if err != nil {
 		t.Fatal(err)
 	}

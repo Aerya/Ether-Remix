@@ -58,6 +58,13 @@ func (i *instance) registerRoutes() error {
 			}
 		}
 	}
+	for _, method := range []string{"GET", "HEAD"} {
+		for _, p := range []string{"/timeshift/{username}/{password}/{duration}/{start}/{file}", "/streaming/timeshift.php"} {
+			if err := i.router.Handle(method, p, http.HandlerFunc(i.serve)); err != nil {
+				return err
+			}
+		}
+	}
 	for _, p := range []string{"/sessions/{tail...}", "/image/{secret}"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			if err := i.router.Handle(method, p, http.HandlerFunc(i.media)); err != nil {
@@ -194,7 +201,13 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.playlist(w, r, l)
 	case "/xmltv.php":
 		i.xmltv(w, r, l)
+	case "/streaming/timeshift.php":
+		i.catchUp(w, r, l)
 	default:
+		if r.PathValue("duration") != "" {
+			i.catchUp(w, r, l)
+			return
+		}
 		i.play(w, r, l)
 	}
 }

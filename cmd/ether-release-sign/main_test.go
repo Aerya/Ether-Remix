@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/braedonsaunders/ether/internal/updater"
 )
 
 func TestKeygenNeverOverwritesAKeyFile(t *testing.T) {
@@ -70,5 +72,31 @@ func TestManifestRolloutDefaults(t *testing.T) {
 		if err != nil || m.RolloutHours != c.hours || m.Critical != c.critical {
 			t.Fatalf("%v: rollout=%d critical=%v err=%v", c.args, m.RolloutHours, m.Critical, err)
 		}
+	}
+}
+
+func TestManifestIncludesNotesWithSizeLimit(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const markdown = "# Ether v1.2.0\n\n- Faster startup\n"
+	const notesURL = "https://example.invalid/releases/v1.2.0"
+	for name, body := range map[string]string{"ether": "binary", "notes.md": markdown} {
+		if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"-version", "1.2.0", "-artifact", "ether:linux:amd64:binary:https://example.invalid/ether",
+		"-notes", notesURL, "-notes-file", "notes.md", "-out", "manifest.json"}
+	if err := cmdManifest(args); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := readManifest("manifest.json")
+	if err != nil || m.Notes != markdown || m.NotesURL != notesURL {
+		t.Fatalf("release notes or URL missing: %v", err)
+	}
+	if err := os.WriteFile("notes.md", []byte(strings.Repeat("x", updater.MaxReleaseNotesBytes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdManifest(args); err == nil || !strings.Contains(err.Error(), "release notes exceed") {
+		t.Fatalf("oversized notes: %v", err)
 	}
 }

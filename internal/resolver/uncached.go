@@ -36,7 +36,7 @@ const maxQueueAttempts = 3
 // answer then wraps core.ErrDownloadQueued, or core.ErrDownloadRefused /
 // core.ErrDownloadLimit when the service would not take it; a release the
 // provider turns out to hold plays at once (index >= 0). The trace error
-// says the same thing the player is told, for Quality › History.
+// says the same thing the player is told, for Releases › History.
 func (s *Service) uncachedOutcome(ctx context.Context, ranked []candidate, results []core.Release, tr *Trace) (index int, payload []byte, err error, ok bool) {
 	var uncached []int
 	usenetTried := false

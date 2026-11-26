@@ -2,7 +2,6 @@ package personalize
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -67,6 +66,13 @@ func (e *Engine) finish(userID int64) {
 
 func (e *Engine) worker(ctx context.Context) {
 	defer e.wg.Done()
+	if e.opts.Ready != nil {
+		select {
+		case <-e.opts.Ready:
+		case <-ctx.Done():
+			return
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -462,7 +468,15 @@ func (e *Engine) runGenerator(g generator, b *builder) (rows []*candRow) {
 			rows = nil
 		}
 	}()
-	return g.run(b)
+	stats := &rowFilterStats{}
+	b.tally = stats
+	defer func() { b.tally = nil }()
+	rows = g.run(b)
+	// Counts are only unambiguous for a generator's single row.
+	if len(rows) == 1 && rows[0].filtered == nil {
+		rows[0].filtered = stats
+	}
+	return rows
 }
 
 // buildTaste builds only the taste model (owner views, PersonalScorer).
@@ -800,14 +814,10 @@ func (e *Engine) computeStats(ctx context.Context) (*statsSnapshot, error) {
 // ---- owner collection rows ---------------------------------------------------------
 
 type ownerEntry struct {
-	rows []core.CollectionRow
-	// layoutOnly marks rows fetched only because the layout places them
-	// (LayoutRow); they are served only while the placement's When and
-	// days-per-week select them.
-	layoutOnly map[string]bool
-	at         time.Time
-	loading    bool
-	done       chan struct{}
+	rows    []core.CollectionRow
+	at      time.Time
+	loading bool
+	done    chan struct{}
 }
 
 // ownerRowsTTL is how long owner collection rows are reused per context.
@@ -837,25 +847,25 @@ func (e *Engine) clearOwnerRows() {
 	e.memoMu.Unlock()
 }
 
-func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, hc core.HubContext, d core.HomeLayout) (prefix, scope string) {
-	raw, _ := json.Marshal(d)
+func (e *Engine) ownerScopeKey(user *core.User, pl *pagePlan) (prefix, scope string) {
 	hash := fnv.New64a()
-	_, _ = hash.Write(raw)
+	for _, id := range pl.placedCollections(user.ID, nil) {
+		_, _ = hash.Write([]byte(id + "\x00"))
+	}
 	var ruleRevision int64
 	if e.opts.CatalogRulesRevision != nil {
 		ruleRevision = e.opts.CatalogRulesRevision(user)
 	}
-	target := layoutTargetForContext(section, hc)
-	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + target + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
+	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + string(pl.key) + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
 	prefix = strconv.FormatInt(user.ID, 10) + "|"
 	return prefix, scope
 }
 
-func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout, collID string) (core.CollectionRow, bool) {
+func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, pl *pagePlan, collID string) (core.CollectionRow, bool) {
 	if user == nil || collID == "" || e.opts.Collections == nil {
 		return core.CollectionRow{}, false
 	}
-	prefix, scope := e.ownerScopeKey(user, section, hc, d)
+	prefix, scope := e.ownerScopeKey(user, pl)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -877,22 +887,21 @@ func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, sect
 	return core.CollectionRow{}, false
 }
 
-// ownerRows returns owner collection rows for the viewer and page from a
-// cache. The fetched rows do not depend on the hour, daypart, weekend or
-// device (schedules and layout placement windows are applied here, per
-// request), so the cache is keyed by viewer, page, layout and local day only:
-// a new hour or daypart reuses the stored rows. A new day serves the previous
-// day's rows while it refreshes in the background, and a page that has never
-// been fetched (first load after a restart or a collection change) waits at
-// most OwnerRowsWait (SourceTimeout for previews) for its first fetch.
-func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout, wait bool) ([]*candRow, int64) {
+// ownerRows returns the collection and plugin list rows the page places,
+// for the viewer, from a cache. The fetched rows do not depend on the hour,
+// daypart, weekend or device (row schedules apply per request), so the
+// cache is keyed by viewer, page, the placed set and local day only: a new
+// hour or daypart reuses the stored rows. A new day serves the previous
+// day's rows while it refreshes in the background, and a page that has
+// never been fetched waits at most OwnerRowsWait (SourceTimeout for
+// previews) for its first fetch.
+func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubContext, section core.MediaType, pl *pagePlan, wait bool) ([]*candRow, int64) {
 	ctx = core.WithCatalogViewer(ctx, user)
-	if e.opts.Collections == nil {
+	placed := pl.placedCollections(user.ID, nil)
+	if e.opts.Collections == nil || len(placed) == 0 {
 		return nil, 0
 	}
-	target := layoutTargetForContext(section, hc)
-	homeTarget := target == surfHome
-	prefix, scope := e.ownerScopeKey(user, section, hc, d)
+	prefix, scope := e.ownerScopeKey(user, pl)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -906,7 +915,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		ent.loading = true
 		ent.done = make(chan struct{})
 		u := *user
-		go e.fetchOwnerRows(key, &u, hc, ent, placedCollections(d, user.ID, target))
+		go e.fetchOwnerRows(key, &u, hc, ent, placed)
 	}
 	done, have := ent.done, !ent.at.IsZero()
 	if !have {
@@ -930,52 +939,11 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		t.Stop()
 	}
 	e.mu.Lock()
-	rows, at, layoutOnly := ent.rows, ent.at, ent.layoutOnly
+	rows, at := ent.rows, ent.at
 	e.mu.Unlock()
-	needSelected := len(layoutOnly) > 0
-	if !needSelected {
-		for _, cr := range rows {
-			if homeTarget && !cr.HomeRow || !homeTarget && !cr.SectionRow {
-				needSelected = true
-				break
-			}
-		}
-	}
-	var selected map[string]bool
-	if needSelected {
-		selected = map[string]bool{}
-		for _, id := range selectedCollections(d, user.ID, target, hc) {
-			selected[id] = true
-		}
-	}
 	var out []*candRow
 	for _, cr := range rows {
-		if layoutOnly[cr.CollectionID] && !selected[cr.CollectionID] {
-			continue
-		}
-		natural := cr.HomeRow
-		if !homeTarget {
-			natural = cr.SectionRow
-		}
-		if !natural {
-			if !selected[cr.CollectionID] {
-				continue
-			}
-			// A collection explicitly placed in this page's layout opts into
-			// this surface even when its Studio targets only enabled the other
-			// surface (HomeRowsFor already loaded it, skipping LayoutRow).
-			if homeTarget {
-				cr.HomeRow = true
-				cr.Hub.Promoted = true
-				cr.Hub.Context = "hub.home.collection"
-			} else {
-				cr.SectionRow = true
-			}
-		}
-		if !collectionScheduleAllows(d, user.ID, section, hc, cr) {
-			continue
-		}
-		if c := e.ownerCandidate(cr, section, homeTarget, user); c != nil {
+		if c := e.ownerCandidate(cr, section, user); c != nil {
 			out = append(out, c)
 		}
 	}
@@ -997,38 +965,24 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 	}()
 	ctx, cancel := context.WithTimeout(core.WithCatalogViewer(e.ctx, user), e.opts.SourceTimeout)
 	defer cancel()
-	rows, err := e.opts.Collections.HomeRowsFor(ctx, user, hc)
-	if err != nil {
-		e.log.Debug("personalize: owner rows failed", "err", err)
-		rows = nil
-	}
-	layoutOnly := map[string]bool{}
-	if source, ok := e.opts.Collections.(core.CollectionLayoutSource); ok {
-		seen := map[string]bool{}
-		for _, row := range rows {
-			seen[row.CollectionID] = true
+	var rows []core.CollectionRow
+	failed := false
+	for _, id := range placed {
+		row, err := e.opts.Collections.LayoutRow(ctx, user, hc, id)
+		if err != nil {
+			if !errors.Is(err, core.ErrNotFound) {
+				failed = true
+				e.log.Debug("personalize: placed collection unavailable", "id", id, "err", err)
+			}
+			continue
 		}
-		for _, id := range placed {
-			if seen[id] {
-				continue
-			}
-			row, err := source.LayoutRow(ctx, user, hc, id)
-			if err != nil {
-				if !errors.Is(err, core.ErrNotFound) {
-					e.log.Debug("personalize: selected collection unavailable", "id", id, "err", err)
-				}
-				continue
-			}
-			if row != nil {
-				rows = append(rows, *row)
-				seen[row.CollectionID] = true
-				layoutOnly[row.CollectionID] = true
-			}
+		if row != nil {
+			rows = append(rows, *row)
 		}
 	}
 	e.mu.Lock()
-	if err == nil || len(rows) > 0 || ent.rows == nil {
-		ent.rows, ent.layoutOnly = rows, layoutOnly
+	if !failed || len(rows) > 0 || ent.rows == nil {
+		ent.rows = rows
 	}
 	ent.at = e.now()
 	if len(e.owner) > 5000 {
@@ -1041,47 +995,8 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 	e.mu.Unlock()
 }
 
-// collectionScheduleAllows applies a collection row's schedule: the draft's
-// edited schedule in a designer preview, else the collection's own. A
-// viewer override for the row that sets its own When replaces it; the
-// layout pass applies that When.
-func collectionScheduleAllows(d core.HomeLayout, user int64, section core.MediaType, hc core.HubContext, cr core.CollectionRow) bool {
-	target := layoutTargetForContext(section, hc)
-	if strings.HasPrefix(cr.CollectionID, "plugin:") {
-		row := core.HomeRow{HubID: cr.CollectionID, Kind: cr.CollectionID}
-		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && p.Row == cr.CollectionID {
-			return true
-		}
-	} else {
-		row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
-		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
-			return true
-		}
-	}
-	sc := cr.Schedule
-	if draft, ok := d.CollectionSchedules[cr.CollectionID]; ok {
-		sc = draft
-	}
-	return sc.Allows(hc.Device, hc.Now)
-}
-
-// collectionRowID returns the collection a layout row names exactly
-// ("collection:<id>" or "collection.<id>"); patterns and other rows give "".
-func collectionRowID(row string) string {
-	for _, p := range []string{KindCollectionPrefix, "collection."} {
-		if id, ok := strings.CutPrefix(row, p); ok && id != "" && !strings.ContainsAny(id, "*?[") {
-			return id
-		}
-	}
-	return ""
-}
-
-// ownerCandidate adapts an owner collection row for this screen.
-func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, homeTarget bool, user *core.User) *candRow {
+func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, user *core.User) *candRow {
 	const collectionMinItems = 3
-	if homeTarget && !cr.HomeRow || !homeTarget && !cr.SectionRow {
-		return nil
-	}
 	if len(cr.Hub.Items) == 0 {
 		return nil
 	}

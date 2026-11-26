@@ -31,7 +31,12 @@ func TestLiveHomeProjectionPreservesHub(t *testing.T) {
 	r = r.WithContext(withRequest(r.Context(), &Request{User: &core.User{ID: 1, IsOwner: true}}))
 	h, row := f.srv.liveTVHubProjection(r)
 	legacy := f.srv.liveTVHub(r)
-	if h == nil || !reflect.DeepEqual(h, legacy) || len(row.Entries) != 1 {
+	if h == nil || legacy == nil || h.HubIdentifier != liveHomeHubID || row.ID != liveHomeHubID || legacy.HubIdentifier != "livetv.onnow" {
+		t.Fatalf("Home serves the one live row, the provider keeps On Now: %+v %+v", h, legacy)
+	}
+	provider := *legacy
+	provider.HubIdentifier = h.HubIdentifier
+	if !reflect.DeepEqual(*h, provider) || len(row.Entries) != 1 {
 		t.Fatalf("projection mismatch: %+v %+v", h, row)
 	}
 	c := row.Entries[0].LiveChannel

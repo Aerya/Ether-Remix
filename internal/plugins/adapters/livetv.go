@@ -19,6 +19,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
+// openStreamDeadline bounds a plugin stream open whose caller set no budget.
+// Live TV callers always set one (a tune shares its connect budget among the
+// channel's inputs), and that budget is the one that applies: a fixed, tighter
+// cap here failed a healthy single-input tune whose plugin open took 3 s.
 const openStreamDeadline = 3 * time.Second
 
 type channelSourceKind struct {
@@ -373,7 +377,10 @@ func (b *Bridge) openPluginStream(ctx context.Context, c livetv.Channel, src liv
 		return "", nil, core.ErrNotAvailable
 	}
 	pluginID := u.Host
-	openCtx, cancel := context.WithTimeout(ctx, openStreamDeadline)
+	openCtx, cancel := ctx, context.CancelFunc(func() {})
+	if _, ok := ctx.Deadline(); !ok {
+		openCtx, cancel = context.WithTimeout(ctx, openStreamDeadline)
+	}
 	defer cancel()
 
 	paths := candidateStreamPaths(u.Path)

@@ -29,6 +29,8 @@ Customize Plex Home in `/ether/home`: select the viewer and device type when com
 
 ## Remix at a glance
 
+The November 26 Ether sync brings Home and library row editing into **Recommendations**. Collections define content; rows are placed on those pages. Existing placements, layout templates and viewer restrictions are retained, alongside Xperience/Jukebox imports, music and strict release checks.
+
 The November 23 Ether synchronization integrates upstream library, plugin, playback version and mobile console changes. Theme libraries, music, strict release checks and Remix settings are retained. Migrations preserve existing settings and collection origins.
 
 Episodes without a filename year are admitted after checking the local catalogue: known series year, complete title, exact episode and no known namesake. Conflicting years remain rejected; catalogue errors keep the strict check.

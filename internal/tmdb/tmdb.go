@@ -53,10 +53,13 @@ func IsBearerKey(key string) bool {
 	return strings.Count(key, ".") >= 2 || len(key) > 64
 }
 
-// ResolveKey picks the owner override, else the bundled key.
+// ResolveKey picks the owner key or bundled key when TMDB is enabled.
 func ResolveKey(cfg config.Catalog) string {
-	if strings.TrimSpace(cfg.TMDBKey) != "" {
-		return strings.TrimSpace(cfg.TMDBKey)
+	if cfg.TMDBDisabled {
+		return ""
+	}
+	if key := strings.TrimSpace(cfg.TMDBKey); key != "" {
+		return key
 	}
 	return strings.TrimSpace(BundledKey)
 }

@@ -2,8 +2,9 @@ package newznab
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/vault"
 	"sync"
+
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 type testVault struct {
@@ -12,9 +13,23 @@ type testVault struct {
 }
 
 func (v *testVault) Put(_ context.Context, r vault.PutRequest) (vault.Key, error) {
-	k := vault.Key(r.Release.IndexerID + "\x00" + r.Release.ID)
-	v.records.Store(k, &vault.Record{XML: append([]byte(nil), r.NZB...)})
-	return k, nil
+	rec := &vault.Record{XML: append([]byte(nil), r.NZB...)}
+	var primary vault.Key
+	storeAlias := func(id string) {
+		if id == "" {
+			return
+		}
+		k := vault.Key(r.Release.IndexerID + "\x00" + id)
+		if primary == "" {
+			primary = k
+		}
+		v.records.Store(k, rec)
+	}
+	storeAlias(r.Release.ID)
+	for _, alias := range r.Aliases {
+		storeAlias(alias)
+	}
+	return primary, nil
 }
 func (v *testVault) ByAlias(_ context.Context, source, id string) (vault.Key, bool, error) {
 	k := vault.Key(source + "\x00" + id)

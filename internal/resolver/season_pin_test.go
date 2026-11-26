@@ -17,7 +17,7 @@ import (
 
 type seasonCatalog struct {
 	titles   map[core.RatingKey]*core.Title
-	episodes map[core.RatingKey][]core.Title
+	children map[core.RatingKey][]core.Title
 }
 
 func (c seasonCatalog) Get(_ context.Context, key core.RatingKey) (*core.Title, error) {
@@ -29,8 +29,8 @@ func (c seasonCatalog) Get(_ context.Context, key core.RatingKey) (*core.Title, 
 }
 
 func (c seasonCatalog) Children(_ context.Context, key core.RatingKey) ([]core.Title, error) {
-	if eps, ok := c.episodes[key]; ok {
-		return append([]core.Title(nil), eps...), nil
+	if children, ok := c.children[key]; ok {
+		return append([]core.Title(nil), children...), nil
 	}
 	return nil, core.ErrNotFound
 }
@@ -111,7 +111,8 @@ func TestConsoleSeasonReleasesAndBatchPin(t *testing.T) {
 			ep1Key:    {Key: ep1Key, Type: core.TypeEpisode, ShowTitle: "Boundary Bay", Title: "Pilot", Season: 1, Episode: 1},
 			ep2Key:    {Key: ep2Key, Type: core.TypeEpisode, ShowTitle: "Boundary Bay", Title: "Second Tide", Season: 1, Episode: 2},
 		},
-		episodes: map[core.RatingKey][]core.Title{
+		children: map[core.RatingKey][]core.Title{
+			showKey:   {*season},
 			seasonKey: {ep1, ep2, ep3Future},
 		},
 	}

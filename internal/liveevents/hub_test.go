@@ -625,7 +625,7 @@ func TestHubAlertsAndSpoilerFreeFiltering(t *testing.T) {
 	}
 }
 
-func TestHubWatchEnricherScreenResolverAndEntitiesStandings(t *testing.T) {
+func TestHubWatchEnricherFeedSubscriptionAndEntitiesStandings(t *testing.T) {
 	ctx := context.Background()
 	clk := newFakeClock(time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC))
 	src := newFakePluginSource(FeedInfo{PluginID: "plug.a", FeedID: "scores", MinIntervalSec: 15, EntityKinds: []string{"team"}})
@@ -648,12 +648,6 @@ func TestHubWatchEnricherScreenResolverAndEntitiesStandings(t *testing.T) {
 	hub := NewHub(Options{
 		Source: src,
 		Clock:  clk,
-		ScreenFeedResolver: func(_ context.Context, _ *core.Viewer, screenID string) ([]FeedRef, error) {
-			if screenID == "sports" {
-				return []FeedRef{{PluginID: "plug.a", FeedID: "scores"}}, nil
-			}
-			return nil, nil
-		},
 		WatchEnricher: func(_ context.Context, v *core.Viewer, events []core.LiveEvent) {
 			for i := range events {
 				events[i].Watch = []core.LiveEventWatchTarget{{Kind: core.LiveEventWatchChannel, ChannelID: "ch-1", Name: "Net 1", Live: true, Confidence: 0.9}}
@@ -663,7 +657,7 @@ func TestHubWatchEnricherScreenResolverAndEntitiesStandings(t *testing.T) {
 	defer hub.Close()
 
 	viewer := &core.Viewer{ID: 7}
-	sub, err := hub.Subscribe(ctx, SubscribeRequest{Screens: []string{"sports"}, Viewer: viewer, FilterSpoilers: true})
+	sub, err := hub.Subscribe(ctx, SubscribeRequest{Feeds: []string{"plug.a:scores"}, Viewer: viewer, FilterSpoilers: true})
 	if err != nil {
 		t.Fatal(err)
 	}

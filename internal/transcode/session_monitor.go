@@ -152,6 +152,9 @@ func (s *Session) watch(r *run) {
 	for {
 		select {
 		case <-done:
+			if r.releaseArchiveInput != nil {
+				r.releaseArchiveInput()
+			}
 			collect(true)
 			s.finish(r)
 			s.mu.Lock()
@@ -215,6 +218,12 @@ func (s *Session) poll(r *run, playlist string, exited bool) {
 	for i, n := range p.segments {
 		if n < r.startSeg || (n <= r.maxDone && r.produced > 0) {
 			continue
+		}
+		if ready, err := s.initCodecConfigLocked(r, exited); err != nil {
+			s.failRunOutputLocked(r, err)
+			break
+		} else if !ready {
+			break // its segments wait with it
 		}
 		if s.total > 0 && n >= s.total+2 {
 			continue // past any plausible trailing sliver
@@ -652,6 +661,17 @@ func (s *Session) finish(r *run) {
 	if s.cur != r {
 		return
 	}
+	// The in-band parameter set filter parses the source record before the
+	// header. A record it cannot read stops the run at start; copy that
+	// session without the rebuild, as before #783, instead of failing it.
+	if r.produced == 0 && !s.keepSourceRecord && parameterSetFilterFailed(stderr, r.spec.rebuildParameterSets()) {
+		s.keepSourceRecord = true
+		log.Warn("in-band parameter set filter failed to start; copying the source record", "filter", r.spec.rebuildParameterSets())
+		if retryErr := s.startRunForLocked(r.startSeg, r.spec.BigProbe, "parameter set filter fallback"); retryErr != nil {
+			s.failErr = retryErr
+		}
+		return
+	}
 	if !s.liveInput && r.produced == 0 && (deterministicHeaderFailure(stderr) || s.headerFallbackPending == s.input) {
 		if s.recoverHeaderLocked(r) {
 			return
@@ -935,8 +955,12 @@ func (s *Session) continueAfterExitLocked(r *run, reason string) error {
 // unpublished segment. Delivered media replenishes the consecutive-failure
 // allowance; a separate sliding ceiling still bounds rapid reconnects.
 func (s *Session) recoverLiveLocked(r *run, err error) {
-	now := time.Now()
 	next := r.next()
+	if err == nil && r.produced > 0 && s.liveEndOnEOF {
+		s.endSeg = next - 1
+		return
+	}
+	now := time.Now()
 	reason := "EOF"
 	if err != nil {
 		reason = "encoder exit: " + err.Error()
@@ -947,7 +971,15 @@ func (s *Session) recoverLiveLocked(r *run, err error) {
 	}
 	stopped := s.stoppedAt.Load() != 0
 	idle := stopped || (s.m.opts.idleTimeout > 0 && now.Sub(s.LastAccess()) >= s.m.opts.idleTimeout)
-	delay, allowed := s.liveRecoveryDelay(now, r)
+	var delay time.Duration
+	var allowed bool
+	if err == nil && r.produced > 0 && !idle {
+		// A live output whose caller leaves recovery to this session can
+		// reconnect immediately after a clean exit that produced media.
+		allowed = s.liveRestarts.take(now, 28, 30*time.Second)
+	} else {
+		delay, allowed = s.liveRecoveryDelay(now, r)
+	}
 	if idle || !allowed {
 		endReason := "restart limit reached"
 		if stopped {
@@ -1114,6 +1146,12 @@ func (s *Session) liveRecoveryDelay(now time.Time, r *run) (time.Duration, bool)
 // Deterministic initialization failures cannot be repaired by probing the same
 // bytes again. Keep this classification narrow: transport outages still use
 // the normal recovery path.
+// parameterSetFilterFailed reports a run whose in-band parameter set filter
+// (filter, "" when the run had none) did not initialize.
+func parameterSetFilterFailed(stderr, filter string) bool {
+	return filter != "" && strings.Contains(strings.ToLower(stderr), "error initializing bitstream filter: "+filter)
+}
+
 func deterministicHeaderFailure(stderr string) bool {
 	l := strings.ToLower(stderr)
 	return strings.Contains(l, "no parameter sets in the extradata") ||

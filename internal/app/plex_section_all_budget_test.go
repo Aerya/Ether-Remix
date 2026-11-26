@@ -254,17 +254,14 @@ FROM seq`,
 		if cID <= 20 {
 			name = fmt.Sprintf("AAB Collection %03d", cID)
 		}
-		targets := core.CollectionTargets{CollectionsTab: true, HomeRow: true, SectionRow: true}
-		if cID > 50 {
-			targets = core.CollectionTargets{CollectionsTab: false, HomeRow: true, SectionRow: true}
-		}
+		browse := cID <= 50
 		spec := core.CollectionSpec{
-			Name:      name,
-			MediaType: string(mediaType),
-			Sort:      "popularity",
-			SortDesc:  true,
-			Enabled:   true,
-			Targets:   targets,
+			Name:         name,
+			MediaType:    string(mediaType),
+			Sort:         "popularity",
+			SortDesc:     true,
+			Enabled:      true,
+			BrowseInApps: browse,
 		}
 		if cID > 50 {
 			spec.Rotate = &core.CollectionRotate{Size: 10, Every: "daily"}

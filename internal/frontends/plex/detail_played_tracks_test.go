@@ -113,7 +113,7 @@ func newPlayedLab(t *testing.T, remoteMaxKbps int, sourceSize int64) *playedLab 
 	x.cfg = config.Defaults(x.dir)
 	x.cfg.Quality.Profiles = []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 1080}}
 	x.cfg.Quality.Default = "home"
-	x.cfg.Quality.Remote = "away"
+	x.cfg.Quality.DefaultAway = "away"
 	x.cfg.Quality.Rules = nil
 	x.cfg.Transcode.RemoteMaxBitrateKbps = remoteMaxKbps
 	x.title = core.Title{Key: core.MovieKey(990001), Type: core.TypeMovie, Title: "Fjord Harbor", Year: 1999, Runtime: 2 * time.Hour, Language: "en"}

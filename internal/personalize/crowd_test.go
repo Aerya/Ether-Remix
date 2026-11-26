@@ -236,15 +236,12 @@ func TestCrowdRows(t *testing.T) {
 		t.Fatalf("TV crowd row title = %q", r.Title)
 	}
 	// Descriptors register both kinds for the Home Designer.
-	descs, err := h.e.AvailableRows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	descs := h.e.SourceInfos()
 	found := 0
 	for _, d := range descs {
 		if d.Kind == KindCrowd || d.Kind == KindCrowdTrending {
 			found++
-			if d.Group != groupPicks || len(d.Sections) != 3 || d.Description == "" {
+			if d.Group != groupForYou || !d.Personal || d.Description == "" {
 				t.Fatalf("descriptor %+v", d)
 			}
 		}

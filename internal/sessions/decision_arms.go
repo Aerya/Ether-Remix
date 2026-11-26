@@ -137,6 +137,30 @@ func (s *DecisionArms) Current(pr DecisionOwner, key core.RatingKey) bool {
 	return !ok || s.now().Sub(a.at) > 3*time.Minute || a.generations[key] == "" || a.generations[key] == pr.Generation
 }
 
+// Stopped reports whether this delivery generation of the title was ended by
+// the player's own stop. A start carrying that generation is a stale request
+// from a finished playback, not a new one: it must not reopen it. Without a
+// generation there is nothing to compare, so nothing is stale.
+func (s *DecisionArms) Stopped(pr DecisionOwner, key core.RatingKey) bool {
+	if pr.ID == "" || pr.Generation == "" || key == 0 {
+		return false
+	}
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(s.ctx, decisionDBTimeout)
+		defer cancel()
+		var found int
+		return s.db.QueryRowContext(ctx, `SELECT 1 FROM plex_decision_arms WHERE user_id=? AND client_id=? AND session_id=? AND title_key=? AND active=0 AND generation=? AND expires>=? LIMIT 1`, pr.UserID, pr.ClientID, pr.SessionID, key, pr.Generation, s.now().UnixMilli()).Scan(&found) == nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.decisionArms[pr.ID]
+	if !ok || s.now().Sub(a.at) > 3*time.Minute {
+		return false
+	}
+	active, seen := a.items[key]
+	return seen && !active && a.generations[key] == pr.Generation
+}
+
 // Stopping one item clears its start/bandwidth authorization while retaining
 // the session's history of having made a decision.
 func (s *DecisionArms) Disarm(pr DecisionOwner, key core.RatingKey) {

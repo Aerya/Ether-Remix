@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +322,20 @@ func TestXtreamPlaybackUsesBrokerAndPreservesRange(t *testing.T) {
 }
 func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 	host, _ := testHost(t)
-	show := frontend.Title{Key: core.ShowKey(1), Type: core.TypeShow, Title: "Show"}
+	showKey, _ := core.AllocatedKey(core.KindShow, 1)
+	firstSeason, _ := core.AllocatedKey(core.KindSeason, 1)
+	yearSeason, _ := core.AllocatedKey(core.KindSeason, 2)
+	firstEpisode, _ := core.AllocatedKey(core.KindEpisode, 1)
+	yearEpisode, _ := core.AllocatedKey(core.KindEpisode, 2)
+	show := frontend.Title{Key: showKey, Type: core.TypeShow, Title: "Show", IDs: core.IDs{TVDB: 1}}
+	seasons := []core.Title{
+		{Key: firstSeason, Type: core.TypeSeason, ShowKey: showKey, Season: 1},
+		{Key: yearSeason, Type: core.TypeSeason, ShowKey: showKey, Season: 2026},
+	}
+	episodes := map[core.RatingKey]core.Title{
+		firstSeason: {Key: firstEpisode, Type: core.TypeEpisode, ShowKey: showKey, ParentKey: firstSeason, Season: 1, Episode: 1, Title: "Episode"},
+		yearSeason:  {Key: yearEpisode, Type: core.TypeEpisode, ShowKey: showKey, ParentKey: yearSeason, Season: 2026, Episode: 123, Title: "Daily Episode"},
+	}
 	host.Experience = frontendtest.Experience{ItemFunc: func(_ context.Context, r frontend.ItemRequest) (frontend.ItemDetail, error) {
 		return frontend.ItemDetail{Title: show}, nil
 	}, ChildrenFunc: func(_ context.Context, v *frontend.Viewer, d frontend.Device, k core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
@@ -329,10 +343,12 @@ func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 			t.Fatal("unscoped/unbounded series")
 		}
 		if k == show.Key {
-			return core.Page{Items: []core.Title{{Key: core.SeasonKey(1, 1), Type: core.TypeSeason, Season: 1}, {Key: core.SeasonKey(1, 2), Type: core.TypeSeason, Season: 2}}, Total: 2}, nil
+			return core.Page{Items: seasons, Total: len(seasons)}, nil
 		}
-		n := k.Season()
-		return core.Page{Items: []core.Title{{Key: core.EpisodeKey(1, n, 1), ShowKey: show.Key, Type: core.TypeEpisode, Season: n, Episode: 1, Title: "Episode"}}, Total: 1}, nil
+		if episode, ok := episodes[k]; ok {
+			return core.Page{Items: []core.Title{episode}, Total: 1}, nil
+		}
+		return core.Page{}, core.ErrNotFound
 	}}
 	id, err := host.IDs.Compact(context.Background(), "xtream", "item", fmt.Sprint(show.Key))
 	if err != nil {
@@ -348,19 +364,21 @@ func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 			ID int32 `json:"id"`
 		}
 		Episodes map[string][]struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Number int    `json:"episode_num"`
 		}
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Seasons) != 2 || result.Seasons[0].ID == 0 || result.Seasons[1].ID == 0 || len(result.Episodes["1"]) != 1 || len(result.Episodes["2"]) != 1 {
+	if len(result.Seasons) != 2 || result.Seasons[0].ID == 0 || result.Seasons[1].ID == 0 || len(result.Episodes["1"]) != 1 || len(result.Episodes["2026"]) != 1 {
 		t.Fatal(w.Body.String())
 	}
-	for n := 1; n <= 2; n++ {
-		ref, err := host.IDs.Resolve(context.Background(), "xtream", "item", int32(mustInt(t, result.Episodes[fmt.Sprint(n)][0].ID)))
-		if err != nil || ref != fmt.Sprint(core.EpisodeKey(1, n, 1)) {
-			t.Fatalf("episode identity %s %v", ref, err)
+	for _, episode := range episodes {
+		wire := result.Episodes[strconv.Itoa(episode.Season)][0]
+		ref, err := host.IDs.Resolve(context.Background(), "xtream", "item", int32(mustInt(t, wire.ID)))
+		if err != nil || ref != episode.Key.String() || wire.Number != episode.Episode {
+			t.Fatalf("episode identity %s, number %d: %v", ref, wire.Number, err)
 		}
 	}
 }
@@ -496,5 +514,116 @@ func TestXtreamYouTubeTrailer(t *testing.T) {
 	}
 	if empty := xtreamYouTubeTrailer([]frontend.Extra{{Kind: "trailer"}}); empty != "" {
 		t.Fatalf("got %q, want empty", empty)
+	}
+}
+
+func TestArchiveReExport(t *testing.T) {
+	host, _ := testHost(t)
+	now := time.Date(2026, 11, 23, 14, 0, 0, 0, time.UTC)
+	host.Now = func() time.Time { return now }
+	host.LiveTV = frontendtest.LiveTV{
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{{ID: "archived", Name: "Archive", Kind: "iptv", ArchiveDays: 2}}, nil
+		},
+		GuideFunc: func(_ context.Context, _ *frontend.Viewer, q frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error) {
+			if len(q.Channels) != 1 || q.Channels[0] != "archived" || !q.From.Equal(now.Add(-48*time.Hour)) {
+				t.Fatal("unexpected archive guide query")
+			}
+			return []frontend.LiveProgramme{
+				{ID: "expired", ChannelID: "archived", Start: now.Add(-49 * time.Hour), End: now.Add(-47 * time.Hour)},
+				{ID: "past", ChannelID: "archived", Start: now.Add(-48 * time.Hour), End: now.Add(-47 * time.Hour)},
+				{ID: "airing", ChannelID: "archived", Start: now.Add(-time.Hour), End: now.Add(time.Hour)},
+			}, nil
+		},
+	}
+	h := mount(t, host)
+	w := request(h, "/player_api.php?"+authQuery()+"&action=get_live_streams")
+	var streams []struct {
+		ID      int    `json:"stream_id"`
+		Archive int    `json:"tv_archive"`
+		Days    int    `json:"tv_archive_duration"`
+		Source  string `json:"direct_source"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &streams) != nil || len(streams) != 1 ||
+		streams[0].Archive != 1 || streams[0].Days != 2 || streams[0].Source != "" {
+		t.Fatal("unexpected live stream archive metadata")
+	}
+	w = request(h, "/player_api.php?"+authQuery()+"&action=get_simple_data_table&stream_id="+fmt.Sprint(streams[0].ID))
+	var response struct {
+		Listings []struct {
+			ID         string `json:"id"`
+			HasArchive int    `json:"has_archive"`
+		} `json:"epg_listings"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Listings) != 3 {
+		t.Fatal("expected three guide rows")
+	}
+	for _, row := range response.Listings {
+		want := 0
+		if row.ID == "past" {
+			want = 1
+		}
+		if row.HasArchive != want {
+			t.Fatalf("incorrect archive flag for %s", row.ID)
+		}
+	}
+}
+
+type archiveHLSFixture struct {
+	*frontendtest.CatchUpLive
+	starts int
+	served string
+}
+
+func (f *archiveHLSFixture) StartCatchUp(ctx context.Context, u *frontend.User, req frontend.CatchUpRequest, caps frontend.ClientCaps, session string) (frontend.CatchUpInfo, error) {
+	f.starts++
+	return f.CatchUpLive.StartCatchUp(ctx, u, req, caps, session)
+}
+
+func (f *archiveHLSFixture) LibraryCatchUpSession(access frontend.SessionAccess, id string) (frontend.CatchUpInfo, bool) {
+	p := f.Item.Programme
+	ok := id == "archive-session" && f.starts == 1 && access.Viewer.ID == 1 && access.Protocol == "xtream" && access.Device.ID != ""
+	return frontend.CatchUpInfo{ID: id, ChannelID: p.ChannelID, Start: p.Start, End: p.End}, ok
+}
+
+func (f *archiveHLSFixture) ServeResource(w http.ResponseWriter, r *http.Request, _ string, file string, _ *frontend.User) {
+	f.served = r.URL.Path
+	_, _ = io.WriteString(w, file)
+}
+
+func TestArchiveHLSRoutesPartsOnTheSameSession(t *testing.T) {
+	host, auth := testHost(t)
+	live := &archiveHLSFixture{CatchUpLive: frontendtest.NewCatchUpLive()}
+	p := live.Item.Programme
+	host.Now = func() time.Time { return p.End.Add(time.Hour) }
+	host.Capabilities = frontendtest.Capabilities{}
+	live.LiveTV = frontendtest.LiveTV{
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{{ID: p.ChannelID, Name: "Archive", Kind: "iptv", ArchiveDays: 2}}, nil
+		},
+	}
+	host.LiveTV = live
+	h := mount(t, host)
+	w := request(h, "/player_api.php?"+authQuery()+"&action=get_live_streams")
+	var streams []struct {
+		ID int `json:"stream_id"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &streams) != nil || len(streams) != 1 {
+		t.Fatal("failed to list archived channel")
+	}
+	archive := fmt.Sprintf("/timeshift/%s/eg1_test/60/%d/%d.m3u8",
+		frontend.XtreamUsername("eg1_test"), p.Start.Unix(), streams[0].ID)
+	w = request(h, archive)
+	part := "?part=0.ts&session=archive-session"
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), part) || strings.Contains(w.Body.String(), "eg1_test") {
+		t.Fatal("playlist did not contain a credential-free relative segment URI")
+	}
+	w = request(h, archive+part)
+	if w.Code != http.StatusOK || live.starts != 1 || live.served != "/0.ts" {
+		t.Fatal("segment did not use the authorized archive session")
+	}
+	auth.revoked = true
+	if w = request(h, archive+part); w.Code != http.StatusUnauthorized {
+		t.Fatalf("segment status after revocation = %d", w.Code)
 	}
 }

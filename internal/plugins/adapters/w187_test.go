@@ -267,7 +267,7 @@ func TestMultiLevelMusicBrowseFacetsSkipResumeAndHistoryRollup(t *testing.T) {
 	exp := h.experienceFor(t, "jellyfin")
 	owner := &core.Viewer{ID: 1, IsOwner: true}
 	libIDStr := strconv.FormatInt(int64(musicLib.ID), 10)
-	rows, err := exp.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, libIDStr)
+	rows, err := exp.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, libIDStr, "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}

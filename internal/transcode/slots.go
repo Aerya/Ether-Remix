@@ -3,8 +3,11 @@ package transcode
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // SlotPriority separates interactive viewing from cancellable render jobs.
@@ -47,68 +50,109 @@ func (m *Manager) acquirePrioritySlotForGroup(ctx context.Context, p SlotPriorit
 		return nil, nil, nil, errors.New("transcode: invalid slot priority")
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p == SlotViewer {
+		if err := m.waitViewerSlotLocked(ctx, nil, multiviewGroup, wait); err != nil {
+			return nil, nil, nil, err
+		}
+	} else if err := m.waitBackgroundSlotLocked(ctx, p, wait); err != nil {
+		return nil, nil, nil, err
+	}
+	jobCtx = ctx
+	var cancel context.CancelFunc
+	if p != SlotViewer {
+		jobCtx, cancel = context.WithCancel(ctx)
+	}
+	holder = &transcodeSlot{priority: p, cancel: cancel, multiviewGroup: multiviewGroup}
+	m.slotHolders = append(m.slotHolders, holder)
+	if p == SlotLivePrep {
+		m.livePrepEncodes++
+	} else {
+		m.downloadEncodes++
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { m.mu.Lock(); m.releaseSlotLocked(holder); m.mu.Unlock() }) }
+	return jobCtx, holder, release, nil
+}
+
+func (m *Manager) waitBackgroundSlotLocked(ctx context.Context, p SlotPriority, wait bool) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if m.closed {
+			return errors.New("transcode: manager closed")
+		}
+		switch p {
+		case SlotLivePrep:
+			if m.livePrepEncodes == 0 {
+				return nil
+			}
+		case SlotBackground:
+			if m.slotViewers.Len() == 0 && !m.transcodeFullLocked("", "") {
+				return nil
+			}
+		}
+		if !wait {
+			return ErrTooManyTranscodes
+		}
+		m.waitSlotChangeLocked(ctx, nil)
+	}
+}
+
+// waitSlotChangeLocked returns with m.mu held. Ramps and rung transitions
+// can release capacity independently of the session and permit registries.
+func (m *Manager) waitSlotChangeLocked(ctx context.Context, retired <-chan struct{}) {
 	if m.slotChanged == nil {
 		m.slotChanged = make(chan struct{})
 	}
-	if p == SlotViewer {
-		m.slotViewers++
+	changed := m.slotChanged
+	m.mu.Unlock()
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-m.stop:
+	case <-retired:
+	case <-changed:
+	case <-timer.C:
 	}
+	m.mu.Lock()
+}
+
+// Only the first viewer can claim a slot or preempt a background holder.
+// Keep m.mu held on success so the caller can immediately charge the budget.
+func (m *Manager) waitViewerSlotLocked(ctx context.Context, retired <-chan struct{}, group string, wait bool) error {
+	turn := m.slotViewers.PushBack(struct{}{})
 	defer func() {
-		if p == SlotViewer {
-			m.slotViewers--
-			m.notifySlotsLocked()
-		}
-		m.mu.Unlock()
+		m.slotViewers.Remove(turn)
+		m.notifySlotsLocked()
 	}()
-	// Legacy encoder lifetimes update their encoding state independently. The
-	// bounded fallback poll observes those transitions without coupling locks.
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, nil, err
+			return err
 		}
 		if m.closed {
-			return nil, nil, nil, errors.New("transcode: manager closed")
+			return errors.New("transcode: manager closed")
 		}
-		full := m.transcodeFullLocked(multiviewGroup, "")
-		if p == SlotLivePrep {
-			full = m.livePrepEncodes >= 1
+		select {
+		case <-retired:
+			return context.Canceled
+		default:
 		}
-		if full && p == SlotViewer {
-			for full && m.preemptBackgroundLocked() {
-				full = m.transcodeFullLocked(multiviewGroup, "")
+		if m.slotViewers.Front() == turn {
+			if group == "" || m.groupEncodingCountLocked(group) < maxMultiviewGroupEncoders {
+				for m.transcodeFullLocked(group, "") && m.preemptBackgroundLocked() {
+				}
 			}
-		}
-		if !full && (p == SlotViewer || p == SlotLivePrep || m.slotViewers == 0) {
-			jobCtx = ctx
-			var cancel context.CancelFunc
-			if p == SlotBackground || p == SlotLivePrep {
-				jobCtx, cancel = context.WithCancel(ctx)
+			if !m.transcodeFullLocked(group, "") {
+				return nil
 			}
-			holder = &transcodeSlot{priority: p, cancel: cancel, multiviewGroup: multiviewGroup}
-			m.slotHolders = append(m.slotHolders, holder)
-			if p == SlotLivePrep {
-				m.livePrepEncodes++
-			} else {
-				m.downloadEncodes++
-			}
-			var once sync.Once
-			release = func() { once.Do(func() { m.mu.Lock(); m.releaseSlotLocked(holder); m.mu.Unlock() }) }
-			return jobCtx, holder, release, nil
 		}
 		if !wait {
-			return nil, nil, nil, ErrTooManyTranscodes
+			return m.encoderCapacityErrorLocked()
 		}
-		changed := m.slotChanged
-		m.mu.Unlock()
-		select {
-		case <-ctx.Done():
-		case <-m.stop:
-		case <-changed:
-		case <-ticker.C:
-		}
-		m.mu.Lock()
+		m.waitSlotChangeLocked(ctx, retired)
 	}
 }
 
@@ -166,4 +210,82 @@ func (m *Manager) EncodingCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.encodingLocked("")
+}
+
+// VideoEncoderLimit is the effective local limit. Hardware detection checks
+// encoder availability, but does not measure concurrent throughput.
+func (m *Manager) VideoEncoderLimit() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.MaxTranscodes
+}
+
+// VideoEncoderBusy is advisory for source selection. Admission checks the
+// budget again under the lock after deciding how to deliver the source.
+func (m *Manager) VideoEncoderBusy(group string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transcodeFullLocked(group, "") || m.slotViewers.Len() > 0
+}
+
+// EncoderCapacityError carries a snapshot of the local budget at rejection.
+// Viewers is for owner diagnostics only.
+type EncoderCapacityError struct {
+	Running int
+	Viewers []string
+}
+
+func (*EncoderCapacityError) Error() string { return ErrTooManyTranscodes.Error() }
+func (*EncoderCapacityError) Unwrap() error { return ErrTooManyTranscodes }
+
+func (m *Manager) encoderCapacityErrorLocked() error {
+	e := &EncoderCapacityError{Running: m.encodingLocked("")}
+	for life := range m.encoders {
+		if life.viewer != "" && (life.encoding.Load() || life.runs.Load() > 0) {
+			e.Viewers = append(e.Viewers, life.viewer)
+		}
+	}
+	slices.Sort(e.Viewers)
+	e.Viewers = slices.Compact(e.Viewers)
+	return e
+}
+
+// admitStartEncoding uses the same viewer order as acquirePrioritySlotForGroup.
+// Charge the lifetime before unlocking so a new start cannot overtake a waiter.
+func (m *Manager) admitStartEncoding(ctx context.Context, req core.HLSRequest, life *encoderLifetime, encoding bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return errors.New("transcode: manager closed")
+	}
+	videoOff := func() bool {
+		return !req.LiveInput && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff())
+	}
+	if !encoding {
+		life.viewer = req.EncoderViewer
+		life.multiviewGroup = req.MultiviewGroup
+		return nil
+	}
+	if videoOff() {
+		return ErrVideoTranscodingDisabled
+	}
+	if req.WaitForEncoder {
+		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := m.waitViewerSlotLocked(bounded, life.cancel, req.MultiviewGroup, true); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return m.encoderCapacityErrorLocked()
+			}
+			return err
+		}
+	} else if err := m.waitViewerSlotLocked(ctx, life.cancel, req.MultiviewGroup, false); err != nil {
+		return err
+	}
+	if videoOff() {
+		return ErrVideoTranscodingDisabled
+	}
+	life.viewer = req.EncoderViewer
+	life.multiviewGroup = req.MultiviewGroup
+	life.encoding.Store(true)
+	return nil
 }

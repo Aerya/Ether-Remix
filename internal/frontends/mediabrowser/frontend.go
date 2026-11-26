@@ -94,6 +94,23 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		return nil, err
 	}
 
+	if err := r.Handle("POST", "/Items/{itemId}/Refresh", http.HandlerFunc(inst.refreshItem)); err != nil {
+		return nil, err
+	}
+
+	for _, route := range []struct {
+		path   string
+		handle http.HandlerFunc
+	}{
+		{"/Items/RemoteSearch/Movie", inst.searchRemoteMatch(frontend.TypeMovie)},
+		{"/Items/RemoteSearch/Series", inst.searchRemoteMatch(frontend.TypeShow)},
+		{"/Items/RemoteSearch/Apply/{itemId}", inst.applyRemoteMatch},
+	} {
+		if err := r.Handle("POST", route.path, route.handle); err != nil {
+			return nil, err
+		}
+	}
+
 	for _, method := range []string{"GET", "HEAD"} {
 		if err := r.Handle(method, "/Items/{itemId}/Images/{imageType}", http.HandlerFunc(inst.image)); err != nil {
 			return nil, err
@@ -157,6 +174,16 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 				return nil, err
 			}
 		}
+		if protocol == "emby" {
+			if err := r.Handle(method, "/Items/{id}/{source}/Subtitles/{index}/{name}", http.HandlerFunc(inst.embyItemSubtitle)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if protocol == "jellyfin" {
+		if err := r.Handle(http.MethodGet, "/Audio/{id}/Lyrics", http.HandlerFunc(inst.audioLyrics)); err != nil {
+			return nil, err
+		}
 	}
 	if err := inst.playbackRoutes(); err != nil {
 		return nil, err
@@ -205,6 +232,9 @@ type instance struct {
 	anon                    *anonIndex
 	keyReveals              apiKeyRevealStore
 	unsupportedPolicyLogged sync.Map
+	// subtitleLists records whether the last item source sent to a viewer
+	// listed subtitle tracks (see subtitle_lists.go).
+	subtitleLists subtitleListShown
 }
 
 func (i *instance) Handler() http.Handler {

@@ -14,7 +14,7 @@ func (a *App) newRowViews(protocol core.Protocol, rows *experience.RowsService, 
 	if len(live) > 0 {
 		liveFn = live[0]
 	}
-	d := experience.RuntimeRowViews{DB: a.db, Protocol: protocol, Receipts: receipts, Visibility: visibility, Libraries: libraries, LiveLibraries: liveFn, Active: a.users.PolicyUser, CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, Playlists: a.playlists, Situation: situationFor,
+	d := experience.RuntimeRowViews{DB: a.db, PendingWatch: a.state.PendingWatchRevision, Protocol: protocol, Receipts: receipts, Visibility: visibility, Libraries: libraries, LiveLibraries: liveFn, Active: a.users.PolicyUser, CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, Playlists: a.playlists, Situation: situationFor,
 		Snapshot: func(ctx context.Context, request frontend.RowRequest, situation core.HomeSituation) ([]frontend.Row, error) {
 			return rows.SnapshotRows(context.WithValue(ctx, experienceSituationKey{}, situation), request, protocol)
 		}}
@@ -51,4 +51,12 @@ func (l liveForApp) AllowedChannels(ctx context.Context, u *core.User) ([]livetv
 
 func (l liveForApp) Guide(ctx context.Context, u *core.User, from, until time.Time) ([]livetv.Programme, error) {
 	return l.svc.Guide(core.WithLiveApp(ctx, l.app), u, from, until)
+}
+
+func (l liveForApp) OnNow(ctx context.Context, u *core.User, now, until time.Time) ([]livetv.Channel, []livetv.Programme, error) {
+	return l.svc.OnNow(core.WithLiveApp(ctx, l.app), u, now, until)
+}
+
+func (l liveForApp) OnNowN(ctx context.Context, u *core.User, now, until time.Time, limit int) ([]livetv.Channel, []livetv.Programme, error) {
+	return l.svc.OnNowN(core.WithLiveApp(ctx, l.app), u, now, until, limit)
 }

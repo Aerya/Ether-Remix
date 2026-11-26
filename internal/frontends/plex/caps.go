@@ -145,7 +145,7 @@ func (s *Server) declaredCaps(pr *Request) frontend.ClientCaps {
 	if pr == nil {
 		return frontend.ClientCaps{}
 	}
-	return pr.ClientCapsWith(s.cfg().Transcode.RemoteMaxBitrateKbps, s.cfg().Clients.Overrides)
+	return pr.ClientCapsWith(0, s.cfg().Clients.Overrides)
 }
 
 // profileExtraEvidence records affirmative codec/HDR claims and HDR denials
@@ -741,15 +741,42 @@ func subtitleProfileTargetFormat(extra string) string {
 	return target
 }
 
-func directMusicProfile(extra string) (containers, codecs []string) {
+// applyMusicDirectPlay adds support for the actual audio file as a pair.
+// The registry's video container list does not enumerate raw music files.
+func applyMusicDirectPlay(c *frontend.ClientCaps, extra string, info frontend.MediaInfo, audioIndex int) {
+	if !info.AudioOnly() {
+		return
+	}
+	if audioIndex < 0 {
+		audioIndex = info.Streams[pickAudio(info, nil)].Index
+	}
+	audio := selectedAudioStream(info, frontend.Decision{AudioStream: audioIndex})
+	codec := normalizeCodec(audio.Codec)
+	container := info.Container
+	switch {
+	case container == "flac" && codec == "flac",
+		container == "mp3" && codec == "mp3",
+		(container == "ogg" || container == "opus") && (codec == "opus" || codec == "vorbis" || codec == "flac"):
+		if c.SupportsAudio(codec) {
+			c.Containers = addUnique(c.Containers, container)
+		}
+	}
 	for _, d := range ParseProfileExtra(extra) {
 		if d.Verb != "add-direct-play-profile" || d.Args["type"] != "musicProfile" {
 			continue
 		}
-		containers = addUnique(containers, splitList(d.Args["container"])...)
-		codecs = addUnique(codecs, splitList(d.Args["audioCodec"])...)
+		if protocol := d.Args["protocol"]; protocol != "" && !strings.EqualFold(protocol, frontend.ProtocolHTTP) {
+			continue
+		}
+		containers, codecs := splitList(d.Args["container"]), splitList(d.Args["audioCodec"])
+		declared := frontend.ClientCaps{Containers: containers, AudioCodecs: codecs}
+		if (profileContains(d.Args["container"], "*") || declared.SupportsContainer(container)) &&
+			(profileContains(d.Args["audioCodec"], "*") || declared.SupportsAudio(codec)) {
+			c.Containers = addUnique(c.Containers, container)
+			c.AudioCodecs = addUnique(c.AudioCodecs, codec)
+			return
+		}
 	}
-	return containers, codecs
 }
 
 func streamingMusicTarget(extra, protocol string) (containers, codecs []string) {

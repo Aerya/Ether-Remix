@@ -42,9 +42,10 @@ func init() {
 // RefreshStatistics gives complete planner statistics to every table whose
 // statistics are stale, in SQLite's own terms: an index without statistics,
 // or a row count ten times larger or smaller than they record. It returns
-// the tables it analysed. Each index is analysed in its own statement, so
-// the write lock is held for one index scan at a time, and every pooled
-// connection plans with the new statistics from its next statement.
+// the tables it analysed. A large table is analysed in a scratch copy and
+// its statistics installed in one short write (planner_stats_copy.go); a
+// small one in place, one index per statement. Every pooled connection
+// plans with the new statistics from its next statement.
 //
 // PostgreSQL's autovacuum analyses tables itself (and Maintain runs ANALYZE);
 // there it does nothing.
@@ -67,7 +68,7 @@ func RefreshStatistics(ctx context.Context, db *sql.DB) ([]string, error) {
 	var longest time.Duration
 	err = withFullAnalysis(ctx, conn, func() error {
 		for _, t := range stale {
-			took, n, err := analyzeFull(ctx, conn, t)
+			took, n, err := analyzeTable(ctx, conn, t)
 			ran += n
 			if err != nil {
 				return err
@@ -108,7 +109,7 @@ func AnalyzeFull(ctx context.Context, db *sql.DB, names ...string) error {
 	var ran int
 	err = withFullAnalysis(ctx, conn, func() error {
 		for _, n := range names {
-			_, count, err := analyzeFull(ctx, conn, n)
+			_, count, err := analyzeTable(ctx, conn, n)
 			ran += count
 			if err != nil {
 				return err
@@ -295,7 +296,11 @@ func withFullAnalysis(ctx context.Context, conn *sql.Conn, fn func() error) erro
 // committed.
 func analyzeFull(ctx context.Context, conn *sql.Conn, name string) (time.Duration, int, error) {
 	targets := []string{name}
-	rows, err := conn.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name=? AND EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?) ORDER BY name`, name, name)
+	// pragma_index_list, unlike sqlite_schema, also names a WITHOUT ROWID
+	// table's primary key. Left out, that key never had statistics, so
+	// PRAGMA optimize called every such table stale and each maintenance
+	// pass analysed all of them again.
+	rows, err := conn.QueryContext(ctx, `SELECT name FROM pragma_index_list(?) WHERE EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?) ORDER BY name`, name, name)
 	if err != nil {
 		return 0, 0, err
 	}

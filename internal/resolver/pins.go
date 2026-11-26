@@ -375,3 +375,61 @@ func candidateReason(tr *Trace, id string) string {
 	}
 	return "not playable for this client"
 }
+
+// RekeyTitle moves the owner's release choices inside a title-match
+// transaction. An existing destination pin remains the owner's choice.
+func (s *Service) RekeyTitle(ctx context.Context, tx *sql.Tx, ranges []core.TitleKeyRange, name string) ([]core.RatingKey, error) {
+	var changed []core.RatingKey
+	for _, r := range ranges {
+		keys, err := rekeyPins(ctx, tx, r, name)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, keys...)
+	}
+	return changed, nil
+}
+
+func rekeyPins(ctx context.Context, tx *sql.Tx, r core.TitleKeyRange, name string) ([]core.RatingKey, error) {
+	rows, err := tx.QueryContext(ctx, `DELETE FROM resolver_pins WHERE rating_key BETWEEN ? AND ? RETURNING `+pinColumns, r.First, r.Last)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pins []Pin
+	for rows.Next() {
+		p, err := scanPin(rows)
+		if err != nil {
+			return nil, err
+		}
+		pins = append(pins, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	keys := make([]core.RatingKey, 0, len(pins)*2)
+	for _, p := range pins {
+		dest := p.TitleKey + core.RatingKey(r.Delta)
+		data, err := json.Marshal(p.Release)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO resolver_pins(rating_key,release_id,release_json,title_name,note,pinned_at)
+			VALUES(?,?,?,?,?,?) ON CONFLICT(rating_key) DO NOTHING`, int64(dest), p.Release.ID, string(data), name, p.Note, p.PinnedAt.Unix()); err != nil {
+			return nil, err
+		}
+		keys = append(keys, p.TitleKey, dest)
+	}
+	return keys, nil
+}
+
+// TitlePinsRebound publishes the committed bindings to the in-memory pin index.
+func (s *Service) TitlePinsRebound(ctx context.Context, keys []core.RatingKey) {
+	for _, key := range keys {
+		s.reloadPin(ctx, key)
+		s.notifyPin(key)
+	}
+}

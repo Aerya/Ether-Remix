@@ -19,11 +19,14 @@ func init() {
 	store.Register("state_continue_hidden", 2, `ALTER TABLE state_continue_hidden ADD COLUMN hidden_at INTEGER NOT NULL DEFAULT 0;`)
 	store.RegisterViewerTable("state", "state_continue_hidden", "user_id", store.ViewerMergeMove, "item_key")
 }
-func continueIdentity(key core.RatingKey) core.RatingKey {
+func continueIdentity(ctx context.Context, db ancestryReader, key core.RatingKey) (core.RatingKey, error) {
 	if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
-		return core.ShowKey(key.TMDB())
+		show, _, err := childAncestry(ctx, db, key)
+		if err != nil || show != 0 {
+			return show, err
+		}
 	}
-	return key
+	return key, nil
 }
 
 // HideContinue removes a title from the viewer's Continue Watching and
@@ -58,12 +61,16 @@ func (s *State) hideContinue(ctx context.Context, uid int64, key core.RatingKey,
 	if err := saveTx(ctx, tx, uid, cur); err != nil {
 		return err
 	}
+	identity, err := continueIdentity(ctx, tx, key)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO state_continue_hidden(user_id,item_key,hidden_at) VALUES(?,?,?)
-		ON CONFLICT(user_id,item_key) DO UPDATE SET hidden_at=excluded.hidden_at`, uid, int64(continueIdentity(key)), now.UnixNano()); err != nil {
+		ON CONFLICT(user_id,item_key) DO UPDATE SET hidden_at=excluded.hidden_at`, uid, identity, now.UnixNano()); err != nil {
 		return err
 	}
 	if !account {
-		evs, err := continueRemovals(ctx, tx, uid, key, now)
+		evs, err := continueRemovals(ctx, tx, uid, identity, now)
 		if err != nil {
 			return err
 		}
@@ -85,13 +92,18 @@ func continueRemovals(ctx context.Context, tx *sql.Tx, uid int64, key core.Ratin
 	lo, hi := key, key+1
 	switch key.Kind() {
 	case core.KindMovie:
-	case core.KindEpisode, core.KindSeason, core.KindShow:
-		lo, hi = core.EpisodeKey(key.TMDB(), 0, 0), core.EpisodeKey(key.TMDB()+1, 0, 0)
+	case core.KindShow:
+		lo, hi = 0, 0
+		if !key.Allocated() {
+			lo, hi = core.EpisodeKey(key.TMDB(), 0, 0), core.EpisodeKey(key.TMDB()+1, 0, 0)
+		}
 	default:
 		return nil, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT rating_key, view_offset_ns, duration_ns FROM state_watch
-		WHERE user_id=? AND rating_key>=? AND rating_key<? AND view_offset_ns>0`, uid, int64(lo), int64(hi))
+		WHERE user_id=? AND rating_key>=? AND rating_key<? AND view_offset_ns>0
+ UNION ALL SELECT w.rating_key,w.view_offset_ns,w.duration_ns FROM catalog_allocated_child a JOIN state_watch w ON w.rating_key=a.key
+ WHERE a.show_key=? AND a.kind=4 AND w.user_id=? AND w.view_offset_ns>0`, uid, lo, hi, key, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -109,15 +121,23 @@ func continueRemovals(ctx context.Context, tx *sql.Tx, uid int64, key core.Ratin
 }
 
 func (s *State) RestoreContinue(ctx context.Context, uid int64, key core.RatingKey) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM state_continue_hidden WHERE user_id=? AND item_key=?`, uid, int64(continueIdentity(key)))
+	identity, err := continueIdentity(ctx, s.db, key)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM state_continue_hidden WHERE user_id=? AND item_key=?`, uid, identity)
 	return err
 }
 
 // ContinueHiddenAt reports whether the title is removed from the viewer's
 // Continue Watching and when (zero when that was not recorded).
 func (s *State) ContinueHiddenAt(ctx context.Context, uid int64, key core.RatingKey) (time.Time, bool, error) {
+	identity, err := continueIdentity(ctx, s.db, key)
+	if err != nil {
+		return time.Time{}, false, err
+	}
 	var at int64
-	err := s.db.QueryRowContext(ctx, `SELECT hidden_at FROM state_continue_hidden WHERE user_id=? AND item_key=?`, uid, int64(continueIdentity(key))).Scan(&at)
+	err = s.db.QueryRowContext(ctx, `SELECT hidden_at FROM state_continue_hidden WHERE user_id=? AND item_key=?`, uid, identity).Scan(&at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
@@ -132,10 +152,21 @@ func (s *State) ContinueHidden(ctx context.Context, uid int64, keys []core.Ratin
 	if len(keys) == 0 {
 		return out, nil
 	}
+	ancestry, err := s.allocatedAncestry(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
 	args := []any{uid}
 	marks := []string{}
 	for _, key := range keys {
-		args = append(args, int64(continueIdentity(key)))
+		if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
+			if show := ancestry[key]; show != 0 {
+				key = show
+			} else if !key.Allocated() {
+				key = core.ShowKey(key.TMDB())
+			}
+		}
+		args = append(args, key)
 		marks = append(marks, "?")
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT item_key FROM state_continue_hidden WHERE user_id=? AND item_key IN (`+strings.Join(marks, ",")+`)`, args...)

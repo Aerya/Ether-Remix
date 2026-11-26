@@ -15,7 +15,7 @@ import (
 
 func TestPublishedTVFilterLibraryProfile(t *testing.T) {
 	a := setupTestAppConfigured(t, true, Options{}, func(c *config.Config) {
-		c.Quality.Profiles = append(c.Quality.Profiles, core.QualityProfile{Name: "Anime 1080p", MediaType: core.MediaTV, MaxHeight: 1080})
+		c.Quality.Profiles = append(c.Quality.Profiles, core.QualityProfile{Name: "Anime 1080p", MaxHeight: 1080})
 	})
 	ctx := context.Background()
 	show := core.Title{Key: core.ShowKey(464), Type: core.TypeShow, Title: "Anime show", Released: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), Genres: []string{"Animation"}}
@@ -30,7 +30,10 @@ func TestPublishedTVFilterLibraryProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.libraries.SetQualityProfile(ctx, lib.ID, "Anime 1080p"); err != nil {
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Quality.Rules = []config.QualityRule{{ID: "r_anime", Libraries: []int64{int64(lib.ID)}, Profile: "Anime 1080p"}}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	exp, err := a.newSurfaceExperience("plex")
@@ -56,11 +59,17 @@ func TestPublishedTVFilterLibraryProfile(t *testing.T) {
 		{Key: core.EpisodeKey(464, 1, 2), Type: core.TypeEpisode},
 		{Key: core.SeasonKey(464, 2), Type: core.TypeSeason},
 	} {
-		if got := profiles.QualityProfileForTitle(ctx, title); got != "Anime 1080p" {
-			t.Fatalf("%s profile = %q", title.Type, got)
+		if !profiles.InLibrary(ctx, title, lib.ID) {
+			t.Fatalf("%s not reported in library %d", title.Type, lib.ID)
+		}
+		if got := a.resolver.ProfileForTitle(ctx, core.ClientCaps{Protocol: "plex"}, nil, title).Name; got != "Anime 1080p" {
+			t.Fatalf("%s profile = %q, want Anime 1080p", title.Type, got)
 		}
 	}
-	if _, ok := profiles.cached(show.Key); !ok {
+	profiles.mu.Lock()
+	_, cached := profiles.cache.Peek(show.Key)
+	profiles.mu.Unlock()
+	if !cached {
 		t.Fatal("missing parent show cache entry")
 	}
 }
@@ -69,15 +78,13 @@ func TestPublishedTVFilterLibraryProfile(t *testing.T) {
 func TestLibraryProfileResolutionInvariant(t *testing.T) {
 	a := setupTestAppConfigured(t, true, Options{}, func(c *config.Config) {
 		c.Quality.Profiles = []core.QualityProfile{
-			{Name: "Home", MediaType: core.MediaMovie, MaxHeight: 2160},
-			{Name: "Custom", MediaType: core.MediaMovie, MaxHeight: 720},
-			{Name: "Other", MediaType: core.MediaMovie, MaxHeight: 1080},
-			{Name: "Shows", MediaType: core.MediaTV, MaxHeight: 1080},
+			{Name: "Home", MaxHeight: 2160},
+			{Name: "Custom", MaxHeight: 720},
+			{Name: "Other", MaxHeight: 1080},
+			{Name: "Shows", MaxHeight: 1080},
 		}
-		c.Quality.DefaultMovie = "Home"
-		c.Quality.DefaultTV = "Shows"
-		c.Quality.Remote = ""
-		c.Quality.RemoteMovie = ""
+		c.Quality.Default = "Home"
+		c.Quality.DefaultAway = ""
 	})
 	ctx := t.Context()
 	title := core.Title{Key: core.MovieKey(311), Type: core.TypeMovie, Title: "Test", Year: 2000, Rating: 7, Genres: []string{"Animation"}}
@@ -92,19 +99,23 @@ func TestLibraryProfileResolutionInvariant(t *testing.T) {
 		}
 		libs = append(libs, lib)
 	}
-	for i, name := range []string{"", "Custom", "Other"} {
-		if err := a.libraries.SetQualityProfile(ctx, libs[i].ID, name); err != nil {
-			t.Fatal(err)
-		}
-	}
 	// Compound visible rules must use membership mode too: this title has
 	// no release date, but its source/rule membership still assigns a profile.
 	if err := a.libraries.SetRules(ctx, libs[1].ID, libraryRules(core.Filter{Type: core.TypeMovie, Genres: []string{"Animation"}, YearFrom: 1990, MinRating: 6}), "hide"); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Quality.Rules = []config.QualityRule{
+			{ID: "r_first", Libraries: []int64{int64(libs[1].ID)}, Profile: "Custom"},
+			{ID: "r_second", Libraries: []int64{int64(libs[2].ID)}, Profile: "Other"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	lookup := newLibraryProfiles(a)
-	if got := lookup.QualityProfileForTitle(ctx, &title); got != "Custom" {
-		t.Fatalf("overlap profile = %q", got)
+	if !lookup.InLibrary(ctx, &title, libs[1].ID) {
+		t.Fatal("title not in First assigned library")
 	}
 	for _, protocol := range []string{"plex", "jellyfin", "emby", "silo", "stremio", "xtream", "vela"} {
 		caps := core.ClientCaps{Protocol: core.Protocol(protocol)}
@@ -120,35 +131,44 @@ func TestLibraryProfileResolutionInvariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.libraries.SetQualityProfile(ctx, collection.ID, "Home"); err != nil {
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Quality.Rules = append(c.Quality.Rules, config.QualityRule{ID: "r_coll", Libraries: []int64{int64(collection.ID)}, Profile: "Other"})
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	outsider := core.Title{Key: core.MovieKey(312), Type: core.TypeMovie, Title: "Outside"}
 	if err := a.catalog.UpsertTitle(ctx, outsider, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := lookup.QualityProfileForTitle(ctx, &outsider); got != "" {
-		t.Fatalf("nonmember captured by collection: %q", got)
+	if lookup.InLibrary(ctx, &outsider, collection.ID) {
+		t.Fatal("nonmember captured by collection")
 	}
 	if _, err := a.db.ExecContext(ctx, `INSERT INTO collections_members(spec_id,pos,key,shared) VALUES(311,0,?,1)`, outsider.Key); err != nil {
 		t.Fatal(err)
 	}
-	// A library edit invalidates membership immediately; catalogue writes do too.
-	if err := a.libraries.SetQualityProfile(ctx, collection.ID, "Other"); err != nil {
+	// A library or config edit invalidates membership immediately; catalogue writes do too.
+	if err := a.libraries.SetRules(ctx, collection.ID, nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := lookup.QualityProfileForTitle(ctx, &outsider); got != "Other" {
-		t.Fatalf("collection member profile = %q", got)
+	if !lookup.InLibrary(ctx, &outsider, collection.ID) {
+		t.Fatal("collection member not recognized after library edit")
+	}
+	if got := a.resolver.ProfileForTitle(ctx, core.ClientCaps{}, nil, &outsider).Name; got != "Other" {
+		t.Fatalf("collection member profile = %q, want Other", got)
 	}
 	before := lookup.PolicyKey(ctx)
-	if err := a.libraries.SetQualityProfile(ctx, libs[1].ID, "Shows"); err != nil {
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Quality.Rules[0].Profile = "Shows"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := lookup.QualityProfileForTitle(ctx, &title); got != "Other" {
-		t.Fatalf("mismatch fallback = %q", got)
+	if got := a.resolver.ProfileForTitle(ctx, core.ClientCaps{}, nil, &title).Name; got != "Shows" {
+		t.Fatalf("library choice = %q, want Shows", got)
 	}
 	if before == lookup.PolicyKey(ctx) {
-		t.Fatal("library edit did not invalidate evidence policy")
+		t.Fatal("rule edit did not invalidate evidence policy")
 	}
 	if got := a.playbackProfile(core.ClientCaps{}, nil, core.PluginKey(1)); got.Name != "" || got.MinHeight != 0 {
 		t.Fatalf("plugin video policy = %+v", got)

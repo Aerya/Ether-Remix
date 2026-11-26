@@ -290,7 +290,7 @@ export function HealthStrip({
         <li key={h.id}>
           <Link
             to={h.href}
-            className="flex items-start gap-3 rounded-xl border border-border bg-surface px-4 py-3 transition-colors hover:bg-surface-hover"
+            className="flex h-full items-start gap-3 rounded-xl border border-border bg-surface px-4 py-3 transition-colors hover:bg-surface-hover"
           >
             <StatusDot level={h.level} className="mt-1.5" />
             <span className="min-w-0 flex-1">
@@ -298,7 +298,9 @@ export function HealthStrip({
                 {h.label}
                 <LevelBadge level={h.level} label={h.statusLabel} />
               </span>
-              <span className="block truncate text-xs text-fg-muted">{h.summary}</span>
+              <span className="mt-0.5 block text-xs leading-snug text-pretty text-fg-muted">
+                {h.summary}
+              </span>
             </span>
           </Link>
         </li>

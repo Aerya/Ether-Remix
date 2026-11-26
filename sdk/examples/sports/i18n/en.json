@@ -34,5 +34,11 @@
   "region_gb": "United Kingdom",
   "region_eu": "Europe",
   "region_au": "Australia",
-  "region_all": "All regions"
+  "region_all": "All regions",
+  "surface_scorebug": "Score",
+  "setting_scorebug": "Score",
+  "surface_ticker": "Scores ticker",
+  "setting_ticker": "Scores ticker",
+  "surface_alert": "Game alerts",
+  "surface_tonight": "Your teams tonight"
 }

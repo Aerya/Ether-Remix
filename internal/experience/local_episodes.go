@@ -29,7 +29,10 @@ func (s *Service) localEpisodesMany(ctx context.Context, viewer *core.Viewer, ke
 	if err != nil {
 		return nil, err
 	}
-	shows := localShows(keys)
+	tree, shows, err := s.localEpisodeTree(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[core.RatingKey]localEpisodeList, len(keys))
 	if len(shows) == 0 {
 		return out, nil
@@ -72,14 +75,14 @@ func (s *Service) localEpisodesMany(ctx context.Context, viewer *core.Viewer, ke
 		shown[title.Key] = true
 	}
 	for _, key := range keys {
-		show, ok := localShowOf(key)
+		parent, ok := tree[key]
 		if !ok {
 			continue
 		}
-		page := pages[show]
+		page := pages[parent.show]
 		list := localEpisodeList{Items: make([]core.Title, 0, len(page.Items)), Complete: page.Total == len(page.Items)}
 		for _, title := range page.Items {
-			if key.Kind() == core.KindSeason && title.Season != key.Season() {
+			if key.Kind() == core.KindSeason && title.Season != parent.season {
 				continue
 			}
 			if shown[title.Key] {
@@ -91,28 +94,53 @@ func (s *Service) localEpisodesMany(ctx context.Context, viewer *core.Viewer, ke
 	return out, nil
 }
 
-// localShowOf is the show a show or season key belongs to.
-func localShowOf(key core.RatingKey) (core.RatingKey, bool) {
-	switch key.Kind() {
-	case core.KindShow:
-		return key, true
-	case core.KindSeason:
-		return core.ShowKey(key.TMDB()), true
-	}
-	return 0, false
+type localEpisodeContainer struct {
+	show   core.RatingKey
+	season int
 }
 
-// localShows are the distinct shows of the show and season keys, in order.
-func localShows(keys []core.RatingKey) []core.RatingKey {
-	var shows []core.RatingKey
-	seen := map[core.RatingKey]bool{}
+// localEpisodeTree resolves the bounded page's season rows together before
+// grouping them by their effective series and season number.
+func (s *Service) localEpisodeTree(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]localEpisodeContainer, []core.RatingKey, error) {
+	var seasons []core.RatingKey
 	for _, key := range keys {
-		if show, ok := localShowOf(key); ok && !seen[show] {
-			seen[show] = true
-			shows = append(shows, show)
+		if key.Kind() == core.KindSeason {
+			seasons = append(seasons, key)
 		}
 	}
-	return shows
+	var stored map[core.RatingKey]core.Title
+	if len(seasons) > 0 && s.d.CachedGetMany != nil {
+		var err error
+		stored, err = s.d.CachedGetMany(ctx, seasons)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	tree := make(map[core.RatingKey]localEpisodeContainer, len(keys))
+	seen := map[core.RatingKey]bool{}
+	var shows []core.RatingKey
+	for _, key := range keys {
+		var parent localEpisodeContainer
+		switch key.Kind() {
+		case core.KindShow:
+			parent.show = key
+		case core.KindSeason:
+			if row, ok := stored[key]; ok {
+				parent.show, parent.season = seriesOfTitle(row), row.Season
+			} else {
+				parent.show, parent.season = key.Parent(), key.Season()
+			}
+		}
+		if parent.show == 0 {
+			continue
+		}
+		tree[key] = parent
+		if !seen[parent.show] {
+			shows = append(shows, parent.show)
+			seen[parent.show] = true
+		}
+	}
+	return tree, shows, nil
 }
 
 // localEpisodeCap is the most stored episodes a show's local list holds; a

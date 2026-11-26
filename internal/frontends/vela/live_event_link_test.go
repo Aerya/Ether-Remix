@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -33,20 +32,6 @@ func (f *fakeLiveEventLinker) Set(progKey string, ref *frontend.LiveEventRef) {
 	defer f.mu.Unlock()
 	f.progKey = progKey
 	f.ref = cloneLiveEventRef(ref)
-}
-
-type fakeLiveEventTicker struct {
-	items      []frontend.LiveTickerItem
-	lastScreen string
-	lastViewer int64
-}
-
-func (f *fakeLiveEventTicker) LiveTicker(_ context.Context, v *frontend.Viewer, screen string) ([]frontend.LiveTickerItem, error) {
-	f.lastScreen = screen
-	if v != nil {
-		f.lastViewer = v.ID
-	}
-	return f.items, nil
 }
 
 func TestVelaLiveSessionSnapshotAndSSELiveEventOnProgrammeChange(t *testing.T) {
@@ -180,83 +165,6 @@ func TestVelaLiveSessionSnapshotAndSSELiveEventOnProgrammeChange(t *testing.T) {
 	val, hasKey := snapAfter["liveEvent"]
 	if !hasKey || val != nil {
 		t.Fatalf("snapshot after rollover liveEvent = (%#v, %v), want (nil, true)", val, hasKey)
-	}
-}
-
-func TestVelaLiveTickerRoute(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 11, 22, 19, 0, 0, 0, time.UTC)
-
-	ticker := &fakeLiveEventTicker{
-		items: []frontend.LiveTickerItem{
-			{
-				ID:     "demo:main:e1",
-				Feed:   "main",
-				League: core.LiveEventLeague{ID: "l1", Name: "Premier", Abbr: "PL"},
-				Start:  now.UTC().Format(time.RFC3339),
-				Status: core.LiveEventStatus{State: core.LiveEventStateIn, Detail: "P2 · 10:00"},
-				Competitors: []core.LiveEventCompetitor{
-					{ID: "a", Name: "North", Abbr: "NTH", Score: "2"},
-					{ID: "b", Name: "South", Abbr: "STH", Score: "1"},
-				},
-				UpdatedAt: now.UTC().Format(time.RFC3339),
-			},
-		},
-	}
-
-	i := &instance{
-		ctx: ctx,
-		mux: http.NewServeMux(),
-		host: frontend.Host{
-			Identity:        identityFake{},
-			LiveEventTicker: ticker,
-		},
-	}
-	i.routes()
-
-	// Missing auth/device header returns 401 unauthorized.
-	unauthReq := httptest.NewRequest("GET", "/vela/v0/live/ticker?screen=sports-main", nil)
-	wUnauth := httptest.NewRecorder()
-	i.mux.ServeHTTP(wUnauth, unauthReq)
-	if wUnauth.Code != 401 {
-		t.Fatalf("unauthenticated ticker status = %d, want 401", wUnauth.Code)
-	}
-
-	req := httptest.NewRequest("GET", "/vela/v0/live/ticker?screen=sports-main", nil)
-	req.Header.Set("Authorization", "Bearer token")
-	req.Header.Set("X-Vela-Device-Id", "device")
-	w := httptest.NewRecorder()
-	i.mux.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("GET /vela/v0/live/ticker status = %d, body = %s", w.Code, w.Body.String())
-	}
-	if ticker.lastScreen != "sports-main" || ticker.lastViewer != 1 {
-		t.Fatalf("ticker called with screen=%q viewer=%d, want sports-main / 1", ticker.lastScreen, ticker.lastViewer)
-	}
-
-	var doc struct {
-		Screen string                    `json:"screen"`
-		Events []frontend.LiveTickerItem `json:"events"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
-		t.Fatalf("unmarshal ticker response: %v", err)
-	}
-	if doc.Screen != "sports-main" || len(doc.Events) != 1 || doc.Events[0].ID != "demo:main:e1" {
-		t.Fatalf("unexpected ticker response: %+v", doc)
-	}
-
-	// When LiveEventTicker is nil, route answers 403 feature_unavailable.
-	iNoTicker := &instance{
-		ctx:  ctx,
-		mux:  http.NewServeMux(),
-		host: frontend.Host{Identity: identityFake{}},
-	}
-	iNoTicker.routes()
-	w2 := httptest.NewRecorder()
-	iNoTicker.mux.ServeHTTP(w2, req)
-	if w2.Code != 403 {
-		t.Fatalf("unconfigured ticker status = %d, want 403", w2.Code)
 	}
 }
 

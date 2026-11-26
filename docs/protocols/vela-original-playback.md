@@ -88,3 +88,58 @@ long playback across refresh, revocation, native HLS fallback position and
 track preservation, and independent AAC audio switch/cancel/A-V sync. The worker
 did not access production or the lab; deployment must pair the runtime client
 and server before enabling original admission.
+
+## Offline downloads
+
+An authenticated viewer sees `capabilities.features.downloads` as
+`{enabled,maxPerDay?,remainingToday?}`. The optional counters are supplied
+for a daily title-count limit. Download permission and usage are shared with
+Plex and Jellyfin/Emby, including any configured byte or monthly limits.
+
+`POST /vela/v0/titles/{id}/download` takes `{idempotencyKey,versionId?}`.
+Send the device's `originalPlayback` declaration through negotiation first.
+A supplied version uses an ID from the title's version menu. With no
+`versionId`, Ether picks an original whose container and default audio and
+video streams the device can decode. The file needs no server-side conversion
+or audio fallback at playback.
+
+A grant returns `{titleId,versionId?,url,expiresAt,etag,byteLength?,mimeType,filename}`.
+Retain the idempotency key with the download. Reposting for the same title
+and version issues a fresh bearer URL for the same bytes and leaves the shared
+quota unchanged, including across a quota reset. `etag` is a required, quoted
+strong validator derived from the release, file identity, and size.
+`byteLength` is included when Ether knows the original's size. A range
+response provides the total in `Content-Range` when the grant omits it.
+
+`GET /vela/v0/download/{ticket}` serves the original with HTTP range and
+conditional requests, including `Range` with `If-Range: <etag>` for resume.
+`HEAD` provides headers without a body. The URL grants access to the file
+until `expiresAt` without additional authentication headers. A transfer that
+started before expiry can finish. Download reads use no playback stream
+slot or playback idle timeout and can run alongside a playback session.
+
+Grant refusals use `403 download_not_allowed`, `429 download_limit`, or
+`409 version_unavailable`. A quota refusal includes `Retry-After` in seconds
+until the current UTC quota period resets. An expired ticket responds with
+404. As with other rangefile responses, an `If-Range` mismatch returns the
+full representation. Check the returned status and validator before
+appending bytes to a partial file.
+
+## Offline watch progress
+
+Send offline progress to the normal authenticated
+`POST /vela/v0/titles/{id}/watch` endpoint with
+`{idempotencyKey,offline:true,positionSeconds,observedAt}`. `observedAt` is
+the time the device observed the position, in RFC 3339. A future value is
+clamped to the time Ether received the request. Ether applies only
+observations newer than the stored `lastViewedAt`. It uses the normal
+completion threshold and preserves titles already marked watched. A client
+with only a completion observation can send `played:true` without a
+position. Stale reports are acknowledged so clients can drop them from the
+offline queue.
+
+Accepted progress uses the usual watch sync with the observation time.
+Plex clients can report the same observation with `POST /:/timeline`,
+`offline=1`, and `updated` as Unix epoch seconds, alongside the usual
+millisecond position and duration. The offline report does not modify an
+active Plex playback session.

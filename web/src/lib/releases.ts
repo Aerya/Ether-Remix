@@ -302,10 +302,22 @@ export interface ImportFormat {
 }
 
 /** A previewed import: the profile as it will be saved and its custom formats. */
+export interface QualityDatabaseCheckResult {
+  ok: boolean;
+  profiles?: number;
+  error?: string;
+  id?: string;
+  name?: string;
+  repo?: string;
+  branch?: string;
+}
+
 export interface QualityImportPlan {
   app: StarrApp;
   /** "trash", "dictionarry", or "" for pasted JSON. */
   source?: "trash" | "dictionarry" | "";
+  database?: string;
+  noSync?: boolean;
   /** Source profile id/slug used to fetch it. */
   profileId?: string;
   trashId?: string;
@@ -330,9 +342,12 @@ export interface QualitySyncReport {
 }
 
 /** A TRaSH or Profilarr (Dictionarry) profile by id, or pasted profile JSON. */
-export type QualityImportSource = { app: StarrApp; source?: "trash" | "dictionarry" } & (
-  { profile: string; json?: undefined } | { json: string; profile?: undefined }
-);
+export type QualityImportSource = {
+  app: StarrApp;
+  source?: "trash" | "dictionarry";
+  database?: string;
+  sync?: boolean;
+} & ({ profile: string; json?: undefined } | { json: string; profile?: undefined });
 
 /** Profile names the server understands beside the configured ones. */
 export const PROFILE_NONE = "none";
@@ -422,10 +437,27 @@ export const releaseConsole = {
     return { items: res.items ?? [], total: res.total ?? 0 };
   },
   historyEntry: (id: number) => apiFetch<HistoryRecord>(`${base}/history/${id}`),
+  presets: async (signal?: AbortSignal) =>
+    (await apiFetch<{ items: QualityProfile[] | null }>(`${base}/presets`, { signal })).items ?? [],
   trashProfiles: (app: StarrApp, signal?: AbortSignal) =>
     apiFetch<TrashProfileList>(`${base}/trash/${app}/profiles`, { signal }),
-  dictionarryProfiles: (app: StarrApp, signal?: AbortSignal) =>
-    apiFetch<TrashProfileList>(`${base}/dictionarry/${app}/profiles`, { signal }),
+  dictionarryProfiles: (
+    app: StarrApp,
+    databaseOrSignal?: string | AbortSignal,
+    maybeSignal?: AbortSignal,
+  ) => {
+    const database = typeof databaseOrSignal === "string" ? databaseOrSignal : undefined;
+    const signal = typeof databaseOrSignal === "string" ? maybeSignal : databaseOrSignal;
+    return apiFetch<TrashProfileList>(`${base}/dictionarry/${app}/profiles${qs({ database })}`, {
+      signal,
+    });
+  },
+  checkQualityDatabase: (repo: string, branch?: string, signal?: AbortSignal) =>
+    apiFetch<QualityDatabaseCheckResult>(`${base}/quality-databases/check`, {
+      method: "POST",
+      body: JSON.stringify({ repo, ...(branch ? { branch } : {}) }),
+      signal,
+    }),
   previewImport: (source: QualityImportSource, signal?: AbortSignal) =>
     apiFetch<QualityImportPlan>(`${base}/quality-import/preview`, {
       method: "POST",

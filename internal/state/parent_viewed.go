@@ -18,10 +18,12 @@ func (s *State) fillParentViewed(ctx context.Context, user int64, status map[cor
 		if !st.LastViewedAt.IsZero() || (k.Kind() != core.KindShow && k.Kind() != core.KindSeason) {
 			continue
 		}
-		lo, hi := core.EpisodeKey(k.TMDB(), 0, 0), core.EpisodeKey(k.TMDB()+1, 0, 0)
-		if k.Kind() == core.KindSeason {
-			lo = core.EpisodeKey(k.TMDB(), k.Season(), 0)
-			hi = core.EpisodeKey(k.TMDB(), k.Season()+1, 0)
+		var lo, hi core.RatingKey
+		if !k.Allocated() {
+			lo, hi = core.EpisodeKey(k.TMDB(), 0, 0), core.EpisodeKey(k.TMDB()+1, 0, 0)
+			if k.Kind() == core.KindSeason {
+				lo, hi = core.EpisodeKey(k.TMDB(), k.Season(), 0), core.EpisodeKey(k.TMDB(), k.Season()+1, 0)
+			}
 		}
 		parents = append(parents, parentRange{k, lo, hi})
 	}
@@ -36,8 +38,15 @@ func (s *State) fillParentViewed(ctx context.Context, user int64, status map[cor
 			q.WriteString(`(CAST(? AS BIGINT),CAST(? AS BIGINT),CAST(? AS BIGINT))`)
 			args = append(args, int64(p.key), int64(p.lo), int64(p.hi))
 		}
-		q.WriteString(`) SELECT key,COALESCE((SELECT MAX(last_viewed_at) FROM state_watch WHERE user_id=? AND rating_key>=parents.lo AND rating_key<parents.hi),0) FROM parents`)
-		args = append(args, user)
+		q.WriteString(`) SELECT key,COALESCE((
+ SELECT MAX(stamp) FROM (
+  SELECT MAX(last_viewed_at) AS stamp FROM state_watch WHERE user_id=? AND rating_key>=parents.lo AND rating_key<parents.hi
+  UNION ALL
+  SELECT MAX(w.last_viewed_at) FROM catalog_allocated_child a JOIN state_watch w ON w.rating_key=a.key AND w.user_id=?
+  WHERE a.kind=4 AND (a.show_key=parents.key OR a.parent_key=parents.key)
+ ) AS touches
+ ),0) FROM parents`)
+		args = append(args, user, user)
 		rows, err := s.db.QueryContext(ctx, q.String(), args...)
 		if err != nil {
 			return err

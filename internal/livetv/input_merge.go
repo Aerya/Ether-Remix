@@ -633,14 +633,15 @@ func reconcileChannelInputMerges(cs []Channel, srcs []Source, cached *inputMerge
 
 // reconcileImportedMerges runs inside importSource's transaction before
 // writeSourceChannels marshals stored. It updates stored in-place for src.ID
-// channels and writes any affected channels on other sources inside tx.
-func (s *Service) reconcileImportedMerges(ctx context.Context, tx *sql.Tx, src Source, stored []Channel, old []Channel) (bool, []string, error) {
+// channels and writes any affected channels on other sources inside tx,
+// returning the rows it wrote for them.
+func (s *Service) reconcileImportedMerges(ctx context.Context, tx *sql.Tx, src Source, stored []Channel, old []Channel) (bool, []string, map[string][]byte, error) {
 	if !needsMergeReconcile(stored) && !needsMergeReconcile(old) {
-		return false, nil, nil
+		return false, nil, nil, nil
 	}
 	srcs, err := s.sourcesTx(ctx, tx)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	foundSrc := false
 	for i := range srcs {
@@ -672,6 +673,7 @@ func (s *Service) reconcileImportedMerges(ctx context.Context, tx *sql.Tx, src S
 
 	crossChanged := false
 	var invalidated []string
+	var written map[string][]byte
 	for _, idx := range changedIdx {
 		if idx < otherBase {
 			continue
@@ -680,17 +682,21 @@ func (s *Service) reconcileImportedMerges(ctx context.Context, tx *sql.Tx, src S
 		updated := universe[idx]
 		b, err := json.Marshal(updated)
 		if err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO livetv_channels(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, updated.ID, b); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
+		if written == nil {
+			written = map[string][]byte{}
+		}
+		written[updated.ID] = b
 		if prev, ok := otherOld[updated.ID]; ok && prev.StreamURL != updated.StreamURL {
 			invalidated = append(invalidated, updated.ID)
 		}
 	}
 	s.invalidateInputMergeIndex()
-	return crossChanged, invalidated, nil
+	return crossChanged, invalidated, written, nil
 }
 
 // reconcileInputMergesTx reconciles all stored channels' merge rules inside tx,
@@ -742,6 +748,7 @@ func (s *Service) saveChannelWithMerges(ctx context.Context, c *Channel) ([]stri
 	if err != nil {
 		return nil, err
 	}
+	c.Archive = nil
 	replaced := false
 	needReconcile := hasInputMergeRules(*c) || c.MergedInto != "" || hasMergedStreamSources(*c)
 	prevStreamURL := make(map[string]string, len(all)+1)
@@ -750,6 +757,9 @@ func (s *Service) saveChannelWithMerges(ctx context.Context, c *Channel) ([]stri
 		if all[i].ID == c.ID {
 			if hasInputMergeRules(all[i]) || all[i].MergedInto != "" || hasMergedStreamSources(all[i]) {
 				needReconcile = true
+			}
+			if c.Kind == "iptv" && c.SourceID == all[i].SourceID {
+				c.Archive = all[i].Archive
 			}
 			all[i] = *c
 			replaced = true

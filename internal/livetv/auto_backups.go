@@ -1122,6 +1122,26 @@ func (s *Service) reconcileAutoBackupsTx(ctx context.Context, tx *sql.Tx, writeB
 	if err != nil {
 		return false, nil, err
 	}
+	return s.reconcileAutoBackupsIn(ctx, tx, writeBatch, inPlace, iptvOnly(all))
+}
+
+// iptvOnly keeps the IPTV channels of cs, in order. Duplicate backups only
+// ever match and change IPTV channels, and the rest (virtual channels carry
+// their whole programming) are most of the stored bytes.
+func iptvOnly(cs []Channel) []Channel {
+	out := make([]Channel, 0, len(cs))
+	for _, c := range cs {
+		if c.Kind == "iptv" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// reconcileAutoBackupsIn is reconcileAutoBackupsTx over all, the IPTV
+// channels as tx holds them (in channels() order), which it may change in
+// place.
+func (s *Service) reconcileAutoBackupsIn(ctx context.Context, tx *sql.Tx, writeBatch int, inPlace []Channel, all []Channel) (bool, []string, error) {
 	if len(all) == 0 {
 		return false, nil, nil
 	}

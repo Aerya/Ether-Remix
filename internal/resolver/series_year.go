@@ -48,7 +48,7 @@ func (s *Service) prepareSeriesYears(ctx context.Context, t *core.Title, sreq co
 	years := map[int]bool{}
 	for _, rel := range results {
 		y := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-		if !releaseparse.SeriesYearMatches(y, sreq.Year) {
+		if !releaseparse.SeriesYearMatches(y, sreq.Year) && !longRunningEpisodeYear(rel, t, sreq, y) {
 			years[y] = true
 		}
 	}
@@ -99,6 +99,32 @@ func (s *Service) seriesYearAccepted(show core.RatingKey, year int) bool {
 	defer s.years.mu.Unlock()
 	v, ok := s.years.seen[seriesYearKey(show, year)]
 	return ok && !v.conflict && s.now().Sub(v.at) < seriesYearTTL
+}
+
+// longRunningEpisodeYear recognizes release labels that keep the year a
+// distributor picked up a series. The exact, late numbered episode and a
+// distinctive catalogue title are required before discounting that year.
+func longRunningEpisodeYear(rel core.Release, t *core.Title, req core.SearchRequest, year int) bool {
+	if req.Type != core.TypeEpisode || req.Year <= 0 || year <= req.Year ||
+		req.Released.IsZero() || year > req.Released.Year() || req.Released.Year()-req.Year < 3 ||
+		req.Season != 1 || req.Episode < 100 || rel.Info.FullSeason ||
+		len(rel.Info.Seasons) != 1 || rel.Info.Seasons[0] != req.Season ||
+		len(rel.Info.Episodes) != 1 || rel.Info.Episodes[0] != req.Episode ||
+		releaseparse.TitleTooGeneric(rel.Info.Title) {
+		return false
+	}
+	if _, conflict := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), req.IDs); conflict {
+		return false
+	}
+	if rel.Info.AirDate != "" && !releaseparse.EpisodeMatchesAirDate(rel.Info, req.Released) {
+		return false
+	}
+	for _, title := range expectedTitlesFor(t, req) {
+		if !releaseparse.TitleTooGeneric(title) && releaseparse.TitlesMatch(rel.Info.Title, title) {
+			return true
+		}
+	}
+	return false
 }
 
 // seriesYearGuessed reports an episode release accepted despite a series

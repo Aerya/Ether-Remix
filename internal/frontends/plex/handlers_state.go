@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
 	"slices"
@@ -39,6 +40,7 @@ func durationParam(v string, unit time.Duration) time.Duration {
 
 // handleTimeline is /:/timeline: playback progress from the client.
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	received := s.now()
 	if s.handleLiveTimeline(w, r) {
 		return
 	}
@@ -47,13 +49,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	origin := frontend.WatchOrigin{SuppressMetadataRefresh: true, Surface: "plex", SessionID: pr.SessionID, ClientID: pr.ClientID}
 	origin.DeviceID = s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform).ID
 	ctx = frontend.WithWatchOrigin(ctx, origin)
-	unlockOwner, locked := s.lockPlaybackRequest(w, r)
-	if !locked {
-		return
-	}
-	defer unlockOwner()
-
 	q := r.URL.Query()
+	offline := r.Method == http.MethodPost && q.Get("offline") == "1" && q.Has("updated")
+	if !offline {
+		unlockOwner, locked := s.lockPlaybackRequest(w, r)
+		if !locked {
+			return
+		}
+		defer unlockOwner()
+	}
 	key := stateKey(r)
 	if pr.User == nil {
 		writeHTTPError(w, http.StatusBadRequest)
@@ -81,7 +85,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
+	if !offline {
+		key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
+	}
 	// Pre-rolls and trailers are synthetic extras, not catalog titles.
 	// Acknowledge their timelines without writing feature watch progress.
 	if key.Kind() == frontend.KindExtra {
@@ -105,13 +111,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.writeEmpty(w, r)
 		return
 	}
+	var title *frontend.Title
 	if key.Kind() == frontend.KindPlaylist {
 		if _, err := s.playlist(ctx, pr.User, key); err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
 	} else {
-		title, err := s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
+		var err error
+		title, err = s.metadataTitle(frontend.WithNoContainerExpand(ctx), pr, key)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
@@ -129,6 +137,10 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}
+	}
+	if offline {
+		s.storeOfflineTimeline(w, r.WithContext(ctx), pr, key, title, received)
+		return
 	}
 	// A stopped old encoder can arrive after the next version's decision
 	// within the SAME public player session. Reject it before reporting a
@@ -200,6 +212,11 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			duration = 0
 		}
 	}
+	// When Ether serves this client none of this title's media, the duration
+	// is the client's own. One far shorter than the title's runtime is other
+	// media reported against it (a detail-page trailer, theme or preview): it
+	// never moves the title's resume point, completion or taste.
+	foreign := ps == nil && len(tids) == 0 && title != nil && frontend.ForeignMediaDuration(title.Runtime, duration)
 	// Some clients carry the previous queue item's playhead into the first
 	// timeline for the next item. A position past the item's end is not
 	// evidence of watching it: keep the last real position for this item and
@@ -216,9 +233,25 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	// A failed start cannot write a resume point or consume the completion latch.
 	// Source bytes include ffmpeg read-ahead; conversions require output evidence.
 	stalled := s.checkStartStall(pr, key, state, offset, tids)
-	if impossible || failedProgressive || stalled != "" || s.playbackNeverDelivered(ps, tids) {
+	undelivered := !impossible && !failedProgressive && stalled == "" && s.playbackNeverDelivered(ps, tids)
+	if foreign {
+		// The session still shows what the client reports; only the
+		// title's watch state, history and taste are left untouched.
 		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		s.log.Debug("timeline not saved: duration is not this title's media", "key", key, "state", state, "position", offset, "duration", duration, "runtime", title.Runtime)
+	}
+	if impossible || failedProgressive || stalled != "" || undelivered {
+		ctx = context.WithValue(ctx, noPlaybackDelivery{}, true)
+		reported := offset
 		offset = s.lastKnownOffset(ctx, user.ID, tid, key)
+		if undelivered {
+			// Never silent: a session that ends here saved no progress (#780).
+			level := slog.LevelDebug
+			if state == "stopped" {
+				level = slog.LevelInfo
+			}
+			s.log.Log(ctx, level, "timeline not saved: no playback delivered", "key", key, "session", tid, "state", state, "position", reported, "kept", offset)
+		}
 	}
 	if ps != nil && state == "stopped" {
 		// EOF after a decoder crash is not a played position. The last nonterminal
@@ -230,7 +263,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, watchErr)
 		return
 	}
-	if !s.reportBrokerTimeline(ctx, pr, key, offset, duration, state, sanitizeSessionID(q.Get("session"))) {
+	// Foreign media is not playback of this title: no progress, prefetch or
+	// session-intent signal reaches the broker for it.
+	if !foreign && !s.reportBrokerTimeline(ctx, pr, key, offset, duration, state, sanitizeSessionID(q.Get("session"))) {
 		s.log.Warn("timeline report", "key", key, "state", state)
 	}
 	if reason := stalled; reason != "" {
@@ -248,7 +283,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
 				continue
 			}
-			if state != "stopped" && e.started && !s.transcodeEntryLive(e) {
+			// An HLS encoder can be restarted under the same binding. Retain
+			// the playlist capabilities until playback actually stops.
+			if state != "stopped" && e.started && e.requested.protocol != "hls" && !s.transcodeEntryLive(e) {
 				s.dropTranscode(id)
 				continue
 			}

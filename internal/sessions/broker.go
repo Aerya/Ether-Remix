@@ -87,8 +87,11 @@ type BrokerDeps struct {
 	CurrentPlay func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
 	FreshPlay   func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
 	// ReceiptCurrent rechecks the acceptance Plex stored for this request.
-	ReceiptCurrent      func(context.Context, auth.Acceptance) error
-	BitrateLimit        func(*core.Viewer) int
+	ReceiptCurrent func(context.Context, auth.Acceptance) error
+	BitrateLimit   func(*core.Viewer) int
+	// ApplyRuleLimits applies quality-rule limits (MaxHeight, MaxBitrateKbps,
+	// StereoAudio) for viewer and title (title == nil for pre-title / Live TV).
+	ApplyRuleLimits     func(ctx context.Context, caps core.ClientCaps, viewer *core.Viewer, title *core.Title) core.ClientCaps
 	StreamLimit         func(*core.Viewer) int
 	RemoteBitrateLimit  func() int
 	RemoteUploadCap     func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
@@ -116,11 +119,18 @@ type BrokerDeps struct {
 	Now       func() time.Time
 }
 
+// versionAdmission holds the limits and delivery options before source-specific admission.
+type versionAdmission struct {
+	caps core.ClientCaps
+	opts core.DecideOptions
+}
+
 type brokerPlan struct {
-	request  frontend.PlanRequest
-	source   *core.PlaySession
-	decision core.Decision
-	created  time.Time
+	versionAdmission versionAdmission
+	request          frontend.PlanRequest
+	source           *core.PlaySession
+	decision         core.Decision
+	created          time.Time
 	// requested is when the play request that made this plan arrived.
 	requested     time.Time
 	etag          string
@@ -129,12 +139,33 @@ type brokerPlan struct {
 	versionHandle string
 	opening       bool
 	pinned        bool
+	// autoRelease: exactRelease is the client's Auto entry, which may fail
+	// over after admission like any automatic session.
+	autoRelease bool
 	// external is a Plex admission: the adapter already prepared the source.
 	external      bool
 	budgetCapKbps int
 	baseMaxHeight int
+	clientCap     clientCapPolicy
+}
+
+// clientCapPolicy tracks Vela's own streaming cap (client.maxBitrate, together
+// with maxWidth/maxHeight) alongside owner caps so only the client's cap can
+// be lifted for an explicit original choice or last-resort fallback.
+type clientCapPolicy struct {
+	clientKbps  int
+	ownerKbps   int
+	ownerHeight int
 }
 type brokerSession struct {
+	versionAdmission versionAdmission
+	// queued is a prefetched next item (PlayIntent.Queued) not yet observed
+	// playing: it supersedes nothing until activateQueued.
+	queued bool
+	// outgoing is the item a queued successor took over from, still playing
+	// out (a crossfade) for at most OutgoingHandover: its reads keep serving,
+	// it no longer owns the device, and its reports write nothing.
+	outgoing bool
 	// qualityCapped records that a quality pick turned off copying, so a
 	// later Auto pick turns it back on.
 	qualityCapped          bool
@@ -150,6 +181,7 @@ type brokerSession struct {
 	distributed, restored bool
 	distributedSaved      time.Time
 	trickplay             *trickplay.Holder
+	trickplayStarted      bool
 	public                frontend.Session
 	grant                 string
 	playID                string
@@ -168,14 +200,24 @@ type brokerSession struct {
 	multiviewGroup        string
 	multiviewTile         int
 	baseMaxHeight         int
+	clientCap             clientCapPolicy
 	knownVideoHeight      int
 	sequence              uint64
 	historyEpoch          int64
 	historySequence       int64
 	versionHandle         string
 	exactRelease          string
+	autoRelease           bool
 	sourcePinned          bool
 	sourceETag            string
+
+	originalFailure, originalReplaced bool
+	originalAwaitingProgress          bool
+	originalSubstituted               bool
+	originalPosition                  *time.Duration
+	originalResumeAt                  time.Duration
+	originalAudio, originalSubtitle   *int
+
 	// transferBarrier is this session's admission ticket. A later open of the
 	// same title, part and device reuses it. Stop drops it once no live
 	// session still holds it; an unverified retirement leaves it until the
@@ -200,6 +242,10 @@ type retiredSession struct {
 	deviceID string
 	item     core.RatingKey
 	until    time.Time
+	// grant and replacedAt are set only when a newer playback on the same
+	// device superseded the session; see replacedMedia.
+	grant      string
+	replacedAt time.Time
 }
 
 // Broker coordinates playback admission for every protocol, including Plex.
@@ -426,6 +472,7 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 	r.Caps.SubtitleCodecs = slices.Clone(r.Caps.SubtitleCodecs)
 	r.Caps.HDRFormats = slices.Clone(r.Caps.HDRFormats)
 	r.Caps.DVProfiles = slices.Clone(r.Caps.DVProfiles)
+	r.Caps.DVProfileVariants = slices.Clone(r.Caps.DVProfileVariants)
 	r.Caps.VideoLevels = maps.Clone(r.Caps.VideoLevels)
 	r.Caps.VideoMaxHeights = maps.Clone(r.Caps.VideoMaxHeights)
 	r.Caps.VideoProfiles = maps.Clone(r.Caps.VideoProfiles)
@@ -525,11 +572,43 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if req.Intent.DeclaredCaps && req.Item != 0 {
 		b.rememberPlayCaps(v, req.Protocol, req.Device, req.Item, req.Caps)
 	}
+	// clientCap tracks Vela's own streaming cap (client.maxBitrate, together
+	// with maxWidth/maxHeight) alongside every owner cap so only the client's
+	// streaming cap can be lifted for an explicit original choice or fallback.
+	var clientCap clientCapPolicy
+	if req.Protocol == "vela" {
+		if req.Item != 0 {
+			clientCap.clientKbps = req.Intent.Options.MaxBitrateKbps
+			if clientCap.clientKbps > 0 {
+				if c := req.Caps.MaxBitrateKbps; c > 0 && c < clientCap.clientKbps {
+					clientCap.ownerKbps = c
+				}
+				if req.Caps.MaxHeight > 0 && req.Caps.MaxHeightSource != "" {
+					clientCap.ownerHeight = req.Caps.MaxHeight
+				}
+			}
+		}
+		// Never let an owner quality rule with a higher ceiling raise Caps
+		// above Vela's declared maxHeight or maxBitrate (including live starts,
+		// which read Caps directly).
+		if h := req.Intent.Options.MaxHeight; h > 0 && (req.Caps.MaxHeight == 0 || h < req.Caps.MaxHeight) {
+			req.Caps.MaxHeight = h
+		}
+		if k := req.Intent.Options.MaxBitrateKbps; k > 0 && (req.Caps.MaxBitrateKbps == 0 || k < req.Caps.MaxBitrateKbps) {
+			req.Caps.MaxBitrateKbps = k
+		}
+	}
 	req.Caps = b.playCaps(v, req.Protocol, req.Device, req.Caps)
+	req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, v, nil)
 	if b.deps.BitrateLimit != nil {
-		if limit := b.deps.BitrateLimit(v); limit > 0 && (req.Intent.Options.MaxBitrateKbps == 0 || limit < req.Intent.Options.MaxBitrateKbps) {
+		limit := b.deps.BitrateLimit(v)
+		if limit > 0 && (req.Intent.Options.MaxBitrateKbps == 0 || limit < req.Intent.Options.MaxBitrateKbps) {
 			req.Intent.Options.MaxBitrateKbps = limit
 		}
+		clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, limit)
+	}
+	if req.Caps.Remote && b.deps.RemoteBitrateLimit != nil {
+		clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, b.deps.RemoteBitrateLimit())
 	}
 	budgetCapKbps := 0
 	if req.Caps.Remote && !req.Intent.Estimate && b.deps.RemoteUploadCap != nil {
@@ -541,6 +620,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, req.Intent.ClientSessionID, req.Caps.Remote, allowTC, existing, 0); fromBudget && capKbps > 0 {
 			budgetCapKbps = capKbps
+			clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, capKbps)
 			if req.Caps.MaxBitrateKbps == 0 || capKbps < req.Caps.MaxBitrateKbps {
 				req.Caps.MaxBitrateKbps = capKbps
 			}
@@ -565,7 +645,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		if req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		return b.planKind(ctx, req, v)
+		return b.planKind(core.WithLiveApp(ctx, string(req.Protocol)), req, v, clientCap)
 	}
 	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
@@ -581,6 +661,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		b.emitAdmissionDenied(v, req.Item, title.Title, req.Caps, req.Device, string(req.Protocol), false, core.ErrUnreleased)
 		return frontend.PlayPlan{}, core.ErrUnreleased
 	}
+	b.applyTitleRuleLimits(ctx, &req, &clientCap, v, title)
 	var detail *detailSourceRecord
 	if req.DetailSource != "" {
 		if req.Version != "" || req.Intent.ExactVersion {
@@ -739,7 +820,15 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if req.ExpectedSourceETag != "" && detail == nil && (!existed || previous == nil || sourceRevision(previous) != req.ExpectedSourceETag) {
 		return frontend.PlayPlan{}, frontend.ErrSourceGone
 	}
+	if !req.Intent.Queued && !req.Intent.AudioSet && !req.Intent.SubtitleSet &&
+		req.Intent.AudioOrdinal == nil && req.Intent.SubtitleOrdinal == nil && detail == nil &&
+		req.ExpectedSourceETag == "" && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) {
+		ctx = b.withSourceDecision(ctx, req)
+	}
 	var ps *core.PlaySession
+	// autoRelease: the handle names Auto's release, so the session may play
+	// another release in its place (a fallback now, a failover later).
+	autoRelease := ((chosen != nil && chosen.Auto) || req.Intent.AutoVersion) && !slotSelector && detail == nil
 	prepStarted := time.Now()
 	if useCachedDetail {
 		if liveness, ok := b.deps.Playback.(interface{ SessionActive(string) bool }); ok && !liveness.SessionActive(previous.ID) {
@@ -753,7 +842,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		// no ExpectedSourceETag was pinned) is no longer available or changed,
 		// fall back cleanly to the next healthy candidate instead of failing
 		// replay with "not available yet: playback: source revision changed".
-		if err != nil && detail == nil && req.ExpectedSourceETag == "" && !slotSelector && (rememberedFallback || (chosen != nil && chosen.Auto) || errors.Is(err, core.ErrSourceChanged)) {
+		if err != nil && detail == nil && req.ExpectedSourceETag == "" && !slotSelector && (rememberedFallback || autoRelease || errors.Is(err, core.ErrSourceChanged)) {
 			if fallbackPS, fallbackErr := playback.PrepareSurface(ctx, v, req.Item, req.Caps, "", false); fallbackErr == nil && fallbackPS != nil {
 				ps, err = fallbackPS, nil
 				prepareExact = false
@@ -788,6 +877,21 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if ps == nil {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
+	// An exact start is the viewer's pick only when they chose a version.
+	// The Auto entry a client was handed (Silo's default file, Jellyfin's
+	// transcode-avoiding Auto switch) and a remembered resume open their
+	// release exactly, but must still fail over when it cannot be read.
+	if prepareExact && detail == nil {
+		binding := core.SourceBindingExplicit
+		if rememberedFallback {
+			binding = core.SourceBindingRemembered
+		} else if autoRelease {
+			binding = core.SourceBindingAuto
+		}
+		if binder, ok := b.deps.Playback.(core.SourceBinder); ok {
+			binder.BindSource(ps.ID, binding)
+		}
+	}
 	// Keep the selected source identifiable when delivery negotiation fails.
 	// In particular, an owner pin must explain why it cannot be delivered
 	// without concealing which release was kept instead of substituting one.
@@ -821,6 +925,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			b.releasePlanSource(ps.ID, pinned)
 		}
 	}()
+	admission := versionAdmission{caps: req.Caps, opts: req.Intent.Options}
 	var pinErr error
 	ps, pinned, pinErr = b.pinRequestedTracks(ctx, &req, ps)
 	if pinErr != nil {
@@ -843,39 +948,10 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		req.Intent.Options = selected
 	}
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideTracks(ps, &req)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &req, clientCap, b.admitPlanDecision)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
-	}
-	if req.Channel == "" && b.videoOff(req.Caps) && decisionEncodesVideo(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
-			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-			Cause:         core.ErrVideoTranscodingDisabled,
-		}
-	}
-	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
-	}
-	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
-	}
-	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		hlsAllowed, _ := b.hlsPlanOutput(ps, req, dec)
-		httpAllowed := false
-		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
-			httpAllowed, _ = b.httpPlanOutput(ps, req, dec)
-		}
-		if !hlsAllowed && !httpAllowed {
-			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
-			if req.Channel == "" && b.videoOff(req.Caps) {
-				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
-					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
-					outErr.Cause = core.ErrVideoTranscodingDisabled
-				}
-			}
-			return frontend.PlayPlan{}, outErr
-		}
 	}
 	ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
 	if pinErr != nil {
@@ -902,7 +978,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if detail != nil {
 		exactRelease = detail.release
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps}
+	b.plans[id] = brokerPlan{versionAdmission: admission, request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, autoRelease: autoRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
 	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps != nil && ps.ID != "" {
 		constrained := ps.Info.BitrateKbps <= 0 || ps.Info.BitrateKbps > budgetCapKbps || dec.Kind == core.DecisionTranscode
 		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
@@ -916,7 +992,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID, OriginalOverClientCap: originalChoice}, nil
 }
 func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()
@@ -999,12 +1075,19 @@ func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 			return frontend.Session{}, core.ErrUnauthorized
 		}
 	}
+	if b.deps.ApplyRuleLimits != nil {
+		probe := p.request.Caps
+		probe.MaxBitrateKbps = 0
+		if limit := b.deps.ApplyRuleLimits(ctx, probe, v, nil).MaxBitrateKbps; limit > 0 && (p.request.Caps.MaxBitrateKbps == 0 || p.request.Caps.MaxBitrateKbps > limit) {
+			return frontend.Session{}, core.ErrUnauthorized
+		}
+	}
 	if p.live {
 		return b.openLive(ctx, req, p, v, openEpoch)
 	}
 	var title *core.Title
 	if p.request.Item.IsPluginKey() && b.deps.KindSource != nil {
-		if in, kerr := b.deps.KindSource(ctx, v, p.request.Item); kerr == nil && in != nil {
+		if in, kerr := b.deps.KindSource(core.WithLiveApp(ctx, string(p.request.Protocol)), v, p.request.Item); kerr == nil && in != nil {
 			title = in.Title
 		}
 	} else {
@@ -1038,6 +1121,11 @@ func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 			return frontend.Session{}, frontend.ErrSourceGone
 		}
 		return frontend.Session{}, core.ErrNotAvailable
+	}
+	if reused, ok := b.reuseDirectFileSession(v, req, p, ps); ok {
+		// The deferred release drops the plan's own source reference; the
+		// kept session holds its own.
+		return reused, nil
 	}
 	if remote, ok := b.deps.Playback.(interface {
 		OpenRemoteSource(context.Context, string) error
@@ -1093,7 +1181,7 @@ func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	if deliverySession == "" {
 		deliverySession = id
 	}
-	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, sourcePinned: p.pinned, sourceETag: p.etag, deliverySession: deliverySession}
+	s := &brokerSession{versionAdmission: p.versionAdmission, autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, autoRelease: p.autoRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
 	barrier, barrierErr := b.admitSessionBarrier(ctx, v.ID, string(req.Protocol), p.request.Device.ID, p.request.Item, ps.ID, id)
 	if barrierErr != nil {
 		if errors.Is(barrierErr, errTransferCommitUnknown) {
@@ -1138,10 +1226,20 @@ func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		return frontend.Session{}, core.ErrNotAvailable
 	}
 	b.bindings.Put(&Binding[frontend.PlayIntent]{ID: id, UserID: v.ID, ClientID: s.clientID, Key: session.Item, PlayID: ps.ID, PlaybackID: s.playbackID, Requested: p.request.Intent, Decision: p.decision, Info: ps.Info, Caps: s.caps, Opts: s.opts, UpdatedAt: b.deps.Now()})
-	b.owners.BindFor("broker", v.ID, s.clientID, session.Item, s.playbackID, ps.ID, true, b.deps.Now())
-	superseded := b.collectSupersededLocked(s)
+	// A queued next item opens beside the playing session; it takes over the
+	// device (ownership, supersession) only once it is observed playing.
+	s.queued = p.request.Intent.Queued && !p.live && p.request.Multiview == nil
+	var superseded []*brokerSession
+	if s.queued {
+		superseded = b.collectStaleQueuedLocked(s)
+	} else {
+		b.owners.BindFor("broker", v.ID, s.clientID, session.Item, s.playbackID, ps.ID, true, b.deps.Now())
+		superseded = b.collectSupersededLocked(s)
+	}
 	b.sessions[id] = s
-	b.bumpNonGroupEpochLocked(v.ID, s.clientID)
+	if !s.queued {
+		b.bumpNonGroupEpochLocked(v.ID, s.clientID)
+	}
 	b.transferPlanSourceLocked(ps.ID)
 	transferred = true
 	b.mu.Unlock()
@@ -1393,6 +1491,11 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		return err
 	}
 	defer unlock()
+	// A queued next item observed playing takes over the device now, under
+	// the same owner gate an open holds.
+	if s.queued && (t.State == "playing" || t.State == "paused" || t.State == "buffering") {
+		b.activateQueued(ctx, id)
+	}
 	s, v, err := b.accessSession(ctx, a, id, t.State != "stopped")
 	if err != nil {
 		return err
@@ -1410,6 +1513,14 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 			return b.stopLocked(ctx, s)
 		}
 		return core.ErrUnauthorized
+	}
+	if s.outgoing {
+		// Playing out after its successor took over: already recorded as
+		// played; its stop ends it, other reports change nothing.
+		if t.State == "stopped" {
+			b.retireOutgoing(ctx, s.public.ID, "")
+		}
+		return nil
 	}
 	if b.cluster != nil && !b.policy(s.public.Protocol).ExternalAdmission {
 		active, err := b.cluster.store.active(ctx, s.public.ID)
@@ -1434,6 +1545,9 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if err := b.enrichCapabilities(ctx, &s.public); err != nil && b.deps.OnEventError != nil {
 		b.deps.OnEventError(err)
 	}
+	if (s.originalFailure || s.originalAwaitingProgress) && t.State == "stopped" {
+		return b.stopLocked(ctx, s)
+	}
 	if !s.live {
 		reportedID := t.PlaybackID
 		if reportedID == s.public.ID {
@@ -1448,6 +1562,16 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		}
 	}
 	if s.live {
+		if s.public.Protocol == "vela" && (t.State == "playing" || t.State == "paused" || t.State == "buffering") {
+			if live, ok := b.deps.Live.(interface {
+				TouchLiveSession(context.Context, *core.Viewer, string) error
+			}); ok {
+				if err := live.TouchLiveSession(core.WithLiveApp(ctx, string(s.public.Protocol)), v, s.playID); err != nil {
+					rollbackSequence()
+					return err
+				}
+			}
+		}
 		b.publish(ctx, sessionEvent("SessionUpdated", s.public, &t))
 		if t.State == "stopped" {
 			return b.stopLocked(ctx, s)
@@ -1512,6 +1636,26 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if sequenced {
 		report.outcome = frontend.ReportApplied
 	}
+	if t.State == "playing" || t.State == "paused" || t.State == "buffering" {
+		b.mu.Lock()
+		if live := b.sessions[id]; live != nil {
+			position := t.Position
+			live.originalPosition = &position
+			if t.State == "playing" {
+				live.originalAwaitingProgress = false
+			}
+			if t.AudioStreamIndex != nil {
+				index := *t.AudioStreamIndex
+				live.originalAudio = &index
+			}
+			if t.SubtitleStreamIndex != nil {
+				index := *t.SubtitleStreamIndex
+				live.originalSubtitle = &index
+			}
+		}
+		b.mu.Unlock()
+	}
+
 	if s.format != "" {
 		b.recordSourceHistory(ctx, s)
 	}
@@ -1565,6 +1709,30 @@ func (b *Broker) recordItemTimeline(ctx context.Context, a frontend.SessionAcces
 
 // ReportItemProgress records a Jellyfin or Emby timeline that names an item
 // instead of a broker session.
+// keepItemSessionsActive is what Report does for a session's own timeline:
+// the open sessions of this viewer, device and title stay active, and their
+// output learns the player is playing or paused. Jellyfin Web reports
+// progress without a PlaySessionId, so its reports arrive here; without this
+// a player that buffered ahead (or paused) for longer than the idle timeout
+// had its stream closed as idle, and its next segment request got a 404.
+func (b *Broker) keepItemSessionsActive(viewerID int64, a frontend.SessionAccess, item core.RatingKey, state string) {
+	b.mu.Lock()
+	var active []*brokerSession
+	for _, s := range b.sessions {
+		if s.public.ViewerID == viewerID && s.public.Protocol == a.Protocol && s.public.Device.ID == a.Device.ID && s.public.Item == item {
+			active = append(active, s)
+		}
+	}
+	b.mu.Unlock()
+	toucher, _ := b.deps.Playback.(interface{ Touch(string) })
+	for _, s := range active {
+		if toucher != nil {
+			toucher.Touch(s.playID)
+		}
+		NotifyTranscodeActivity(b.deps.Transcoder, s.public.ID, state)
+	}
+}
+
 func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAccess, item core.RatingKey, t frontend.Timeline) error {
 	if !b.policy(a.Protocol).DistributedBindings {
 		return core.ErrUnauthorized
@@ -1580,12 +1748,19 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 	if lookup == nil {
 		return core.ErrNotAvailable
 	}
-	title, err := lookup(ctx, viewer, a.Device, item)
+	title, err := lookup(core.WithLiveApp(ctx, string(a.Protocol)), viewer, a.Device, item)
 	if err != nil || title == nil || title.Key != item {
 		if err != nil {
 			return err
 		}
 		return core.ErrNotFound
+	}
+	// No session names this report, so its duration is the client's. One far
+	// shorter than the title's runtime is a trailer, theme or preview the
+	// client attributed to the title: it neither writes the title's progress
+	// nor stops the title's own playback.
+	if frontend.ForeignMediaDuration(title.Runtime, t.Duration) {
+		return nil
 	}
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: a.Protocol, SessionID: t.PlaybackID, ClientID: a.Device.ID})
 	if err := RecordProgress(ctx, b.deps.Progress, viewer.ID, item, t.Position, t.Duration, t.State); err != nil {
@@ -1596,6 +1771,9 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 	}
 	if b.deps.OnTimeline != nil {
 		b.deps.OnTimeline(viewer, item, t.Position, t.Duration, t.State)
+	}
+	if t.State == "playing" || t.State == "paused" {
+		b.keepItemSessionsActive(viewer.ID, a, item, t.State)
 	}
 	if t.State == "stopped" {
 		clientID := clientKey(a.Protocol, a.Device)
@@ -1690,6 +1868,10 @@ func (b *Broker) Stop(ctx context.Context, a frontend.SessionAccess, id string) 
 	s, viewer, err := b.accessSession(ctx, a, id, false)
 	if err != nil {
 		return err
+	}
+	if s.outgoing {
+		b.retireOutgoing(ctx, s.public.ID, "")
+		return nil
 	}
 	if viewer.ID != s.public.ViewerID {
 		viewer, err = b.deps.ActiveViewer(ctx, s.public.ViewerID)
@@ -2006,4 +2188,119 @@ func (b *Broker) Close(ctx context.Context) {
 	if firstClose && b.cluster != nil {
 		b.cluster.close()
 	}
+}
+
+// admitPlanDecision decides delivery for a resolved source and applies the
+// request's admission rules (transcoding policy, delivery modes, and Vela's
+// HLS/HTTP output check).
+func (b *Broker) admitPlanDecision(ps *core.PlaySession, req *frontend.PlanRequest) (core.Decision, error) {
+	dec, err := b.decideTracks(ps, req)
+	if err != nil {
+		return dec, err
+	}
+	if req.Channel == "" && b.videoOff(req.Caps) && decisionEncodesVideo(dec, ps.Info) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
+		}
+	}
+	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
+	}
+	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
+	}
+	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
+		hlsAllowed, _ := b.hlsPlanOutput(ps, *req, dec)
+		httpAllowed := false
+		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+			httpAllowed, _ = b.httpPlanOutput(ps, *req, dec)
+		}
+		if !hlsAllowed && !httpAllowed {
+			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, *req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
+			if req.Channel == "" && b.videoOff(req.Caps) {
+				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
+					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
+					outErr.Cause = core.ErrVideoTranscodingDisabled
+				}
+			}
+			return core.Decision{}, outErr
+		}
+	}
+	return dec, nil
+}
+
+// admitWithClientCap runs admit under the request's caps. When Vela supplied a
+// client streaming cap (client.maxBitrate, together with maxWidth/maxHeight):
+//   - If nothing within the cap can play (or only an unconverted copy over the
+//     cap), it falls back to the original with only the client's cap lifted
+//     (owner bitrate and height caps still apply).
+//   - If the client's cap converted an otherwise direct-playable original, it
+//     returns that original decision as an unselected explicit choice without
+//     starting any work.
+func (b *Broker) admitWithClientCap(ps *core.PlaySession, req *frontend.PlanRequest, cap clientCapPolicy, admit func(*core.PlaySession, *frontend.PlanRequest) (core.Decision, error)) (core.Decision, *core.Decision, error) {
+	dec, err := admit(ps, req)
+	if cap.clientKbps > 0 && (err != nil || (dec.Kind != core.DecisionDirectPlay && !decisionEncodes(dec, ps.Info))) {
+		lifted := clientCapLifted(*req, cap.ownerKbps, cap.ownerHeight)
+		if liftedDec, liftedErr := admit(ps, &lifted); liftedErr == nil && !decisionEncodes(liftedDec, ps.Info) && (err != nil || liftedDec.Kind == core.DecisionDirectPlay) {
+			dec, err, *req = liftedDec, nil, lifted
+		}
+	}
+	if err != nil {
+		return core.Decision{}, nil, err
+	}
+	var originalChoice *core.Decision
+	if cap.clientKbps > 0 && dec.Kind != core.DecisionDirectPlay {
+		if d, e := b.decideProfile(ps, clientCapLifted(*req, cap.ownerKbps, cap.ownerHeight)); e == nil && d.Kind == core.DecisionDirectPlay {
+			originalChoice = &d
+		}
+	}
+	return dec, originalChoice, nil
+}
+
+// clientCapLifted is req without the client's own streaming cap (bitrate and
+// width/height box); ownerKbps (viewer limit, away cap, upload budget) and
+// ownerHeight (quality rule, app compatibility override) stay.
+func clientCapLifted(req frontend.PlanRequest, ownerKbps, ownerHeight int) frontend.PlanRequest {
+	req.Intent.Options.MaxBitrateKbps = ownerKbps
+	req.Caps.MaxBitrateKbps = ownerKbps
+	req.Intent.Options.MaxWidth = 0
+	req.Intent.Options.MaxHeight = ownerHeight
+	req.Caps.MaxHeight = ownerHeight
+	return req
+}
+
+func stricterLimit(a, b int) int {
+	if a <= 0 || (b > 0 && b < a) {
+		return b
+	}
+	return a
+}
+
+// Keep the household limits even when the viewer explicitly chooses Original.
+// Evaluate the title rules before intersecting them with the Vela preset, so
+// a stricter client preset cannot hide a household limit on the same axis.
+func (b *Broker) applyTitleRuleLimits(ctx context.Context, req *frontend.PlanRequest, policy *clientCapPolicy, viewer *core.Viewer, title *core.Title) {
+	if policy.clientKbps == 0 || b.deps.ApplyRuleLimits == nil {
+		req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, viewer, title)
+		return
+	}
+	owner := clientCapLifted(*req, policy.ownerKbps, policy.ownerHeight)
+	caps := b.applyRuleLimits(ctx, owner.Caps, nil, viewer, title)
+	policy.ownerKbps, policy.ownerHeight = caps.MaxBitrateKbps, caps.MaxHeight
+	caps.MaxBitrateKbps = stricterLimit(req.Caps.MaxBitrateKbps, caps.MaxBitrateKbps)
+	caps.MaxHeight = stricterLimit(req.Caps.MaxHeight, caps.MaxHeight)
+	req.Caps = caps
+	req.Intent.Options.MaxBitrateKbps = stricterLimit(req.Intent.Options.MaxBitrateKbps, caps.MaxBitrateKbps)
+}
+
+func (b *Broker) applyRuleLimits(ctx context.Context, caps core.ClientCaps, opts *core.DecideOptions, v *core.Viewer, title *core.Title) core.ClientCaps {
+	if b == nil || b.deps.ApplyRuleLimits == nil {
+		return caps
+	}
+	updated := b.deps.ApplyRuleLimits(ctx, caps, v, title)
+	if opts != nil && updated.MaxBitrateKbps > 0 && (opts.MaxBitrateKbps == 0 || updated.MaxBitrateKbps < opts.MaxBitrateKbps) {
+		opts.MaxBitrateKbps = updated.MaxBitrateKbps
+	}
+	return updated
 }

@@ -24,7 +24,7 @@ type assembly struct {
 	hc       core.HubContext
 	section  core.MediaType // "" = Home
 	limit    int            // items per row
-	layout   *core.HomeLayout
+	plan     *pagePlan      // the page, resolved for this viewer
 	global   map[string]arm // server-wide evidence by prior kind
 	arms     map[string]arm // this viewer's evidence by kind
 	allowed  func(core.MediaType) bool
@@ -32,6 +32,8 @@ type assembly struct {
 	explore  float64
 	day      int
 	intent   *intentSnapshot // live session intent (#32); nil = none
+
+	metadataRows func(string) bool
 
 	// Surfaces, dials and cross-surface dedupe (surfaces.go, tuning.go,
 	// homelead.go).
@@ -106,16 +108,12 @@ func (a *assembly) run() []core.HomeRow {
 			continue
 		}
 		rr := &rankedRow{c: c, items: items, hubID: hubID}
-		if a.layout != nil {
-			target := a.layoutTarget()
-			p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: rr.hubID, Kind: c.kind})
-			if p != nil {
-				rr.d.hidden = p.Status == "off" || !whenMatches(p.When, a.hc) || !weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
-				rr.d.pinned = !rr.d.hidden && p.Status == "always"
-				rr.d.repeats = p.ShowRepeats != nil && *p.ShowRepeats
-				if p.Slot > 0 {
-					rr.d.position = p.Slot - 1
-				}
+		if p := a.plan.match(core.HomeRow{HubID: rr.hubID, Kind: c.kind}); p != nil {
+			rr.d.hidden = !p.active(a.user.ID, a.hc)
+			rr.d.pinned = !rr.d.hidden && p.Status == "always"
+			rr.d.repeats = p.Look.KeepWhole
+			if p.Slot > 0 {
+				rr.d.position = p.Slot - 1
 			}
 		}
 		rr.score, rr.strength = a.rowScore(c, items)
@@ -151,7 +149,7 @@ func (a *assembly) run() []core.HomeRow {
 			headlines = append(headlines, core.HomeRow{HubID: r.hubID, Kind: r.c.kind, Hub: core.Hub{ItemCount: len(r.items)}})
 		}
 	}
-	_, defaults := leadDefaults(headlines, nil, nil, a.maxRows)
+	_, defaults := leadDefaults(headlines, nil, a.maxRows)
 	priority := func(r *rankedRow) int {
 		if p := defaults[r.hubID]; p != nil && p.Slot > 0 {
 			return p.Slot
@@ -527,13 +525,8 @@ func (a *assembly) survivors(sel []*rankedRow) map[*rankedRow]bool {
 		rows = append(rows, core.HomeRow{HubID: r.hubID, Kind: r.c.kind, Source: r.c.source, Hub: core.Hub{ItemCount: len(r.items)}})
 		byID[r.hubID] = r
 	}
-	var d core.HomeLayout
-	if a.layout != nil {
-		d = *a.layout
-	}
 	out := make(map[*rankedRow]bool, len(sel))
-	target := a.layoutTarget()
-	for _, hr := range arrangeLayoutFor(rows, d, a.user.ID, a.hc, target, a.pageLen) {
+	for _, hr := range arrangePage(rows, a.plan, a.user.ID, a.hc, a.pageLen) {
 		if r := byID[hr.HubID]; r != nil && !hr.Hidden {
 			out[r] = true
 		}
@@ -597,6 +590,16 @@ func (a *assembly) typeOK(t *core.Title) bool {
 // them for the context and orders them (MMR-diversified unless the row's
 // order is meaningful).
 func (a *assembly) contextItems(c *candRow) []candItem {
+	if a.metadataRows != nil && !a.metadataRows(c.kind) {
+		return nil
+	}
+	if c.relaxed != nil && a.ownerAlways(c, a.hubID(c)) {
+		// The owner placed this row: the language gate re-ranks it, never
+		// empties it.
+		relaxed := *c
+		relaxed.items, relaxed.typed, relaxed.relaxed, relaxed.relaxedTyped = c.relaxed, c.relaxedTyped, nil, nil
+		c = &relaxed
+	}
 	target := a.model.taste.targetMinutes(a.hc)
 	src := c.items
 	if l, ok := c.typed[a.section]; ok && a.section != "" {

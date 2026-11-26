@@ -1,6 +1,8 @@
 package plex
 
 import (
+	"cmp"
+	"context"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/go-chi/chi/v5"
@@ -10,8 +12,8 @@ import (
 	"time"
 )
 
-func historySection(s *Server, t *frontend.Title) string {
-	sec, ok := s.sectionFor(t.Type)
+func historySection(ctx context.Context, s *Server, t *frontend.Title) string {
+	sec, ok := s.sectionForTitle(ctx, t)
 	if !ok {
 		return ""
 	}
@@ -181,6 +183,18 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	for i := range titles {
 		byKey[titles[i].Key] = &titles[i]
 	}
+	// Each row's section, and the librarySectionID filter, come from the
+	// library that lists the title, resolved for the whole page at once.
+	if section, ok := ids["librarySectionID"]; ok {
+		ctx = withPreferredSections(ctx, int(section))
+	}
+	attributed := append([]frontend.Title(nil), titles...)
+	for _, h := range hist {
+		if _, ok := byKey[h.Key]; !ok && h.Snapshot != nil {
+			attributed = append(attributed, *h.Snapshot)
+		}
+	}
+	secs := s.sectionsForTitles(ctx, attributed)
 	visible := map[frontend.RatingKey]bool{}
 	for _, h := range hist {
 		if q.Has("accountID") && h.UserID != accountUser {
@@ -219,16 +233,18 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if q.Has("metadataItemID") && int64(t.Key) != ids["metadataItemID"] {
 			continue
 		}
-		if q.Has("librarySectionID") {
-			sec, ok := s.sectionFor(t.Type)
-			if !ok || int64(sec.ID) != ids["librarySectionID"] {
-				continue
-			}
+		sec, hasSec := secs[t.Key]
+		if q.Has("librarySectionID") && (!hasSec || int64(sec.ID) != ids["librarySectionID"]) {
+			continue
 		}
-		md := model.HistoryMetadata{RatingKey: t.Key.String(), Key: "/library/metadata/" + t.Key.String(), Type: string(t.Type), Title: t.Title, Thumb: s.thumbURL(t), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), ViewedAt: h.ViewedAt.Unix(), LibrarySectionID: historySection(s, t), DeviceID: h.DeviceID, AccountID: dir.wireID(ctx, h.UserID)}
+		secID := ""
+		if hasSec {
+			secID = strconv.Itoa(sec.ID)
+		}
+		md := model.HistoryMetadata{RatingKey: t.Key.String(), Key: "/library/metadata/" + t.Key.String(), Type: string(t.Type), Title: t.Title, Thumb: s.thumbURL(t), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), ViewedAt: h.ViewedAt.Unix(), LibrarySectionID: secID, DeviceID: h.DeviceID, AccountID: dir.wireID(ctx, h.UserID)}
 
-		if !t.Released.IsZero() {
-			md.OriginallyAvailableAt = t.Released.Format("2006-01-02")
+		if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+			md.OriginallyAvailableAt = date.Format("2006-01-02")
 		}
 		if t.Type == frontend.TypeEpisode {
 			md.GrandparentTitle = t.ShowTitle
@@ -243,7 +259,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			md.ViewType = model.Ptr(h.ViewType)
 		}
 		if t.Type == frontend.TypeEpisode {
-			md.ParentKey = "/library/metadata/" + frontend.SeasonKey(t.ShowKey.TMDB(), t.Season).String()
+			md.ParentKey = "/library/metadata/" + titleParent(t).String()
 			md.ParentThumb = md.ParentKey + "/thumb"
 			md.GrandparentThumb = "/library/metadata/" + t.ShowKey.String() + "/thumb"
 			md.GrandparentKey = "/library/metadata/" + t.ShowKey.String()
@@ -305,7 +321,7 @@ func (s *Server) handleHistoryItem(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := s.newPlexAccountDir(r.Context(), pr.User, pr.User.IsOwner)
 	accountID := dir.wireID(r.Context(), h.UserID)
-	md := model.HistoryMetadata{Title: t.Title, Type: string(t.Type), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), LibrarySectionID: historySection(s, t), ViewedAt: h.ViewedAt.Unix(), AccountID: accountID, DeviceID: h.DeviceID, ViewType: model.Ptr(1)}
+	md := model.HistoryMetadata{Title: t.Title, Type: string(t.Type), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), LibrarySectionID: historySection(r.Context(), s, t), ViewedAt: h.ViewedAt.Unix(), AccountID: accountID, DeviceID: h.DeviceID, ViewType: model.Ptr(1)}
 
 	if !t.Released.IsZero() {
 		md.OriginallyAvailableAt = t.Released.Format("2006-01-02")

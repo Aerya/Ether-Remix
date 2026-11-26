@@ -74,7 +74,8 @@ export default hello;
 
 - `catalog` (`GET /catalog/{type}/{id}[/{extra}].json`)
 - `meta` (`GET /meta/{type}/{id}.json`)
-- `stream` (`GET /stream/{type}/{id}[/{extra}].json`) and `openStream` (`POST /ether/stream/open`)
+- `stream` (`GET /stream/{type}/{id}[/{extra}].json`) and `openStream` (`GET /ether/open/{streamId}[?file=&fileIndex=]`, also `POST /ether/stream/open`)
+- `sourceSearch` (`GET /ether/search`, for a `contributes.source.search` declaration) and `releaseFiles` (`GET /ether/files/{id}`)
 - `subtitles` (`GET /subtitles/{type}/{id}[/{extra}].json`, requires `X-Ether-Pick` header)
 - `markers` (`GET /ether/markers/{type}/{id}.json`)
 - `channels` (`GET /ether/channels.json`) and `guide` (`GET /ether/guide/{channelId}.json`)
@@ -216,8 +217,8 @@ Viewer request-path calls derive their unit budget directly from each route's
 deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 units;
 20 s / 200,000 units for Stremio add-ons), `/subtitles/*`, `/ether/subtitles/*` and
 `/ether/v1/kinds/*/resolve` or `/match` get 5 s (50,000 units), and `/catalog/*`,
-`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
-`/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`,
+`/items/*`, `/ether/search` and `/ether/files/*` get 10 s (100,000 units), further shortened only if the owner sets a
 lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
 per-batch defaults. Background kind sync and on-demand facet expansion (`/ether/v1/kinds/*/browse`,
 `/changes` and `/expand`), administrative setup, actions, tools, events and jobs use the

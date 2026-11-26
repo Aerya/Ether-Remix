@@ -684,3 +684,23 @@ func TestPreviewFetchManyAppliesAllowlistAndRedirectPolicy(t *testing.T) {
 		t.Fatalf("item[2]=%+v, want forbidden on redirect", res[2])
 	}
 }
+
+func TestPluginHTTPFetchRefusesConfiguredIndexer(t *testing.T) {
+	rt := dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Hostname() == "indexer.example.test" {
+			t.Error("plugin crossed configured indexer guard")
+			return nil, errors.New("unexpected indexer request")
+		}
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{
+			"Location": {"https://indexer.example.test/api?t=get"},
+		}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	env, _, h := setupFetchManyTestHost(t, []string{"indexer.example.test", "redirect.example.test"}, rt)
+	env.m.deps.IsIndexerHost = func(host string) bool { return host == "indexer.example.test" }
+	for _, rawURL := range []string{"https://indexer.example.test/api?t=get", "https://redirect.example.test/redirect"} {
+		_, err := h.HTTPFetch(t.Context(), FetchRequest{URL: rawURL})
+		if !errors.Is(err, ErrPermissionDenied) || !strings.Contains(err.Error(), "nzb_request") {
+			t.Fatalf("want permission error with NZB request guidance, got %v", err)
+		}
+	}
+}

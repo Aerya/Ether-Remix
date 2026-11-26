@@ -279,6 +279,138 @@ func TestKindJournalAndUndo(t *testing.T) {
 	}
 }
 
+// #766: KindUpsertWithResult through KindUpsertUndo skips empty/unchanged
+// journal entries, and a kind declaring sync.undo: "ids" skips snapshot reads
+// while undo removes only items created by the batch.
+func TestKindUpsertUndoUnchangedSkipAndIDsMode(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	man := contentManifest()
+	man.Ether.Contributes.MediaKinds[0].Sync = KindSyncDecl{Mode: KindSyncPush}
+	idsKind := man.Ether.Contributes.MediaKinds[0]
+	idsKind.Key = "fast"
+	idsKind.Library.Name = "Fast catalog"
+	idsKind.Sync = KindSyncDecl{Mode: KindSyncPush, Undo: KindSyncUndoIDs}
+	man.Ether.Contributes.MediaKinds = append(man.Ether.Contributes.MediaKinds, idsKind)
+
+	raw, _ := json.Marshal(man)
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "studio", Manifest: raw, Files: map[string][]byte{"dist/plugin.js": []byte("// v1")}})
+	if err != nil {
+		t.Fatalf("PreviewInstall: %v", err)
+	}
+	rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	h := env.m.HostFor(rec.ID)
+
+	itemsByKind := map[string]map[string]core.KindItem{
+		"recording": {},
+		"fast":      {"trk-pre": {ID: "trk-pre", Level: "track", ParentID: "alb-1", Title: "Pre-existing", Playable: true}},
+	}
+	var snapshotFlags []bool
+	var snapshotReadCalls int
+	env.m.SetKindBackends(KindBackends{
+		KindUpsert: func(_ context.Context, _, kindKey string, items []core.KindItem) (int, error) {
+			for _, it := range items {
+				itemsByKind[kindKey][it.ID] = it
+			}
+			return len(items), nil
+		},
+		KindUpsertUndo: func(_ context.Context, _, kindKey string, items []core.KindItem, snapshotPrevious bool) (KindUpsertUndo, error) {
+			snapshotFlags = append(snapshotFlags, snapshotPrevious)
+			m := itemsByKind[kindKey]
+			var out KindUpsertUndo
+			out.Result.Accepted = len(items)
+			for _, it := range items {
+				prev, ok := m[it.ID]
+				switch {
+				case !ok:
+					out.Result.Added++
+					out.AddedIDs = append(out.AddedIDs, it.ID)
+				case prev.Title == it.Title:
+					out.Result.Unchanged++
+					continue
+				default:
+					out.Result.Updated++
+					out.UpdatedIDs = append(out.UpdatedIDs, it.ID)
+					if snapshotPrevious {
+						out.Previous = append(out.Previous, prev)
+					}
+				}
+				m[it.ID] = it
+			}
+			return out, nil
+		},
+		KindDelete: func(_ context.Context, _, kindKey string, ids []string) error {
+			for _, id := range ids {
+				delete(itemsByKind[kindKey], id)
+			}
+			return nil
+		},
+		KindItemsByID: func(_ context.Context, _, _ string, _ []string) ([]core.KindItem, error) {
+			snapshotReadCalls++
+			return nil, nil
+		},
+	})
+
+	trk1 := core.KindItem{ID: "trk-1", Level: "track", ParentID: "alb-1", Title: "Original", Playable: true}
+	if _, err := h.KindUpsert(ctx, "recording", []core.KindItem{trk1}); err != nil {
+		t.Fatalf("recording initial upsert: %v", err)
+	}
+	// Identical re-publish must write no journal entry.
+	if _, err := h.KindUpsert(ctx, "recording", []core.KindItem{trk1}); err != nil {
+		t.Fatalf("recording unchanged upsert: %v", err)
+	}
+	entries, err := env.m.store.journalList(ctx, rec.ID, 10, true)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("live journal entries after unchanged republish = %d, %v; want 1", len(entries), err)
+	}
+
+	// sync.undo: "ids" skips snapshot reads and records created vs touched IDs.
+	trkPreUpdated := core.KindItem{ID: "trk-pre", Level: "track", ParentID: "alb-1", Title: "Updated", Playable: true}
+	trkNew := core.KindItem{ID: "trk-new", Level: "track", ParentID: "alb-1", Title: "Created", Playable: true}
+	if _, err := h.KindUpsert(ctx, "fast", []core.KindItem{trkPreUpdated, trkNew}); err != nil {
+		t.Fatalf("fast upsert: %v", err)
+	}
+	if err := h.KindDelete(ctx, "fast", []string{"trk-missing"}); err != nil {
+		t.Fatalf("fast delete: %v", err)
+	}
+	if snapshotReadCalls != 0 {
+		t.Fatalf("KindItemsByID called %d times, want 0", snapshotReadCalls)
+	}
+	if len(snapshotFlags) != 3 || !snapshotFlags[0] || !snapshotFlags[1] || snapshotFlags[2] {
+		t.Fatalf("snapshotPrevious flags = %v, want [true true false]", snapshotFlags)
+	}
+	entries, err = env.m.store.journalList(ctx, rec.ID, 10, true)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("live journal entries = %d, %v; want 3", len(entries), err)
+	}
+	var idsInv kindInverse
+	if err := json.Unmarshal(entries[1].Inverse, &idsInv); err != nil {
+		t.Fatal(err)
+	}
+	if len(idsInv.Previous) != 0 || len(idsInv.Items) != 1 || idsInv.Items[0] != "trk-new" || len(idsInv.Touched) != 1 || idsInv.Touched[0] != "trk-pre" {
+		t.Fatalf("ids inverse = %+v, want items=[trk-new] touched=[trk-pre] previous=[]", idsInv)
+	}
+
+	// UndoAll removes created items (trk-1, trk-new) and leaves touched trk-pre intact.
+	undone, err := env.m.UndoAll(ctx, rec.ID)
+	if err != nil || undone != 3 {
+		t.Fatalf("UndoAll = %d, %v; want 3, nil", undone, err)
+	}
+	if _, ok := itemsByKind["recording"]["trk-1"]; ok {
+		t.Fatal("trk-1 remained after UndoAll")
+	}
+	if _, ok := itemsByKind["fast"]["trk-new"]; ok {
+		t.Fatal("trk-new remained after UndoAll")
+	}
+	if got := itemsByKind["fast"]["trk-pre"].Title; got != "Updated" {
+		t.Fatalf("trk-pre after ids-mode UndoAll = %q, want Updated", got)
+	}
+}
+
 func TestInstallMediaKindsUpgradeGateAndPurgeSetup(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
@@ -597,6 +729,38 @@ func TestKindVisibleAndBrowseGuardsAndHostedBridge(t *testing.T) {
 		if gotQuery.Total != mode {
 			t.Fatalf("KindBrowse total=%q forwarded as %q", mode, gotQuery.Total)
 		}
+	}
+	// Unknown empty field rejected; declared + envelope empty fields pass without counting toward value bounds.
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		Empty: map[string]bool{"unknownField": true},
+	}); !errors.As(err, &valErr) {
+		t.Fatalf("KindBrowse unknown empty field: %v", err)
+	}
+	half := make([]string, MaxKindBrowseFacetValues/2)
+	for i := range half {
+		half[i] = "v"
+	}
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		AnyGroups: []core.KindBrowseFacetGroup{{Any: []core.KindBrowseFacetAlt{
+			{Field: "genre", Values: half},
+			{Field: "recordist", Values: half},
+		}}},
+		Empty:        map[string]bool{"genre": true, "released": false},
+		ExcludeQuery: "live",
+	}); err != nil {
+		t.Fatalf("KindBrowse valid empty + cross-field anyGroups + excludeQuery: %v", err)
+	}
+	if gotQuery.ExcludeQuery != "live" || !gotQuery.Empty["genre"] || gotQuery.Empty["released"] {
+		t.Fatalf("KindBrowse forwarded query = %+v", gotQuery)
+	}
+	overHalf := append(append([]string(nil), half...), "extra")
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		AnyGroups: []core.KindBrowseFacetGroup{{Any: []core.KindBrowseFacetAlt{
+			{Field: "genre", Values: half},
+			{Field: "recordist", Values: overHalf},
+		}}},
+	}); !errors.As(err, &valErr) {
+		t.Fatalf("KindBrowse over-limit cross-field anyGroups: %v", err)
 	}
 
 	// Non-adapter route carrying a forged X-Ether-Viewer header must NOT get viewer context or token.

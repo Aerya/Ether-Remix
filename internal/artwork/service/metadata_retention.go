@@ -50,15 +50,33 @@ func (q *MetadataQueue) touch(key string, m *artworkMetadata) bool {
 
 func (q *MetadataQueue) runTouches() {
 	defer q.workers.Done()
+	batch := make([]string, 0, 64)
 	for {
 		select {
 		case <-q.ctx.Done():
 			return
 		case key := <-q.touches:
+			batch = append(batch[:0], key)
+			for len(batch) < cap(batch) {
+				select {
+				case next := <-q.touches:
+					batch = append(batch, next)
+				default:
+					goto flush
+				}
+			}
+		flush:
 			ctx, cancel := context.WithTimeout(q.ctx, 5*time.Second)
 			now := time.Now().Unix()
+			cutoff := now - int64(metadataTouchEvery/time.Second)
+			args := make([]any, 0, len(batch)+2)
+			args = append(args, now)
+			for _, k := range batch {
+				args = append(args, k)
+			}
+			args = append(args, cutoff)
 			// Another node may have touched it today already.
-			_, _ = q.db.ExecContext(ctx, `UPDATE artwork_image_metadata SET used_at=? WHERE image_key=? AND used_at<?`, now, key, now-int64(metadataTouchEvery/time.Second))
+			_, _ = q.db.ExecContext(ctx, `UPDATE artwork_image_metadata SET used_at=? WHERE image_key IN (`+placeholders(len(batch))+`) AND used_at<?`, args...)
 			cancel()
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 // frontend's Host seams.
 type instance struct {
 	frontend *Frontend
+	host     frontend.Host
 	auth     *authenticator
 	handler  http.Handler
 	limits   *limiters
@@ -53,8 +55,24 @@ func (i *instance) Close(context.Context) error { return nil }
 // relays each request to the plugin.
 func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.decl.Meta.Auth == AuthQueryCredentials {
+			// Query credentials carry no ambient authority (no cookies or
+			// browser-held auth), so browser clients on any origin, such as
+			// web Subsonic players, may call the adapter.
+			if allowAnyOrigin(w, r) {
+				return
+			}
+			if err := mergeFormIntoQuery(r); err != nil {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
 		auth, err := inst.auth.authenticate(r.Context(), r)
 		if err != nil {
+			if f.decl.Meta.Auth == AuthQueryCredentials && errors.Is(err, errUnauthenticated) {
+				f.relayUnauthenticated(w, r, inst)
+				return
+			}
 			writeAuthError(w, err)
 			return
 		}
@@ -69,11 +87,12 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			return
 		}
 		req := plugins.Request{
-			PluginID: f.decl.PluginID,
-			Method:   r.Method,
-			Path:     pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
-			Query:    firstValues(r.URL.Query()),
-			Headers:  outboundHeaders(r, auth),
+			PluginID:      f.decl.PluginID,
+			Method:        r.Method,
+			Path:          pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
+			Query:         firstValues(f.pluginQuery(r)),
+			RepeatedQuery: repeatedValues(f.pluginQuery(r)),
+			Headers:       outboundHeaders(r, auth, requestOrigin(r, inst.host)),
 		}
 		if len(body) > 0 {
 			// The exact bytes always ride along base64-encoded so a plugin
@@ -99,6 +118,13 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			f.writeBlob(w, r, auth, resp)
 			return
 		}
+		if resp.Media != nil || resp.Art != nil {
+			if stream != nil {
+				stream.Close()
+			}
+			f.writeHostMedia(w, r, auth, resp)
+			return
+		}
 		if stream != nil {
 			defer stream.Close()
 			writeStream(w, resp, stream)
@@ -106,6 +132,115 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+// mergeFormIntoQuery folds a form-encoded POST body into the query string.
+// Query-credential protocols (Subsonic) let clients send every parameter,
+// credentials included, either way; after this the request is handled exactly
+// like the equivalent GET.
+func mergeFormIntoQuery(r *http.Request) error {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if !strings.EqualFold(strings.TrimSpace(ct), "application/x-www-form-urlencoded") {
+		return nil
+	}
+	body, err := readBody(r)
+	if err != nil {
+		return err
+	}
+	r.Body = http.NoBody
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil
+	}
+	q := r.URL.Query()
+	for k, vs := range form {
+		q[k] = append(q[k], vs...)
+	}
+	r.URL.RawQuery = q.Encode()
+	return nil
+}
+
+// allowAnyOrigin sets permissive CORS headers and answers a preflight. It
+// reports true when the request was a preflight and has been answered.
+func allowAnyOrigin(w http.ResponseWriter, r *http.Request) bool {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type")
+	if r.Method != http.MethodOptions || r.Header.Get("Access-Control-Request-Method") == "" {
+		return false
+	}
+	h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+	if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
+		h.Set("Access-Control-Allow-Headers", req)
+	}
+	h.Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+// UnauthenticatedPath is the reserved plugin sub-path under which a
+// query-credentials adapter receives requests that carried no valid
+// credentials. They arrive without any viewer identity, so the plugin can
+// answer only with its protocol's authentication error or a public document
+// (for example a capabilities list the protocol defines as auth-free).
+const UnauthenticatedPath = "/.unauthenticated"
+
+// anonymousViewer is the shared rate-limit bucket for unauthenticated relays.
+const anonymousViewer int64 = 0
+
+// pluginQuery is the query the plugin sees: query credentials are removed so
+// the plugin never receives a password or a token.
+func (f *Frontend) pluginQuery(r *http.Request) map[string][]string {
+	if f.decl.Meta.Auth == AuthQueryCredentials {
+		return stripQueryCredentials(r.URL.Query())
+	}
+	return r.URL.Query()
+}
+
+// relayUnauthenticated forwards a request without valid query credentials to
+// the plugin under UnauthenticatedPath, with no viewer identity, so the client
+// gets the protocol's own error document instead of a bare HTTP 401. Relays
+// share one anonymous rate-limit bucket; anything the plugin cannot answer
+// falls back to 401.
+func (f *Frontend) relayUnauthenticated(w http.ResponseWriter, r *http.Request, inst *instance) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
+		writeAuthError(w, errUnauthenticated)
+		return
+	}
+	if !inst.limits.allow(anonymousViewer, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+	headers := make(map[string]string, len(forwardedRequestHeaders))
+	for _, name := range forwardedRequestHeaders {
+		if v := r.Header.Get(name); v != "" {
+			headers[name] = v
+		}
+	}
+	req := plugins.Request{
+		PluginID: f.decl.PluginID,
+		Method:   r.Method,
+		Path:     pluginPath(f.decl.Meta.Key, UnauthenticatedPath+stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
+		Query:    firstValues(f.pluginQuery(r)),
+		Headers:  headers,
+	}
+	resp, stream, err := f.call(r.Context(), req)
+	if stream != nil {
+		defer stream.Close()
+	}
+	if err != nil || resp.Blob != nil || resp.Media != nil || resp.Art != nil || resp.Status == http.StatusNotFound {
+		writeAuthError(w, errUnauthenticated)
+		return
+	}
+	if stream != nil {
+		writeStream(w, resp, stream)
+		return
+	}
+	writeResponse(w, resp)
 }
 
 // call relays one request. It streams when the plugin runtime supports it
@@ -125,6 +260,15 @@ func (f *Frontend) call(ctx context.Context, req plugins.Request) (plugins.Respo
 	}
 	if int64(len(resp.Body)) > MaxHostedResponseBytes {
 		return plugins.Response{}, nil, errors.New("frontendadapter: hosted response exceeds cap")
+	}
+	// A hosted plugin's body is the JSON value it returned. A string body is
+	// the document itself (XML, HTML, plain text), so it is written unquoted;
+	// object and array bodies are already the JSON document.
+	if len(resp.Body) > 0 && resp.Body[0] == '"' {
+		var text string
+		if json.Unmarshal(resp.Body, &text) == nil {
+			resp.Body = []byte(text)
+		}
 	}
 	return resp, nil, nil
 }
@@ -196,6 +340,9 @@ func headerValue(headers map[string]string, name string) string {
 // answer 401 with a Basic challenge so readers prompt for one.
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errRateLimited):
+		w.Header().Set("Retry-After", "900")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	case errors.Is(err, errNotVisible):
 		http.Error(w, "not found", http.StatusNotFound)
 	default:
@@ -230,6 +377,26 @@ func stripPrefix(path, prefix string) string {
 		return rest
 	}
 	return path
+}
+
+// maxRepeatedValues bounds how many values of one repeated query key reach a
+// plugin, so a request cannot fan one call into unbounded work.
+const maxRepeatedValues = 500
+
+// repeatedValues keeps every value of keys that appear more than once, for
+// runtimes that can deliver them (hosted plugins receive arrays).
+func repeatedValues(values map[string][]string) map[string][]string {
+	var out map[string][]string
+	for k, v := range values {
+		if len(v) < 2 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string)
+		}
+		out[k] = append([]string(nil), v[:min(len(v), maxRepeatedValues)]...)
+	}
+	return out
 }
 
 // firstValues flattens a query into the map[string]string the plugin

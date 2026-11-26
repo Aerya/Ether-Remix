@@ -3,9 +3,11 @@ package transcode
 import (
 	"context"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/config"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Priority, newest-holder preemption, exact accounting, and viewer precedence
@@ -58,7 +60,7 @@ func TestSlotPriority(t *testing.T) {
 	}()
 	for {
 		m.mu.Lock()
-		waiting := m.slotViewers
+		waiting := m.slotViewers.Len()
 		m.mu.Unlock()
 		if waiting > 0 {
 			break
@@ -213,5 +215,75 @@ func TestMultiviewGroupSharesSingleTranscodeSlotAndFailsFastWhenFull(t *testing.
 	defer sibRel()
 	if got := m1.EncodingCount(); got != 1 {
 		t.Fatalf("m1 EncodingCount = %d, want 1", got)
+	}
+}
+
+// Both encoder lifetimes and explicit slot holders must charge the same FIFO
+// before waking another waiter, even though their retirement paths differ.
+func TestViewerSlotQueueSharesAdmissionOrder(t *testing.T) {
+	m := newTestManager(t, newFakeRunner(), config.Transcode{MaxTranscodes: 1})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, releaseHeld, err := m.AcquireTranscodeSlot(ctx, SlotViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseHeld()
+	life, err := m.reserveEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer life.finishWork()
+	defer life.seal()
+
+	type admission struct {
+		encoder bool
+		release func()
+		err     error
+	}
+	admitted := make(chan admission, 2)
+	waitQueued := func(want int) {
+		t.Helper()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for m.slotViewers.Len() < want && ctx.Err() == nil {
+			m.waitSlotChangeLocked(ctx, nil)
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	go func() {
+		err := m.admitStartEncoding(ctx, core.HLSRequest{WaitForEncoder: true}, life, true)
+		admitted <- admission{encoder: true, err: err}
+	}()
+	waitQueued(1)
+	go func() {
+		_, release, err := m.AcquireTranscodeSlot(ctx, SlotViewer)
+		admitted <- admission{release: release, err: err}
+	}()
+	waitQueued(2)
+	releaseHeld()
+
+	select {
+	case first := <-admitted:
+		if first.release != nil {
+			first.release()
+		}
+		if !first.encoder || first.err != nil {
+			t.Fatalf("the encode start should acquire first: %+v", first)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	life.decisionEncoding(false)
+	select {
+	case second := <-admitted:
+		if second.err != nil {
+			t.Fatal(second.err)
+		}
+		second.release()
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }

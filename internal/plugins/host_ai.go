@@ -345,7 +345,7 @@ func extractCallSearchQuery(req Request) string {
 		}
 		return ""
 	}
-	if isFrontendAdapterPath(req.Path) {
+	if isFrontendAdapterRoute(req.Path) {
 		return queryParamFromRequest(req, "q", "query", "search")
 	}
 	return ""
@@ -995,7 +995,7 @@ func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AIComplet
 		if searchQuery == "" {
 			if q, ok := stremioCatalogSearchQuery(path); ok {
 				searchQuery = q
-			} else if isFrontendAdapterPath(path) {
+			} else if isFrontendAdapterRoute(path) {
 				searchQuery = queryParamFromRequest(Request{Path: path}, "q", "query", "search")
 			}
 		}

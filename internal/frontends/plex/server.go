@@ -184,6 +184,7 @@ type Server struct {
 	plexMeta          frontend.LibraryMetadata
 	variantIDs        *variantIDRegistry
 	playIDs           *playIdentities
+	trackRestarts     *trackRestarts
 	versionFlows      *versionFlowStore
 	variantWatch      variantWatches
 	plezyReasks       plezyReaskStore
@@ -270,6 +271,7 @@ func NewServer(d Deps) *Server {
 		channelRaster:     frontend.NewSVGRasterizer(),
 		variantIDs:        newVariantIDRegistry(rt, db),
 		playIDs:           newPlayIdentities(),
+		trackRestarts:     newTrackRestarts(),
 		downloads:         rt.NewDownloadQueueStore(),
 		queues:            rt.NewPlayQueues(),
 		sessions:          newSessionActivities(),
@@ -1151,6 +1153,7 @@ func (s *Server) janitor() {
 			s.expireDownloads(now)
 			s.queues.Expire(now, 6*time.Hour)
 			s.playIDs.expire(now, s.playIdentityAlive)
+			s.trackRestarts.expire(now)
 			s.expireTranscodes(now, 2*time.Hour)
 			s.playbackOwners.Expire(now, 2*time.Hour)
 			s.extraPlay.expire(now, 2*time.Hour)

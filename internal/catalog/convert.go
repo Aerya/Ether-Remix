@@ -66,16 +66,17 @@ func (c *Catalog) genreMap(ctx context.Context, mediaType string) map[int]string
 	if m, ok := c.genres[mediaType]; ok {
 		return m
 	}
-	m := map[int]string{}
-	if c.tmdb() != nil {
-		if gs, err := c.tmdb().Genres(ctx, mediaType); err == nil {
-			for _, g := range gs {
-				m[g.ID] = g.Name
-			}
-		} else {
-			c.log.Debug("catalog: genre list failed", "type", mediaType, "err", err)
-			return m // don't cache failures
-		}
+	if !c.TMDBConfigured() {
+		return nil
+	}
+	gs, err := c.tmdb().Genres(ctx, mediaType)
+	if err != nil {
+		c.log.Debug("catalog: genre list failed", "type", mediaType, "err", err)
+		return nil
+	}
+	m := make(map[int]string, len(gs))
+	for _, g := range gs {
+		m[g.ID] = g.Name
 	}
 	c.genres[mediaType] = m
 	return m

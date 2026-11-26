@@ -241,7 +241,9 @@ func (s *Server) facet(ctx context.Context, t frontend.MediaType, name string) (
 	if ok && s.now().Sub(e.at) < facetTTL {
 		return e.vals, nil
 	}
-	vals, err := s.catalog().Facet(ctx, t, name)
+	// The entry is shared by every viewer, so it is counted under the
+	// household rules, never under whichever viewer missed first.
+	vals, err := s.catalog().Facet(frontend.WithoutCatalogViewer(ctx), t, name)
 	if err != nil {
 		return nil, err
 	}

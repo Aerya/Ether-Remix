@@ -267,3 +267,38 @@ func TestValidateMediaKindsUpgradeBranchingLevels(t *testing.T) {
 		t.Fatalf("reparenting existing level error = %v, want parent mismatch error", err)
 	}
 }
+
+func TestListLevelValidation(t *testing.T) {
+	withList := func(extra func(*MediaKindMeta)) error {
+		m := branchingMusicKindManifest(func(k *MediaKindMeta) {
+			k.Levels = append(k.Levels, KindLevel{Key: "playlist", Label: "Playlist", Role: "playlist", Container: true, Members: true})
+			if extra != nil {
+				extra(k)
+			}
+		})
+		return m.Validate()
+	}
+	if err := withList(nil); err != nil {
+		t.Fatalf("list level rejected: %v", err)
+	}
+	m := branchingMusicKindManifest(func(k *MediaKindMeta) {
+		k.Levels = append(k.Levels, KindLevel{Key: "playlist", Label: "Playlist", Container: true, Members: true})
+	})
+	if got := m.Ether.Contributes.MediaKinds[0].LevelParent("playlist"); got != "" {
+		t.Fatalf("a list level is a root, parent = %q", got)
+	}
+	for name, bad := range map[string]func(*MediaKindMeta){
+		"playable": func(k *MediaKindMeta) { k.Levels[len(k.Levels)-1].Playable = true },
+		"parent":   func(k *MediaKindMeta) { k.Levels[len(k.Levels)-1].Parent = "artist" },
+		"parent of another level": func(k *MediaKindMeta) {
+			k.Levels[3] = KindLevel{Key: "entry", Label: "Entry", Parent: "album", Playable: true}
+			k.Levels[3], k.Levels[4] = k.Levels[4], k.Levels[3]
+			k.Levels[4].Parent = "playlist"
+			k.Library.Tabs, k.Library.Shelves = nil, nil
+		},
+	} {
+		if err := withList(bad); err == nil || !strings.Contains(err.Error(), "list level") {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

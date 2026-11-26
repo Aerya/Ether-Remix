@@ -643,11 +643,12 @@ func (b *builder) regroupSingleRARs(ctx context.Context, cands []candidate) (boo
 		_ = b.parallel(ctx, len(needTail), func(ctx context.Context, k int) error {
 			idx := needTail[k]
 			pf := rars[idx].pf
-			msgID := pf.msgID(pf.numSlots() - 1)
+			slot := pf.numSlots() - 1
+			msgID := pf.msgID(slot)
 			if msgID == "" {
 				return nil
 			}
-			data, _, err := b.e.bodyPart(ctx, pf, msgID, b.prio, b.fo)
+			data, _, err := b.e.bodyPart(ctx, pf, slot, msgID, b.prio, b.fo)
 			if err == nil && len(data) > 0 {
 				if n := archive.ReadRAR4TailVolumeNumber(data); n >= 0 {
 					rars[idx].number = n
@@ -2129,7 +2130,7 @@ func (b *builder) probeObfuscated(ctx context.Context, unknown []*postedFile, se
 				if msgID == "" {
 					return nil
 				}
-				data, _, err := b.e.bodyPart(ctx, pf, msgID, b.prio, b.fo)
+				data, _, err := b.e.bodyPart(ctx, pf, slot, msgID, b.prio, b.fo)
 				if err == nil && len(data) > 0 {
 					if n := archive.ReadRAR4TailVolumeNumber(data); n >= 0 {
 						rars[idx].number = n

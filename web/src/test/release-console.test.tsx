@@ -20,7 +20,7 @@ async function pickTitle(title: string) {
 
 describe("Release search", () => {
   it("ranks a movie's releases as playback would and pins one with a note", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const movie = fake.catalog.filter((t) => t.type === "movie")[3]!;
     await pickTitle(movie.title);
     expect(
@@ -54,7 +54,7 @@ describe("Release search", () => {
   });
 
   it("blocks a release with a reason and searches again without the cache", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const movie = fake.catalog.filter((t) => t.type === "movie")[4]!;
     await pickTitle(movie.title);
     await screen.findByText("Plays first", {}, WAIT);
@@ -81,11 +81,11 @@ describe("Release search", () => {
   });
 
   it("ranks with another profile and reports a failed health check", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const movie = fake.catalog.filter((t) => t.type === "movie")[5]!;
     await pickTitle(movie.title);
     await screen.findByText("Plays first", {}, WAIT);
-    await choose("Quality profile", "No profile limits");
+    await choose("Release profile", "No profile limits");
     await waitFor(() =>
       expect(
         calls(fake, "GET", "/releases/search").some((c) => c.path.includes("profile=none")),
@@ -102,7 +102,7 @@ describe("Release search", () => {
   });
 
   it("finds an episode through its show and season", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const show = fake.catalog.find((t) => t.type === "show")!;
     await pickTitle(show.title);
     await waitFor(() => expect(screen.getByRole("button", { name: "Season" })).toBeEnabled(), WAIT);
@@ -125,7 +125,7 @@ describe("Release search", () => {
   });
 
   it("pins a release for every episode in a season from best candidates or a season pack", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const show = fake.catalog.find((t) => t.type === "show")!;
     await pickTitle(show.title);
     await waitFor(() => expect(screen.getByRole("button", { name: "Season" })).toBeEnabled(), WAIT);
@@ -182,12 +182,12 @@ describe("Release search", () => {
 
 describe("Pinned releases", () => {
   it("lists pins with their last status and unpins one", async () => {
-    const { fake } = renderApp("/quality/pinned");
+    const { fake } = renderApp("/releases/pinned");
     const movie = fake.catalog.filter((t) => t.type === "movie")[0]!;
     const name = `${movie.title} (${movie.year})`;
     expect(await screen.findByRole("link", { name }, WAIT)).toHaveAttribute(
       "href",
-      `/quality/pinned?key=${movie.key}&title=${encodeURIComponent(name)}`,
+      `/releases/pinned?key=${movie.key}&title=${encodeURIComponent(name)}`,
     );
     expect(screen.getByText("Playing")).toBeInTheDocument();
     expect(screen.getByText("The only encode with the original mix")).toBeInTheDocument();
@@ -202,7 +202,7 @@ describe("Pinned releases", () => {
 
 describe("Blocklist", () => {
   it("filters by source and unblocks a release", async () => {
-    const { fake } = renderApp("/quality/blocklist");
+    const { fake } = renderApp("/releases/blocklist");
     expect(await screen.findByText("health: missing articles", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText("Wrong audio language")).toBeInTheDocument();
     await choose("Source", "Blocked by you");
@@ -219,7 +219,7 @@ describe("Blocklist", () => {
 
 describe("Release history", () => {
   it("lists decisions newest first and explains one in a drawer", async () => {
-    const { fake } = renderApp("/quality/history");
+    const { fake } = renderApp("/releases/history");
     const movies = fake.catalog.filter((t) => t.type === "movie");
     const first = `${movies[0]!.title} (${movies[0]!.year})`;
     fireEvent.click(await screen.findByText(first, {}, WAIT));
@@ -235,7 +235,7 @@ describe("Release history", () => {
     const searchLink = within(drawer).getByRole("link", { name: "Search releases for this title" });
     expect(searchLink).toHaveAttribute(
       "href",
-      `/quality/pinned?key=${movies[0]!.key}&title=${encodeURIComponent(first)}`,
+      `/releases/pinned?key=${movies[0]!.key}&title=${encodeURIComponent(first)}`,
     );
     fireEvent.click(searchLink);
     expect(
@@ -248,7 +248,7 @@ describe("Release history", () => {
   });
 
   it("does not keep a /releases/search page", async () => {
-    const { fake } = renderApp("/quality/search?key=1000000000000550&title=Fight%20Club%20(1999)");
+    const { fake } = renderApp("/releases/search?key=1000000000000550&title=Fight%20Club%20(1999)");
     expect(await screen.findByRole("tab", { name: "Profiles" }, WAIT)).toBeInTheDocument();
     expect(calls(fake, "GET", "/releases/search?key=1000000000000550")).toHaveLength(0);
   });

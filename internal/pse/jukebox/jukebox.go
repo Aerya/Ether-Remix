@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/libraries"
 	"io"
 	"net/http"
 	"net/url"
@@ -41,7 +42,7 @@ type Collections interface {
 }
 type Libraries interface {
 	List(context.Context) ([]core.Library, error)
-	CreateCollection(context.Context, string, int64, core.MediaType, core.Presentations) (core.Library, error)
+	CreateCollection(context.Context, string, int64, core.MediaType, core.Presentations, ...libraries.CreateOption) (core.Library, error)
 }
 type Service struct {
 	cols   Collections
@@ -129,12 +130,19 @@ func (s *Service) Apply(ctx context.Context, req Request) (Result, error) {
 					Sources:    []core.CollectionSource{{Kind: "mdblist", URL: source, MediaType: typ}}, Match: "all",
 					Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{}, Sort: "released", SortDesc: true,
 					Refresh: "daily", ReleaseMode: "released", Enabled: true, Artwork: core.CollectionArtwork{Mode: "auto"},
-					Targets: core.CollectionTargets{CollectionsTab: true, HomeRow: true, SectionRow: true, Users: core.AllUsers()}}
+					BrowseInApps: true}
 				found, err = s.cols.CreateSpec(ctx, sp)
 				if err != nil {
 					return out, err
 				}
 				specs = append(specs, *found)
+			}
+			if publisher, ok := s.cols.(interface {
+				PublishRemixRows(context.Context, core.CollectionSpec) error
+			}); ok {
+				if err := publisher.PublishRemixRows(ctx, *found); err != nil {
+					return out, err
+				}
 			}
 			out.Collections = append(out.Collections, found.ID)
 			if !req.Libraries {

@@ -170,6 +170,9 @@ func (f localIdentity) evidence(rel core.Release, t *core.Title, req core.Search
 		return ""
 	}
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
+	if longRunningEpisodeYear(rel, t, req, year) {
+		return "corroborated long-running series episode"
+	}
 	if year > 0 && req.Year > 0 && !releaseparse.SeriesYearMatches(year, req.Year) {
 		return ""
 	}
@@ -249,6 +252,7 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 		(t != nil && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle)) ||
 		(req.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, req.EnglishTitle)) ||
 		(t != nil && t.ShowEnglishTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowEnglishTitle))
+	aliasYear := longRunningEpisodeYear(rel, t, req, year)
 	for name, others := range f.OtherShows {
 		if !releaseparse.TitleMatches(rel.Info, name) {
 			continue
@@ -261,7 +265,7 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 				for _, raw := range identityYear.FindAllString(rel.Name, -1) {
 					y, _ := strconv.Atoi(raw)
 					// An episode's air year is not necessarily the show's premiere year.
-					if y == other.Year && (req.Released.IsZero() || (y < req.Released.Year()-1 || y > req.Released.Year()+1)) {
+					if y == other.Year && !(y == year && aliasYear) && (req.Released.IsZero() || (y < req.Released.Year()-1 || y > req.Released.Year()+1)) {
 						return "release names another show's premiere year"
 					}
 				}

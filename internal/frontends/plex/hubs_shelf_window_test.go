@@ -36,12 +36,9 @@ func TestHomeShelfSurvivesHTTPCountSequence(t *testing.T) {
 	if err := e.Rebuild(ctx, &ownerUser); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"home.toprated", "home.showcase.comedy"} {
+	for id, source := range map[string]string{"home.toprated": personalize.KindTopRated, "home.showcase.comedy": personalize.KindShowcase} {
 		t.Run(id, func(t *testing.T) {
-			_, err := e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: "*", Status: "off"}, {Row: id, Status: "always", Slot: 1}}}}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			saveCuratedPage(t, e, core.PageHome, 1, core.Row{Source: core.RowSource{Kind: source}})
 			for _, path := range []string{"/hubs?count=12", "/hubs?count=4", "/hubs/promoted?count=4", "/hubs?count=1", "/hubs/promoted?count=5", "/hubs?count=12"} {
 				response := f.get(t, path, "Accept", "application/json", "X-Plex-Product", "Plex for iOS", "X-Plex-Platform", "iOS", "X-Plex-Version", "2026.20.0", "X-Plex-Session-Identifier", "shelf-session")
 				var got struct {

@@ -2,10 +2,13 @@ package catalog
 
 import (
 	"context"
+	"maps"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -244,4 +247,170 @@ func (c *Catalog) CachedVisibilityRows(ctx context.Context, keys []core.RatingKe
 		}
 	}
 	return out, nil
+}
+
+// CachedPolicyRows is a batched, local-only counterpart to CachedGet for policy
+// decisions (such as Live TV search). It reuses cached full titles when present
+// and batch-hydrates missing rows with only visibility facts and parent-show
+// policy inheritance—never trailers, credits, or alternative titles—and never
+// populates the full-title cache with partial rows.
+func (c *Catalog) CachedPolicyRows(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+	out := make(map[core.RatingKey]core.Title, len(keys))
+	gen, minute := c.writeGen.Load(), c.minuteBucket()
+	seen := make(map[core.RatingKey]bool, len(keys))
+	var missing []core.RatingKey
+	for _, key := range keys {
+		if key == 0 || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if title, ok := c.cachedStored(key, gen, minute); ok {
+			if c.visibleTitle(&title) {
+				out[key] = title
+			}
+			continue
+		}
+		missing = append(missing, key)
+	}
+	for part := range store.Chunks(missing, 200) {
+		args := make([]any, len(part))
+		for i, k := range part {
+			args[i] = int64(k)
+		}
+		rows, err := c.db.QueryContext(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		var items []core.Title
+		hasSeasons := false
+		for rows.Next() {
+			st, err := scanTitle(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if st.t.Type == core.TypeSeason {
+				hasSeasons = true
+			}
+			items = append(items, st.t)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			continue
+		}
+		if hasSeasons {
+			if err := c.airedCounts(ctx, items); err != nil {
+				return nil, err
+			}
+		}
+		if err := c.hydrateFacts(ctx, items, core.VisibilityFacts); err != nil {
+			return nil, err
+		}
+		if err := c.hydrateShowPolicy(ctx, items); err != nil {
+			return nil, err
+		}
+		for i := range items {
+			if c.visibleTitle(&items[i]) {
+				out[items[i].Key] = items[i]
+			}
+		}
+	}
+	return out, nil
+}
+
+// hydrateShowPolicy applies only the parent-show fields read by visibility and
+// content-rating policy checks (title, ratings, certifications, keywords) for
+// seasons and episodes, without reading alternative titles or sibling seasons.
+func (c *Catalog) hydrateShowPolicy(ctx context.Context, items []core.Title) error {
+	type showPolicy struct {
+		title, contentRating, enforcementRating string
+		certifications                          map[string]string
+		keywords                                []string
+	}
+	shows := map[core.RatingKey]*showPolicy{}
+	var showArgs []any
+	for i := range items {
+		if items[i].Type != core.TypeSeason && items[i].Type != core.TypeEpisode {
+			continue
+		}
+		if k := items[i].ShowKey; k != 0 && shows[k] == nil {
+			shows[k] = &showPolicy{}
+			showArgs = append(showArgs, int64(k))
+		}
+	}
+	if len(shows) == 0 {
+		return nil
+	}
+	for chunk := range store.Chunks(showArgs, 200) {
+		ph := placeholders(len(chunk))
+		q := `SELECT tag, key, a, b, c, d FROM (
+SELECT 'id' AS tag, key, title AS a, content_rating AS b, enforcement_rating AS c, certifications AS d FROM catalog_titles WHERE key IN (` + ph + `)
+UNION ALL
+SELECT 'kw', key, keyword, '', '', '' FROM catalog_keywords WHERE key IN (` + ph + `)
+) AS show_policy`
+		bound := make([]any, 0, len(chunk)*2)
+		bound = append(bound, chunk...)
+		bound = append(bound, chunk...)
+		rows, err := c.db.QueryContext(ctx, q, bound...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var key int64
+			var tag, a, b, ccol, d string
+			if err := rows.Scan(&tag, &key, &a, &b, &ccol, &d); err != nil {
+				rows.Close()
+				return err
+			}
+			show := shows[core.RatingKey(key)]
+			if show == nil {
+				continue
+			}
+			switch tag {
+			case "id":
+				show.title, show.contentRating, show.enforcementRating, show.certifications = a, b, ccol, decodeCertifications(d)
+			case "kw":
+				show.keywords = append(show.keywords, a)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	for _, show := range shows {
+		sort.Strings(show.keywords)
+	}
+	for i := range items {
+		if items[i].Type != core.TypeSeason && items[i].Type != core.TypeEpisode {
+			continue
+		}
+		show := shows[items[i].ShowKey]
+		if show == nil {
+			continue
+		}
+		if len(items[i].Keywords) == 0 && len(show.keywords) > 0 {
+			items[i].Keywords = uniqueStrings(append([]string(nil), show.keywords...))
+		}
+		if items[i].ShowTitle == "" && show.title != "" {
+			items[i].ShowTitle = show.title
+		}
+		if items[i].ContentRating == "" && show.contentRating != "" {
+			items[i].ContentRating = show.contentRating
+		}
+		if len(items[i].ContentRatings) == 0 && len(show.certifications) > 0 {
+			items[i].ContentRatings = maps.Clone(show.certifications)
+		}
+		if items[i].EnforcementRating == "" {
+			if enf := contentrating.EffectiveEnforcement(show.enforcementRating, items[i].ContentRating, items[i].Adult, show.keywords); enf != "" {
+				items[i].EnforcementRating = enf
+			}
+		}
+	}
+	return nil
 }

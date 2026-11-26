@@ -107,6 +107,7 @@ func (f *Frontend) Describe() frontend.Descriptor {
 		PathPrefix:     f.decl.Meta.PathPrefix,
 		Name:           name,
 		Logo:           f.decl.Icon,
+		ProtocolHint:   f.decl.Meta.ProtocolHint,
 		Version:        f.decl.Version,
 		DocsURL:        f.decl.DocsURL,
 		DefaultPort:    port,
@@ -131,6 +132,7 @@ func (f *Frontend) Mount(ctx context.Context, host frontend.Host) (frontend.Inst
 	}
 	inst := &instance{
 		frontend: f,
+		host:     host,
 		auth:     auth,
 		limits:   newLimiters(f.decl),
 	}

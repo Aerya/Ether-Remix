@@ -64,10 +64,21 @@ func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k front
 		}
 		return s.metadataGrandchildrenOf(ctx, pr, parent)
 	}
-	if s.episodeOrder() != nil {
-		return s.episodeOrder().Grandchildren(ctx, pr.User, k)
+	load := func() ([]frontend.Title, error) {
+		if s.episodeOrder() != nil {
+			return s.episodeOrder().Grandchildren(ctx, pr.User, k)
+		}
+		return s.catalog().Grandchildren(ctx, k)
 	}
-	return s.catalog().Grandchildren(ctx, k)
+	if !reqmemo.Active(ctx) {
+		return load()
+	}
+	var uid int64
+	if pr != nil && pr.User != nil {
+		uid = pr.User.ID
+	}
+	items, err := reqmemo.Do(ctx, fmt.Sprintf("plex:grandchildren:%p:%d:%d", s, uid, k), load)
+	return append([]frontend.Title(nil), items...), err
 }
 
 // metadataGrandchildrenOf expands a plugin container (e.g. artist -> albums ->
@@ -198,7 +209,7 @@ func (s *Server) presentedSeasons(ctx context.Context, pr *Request, show fronten
 	out := map[int][]frontend.Title{}
 	for _, e := range eps {
 		n := e.Season
-		if grouped {
+		if grouped && viewerEpisodeOrder(&e) {
 			if season, _, _, ok := s.episodeOrder().Position(ctx, pr.User, e.Key); ok {
 				n = season
 			}
@@ -230,10 +241,11 @@ func (s *Server) episodeOrderList(ctx context.Context, pr *Request, ts []fronten
 	var shows []frontend.RatingKey
 	seen := map[frontend.RatingKey]bool{}
 	for i := range ts {
-		if ts[i].Type != frontend.TypeShow && ts[i].Type != frontend.TypeEpisode || ts[i].Key.TMDB() <= 0 {
+		t := &ts[i]
+		if (t.Type != frontend.TypeShow && t.Type != frontend.TypeEpisode) || !viewerEpisodeOrder(t) {
 			continue
 		}
-		if k := frontend.ShowKey(ts[i].Key.TMDB()); !seen[k] {
+		if k := titleShow(t); k != 0 && !seen[k] {
 			seen[k] = true
 			shows = append(shows, k)
 		}
@@ -274,11 +286,20 @@ func (s *Server) episodeOrderList(ctx context.Context, pr *Request, ts []fronten
 	return v
 }
 
-// applyEpisodeOrder runs after canonical media rendering: filenames, playback,
-// GUIDs and the resolver retain canonical identity while Plex sees the chosen
-// group tree and display numbering.
+// Viewer-specific TMDB groups only supplement an aired catalogue order.
+func viewerEpisodeOrder(t *frontend.Title) bool {
+	return !t.Key.IsPluginKey() && (t.EpisodeOrder.Source == "" ||
+		t.EpisodeOrder.Source == frontend.MetadataTMDB && t.EpisodeOrder.Kind == frontend.OrderAired)
+}
+
+func virtualPlexSeason(t *frontend.Title) bool {
+	return t.Type == frontend.TypeSeason && t.Season >= 9000 && !t.Key.Allocated() && viewerEpisodeOrder(t)
+}
+
+// applyEpisodeOrder presents the viewer's TMDB group while retaining the
+// episode's stable identity for playback and watch history.
 func (s *Server) applyEpisodeOrder(ctx context.Context, pr *Request, t *frontend.Title, m *model.Metadata, v episodeOrderView) {
-	if s.episodeOrder() == nil || t.Key.IsPluginKey() {
+	if s.episodeOrder() == nil || !viewerEpisodeOrder(t) {
 		return
 	}
 	if t.Type == frontend.TypeShow {
@@ -293,21 +314,22 @@ func (s *Server) applyEpisodeOrder(ctx context.Context, pr *Request, t *frontend
 		}
 		return
 	}
-	if t.Type == frontend.TypeSeason {
-		if t.Season >= 9000 {
-			m.GUID = "local://episode-order/" + t.Key.String()
-			m.Index = model.Ptr(t.Season - 8999)
-		}
+	if virtualPlexSeason(t) {
+		m.GUID = "local://episode-order/" + t.Key.String()
+		m.Index = model.Ptr(t.Season - 8999)
 		return
 	}
-	if t.Type != frontend.TypeEpisode || v.grouped != nil && !v.grouped[frontend.ShowKey(t.Key.TMDB())] {
+	if t.Type != frontend.TypeEpisode || v.grouped != nil && !v.grouped[titleShow(t)] {
 		return
 	}
 	season, index, name, ok := s.episodeOrder().Position(ctx, pr.User, t.Key)
 	if !ok {
 		return
 	}
-	parent := frontend.SeasonKey(t.Key.TMDB(), season)
+	parent := viewerSeasonKey(t, season)
+	if parent == 0 {
+		return
+	}
 	m.Index = model.Ptr(index)
 	m.ParentIndex = model.Ptr(season)
 	if season >= 9000 {
@@ -316,7 +338,26 @@ func (s *Server) applyEpisodeOrder(ctx context.Context, pr *Request, t *frontend
 	m.ParentTitle = name
 	m.ParentRatingKey = parent.String()
 	m.ParentKey = "/library/metadata/" + parent.String()
-	m.ParentThumb = "/library/metadata/" + frontend.ShowKey(t.Key.TMDB()).String() + "/thumb"
+	m.ParentThumb = "/library/metadata/" + titleShow(t).String() + "/thumb"
 	// A group is local presentation metadata, not an invented TMDB season.
 	m.ParentGUID = "local://episode-order/" + parent.String()
+}
+
+// A viewer group creates virtual seasons in a TMDB show's packed namespace.
+func viewerSeasonKey(t *frontend.Title, season int) frontend.RatingKey {
+	if t.ShowIDs.TMDB > 0 {
+		return frontend.SeasonKey(t.ShowIDs.TMDB, season)
+	}
+	return 0
+}
+
+func (s *Server) presentedParent(ctx context.Context, pr *Request, t *frontend.Title) frontend.RatingKey {
+	if t.Type == frontend.TypeEpisode && viewerEpisodeOrder(t) && s.episodeOrder() != nil {
+		if n, _, _, ok := s.episodeOrder().Position(ctx, pr.User, t.Key); ok {
+			if parent := viewerSeasonKey(t, n); parent != 0 {
+				return parent
+			}
+		}
+	}
+	return titleParent(t)
 }

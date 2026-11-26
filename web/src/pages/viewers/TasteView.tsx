@@ -23,6 +23,7 @@ import { Segmented } from "../../components/fields";
 import { SaveBar } from "../../components/SaveBar";
 import { FacetSelect, LookupPicker } from "../../components/pickers";
 import { getLocale, localized, t } from "../../i18n";
+import { PAGE_HOME, type PagePreview, type PreviewRow } from "../../lib/pages";
 import { api, errorMessage } from "../../lib/api";
 import type {
   Device,
@@ -30,7 +31,6 @@ import type {
   TasteOverride,
   TasteProfile,
   TitleCard,
-  ViewerHome,
 } from "../../lib/contract";
 import { fixed, formatMinutes, formatPercent, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
@@ -223,14 +223,14 @@ const PERSONAL_ROW_KINDS = new Set([
   "up-next",
 ]);
 
-export function extractTopPicks(preview: ViewerHome | null | undefined, limit = 10): RankedPick[] {
+export function extractTopPicks(preview: PagePreview | null | undefined, limit = 10): RankedPick[] {
   if (!preview?.rows) return [];
   const seen = new Set<string>();
   const out: RankedPick[] = [];
   const rows = preview.rows.filter(
-    (r) => !r.hidden && r.kind !== "continue-watching" && r.kind !== "playlists",
+    (r) => !r.ghost && r.kind !== "continue-watching" && r.kind !== "playlists",
   );
-  const addFrom = (r: ViewerHome["rows"][number], it: TitleCard) => {
+  const addFrom = (r: PreviewRow, it: TitleCard) => {
     if (seen.has(it.key) || out.length >= limit) return;
     seen.add(it.key);
     out.push({
@@ -253,7 +253,7 @@ export function extractTopPicks(preview: ViewerHome | null | undefined, limit = 
   const personalLead = [...top10, ...because];
   for (let round = 0; round < 4 && out.length < limit; round++) {
     for (const r of personalLead) {
-      const it = r.items[round];
+      const it = r.items?.[round];
       if (it) addFrom(r, it);
     }
   }
@@ -261,7 +261,7 @@ export function extractTopPicks(preview: ViewerHome | null | undefined, limit = 
   // 2. Fill remaining slots from the rest of their personal rows.
   for (let round = 0; round < 6 && out.length < limit; round++) {
     for (const r of [...personalLead, ...otherPersonal]) {
-      const it = r.items[round];
+      const it = r.items?.[round];
       if (it) addFrom(r, it);
     }
   }
@@ -270,7 +270,7 @@ export function extractTopPicks(preview: ViewerHome | null | undefined, limit = 
   if (out.length < limit) {
     for (const r of rows) {
       if (PERSONAL_ROW_KINDS.has(r.kind)) continue;
-      for (const it of r.items) {
+      for (const it of r.items ?? []) {
         addFrom(r, it);
         if (out.length >= limit) break;
       }
@@ -332,11 +332,11 @@ export function TasteView({
   const activePreset = CONTEXT_PRESETS.find((p) => p.key === preset) ?? CONTEXT_PRESETS[0]!;
   const preview = useAsync(
     (signal) =>
-      api.viewerHome(
-        userId,
+      api.previewPage(
+        PAGE_HOME,
         {
+          viewer: userId,
           device: activePreset.device,
-          section: "home",
           at: presetIso(activePreset.day, activePreset.hour),
         },
         signal,

@@ -133,6 +133,14 @@ func (s surfaceVirtualPaths) Path(ctx context.Context, viewer *core.Viewer, devi
 func (s surfaceVirtualPaths) virtualPathCatalog() experience.VirtualPathCatalog {
 	exp := s.experience
 	return experience.VirtualPathCatalog{
+		StoredTitles: func(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) ([]core.Title, error) {
+			if cached, ok := exp.(interface {
+				PageArtworkTitles(context.Context, *core.Viewer, []core.RatingKey) ([]core.Title, error)
+			}); ok {
+				return cached.PageArtworkTitles(ctx, viewer, keys)
+			}
+			return nil, core.ErrNotAvailable
+		},
 		Views: func(ctx context.Context, viewer *core.Viewer) ([]experience.VirtualPathView, error) {
 			views, err := exp.Views(ctx, viewer)
 			if err != nil {

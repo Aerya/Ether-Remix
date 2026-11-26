@@ -73,6 +73,10 @@ CREATE TABLE collections_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');
 	store.Register("collections", 4, `UPDATE collections_specs SET build_hash='';`)
 	store.Register("collections", 6, `CREATE TABLE collections_air_dates (show_key INTEGER PRIMARY KEY, episode_ts INTEGER NOT NULL, premiere_ts INTEGER NOT NULL, fetched_at INTEGER NOT NULL, attempted_at INTEGER NOT NULL, failed INTEGER NOT NULL);`)
 	store.Register("collections", 7, repairNanoStampsSQL)
+	store.RegisterDialect("collections", 12, store.SQLite, `CREATE INDEX collections_card_name ON collections_specs
+		(json_extract(spec_json, '$.name') COLLATE NOCASE, id) WHERE enabled=1 AND owner_user_id=0;`)
+	store.RegisterDialect("collections", 12, store.Postgres, `CREATE INDEX collections_card_name ON collections_specs
+		(LOWER(spec_json::jsonb->>'name') COLLATE "C", id) WHERE enabled=1 AND owner_user_id=0;`)
 }
 
 // repairNanoStampsSQL converts stamps written in nanoseconds back to
@@ -362,75 +366,6 @@ func (s *Service) rowsByIDs(ctx context.Context, ids []int64) (map[int64]*specRo
 		}
 	}
 	return out, nil
-}
-
-// ensurePluginLayoutRow finds or provisions a hidden backing specRow for a
-// plugin list source placed directly in Home Designer ("plugin:<id>/<key>").
-func (s *Service) ensurePluginLayoutRow(ctx context.Context, kindID string) (*specRow, error) {
-	kind, ok := s.kindRegistry().Lookup(kindID)
-	if !ok {
-		return nil, core.ErrNotFound
-	}
-	r, err := scanSpecRow(s.db.QueryRowContext(ctx, `SELECT `+specCols+` FROM collections_specs WHERE slug=? AND builtin=0 LIMIT 1`, kindID))
-	if err == nil {
-		return r, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
-	desc := kind.Describe()
-	name := strings.TrimSpace(desc.Label.Resolved)
-	if name == "" {
-		name = kindID
-	}
-	mediaType := MediaMixed
-	if len(desc.MediaTypes) == 1 {
-		switch desc.MediaTypes[0] {
-		case "movie":
-			mediaType = MediaMovie
-		case "show":
-			mediaType = MediaShow
-		}
-	}
-	sp := core.CollectionSpec{
-		Name:      name,
-		MediaType: mediaType,
-		Sources:   []core.CollectionSource{{Kind: kindID}},
-		Match:     MatchAll,
-		Sort:      "source",
-		Refresh:   RefreshDaily,
-		Enabled:   true,
-		Targets:   core.CollectionTargets{Users: core.AllUsers()},
-	}
-	Normalize(&sp)
-	js, err := specJSON(sp)
-	if err != nil {
-		return nil, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var existingID int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM collections_specs WHERE slug=? AND builtin=0 LIMIT 1`, kindID).Scan(&existingID); err == nil {
-		_ = tx.Rollback()
-		return s.rowByID(ctx, strconv.FormatInt(existingID, 10))
-	}
-	id, err := s.nextID(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	now := s.now().Unix()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO collections_specs(id,slug,builtin,owner_user_id,spec_json,enabled,created_at,updated_at)
-		VALUES(?, ?, 0, 0, ?, 1, ?, ?)`, id, kindID, js, now, now); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	s.forgetRowMemo(ctx)
-	return s.rowByID(ctx, strconv.FormatInt(id, 10))
 }
 
 func (s *Service) rowByKey(ctx context.Context, key core.RatingKey) (*specRow, error) {
@@ -726,8 +661,8 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		Name: c.Title, Description: c.Summary, MediaType: MediaMixed,
 		Sources: []core.CollectionSource{{Kind: "catalog"}}, Match: MatchAll,
 		Refresh: RefreshLive, Enabled: true, Sort: string(c.Sort), SortDesc: c.Sort != core.SortTitle,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
+		BrowseInApps: true,
 	}
 	if f.Topic != "" {
 		sp.Sources[0].Params = map[string]string{"topic": f.Topic}
@@ -743,7 +678,6 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		sp.SortDesc = true
 	}
 	if c.OwnerUserID != 0 {
-		sp.Targets.Users = core.UserTargets{IDs: []int64{c.OwnerUserID}}
 	}
 	add := func(field, op string, v any) {
 		b, _ := json.Marshal(v)

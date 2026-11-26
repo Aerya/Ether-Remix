@@ -47,7 +47,7 @@ func validRequest(r Request) bool {
 		return false
 	}
 	switch r.Operation {
-	case TestProvider, TestIndexer, TestDebrid, CacheStatus:
+	case TestProvider, TestIndexer, TestDebrid, SpeedUsenet, SpeedDebrid, CacheStatus:
 		return id(r.ResourceID) && r.Payload == nil
 	case Snapshot, Traces, ReleaseHistory, Variants:
 		if r.ResourceID != "" || r.Payload == nil || r.Payload.Limit < 1 || r.Payload.Limit > MaxItems {
@@ -156,6 +156,16 @@ func (h *Handler) execute(ctx context.Context, r Request) (Response, error) {
 		var v Diagnostics
 		v, err = s.Snapshot(ctx, r.Payload.Limit)
 		out.Diagnostics = &v
+	case SpeedUsenet, SpeedDebrid:
+		fn := s.SpeedUsenet
+		if r.Operation == SpeedDebrid {
+			fn = s.SpeedDebrid
+		}
+		if fn == nil {
+			return out, ErrUnsupported
+		}
+		v := fn(ctx, r.ResourceID)
+		out.Speed = &v
 	case TestProvider, TestIndexer, TestDebrid:
 		fn := s.TestProvider
 		if r.Operation == TestIndexer {
@@ -228,6 +238,13 @@ func validResponse(r Request, v Response) bool {
 				return false
 			}
 		}
+	}
+	if r.Operation == SpeedUsenet || r.Operation == SpeedDebrid {
+		return v.Speed != nil && v.Speed.ValidStatus() && v.Diagnostics == nil && v.Cache == nil &&
+			len(v.Traces) == 0 && len(v.Releases) == 0 && !v.Tested
+	}
+	if v.Speed != nil {
+		return false
 	}
 	// Enforce the tagged response shape for hostile/misconfigured peers too.
 	switch r.Operation {

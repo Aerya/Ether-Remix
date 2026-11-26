@@ -93,7 +93,7 @@ func TestPlexRootBehaviourUnchanged(t *testing.T) {
 		got := httptest.NewRecorder()
 		mounted.ServeHTTP(got, makeReq())
 		// updatedAt is the wall clock in seconds and can tick between the two calls.
-		stamp := regexp.MustCompile(`updatedAt="\d+"`)
+		stamp := regexp.MustCompile(`updatedAt="\d+"|"updatedAt":\d+`)
 		gotBody := stamp.ReplaceAll(got.Body.Bytes(), nil)
 		wantBody := stamp.ReplaceAll(want.Body.Bytes(), nil)
 		if got.Code != want.Code || !bytes.Equal(gotBody, wantBody) {

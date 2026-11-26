@@ -27,6 +27,7 @@ func (g *Grants) ResolveGrantDevice(ctx context.Context, surface, credential, cl
 	if !ok || surface == "" {
 		return nil, core.Device{}, time.Time{}, core.ErrUnauthorized
 	}
+	queued := g.queuedExpiry(hash, surface)
 	var id, expires int64
 	var owner int
 	var device core.Device
@@ -40,7 +41,9 @@ func (g *Grants) ResolveGrantDevice(ctx context.Context, surface, credential, cl
 	}
 	// A queued sliding refresh already extends the grant (#648); report
 	// and judge the effective expiry, not the not-yet-written row.
-	expires = g.effectiveExpiry(hash, surface, expires)
+	if queued > expires {
+		expires = queued
+	}
 	if expires <= g.now().UnixMilli() {
 		return nil, core.Device{}, time.Time{}, core.ErrUnauthorized
 	}

@@ -72,7 +72,7 @@ func (c *memSegmentCache) Usage() (int64, int64)      { return 0, 0 }
 func TestRepostAlternateServesMissingPart(t *testing.T) {
 	f := newFakeFetcher()
 	data := mkvBytes(3, 200_000)
-	doc := post(t, f, 10_000, postFile{name: "r.mkv", data: data})
+	doc := post(t, f, 10_000, postFile{name: "r.mkv", yName: "different-name.mkv", data: data})
 	doc = withRepost(t, f, doc, "r.mkv", 7, samePart)
 	f.setMissing(postID("r.mkv", 7))
 	cache := &memSegmentCache{}
@@ -95,8 +95,13 @@ func TestRepostAlternateServesMissingPart(t *testing.T) {
 	cold := newFakeFetcher()
 	cold.failAll = true
 	e2 := newTestEngine(t, cold, cache, Options{})
+	rel, err := e2.acquire(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e2.release(rel)
 	// One posted file, so global segment numbers equal its slots.
-	seg, ok := e2.cachedSegment("rel1", 6)
+	seg, ok := e2.cachedSegment("rel1", 6, rel.files[0], 6)
 	if !ok {
 		t.Fatal("repost slot not in the segment cache")
 	}

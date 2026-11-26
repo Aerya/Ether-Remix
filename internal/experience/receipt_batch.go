@@ -48,7 +48,9 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 	if viewer == nil || viewer.ID <= 0 || device.ID == "" || protocol == "" || len(subjects) == 0 || len(subjects) > s.opts.MaxPerDevice {
 		return nil, ErrReceipt
 	}
-	if proof := bootstrapProofFor(ctx, viewer.ID); proof != nil && proof.epoch != epoch {
+	// An unrestricted viewer's Home revision carries no policy epoch (0):
+	// policy changes don't reach it, so it has nothing to fence.
+	if proof := bootstrapProofFor(ctx, viewer.ID); proof != nil && proof.epoch != 0 && proof.epoch != epoch {
 		return nil, viewerpolicy.ErrChanged
 	}
 	snapshots := make([]string, len(subjects))
@@ -90,7 +92,11 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 			seen[key] = true
 			keys = append(keys, key)
 			if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
-				if show := core.ShowKey(key.TMDB()); show != 0 && !seen[show] {
+				show := key.Parent()
+				if key.Kind() == core.KindEpisode {
+					show = show.Parent()
+				}
+				if show != 0 && !seen[show] {
 					seen[show] = true
 					keys = append(keys, show)
 				}
@@ -135,6 +141,12 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 	if current != nil && !current() {
 		return nil, ErrRowViewStale
 	}
+	// Ranking a full device's authority sorts up to MaxPerDevice rows; do it
+	// as a plain read so the write transaction only deletes by digest.
+	plan, err := s.planEviction(ctx, viewer.ID, device.ID, protocol, generation, len(subjects))
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.opts.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -177,25 +189,22 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		return nil, err
 	}
 	if count+len(subjects) > s.opts.MaxPerDevice {
-		// Retire only this device's oldest dispensable authority. The delete
-		// triggers retire headers and claims in the same transaction. The window
-		// ranks only this quota-bounded device, never the library; older
-		// duplicates are superseded even if an impression was reported.
-		need := count + len(subjects) - s.opts.MaxPerDevice
-		result, evictErr := tx.ExecContext(ctx, `DELETE FROM experience_receipts WHERE viewer_id=? AND device_id=? AND hash IN (
- SELECT r.hash FROM (
- SELECT hash,expires,protocol,generation,
- ROW_NUMBER() OVER (PARTITION BY protocol,kind,subject,purpose,rank,generation ORDER BY expires DESC,hash DESC) AS recency
- FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?
- ) r WHERE r.recency>1 OR (?=1 AND r.protocol=? AND r.generation<>?) OR NOT EXISTS (
- SELECT 1 FROM capability_claims c WHERE c.namespace=? AND c.digest=r.hash)
- ORDER BY r.expires,r.hash LIMIT ?)`, viewer.ID, device.ID, viewer.ID, device.ID, now, store.BoolInt(s.opts.Generation != nil), string(protocol), generation, ReceiptCapabilityNamespace, need)
+		// Retire only this device's oldest dispensable authority, as planned
+		// before the transaction. The delete triggers retire headers and
+		// claims in the same transaction.
+		need := int64(count + len(subjects) - s.opts.MaxPerDevice)
+		removed, evictErr := s.evictPlanned(ctx, tx, viewer.ID, device.ID, now, plan, need)
 		if evictErr != nil {
 			return nil, evictErr
 		}
-		removed, evictErr := result.RowsAffected()
-		if evictErr != nil {
-			return nil, evictErr
+		// A planned row that was claimed, or retired by another issue, since
+		// the read leaves a shortfall; rank in the transaction only then.
+		if removed < need {
+			more, evictErr := s.evictRanked(ctx, tx, viewer.ID, device.ID, now, protocol, generation, need-removed)
+			if evictErr != nil {
+				return nil, evictErr
+			}
+			removed += more
 		}
 		// Recount live authority after the bounded eviction.
 		if removed > 0 {
@@ -268,6 +277,101 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		return nil, err
 	}
 	return tokens, nil
+}
+
+// evictionPlan is a device's oldest dispensable live authority, read outside
+// the write transaction. superseded holds the digests whose reason cannot
+// lapse before the transaction: a newer duplicate (eviction retires oldest
+// first, so it outlives the older row) or another generation. The rest were
+// unclaimed and are rechecked when deleted.
+type evictionPlan struct {
+	superseded, unclaimed []string
+}
+
+// The window ranks only one quota-bounded device, never the library; older
+// duplicates are superseded even if an impression was reported.
+const receiptEvictionRank = `SELECT r.hash, CASE WHEN r.recency>1 OR (?=1 AND r.protocol=? AND r.generation<>?) THEN 1 ELSE 0 END FROM (
+ SELECT hash,expires,protocol,generation,
+ ROW_NUMBER() OVER (PARTITION BY protocol,kind,subject,purpose,rank,generation ORDER BY expires DESC,hash DESC) AS recency
+ FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?
+ ) r WHERE r.recency>1 OR (?=1 AND r.protocol=? AND r.generation<>?) OR NOT EXISTS (
+ SELECT 1 FROM capability_claims c WHERE c.namespace=? AND c.digest=r.hash)
+ ORDER BY r.expires,r.hash LIMIT ?`
+
+func (s *Receipts) evictionRankArgs(viewer int64, device string, now int64, protocol core.Protocol, generation, limit int64) []any {
+	gen := store.BoolInt(s.opts.Generation != nil)
+	return []any{gen, string(protocol), generation, viewer, device, now, gen, string(protocol), generation, ReceiptCapabilityNamespace, limit}
+}
+
+func (s *Receipts) planEviction(ctx context.Context, viewer int64, device string, protocol core.Protocol, generation int64, incoming int) (evictionPlan, error) {
+	var plan evictionPlan
+	now := s.opts.Now().Unix()
+	var count int
+	if err := s.opts.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?`, viewer, device, now).Scan(&count); err != nil {
+		return plan, err
+	}
+	need := count + incoming - s.opts.MaxPerDevice
+	if need <= 0 {
+		return plan, nil
+	}
+	rows, err := s.opts.DB.QueryContext(ctx, receiptEvictionRank, s.evictionRankArgs(viewer, device, now, protocol, generation, int64(need))...)
+	if err != nil {
+		return plan, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hash string
+		var superseded int
+		if err = rows.Scan(&hash, &superseded); err != nil {
+			return plan, err
+		}
+		if superseded == 1 {
+			plan.superseded = append(plan.superseded, hash)
+		} else {
+			plan.unclaimed = append(plan.unclaimed, hash)
+		}
+	}
+	return plan, rows.Err()
+}
+
+// evictPlanned retires up to need planned digests that are still this
+// device's live authority, oldest first, by primary key. Unclaimed ones are
+// skipped if an impression was reported since the plan. The delete triggers
+// retire headers and claims in the same transaction.
+func (s *Receipts) evictPlanned(ctx context.Context, tx *sql.Tx, viewer int64, device string, now int64, plan evictionPlan, need int64) (int64, error) {
+	if len(plan.superseded)+len(plan.unclaimed) == 0 || need <= 0 {
+		return 0, nil
+	}
+	all, err := json.Marshal(append(append([]string{}, plan.superseded...), plan.unclaimed...))
+	if err != nil {
+		return 0, err
+	}
+	superseded, err := json.Marshal(append([]string{}, plan.superseded...))
+	if err != nil {
+		return 0, err
+	}
+	source := "SELECT value FROM json_each(?)"
+	if store.DialectOf(s.opts.DB) == store.Postgres {
+		source = "SELECT value FROM json_array_elements_text(CAST(? AS JSON))"
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM experience_receipts WHERE hash IN (
+ SELECT r.hash FROM (`+source+`) planned CROSS JOIN experience_receipts r WHERE r.hash=planned.value AND r.viewer_id=? AND r.device_id=? AND r.expires>? AND (r.hash IN (`+source+`) OR NOT EXISTS (
+ SELECT 1 FROM capability_claims c WHERE c.namespace=? AND c.digest=r.hash))
+ ORDER BY r.expires,r.hash LIMIT ?)`, string(all), viewer, device, now, string(superseded), ReceiptCapabilityNamespace, need)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// evictRanked ranks and retires in the transaction; the fallback when the
+// plan came up short.
+func (s *Receipts) evictRanked(ctx context.Context, tx *sql.Tx, viewer int64, device string, now int64, protocol core.Protocol, generation, need int64) (int64, error) {
+	result, err := tx.ExecContext(ctx, `DELETE FROM experience_receipts WHERE viewer_id=? AND device_id=? AND hash IN (SELECT hash FROM (`+receiptEvictionRank+`) ranked)`, append([]any{viewer, device}, s.evictionRankArgs(viewer, device, now, protocol, generation, need)...)...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // receiptsLive checks only the fixed page's digests, so cache reuse cannot

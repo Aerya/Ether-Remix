@@ -188,7 +188,7 @@ func TestBlobCacheEndToEnd(t *testing.T) {
 		if _, err := ns.Open(refC); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("expected C to expire by TTL, got %v", err)
 		}
-		ns.Sweep()
+		ns.Sweep(0)
 		if used, count := ns.Stats(); used != 0 || count != 0 {
 			t.Fatalf("stats after TTL sweep = (%d, %d), want (0, 0)", used, count)
 		}

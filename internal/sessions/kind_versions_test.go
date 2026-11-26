@@ -219,7 +219,7 @@ func TestPluginKeyVersionsPlanSwitchAndPlexPartSources(t *testing.T) {
 		},
 	}
 	plexCaps := core.ClientCaps{Product: "Plex", ClientID: "plex-1"}
-	psPlex, err := psrc.Prepare(ctx, viewer, key, plexCaps, rel1080, time.Second)
+	psPlex, err := psrc.Prepare(ctx, viewer, key, plexCaps, rel1080, false, time.Second)
 	if err != nil {
 		t.Fatalf("PartSources.Prepare(1080p): %v", err)
 	}

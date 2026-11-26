@@ -1,9 +1,11 @@
 package state
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 func TestPlexRatingTimestampMatrix(t *testing.T) {
@@ -47,9 +49,15 @@ func TestPlexRatingTimestampMatrix(t *testing.T) {
 
 func TestPlexParentCountersAndManualHistory(t *testing.T) {
 	s, _ := newTestState(t)
-	ep := core.EpisodeKey(42, 1, 1)
-	season := ep.Parent()
-	show := season.Parent()
+	ep, _ := core.AllocatedKey(core.KindEpisode, 42)
+	season, _ := core.AllocatedKey(core.KindSeason, 43)
+	show, _ := core.AllocatedKey(core.KindShow, 44)
+	s.ancestry = func(_ context.Context, keys []core.RatingKey) (map[core.RatingKey]Ancestry, error) {
+		if len(keys) != 1 || keys[0] != ep {
+			t.Fatalf("ancestry for %v, want episode %v", keys, ep)
+		}
+		return map[core.RatingKey]Ancestry{ep: {ShowKey: show, ParentKey: season}}, nil
+	}
 	apply := func(k core.RatingKey, leaves []core.RatingKey, watched bool) {
 		t.Helper()
 		if err := s.ScrobbleTree(ctx, 1, k, leaves, watched); err != nil {
@@ -63,9 +71,12 @@ func TestPlexParentCountersAndManualHistory(t *testing.T) {
 	if st[ep].ViewCount != 3 || st[season].ViewCount != 2 || st[show].ViewCount != 2 {
 		t.Fatalf("independent counters %+v", st)
 	}
+	if err := s.TouchParents(ctx, 1, ep, time.Time{}, true); err != nil {
+		t.Fatal(err)
+	}
 	apply(ep, []core.RatingKey{ep}, false)
 	st, _ = s.GetMany(ctx, 1, []core.RatingKey{season, show})
-	if st[season].ViewCount != 2 || st[show].ViewCount != 2 {
+	if st[season].ViewCount != 3 || st[show].ViewCount != 3 {
 		t.Fatal("leaf unscrobble changed parents")
 	}
 	apply(show, []core.RatingKey{ep}, false)

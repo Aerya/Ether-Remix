@@ -213,19 +213,6 @@ func TestLiveEventSpecArraysAndRankingSecondary(t *testing.T) {
 		t.Fatalf("LiveEventTable.rows = %#v, want []", tbl["rows"])
 	}
 
-	// LiveTickerItem preserves empty competitors[].
-	tickerRaw, err := json.Marshal(TickerItemFromEvent(ev))
-	if err != nil {
-		t.Fatalf("marshal LiveTickerItem: %v", err)
-	}
-	var tickerMap map[string]any
-	if err := json.Unmarshal(tickerRaw, &tickerMap); err != nil {
-		t.Fatalf("unmarshal LiveTickerItem: %v", err)
-	}
-	if arr, ok := tickerMap["competitors"].([]any); !ok || len(arr) != 0 {
-		t.Fatalf("LiveTickerItem competitors = %#v, want []", tickerMap["competitors"])
-	}
-
 	// Response wrappers never emit null arrays.
 	for name, payload := range map[string]any{
 		"events":    LiveEventsResponse{},

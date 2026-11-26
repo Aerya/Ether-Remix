@@ -44,6 +44,7 @@ CREATE TABLE trakt_tokens (
   username TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL DEFAULT 0
 );`)
+	store.Register("trakt", 4, `ALTER TABLE trakt_tokens ADD COLUMN link_id TEXT NOT NULL DEFAULT '';`)
 }
 
 const defaultBaseURL = "https://api.trakt.tv"
@@ -77,6 +78,8 @@ type Tokens struct {
 	RefreshToken string
 	ExpiresAt    time.Time
 	Username     string
+	linkID       string // identifies a connection across token rotations
+	storedAccess string // database value used to fence refresh writes
 }
 
 // Options build a Client.
@@ -119,6 +122,11 @@ var ErrRevoked = errors.New("trakt: authorization revoked; reconnect required")
 // linked Trakt.
 var ErrNotConnected = errors.New("trakt: user not connected")
 
+type refreshKey struct {
+	userID int64
+	linkID string
+}
+
 // Client talks to the Trakt API for all users.
 type Client struct {
 	cfg     config.Trakt
@@ -131,14 +139,15 @@ type Client struct {
 	now     func() time.Time
 	maxWait time.Duration
 
-	mu     sync.RWMutex // guards cfg
-	rfrMu  sync.Mutex   // serialises token refresh
-	evMu   sync.Mutex
-	queue  []state.Event
-	qsize  int
-	notify chan struct{}
-	done   chan struct{}
-	once   sync.Once
+	mu         sync.RWMutex // guards cfg
+	rfrMu      sync.Mutex
+	refreshing map[refreshKey]chan struct{} // one token refresh per connection
+	evMu       sync.Mutex
+	queue      []state.Event
+	qsize      int
+	notify     chan struct{}
+	done       chan struct{}
+	once       sync.Once
 
 	postMu   sync.Mutex // paces POSTs
 	lastPost time.Time
@@ -149,8 +158,10 @@ type Client struct {
 	cacheGeneration uint64 // invalidations fence off older in-flight pulls
 	ttl             time.Duration
 
-	scMu     sync.Mutex
-	lastScro map[scrobbleKey]scrobbleState
+	scMu      sync.Mutex
+	lastScro  map[scrobbleKey]scrobbleState
+	stops     map[scrobbleKey]*pendingStop // final stops being sent or awaiting a retry
+	retryWake chan struct{}
 
 	devMu   sync.Mutex
 	devices map[int64]*deviceFlow
@@ -206,7 +217,8 @@ func New(opts Options) *Client {
 		http: opts.HTTPClient, log: opts.Logger, now: opts.Now, maxWait: opts.MaxRetryAfter,
 		notify: make(chan struct{}, 1), done: make(chan struct{}), qsize: opts.QueueSize,
 		minPost: opts.MinPostInterval, cache: map[string]*cacheEntry{}, ttl: opts.CacheTTL,
-		lastScro: map[scrobbleKey]scrobbleState{}, devices: map[int64]*deviceFlow{},
+		refreshing: map[refreshKey]chan struct{}{}, retryWake: make(chan struct{}, 1),
+		lastScro: map[scrobbleKey]scrobbleState{}, stops: map[scrobbleKey]*pendingStop{}, devices: map[int64]*deviceFlow{},
 		pollUnit: time.Second, claimID: opts.NodeID, onTokenExpired: opts.OnTokenExpired,
 	}
 }
@@ -216,19 +228,23 @@ func (c *Client) pace(ctx context.Context) error {
 	if c.minPost <= 0 {
 		return nil
 	}
-	c.postMu.Lock()
-	defer c.postMu.Unlock()
-	if wait := time.Until(c.lastPost.Add(c.minPost)); wait > 0 {
+	for {
+		c.postMu.Lock()
+		wait := time.Until(c.lastPost.Add(c.minPost))
+		if wait <= 0 {
+			c.lastPost = time.Now()
+			c.postMu.Unlock()
+			return ctx.Err()
+		}
+		c.postMu.Unlock()
 		t := time.NewTimer(wait)
-		defer t.Stop()
 		select {
 		case <-t.C:
 		case <-ctx.Done():
+			t.Stop()
 			return ctx.Err()
 		}
 	}
-	c.lastPost = time.Now()
-	return nil
 }
 
 // UpdateConfig swaps the Trakt settings.
@@ -336,10 +352,14 @@ func (c *Client) saveTokens(ctx context.Context, t Tokens) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.db.ExecContext(ctx, `INSERT INTO trakt_tokens(user_id, access_token, refresh_token, expires_at, username, updated_at)
-		VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET access_token=excluded.access_token,
-		  refresh_token=excluded.refresh_token, expires_at=excluded.expires_at, username=excluded.username, updated_at=excluded.updated_at`,
-		t.UserID, access, refresh, t.ExpiresAt.Unix(), t.Username, c.now().Unix())
+	var linkID [16]byte
+	if _, err := rand.Read(linkID[:]); err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `INSERT INTO trakt_tokens(user_id, access_token, refresh_token, expires_at, username, updated_at, link_id)
+		VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET access_token=excluded.access_token,
+		  refresh_token=excluded.refresh_token, expires_at=excluded.expires_at, username=excluded.username, updated_at=excluded.updated_at, link_id=excluded.link_id`,
+		t.UserID, access, refresh, t.ExpiresAt.Unix(), t.Username, c.now().Unix(), hex.EncodeToString(linkID[:]))
 	return err
 }
 
@@ -350,15 +370,15 @@ func (c *Client) Tokens(ctx context.Context, userID int64) (Tokens, bool, error)
 	}
 	var t Tokens
 	var exp int64
-	err := c.db.QueryRowContext(ctx, `SELECT access_token, refresh_token, expires_at, username FROM trakt_tokens WHERE user_id=?`, userID).
-		Scan(&t.AccessToken, &t.RefreshToken, &exp, &t.Username)
+	err := c.db.QueryRowContext(ctx, `SELECT access_token, refresh_token, expires_at, username, link_id FROM trakt_tokens WHERE user_id=?`, userID).
+		Scan(&t.storedAccess, &t.RefreshToken, &exp, &t.Username, &t.linkID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Tokens{}, false, nil
 	}
 	if err != nil {
 		return Tokens{}, false, err
 	}
-	if t.AccessToken, t.RefreshToken, _, err = c.openTokens(userID, t.AccessToken, t.RefreshToken); err != nil {
+	if t.AccessToken, t.RefreshToken, _, err = c.openTokens(userID, t.storedAccess, t.RefreshToken); err != nil {
 		return Tokens{}, false, err
 	}
 	t.UserID = userID
@@ -386,6 +406,7 @@ func (c *Client) Disconnect(ctx context.Context, userID int64) error {
 	delete(c.devices, userID)
 	c.devMu.Unlock()
 	_, err := c.db.ExecContext(ctx, `DELETE FROM trakt_tokens WHERE user_id=?`, userID)
+	c.cancelStops(userID, 0)
 	c.invalidateUser(userID)
 	return err
 }
@@ -398,14 +419,17 @@ type tokenResponse struct {
 }
 
 func (c *Client) storeTokenResponse(ctx context.Context, userID int64, tr tokenResponse, username string) error {
-	exp := c.now().Add(time.Duration(tr.ExpiresIn) * time.Second)
-	if tr.CreatedAt > 0 && tr.ExpiresIn > 0 {
-		exp = time.Unix(tr.CreatedAt+tr.ExpiresIn, 0)
-	}
 	if tr.AccessToken == "" {
 		return fmt.Errorf("trakt: token response without access_token")
 	}
-	return c.saveTokens(ctx, Tokens{UserID: userID, AccessToken: tr.AccessToken, RefreshToken: tr.RefreshToken, ExpiresAt: exp.UTC(), Username: username})
+	return c.saveTokens(ctx, Tokens{UserID: userID, AccessToken: tr.AccessToken, RefreshToken: tr.RefreshToken, ExpiresAt: c.tokenExpiry(tr), Username: username})
+}
+
+func (c *Client) tokenExpiry(tr tokenResponse) time.Time {
+	if tr.CreatedAt > 0 && tr.ExpiresIn > 0 {
+		return time.Unix(tr.CreatedAt+tr.ExpiresIn, 0).UTC()
+	}
+	return c.now().Add(time.Duration(tr.ExpiresIn) * time.Second).UTC()
 }
 
 // StartDevice begins the device-code flow for a user.
@@ -451,6 +475,7 @@ func (c *Client) PollDevice(ctx context.Context, userID int64, deviceCode string
 		if err := c.storeTokenResponse(ctx, userID, tr, username); err != nil {
 			return "", err
 		}
+		c.cancelStops(userID, 0)
 		c.invalidateUser(userID)
 		c.log.Info("trakt connected", "user", userID, "trakt_user", username)
 		return PollAuthorized, nil
@@ -527,89 +552,144 @@ func (c *Client) fetchUsername(ctx context.Context, token string) string {
 
 // Refresh exchanges a user's refresh token for a fresh token pair.
 func (c *Client) Refresh(ctx context.Context, userID int64) error {
-	t, ok, err := c.Tokens(ctx, userID)
-	if err != nil || !ok {
-		if err == nil {
-			err = ErrNotConnected
-		}
+	t, err := c.tokensForLink(ctx, userID, nil)
+	if err != nil {
 		return err
 	}
+	_, err = c.refreshFrom(ctx, t)
+	return err
+}
+
+func (c *Client) tokensForLink(ctx context.Context, userID int64, link *string) (Tokens, error) {
+	t, ok, err := c.Tokens(ctx, userID)
+	if err != nil {
+		return Tokens{}, tokenLookupError{err}
+	}
+	if !ok || (link != nil && t.linkID != *link) {
+		return Tokens{}, ErrNotConnected
+	}
+	return t, nil
+}
+
+type tokenLookupError struct{ error }
+
+func (e tokenLookupError) Unwrap() error { return e.error }
+
+// refreshFrom rotates a token for the same link. One refresh per link can
+// run on this node. The conditional write also fences disconnects, relinks,
+// and rotations on other nodes while the OAuth request is in flight.
+func (c *Client) refreshFrom(ctx context.Context, stale Tokens) (Tokens, error) {
+	userID := stale.UserID
+	key := refreshKey{userID, stale.linkID}
+	for {
+		c.rfrMu.Lock()
+		active := c.refreshing[key]
+		if active == nil {
+			active = make(chan struct{})
+			c.refreshing[key] = active
+			c.rfrMu.Unlock()
+			defer func() {
+				c.rfrMu.Lock()
+				delete(c.refreshing, key)
+				close(active)
+				c.rfrMu.Unlock()
+			}()
+			break
+		}
+		c.rfrMu.Unlock()
+		select {
+		case <-active:
+		case <-ctx.Done():
+			return Tokens{}, ctx.Err()
+		}
+	}
+
+	t, err := c.tokensForLink(ctx, userID, &stale.linkID)
+	if err != nil || t.AccessToken != stale.AccessToken || t.RefreshToken != stale.RefreshToken {
+		return t, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Tokens{}, err
+	}
+	// Once started, let the exchange commit its single-use token even if
+	// the playback operation that needed it is cancelled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	id, secret := c.creds()
 	status, b, err := c.do(ctx, http.MethodPost, "/oauth/token", withSecret(map[string]string{
 		"refresh_token": t.RefreshToken, "client_id": id,
 		"grant_type": "refresh_token",
 	}, secret), "")
-	if err != nil {
-		return err
+	if err != nil && status == 0 {
+		return Tokens{}, err
 	}
 	if status == http.StatusBadRequest || status == http.StatusUnauthorized {
-		// invalid_grant: the refresh token was revoked or already used.
-		c.log.Warn("trakt refresh token rejected; disconnecting user", "user", userID, "status", status)
-		if derr := c.Disconnect(ctx, userID); derr != nil {
-			c.log.Warn("trakt disconnect failed", "user", userID, "err", derr)
+		res, err := c.db.ExecContext(ctx, `DELETE FROM trakt_tokens WHERE user_id=? AND link_id=? AND access_token=?`, userID, t.linkID, t.storedAccess)
+		if err != nil {
+			return Tokens{}, err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return Tokens{}, err
+		}
+		if n == 0 {
+			return c.tokensForLink(ctx, userID, &t.linkID)
+		}
+		c.invalidateUser(userID)
+		c.log.Warn("trakt refresh token rejected; disconnected user", "user", userID, "status", status)
 		if c.onTokenExpired != nil {
-			c.onTokenExpired(userID, t.Username, fmt.Sprintf("HTTP %d: %s", status, truncate(string(b), 160)))
+			c.onTokenExpired(userID, t.Username, fmt.Sprintf("HTTP %d", status))
 		}
-		return ErrRevoked
+		return Tokens{}, ErrRevoked
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("trakt refresh: HTTP %d: %s", status, truncate(string(b), 200))
+		return Tokens{}, fmt.Errorf("trakt refresh: %w", traktStatus(status))
+	}
+	if err != nil {
+		return Tokens{}, err
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(b, &tr); err != nil {
-		return fmt.Errorf("trakt refresh decode: %w", err)
+		return Tokens{}, fmt.Errorf("trakt refresh decode: %w", err)
 	}
-	return c.storeTokenResponse(ctx, userID, tr, t.Username)
-}
-
-// accessToken returns a valid token for a user, refreshing when expired
-// (within 60s of expiry) under a mutex so concurrent callers share a refresh.
-func (c *Client) accessToken(ctx context.Context, userID int64) (string, error) {
-	t, ok, err := c.Tokens(ctx, userID)
-	if err != nil || !ok {
-		if err == nil {
-			err = ErrNotConnected
-		}
-		return "", err
+	if tr.AccessToken == "" {
+		return Tokens{}, fmt.Errorf("trakt: token response without access_token")
 	}
-	if t.ExpiresAt.IsZero() || c.now().Add(60*time.Second).Before(t.ExpiresAt) {
-		return t.AccessToken, nil
+	access, refresh, err := c.sealTokens(userID, tr.AccessToken, tr.RefreshToken)
+	if err != nil {
+		return Tokens{}, err
 	}
-	return c.refreshFrom(ctx, userID, t.AccessToken)
-}
-
-// refreshFrom replaces the stale access token under rfrMu and returns the
-// current one. Trakt refresh tokens are single-use, so two callers must
-// never both spend the same one: the loser's refresh would be rejected and
-// disconnect the user. A caller that waited while another refreshed reuses
-// the new token instead.
-func (c *Client) refreshFrom(ctx context.Context, userID int64, stale string) (string, error) {
-	c.rfrMu.Lock()
-	defer c.rfrMu.Unlock()
-	// Re-read: another goroutine may have refreshed while we waited.
-	t2, ok, err := c.Tokens(ctx, userID)
-	if err == nil && ok && t2.AccessToken != stale {
-		return t2.AccessToken, nil
+	_, err = c.db.ExecContext(ctx, `UPDATE trakt_tokens SET access_token=?, refresh_token=?, expires_at=?, updated_at=?
+		WHERE user_id=? AND link_id=? AND access_token=?`, access, refresh, c.tokenExpiry(tr).Unix(), c.now().Unix(), userID, t.linkID, t.storedAccess)
+	if err != nil {
+		return Tokens{}, err
 	}
-	if err := c.Refresh(ctx, userID); err != nil {
-		return "", err
-	}
-	t3, _, err := c.Tokens(ctx, userID)
-	return t3.AccessToken, err
+	return c.tokensForLink(ctx, userID, &t.linkID)
 }
 
 // authed does a request with the user's token, refreshing once on 401.
 func (c *Client) authed(ctx context.Context, userID int64, method, path string, payload any) (int, []byte, error) {
-	tok, err := c.accessToken(ctx, userID)
+	return c.authedForLink(ctx, userID, nil, method, path, payload)
+}
+
+func (c *Client) authedForLink(ctx context.Context, userID int64, link *string, method, path string, payload any) (int, []byte, error) {
+	t, err := c.tokensForLink(ctx, userID, link)
 	if err != nil {
 		return 0, nil, err
 	}
-	status, b, err := c.do(ctx, method, path, payload, tok)
-	if err == nil && status == http.StatusUnauthorized {
-		if tok2, rerr := c.refreshFrom(ctx, userID, tok); rerr == nil {
-			return c.do(ctx, method, path, payload, tok2)
+	if !t.ExpiresAt.IsZero() && !c.now().Add(time.Minute).Before(t.ExpiresAt) {
+		t, err = c.refreshFrom(ctx, t)
+		if err != nil {
+			return 0, nil, err
 		}
+	}
+	status, b, err := c.do(ctx, method, path, payload, t.AccessToken)
+	if status == http.StatusUnauthorized && ctx.Err() == nil {
+		t, err = c.refreshFrom(ctx, t)
+		if err != nil {
+			return 0, nil, err
+		}
+		return c.do(ctx, method, path, payload, t.AccessToken)
 	}
 	return status, b, err
 }

@@ -40,6 +40,7 @@ func (a *App) buildExtensibility(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("plugins: %w", err)
 	}
 	a.buildLiveEvents()
+	a.buildLoudness()
 	// Add-ons entered before they had one home move into installed
 	// add-ons; playback never waits on it.
 	go func() {

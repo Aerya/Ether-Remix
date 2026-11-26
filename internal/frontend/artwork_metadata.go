@@ -79,3 +79,23 @@ func ArtworkKindWanted(ctx context.Context, kind string) bool {
 	kinds, ok := ctx.Value(artworkKindsKey{}).(map[string]bool)
 	return !ok || kinds[kind]
 }
+
+type primaryArtworkOnlyKey struct{}
+
+// WithPrimaryArtworkOnly marks a read (such as page signing) that seals at most
+// one image per wanted kind, so artwork lists skip redundant secondary variants.
+func WithPrimaryArtworkOnly(ctx context.Context) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, primaryArtworkOnlyKey{}, true)
+}
+
+// PrimaryArtworkOnly reports whether this read uses at most one image per kind.
+func PrimaryArtworkOnly(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	only, _ := ctx.Value(primaryArtworkOnlyKey{}).(bool)
+	return only
+}

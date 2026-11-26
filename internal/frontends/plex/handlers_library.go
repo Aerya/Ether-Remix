@@ -178,6 +178,13 @@ func (s *Server) sectionParam(w http.ResponseWriter, r *http.Request) (Section, 
 		writeHTTPError(w, http.StatusNotFound)
 		return Section{}, false
 	}
+	if id == catchUpSectionID {
+		if sec, ok := s.catchUpSection(r); ok {
+			return sec, true
+		}
+		writeHTTPError(w, 404)
+		return Section{}, false
+	}
 	sec, ok := s.sectionByID(id)
 	if !ok || !s.canSeeSection(FromContext(r.Context()).User, id) {
 		writeHTTPError(w, http.StatusNotFound)
@@ -199,7 +206,7 @@ func (s *Server) handleSections(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	mc := &model.MediaContainer{AllowSync: model.Ptr(s.downloadsAllowed(u)), Title1: "Plex Library"}
 	now := s.now().Unix()
-	for _, sec := range s.pseWithThemes(u, s.userSections(u)) { // PSE-HOOK: bibliothèques à thème — voir docs/pse/FORK.fr.md
+	for _, sec := range s.pseWithThemes(u, s.viewerSections(r)) { // PSE-HOOK: bibliothèques à thème — voir docs/pse/FORK.fr.md
 		agent, scanner := agentFor(sec.Type)
 		mc.Directory = append(mc.Directory, model.Directory{
 			AllowSync:        model.Ptr(s.downloadsAllowed(u) || u != nil && u.IsOwner && (s.cfg().Plex.Claimed || s.cfg().Plex.Token != "")),
@@ -1229,6 +1236,15 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := chi.URLParam(r, "sub")
+	if sec.ID == catchUpSectionID {
+		switch sub {
+		case "all", "allLeaves", "newest", "recentlyAdded":
+			s.catchUpBrowse(w, r, frontend.CatchUpLibraryID, sub == "allLeaves" || sub == "recentlyAdded" || r.URL.Query().Get("type") == "4")
+		default:
+			s.write(w, r, s.sectionContainer(sec))
+		}
+		return
+	}
 	if (sub == "unwatched" || sub == "onDeck") && r.URL.Query().Has("type") {
 		if _, err := strconv.ParseInt(r.URL.Query().Get("type"), 10, 64); err != nil {
 			writeHTTPError(w, http.StatusInternalServerError)
@@ -1497,7 +1513,8 @@ func (s *Server) scopedSectionMembers(ctx context.Context, sec Section, items []
 }
 
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
-	r = r.WithContext(s.searchRequestContext(r.Context()))
+	r, leave := s.enterSearch(r, query)
+	defer leave()
 	pr := FromContext(r.Context())
 	ctx := frontend.WithSearchClient(r.Context(), s.searchClientID(pr))
 	var items []frontend.Title
@@ -1514,7 +1531,8 @@ func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Secti
 		search := s.searchExperience()
 		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, fetch)
 		if err != nil {
-			s.writeErr(w, r, err)
+			mc.Title2 = "Search for '" + query + "'"
+			s.writeSearchErr(w, r, err, mc)
 			return
 		}
 		if scoped {
@@ -1892,7 +1910,7 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 		mc.Metadata = s.onDeckItems(ctx, pr, page.Items, state)
 		if r.URL.Path == "/hubs/home/onDeck" {
 			for i := range mc.Metadata {
-				if sec, ok := s.sectionFor(page.Items[i].Type); ok {
+				if sec, ok := s.sectionForTitle(ctx, &page.Items[i]); ok {
 					mc.Metadata[i].LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 					mc.Metadata[i].LibrarySectionUUID = ""
 				}
@@ -1937,7 +1955,7 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 	mc.Metadata = s.onDeckItems(ctx, pr, items, state)
 	if r.URL.Path == "/hubs/home/onDeck" {
 		for i := range mc.Metadata {
-			if sec, ok := s.sectionFor(items[i].Type); ok {
+			if sec, ok := s.sectionForTitle(ctx, &items[i]); ok {
 				mc.Metadata[i].LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 				mc.Metadata[i].LibrarySectionUUID = ""
 			}
@@ -1970,7 +1988,7 @@ func (s *Server) onDeckItems(ctx context.Context, pr *Request, items []frontend.
 		md[i].SetOnDeckOrder()
 		md[i].LibrarySectionKey = ""
 		md[i].AllowSync = model.Ptr(s.downloadsAllowed(pr.User) && isPlayable(items[i].Type))
-		if sec, ok := s.sectionFor(items[i].Type); ok {
+		if sec, ok := s.sectionForTitle(ctx, &items[i]); ok {
 			md[i].LibrarySectionUUID = sec.UUID
 		}
 	}

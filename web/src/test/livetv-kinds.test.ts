@@ -24,7 +24,7 @@ describe("Live TV source kinds from the registry", () => {
     const rows = collectionDescriptors.filter((d) => d.kind === "rowSource");
     expect(rows.length).toBeGreaterThan(20);
     const cw = rows.find((d) => d.id === "continue-watching");
-    expect(cw?.label.source).toBe("Continue Watching");
+    expect(cw?.label.source).toBe("Continue");
     expect((cw?.meta as { hubId?: string })?.hubId).toBe("continue-watching");
   });
 });

@@ -275,6 +275,9 @@ interface RawEspnScoreboard {
 
 interface RawEspnPlay {
   id?: string;
+  wallclock?: string;
+  homeScore?: number;
+  awayScore?: number;
   text?: string;
   shortText?: string;
   scoringPlay?: boolean;
@@ -1359,7 +1362,37 @@ function mapScoreboardEvent(
   if (matchHints.terms.length > 0 || matchHints.callsigns.length > 0) {
     event.matchHints = matchHints;
   }
+  const prominence = eventProminence(league, competitors, broadcasts);
+  if (prominence > 0) event.prominence = prominence;
   return event;
+}
+
+const LEAGUE_WEIGHT: Record<string, number> = {
+  nfl: 0.35,
+  nba: 0.25,
+  epl: 0.25,
+  ucl: 0.25,
+  mlb: 0.2,
+  nhl: 0.2,
+  ncaaf: 0.2,
+  f1: 0.2,
+};
+
+/**
+ * How big an event is, 0..1, for Ether's featured order: the league, ranked
+ * teams, and a national TV broadcast. Ether puts favourites and close games
+ * first on its own; this only orders the rest.
+ */
+export function eventProminence(
+  league: LeagueConfig,
+  competitors: Competitor[],
+  broadcasts: { kind?: string }[],
+): number {
+  let p = LEAGUE_WEIGHT[league.id] ?? 0.1;
+  const ranked = competitors.filter((c) => typeof c.rank === "number" && c.rank > 0 && c.rank <= 25);
+  p += ranked.length >= 2 ? 0.3 : ranked.length === 1 ? 0.15 : 0;
+  if (broadcasts.some((b) => b.kind === "tv")) p += 0.15;
+  return Math.round(Math.min(1, p) * 100) / 100;
 }
 
 function buildLineScoreTable(
@@ -1434,10 +1467,16 @@ function buildSummaryTables(
       }
     }
     const rows: string[][] = [];
+    // ESPN can list two stats under one label (a total and an average
+    // both called "Points Against"); show each label once.
+    const seenLabels = new Set<string>();
     for (const s of awayStats.slice(0, 12)) {
       if (!s.name || !s.label) continue;
       const hv = homeByName.get(s.name);
       if (hv === undefined) continue;
+      const label = s.label.trim().toLowerCase();
+      if (seenLabels.has(label)) continue;
+      seenLabels.add(label);
       rows.push([s.label, s.displayValue ?? "-", hv]);
     }
     if (rows.length > 0) {
@@ -1502,10 +1541,17 @@ function classifyPlayEmphasis(play: RawEspnPlay): "score" | "key" | "normal" {
   return "normal";
 }
 
+/** The home and away competitor ids, for a play's score after it. */
+interface PlaySides {
+  home?: string;
+  away?: string;
+}
+
 function mapRawPlay(
   _league: LeagueConfig,
   play: RawEspnPlay,
   fallbackTeamId?: string,
+  sides?: PlaySides,
 ): EventPlay | null {
   const text = (play.text || play.shortText || "").trim();
   if (!text) return null;
@@ -1523,18 +1569,36 @@ function mapRawPlay(
   if (rawTeam) {
     out.competitorId = formatEntityId(_league.id, String(rawTeam));
   }
+  // Wall-clock time and the score after the play let a timeshifted overlay
+  // show the score of the picture on screen.
+  if (play.wallclock && !Number.isNaN(Date.parse(play.wallclock))) {
+    out.at = new Date(Date.parse(play.wallclock)).toISOString();
+  }
+  if (
+    sides?.home &&
+    sides.away &&
+    typeof play.homeScore === "number" &&
+    typeof play.awayScore === "number"
+  ) {
+    out.score = { [sides.home]: String(play.homeScore), [sides.away]: String(play.awayScore) };
+  }
   return out;
 }
 
 function extractSummaryPlays(
   league: LeagueConfig,
   summary: RawEspnSummary,
+  competitors: Competitor[] = [],
 ): EventPlay[] {
   const out: EventPlay[] = [];
+  const sides: PlaySides = {
+    home: competitors.find((c) => c.home)?.id,
+    away: competitors.find((c) => !c.home)?.id,
+  };
 
   if (league.category === "soccer" && Array.isArray(summary.keyEvents)) {
     for (const ke of summary.keyEvents) {
-      const mapped = mapRawPlay(league, ke);
+      const mapped = mapRawPlay(league, ke, undefined, sides);
       if (mapped) out.push(mapped);
     }
   } else if (summary.drives) {
@@ -1544,19 +1608,19 @@ function extractSummaryPlays(
     ];
     for (const drive of allDrives) {
       for (const p of drive.plays || []) {
-        const mapped = mapRawPlay(league, p, drive.team?.id);
+        const mapped = mapRawPlay(league, p, drive.team?.id, sides);
         if (mapped) out.push(mapped);
       }
     }
     if (out.length === 0 && Array.isArray(summary.scoringPlays)) {
       for (const sp of summary.scoringPlays) {
-        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true });
+        const mapped = mapRawPlay(league, { ...sp, scoringPlay: true }, undefined, sides);
         if (mapped) out.push(mapped);
       }
     }
   } else if (Array.isArray(summary.plays)) {
     for (const p of summary.plays) {
-      const mapped = mapRawPlay(league, p);
+      const mapped = mapRawPlay(league, p, undefined, sides);
       if (mapped) out.push(mapped);
     }
   }
@@ -1802,7 +1866,28 @@ function sortStandingsEntries(
   });
 }
 
+/**
+ * A standings table whose rows name their entity (team or driver), so Ether
+ * can light a viewer's favourites by identity rather than by name.
+ */
 function mapStandingsTable(
+  league: LeagueConfig,
+  title: string,
+  rawEntries: RawEspnStandingEntry[],
+): GenericTable | null {
+  const table = mapStandingsRows(league, title, rawEntries);
+  if (!table) return null;
+  const ids = sortStandingsEntries(league, rawEntries).map((e) => {
+    const raw = e.team?.id || e.athlete?.id;
+    return raw ? formatEntityId(league.id, String(raw)) : "";
+  });
+  if (ids.length === table.rows.length && ids.some((id) => id !== "")) {
+    table.rowEntityIds = ids;
+  }
+  return table;
+}
+
+function mapStandingsRows(
   league: LeagueConfig,
   title: string,
   rawEntries: RawEspnStandingEntry[],
@@ -2262,7 +2347,7 @@ export class EspnSportsProvider implements SportsProvider {
         rawStatus?.clock,
       );
       const tables = buildSummaryTables(league, summary, rawCompetitors, competitors);
-      const plays = extractSummaryPlays(league, summary);
+      const plays = extractSummaryPlays(league, summary, competitors);
       const links = extractLinks(summary.header?.links);
 
       const detail: LiveEventDetail = {

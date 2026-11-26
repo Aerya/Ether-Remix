@@ -493,11 +493,9 @@ func assertInstalledConfig(t *testing.T, cfg config.Config) {
 	if !cfg.SetupComplete || cfg.Server.MachineIdentifier != upgradeMachineID {
 		t.Fatalf("config complete=%v machine=%s", cfg.SetupComplete, cfg.Server.MachineIdentifier)
 	}
-	// The installed profile served movies and shows; the upgrade splits it
-	// into a movie and a TV profile of the same name.
-	if cfg.Quality.Default != upgradeProfileName || len(cfg.Quality.Profiles) != 2 ||
-		cfg.Quality.Profiles[0].Name != upgradeProfileName || cfg.Quality.Profiles[0].MediaType != core.MediaMovie ||
-		cfg.Quality.Profiles[1].Name != upgradeProfileName || cfg.Quality.Profiles[1].MediaType != core.MediaTV {
+	// The installed profile served movies and shows; it stays one profile.
+	if cfg.Quality.Default != upgradeProfileName || len(cfg.Quality.Profiles) != 1 ||
+		cfg.Quality.Profiles[0].Name != upgradeProfileName {
 		t.Fatalf("profile key %+v default %q", cfg.Quality.Profiles, cfg.Quality.Default)
 	}
 	if cfg.Quality.Profiles[0].CustomFormatScores[core.SourceFormat(core.SourceBluRay)] != 4000 || len(cfg.Quality.Profiles[0].QualityOrder) != 1 {

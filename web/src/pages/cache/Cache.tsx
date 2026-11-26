@@ -748,7 +748,7 @@ export default function Cache() {
               <SettingsSection
                 title={t("Managed local shelf")}
                 description={t(
-                  "Proactively fill a dedicated part of your cache from the local catalogue using your sources and quality rules.",
+                  "Proactively fill a dedicated part of your cache from the local catalogue using your sources and release rules.",
                 )}
               >
                 <SettingsRow

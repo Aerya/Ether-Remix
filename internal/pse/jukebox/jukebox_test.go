@@ -70,7 +70,7 @@ func TestQuickSetupConcurrentAndPreservesEdits(t *testing.T) {
 		t.Fatalf("libraries: %+v %v", all, err)
 	}
 	for i, sp := range cols.specs {
-		if sp.Sort != "released" || !sp.SortDesc || sp.Refresh != "daily" || sp.ReleaseMode != "released" || !sp.Targets.CollectionsTab || !sp.Targets.HomeRow || !sp.Targets.SectionRow || !sp.Enabled {
+		if sp.Sort != "released" || !sp.SortDesc || sp.Refresh != "daily" || sp.ReleaseMode != "released" || !sp.BrowseInApps || !sp.Enabled {
 			t.Fatalf("bad defaults: %+v", sp)
 		}
 		lib := all[i+2]

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -272,6 +273,15 @@ func ComputePalette(ctx context.Context, cache *RemoteCache, imageURL core.Image
 	}
 	ch := make(chan result, 1)
 	go func() {
+		if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+			if cache.store == nil {
+				ch <- result{err: core.ErrNotAvailable}
+				return
+			}
+			data, _, err := cache.store.GetUntrustedURL(ctx, path)
+			ch <- result{img: &RemoteImage{Data: data}, err: err}
+			return
+		}
 		img, err := cache.Get(ctx, imageURL(path, ultraBlurImageSize), now)
 		ch <- result{img, err}
 	}()

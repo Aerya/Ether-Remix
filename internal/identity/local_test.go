@@ -66,6 +66,47 @@ func TestLocal(t *testing.T) {
 	}
 }
 
+func TestPasswordResetKeepsOneViewerPerNameAndOneFirstNamePerViewer(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users (id,plex_id,username,title,email,created_at,updated_at)
+		VALUES (1,42,'first','First','first@example.com',1,1), (2,43,'second','Second','second@example.com',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	local, err := NewLocal(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, name := range []string{"first", "alternate"} {
+		go func() {
+			<-start
+			results <- local.UpsertPassword(ctx, 1, name, "initial-pass")
+		}()
+	}
+	close(start)
+	errA, errB := <-results, <-results
+	if !(errA == nil && errors.Is(errB, core.ErrUnauthorized) || errB == nil && errors.Is(errA, core.ErrUnauthorized)) {
+		t.Fatalf("expected one first sign-in name, got %v and %v", errA, errB)
+	}
+	links, err := local.Links(ctx, 1)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("expected one local link, got %v (%v)", links, err)
+	}
+	name := links[0].Display
+	if err := local.UpsertPassword(ctx, 2, name, "collision-pass"); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("another viewer's name should be rejected: %v", err)
+	}
+	if err := local.UpsertPassword(ctx, 1, name, "changed-pass"); err != nil {
+		t.Fatal(err)
+	}
+	if viewer, link, err := local.Authenticate(ctx, name, "changed-pass"); err != nil || viewer != 1 || link != links[0].ID {
+		t.Fatalf("reset changed the credential's identity: viewer %d, link %d, error %v", viewer, link, err)
+	}
+}
+
 func TestLegacyArgon2idStillVerifiesAndRewrites(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)

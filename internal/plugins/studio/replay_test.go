@@ -260,7 +260,7 @@ func TestEventReplayDryRunRecordsWithoutApplying(t *testing.T) {
 		Tools:    tools.NewCatalogue(),
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Backends: plugins.Backends{
-			SetWatchState: func(context.Context, int64, string, bool) (bool, error) {
+			SetWatchState: func(context.Context, string, int64, string, bool) (bool, error) {
 				liveWatchWrites++
 				return false, nil
 			},

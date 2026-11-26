@@ -93,13 +93,21 @@ func (c *Catalog) TitleShowSchedule(ctx context.Context, show core.RatingKey, si
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	st, err := c.getShow(ctx, show.TMDB())
+	st, err := c.get(ctx, show)
 	if err != nil {
 		return nil, err
 	}
 	if st.Adult {
 		return nil, core.ErrNotFound
 	}
+	effective, err := c.effectiveEpisodeOrder(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	if providerLayout(st, effective.Order) {
+		return c.providerTitleSchedule(ctx, st, effective.Order, since, limit)
+	}
+
 	// RefreshSchedule skips settled shows; a drawer must still see the
 	// newest season of one nobody follows, so mirror it once if missing.
 	if err := c.RefreshSchedule(ctx, show); err != nil && ctx.Err() != nil {
@@ -109,8 +117,8 @@ func (c *Catalog) TitleShowSchedule(ctx context.Context, show core.RatingKey, si
 	if out.Seasons, err = c.seasonSummaries(ctx, show); err != nil {
 		return nil, err
 	}
-	if n := len(out.Seasons); n > 0 && out.Seasons[n-1].Episodes == 0 && out.Seasons[n-1].Season > 0 && episodeKeyFits(out.Seasons[n-1].Season, 0) {
-		if _, ferr := c.fetchSeason(ctx, show.TMDB(), out.Seasons[n-1].Season); ferr == nil {
+	if n := len(out.Seasons); c.TMDBConfigured() && st.IDs.TMDB > 0 && n > 0 && out.Seasons[n-1].Episodes == 0 && out.Seasons[n-1].Season > 0 && episodeKeyFits(out.Seasons[n-1].Season, 0) {
+		if _, ferr := c.fetchSeason(ctx, st.IDs.TMDB, out.Seasons[n-1].Season); ferr == nil {
 			if out.Seasons, err = c.seasonSummaries(ctx, show); err != nil {
 				return nil, err
 			}
@@ -221,17 +229,28 @@ func (c *Catalog) seasonSummaries(ctx context.Context, show core.RatingKey) ([]S
 // TitleSeasonSchedule mirrors one season when stale and returns every
 // episode TMDB lists for it, aired or announced.
 func (c *Catalog) TitleSeasonSchedule(ctx context.Context, show core.RatingKey, season int) ([]DatedEpisode, error) {
-	if show.Kind() != core.KindShow || !episodeKeyFits(season, 0) {
+	if show.Kind() != core.KindShow || season < 0 {
 		return nil, fmt.Errorf("%w: season %d of %s", core.ErrNotFound, season, show)
 	}
-	st, err := c.getShow(ctx, show.TMDB())
+	st, err := c.get(ctx, show)
 	if err != nil {
 		return nil, err
 	}
 	if st.Adult {
 		return nil, core.ErrNotFound
 	}
-	if _, err := c.fetchSeason(ctx, show.TMDB(), season); err != nil && !errors.Is(err, core.ErrNotFound) {
+	effective, err := c.effectiveEpisodeOrder(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	if providerLayout(st, effective.Order) {
+		return c.providerSeasonSchedule(ctx, st, effective.Order, season)
+	}
+	if !episodeKeyFits(season, 0) {
+		return nil, core.ErrNotFound
+	}
+
+	if _, err := c.fetchSeason(ctx, st.IDs.TMDB, season); err != nil && !errors.Is(err, core.ErrNotFound) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -267,10 +286,19 @@ func (c *Catalog) MovieReleaseTimeline(ctx context.Context, key core.RatingKey) 
 		return nil, fmt.Errorf("%w: key %s", core.ErrNotFound, key)
 	}
 	api, ok := c.tmdb().(releaseDatesTMDB)
-	if !ok || api == nil {
-		return nil, errors.New("catalog: TMDB is not configured")
+	if !ok || !c.TMDBConfigured() {
+		return nil, nil
 	}
-	got, err := api.MovieReleaseDates(ctx, key.TMDB())
+	id := key.TMDB()
+	if title, err := c.storedTitle(ctx, key); err == nil && title.IDs.TMDB > 0 {
+		id = title.IDs.TMDB
+	} else if err != nil && !errors.Is(err, core.ErrNotFound) {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, nil
+	}
+	got, err := api.MovieReleaseDates(ctx, id)
 	if err != nil {
 		return nil, err
 	}

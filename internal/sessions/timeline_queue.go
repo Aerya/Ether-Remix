@@ -19,6 +19,12 @@ func (s *PlayQueues) TimelineQueue(user int64, client string, key core.RatingKey
 			return 0, false
 		}
 		for i, it := range q.Items {
+			// A trailer, pre-roll or other extra is never re-attributed to
+			// the queue item a client names beside it: that is how a
+			// detail-page trailer would become the feature's progress.
+			if present && it.ID == itemID && key.Kind() == core.KindExtra && it.Key != key {
+				continue
+			}
 			if (present && it.ID == itemID) || (!present && it.Key == key) {
 				return i, true
 			}

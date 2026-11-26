@@ -73,7 +73,7 @@ func TestFinalLayoutReceivesRenderedAvailability(t *testing.T) {
 	if !reflect.DeepEqual(got, []model.Hub{rows[1], rows[0]}) {
 		t.Fatal("layout changed original Plex metadata")
 	}
-	if !reflect.DeepEqual(stableHomeHubs(got), []model.Hub{rows[1]}) {
+	if !reflect.DeepEqual(stableHomeHubs(nil, got), []model.Hub{rows[1]}) {
 		t.Fatal("stable home rows kept an empty row")
 	}
 }
@@ -105,7 +105,7 @@ func TestHeroReadyHomeHubsOmitsColdAndArtlessHero(t *testing.T) {
 	because := model.Hub{HubIdentifier: "home.because", Title: "Because You Watched", Style: "shelf", Size: 1, HubKey: "/library/metadata/2", Metadata: []model.Metadata{ready}}
 	short := model.Hub{HubIdentifier: "home.shortontime", Title: "Short on Time", Style: "shelf", Size: 1, Metadata: []model.Metadata{ready}}
 
-	cold := heroReadyHomeHubs(stableHomeHubs([]model.Hub{
+	cold := heroReadyHomeHubs(stableHomeHubs(nil, []model.Hub{
 		{HubIdentifier: "home.continue", Title: "Continue Watching", Style: "hero", Size: 0},
 		{HubIdentifier: "home.trending", Title: "Trending Now", Style: "shelf", Size: 1, Metadata: []model.Metadata{artless}},
 		because,
@@ -133,7 +133,7 @@ func TestHeroReadyHomeHubsOmitsColdAndArtlessHero(t *testing.T) {
 		t.Fatalf("ready state changed: %+v", got)
 	}
 
-	if rows := heroReadyHomeHubs(stableHomeHubs(nil)); len(rows) != 0 {
+	if rows := heroReadyHomeHubs(stableHomeHubs(nil, nil)); len(rows) != 0 {
 		t.Fatalf("empty home = %+v", rows)
 	}
 }

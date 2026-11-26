@@ -411,3 +411,67 @@ func TestPublicContentTagSurvivesRestart(t *testing.T) {
 		t.Fatalf("restricted content: %d", code)
 	}
 }
+
+type inspectArtworkExperience struct {
+	frontendtest.Experience
+	images []frontend.Image
+	gotCtx context.Context
+}
+
+func (e *inspectArtworkExperience) ItemArtwork(ctx context.Context, _ *core.Viewer, _ core.Device, _ core.RatingKey) ([]frontend.Image, bool, error) {
+	e.gotCtx = ctx
+	return e.images, true, nil
+}
+
+// Serving a granted image must skip metadata lookup/retention checks and scope
+// artwork listing to the requested image kind, while still authorizing
+// secondary variants (never enabling PrimaryArtworkOnly on Serve).
+func TestImageGrantServeSkipsMetadataAndAuthorizesVariants(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, members{db}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := frontend.Image{Kind: frontend.ImagePoster, Path: "/poster-1", Tag: "v1"}
+	variant := frontend.Image{Kind: frontend.ImagePoster, Path: "/poster-2", Tag: "v2"}
+	exp := &inspectArtworkExperience{images: []frontend.Image{primary, variant}}
+	source := &imageFixture{}
+	svc, err := identity.NewImageGrantService(db, "vela", grants, func() frontend.Experience { return exp }, source, time.Minute, nil, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := svc.Issue(ctx, frontend.ImageGrantRequest{
+		Credential: credential,
+		Device:     core.Device{ID: "web"},
+		Item:       core.MovieKey(42),
+		Image:      variant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	svc.Serve(rec, httptest.NewRequest(http.MethodGet, "/vela/v0/images/"+secret, nil), secret)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Serve variant status = %d, want 200", rec.Code)
+	}
+	if exp.gotCtx == nil {
+		t.Fatal("ItemArtwork was not called during Serve authorization")
+	}
+	if frontend.ArtworkMetadataWanted(exp.gotCtx) {
+		t.Fatal("Serve authorization requested artwork metadata")
+	}
+	if frontend.PrimaryArtworkOnly(exp.gotCtx) {
+		t.Fatal("Serve authorization enabled PrimaryArtworkOnly, which would reject variants")
+	}
+	if !frontend.ArtworkKindWanted(exp.gotCtx, frontend.ImagePoster) || frontend.ArtworkKindWanted(exp.gotCtx, frontend.ImageBackdrop) {
+		t.Fatal("Serve authorization did not narrow artwork kinds to the granted image kind")
+	}
+}

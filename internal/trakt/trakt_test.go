@@ -29,7 +29,27 @@ type fakeTrakt struct {
 	// return (200 issues tokens).
 	deviceSeq     []int
 	refreshStatus int    // non-zero: /oauth/token responds with it
+	beforeRefresh func() // optional barrier for a refresh in flight
 	rejectToken   string // Bearer token answered with 401
+	// scrobbleSeq, when set, is the sequence of statuses /scrobble/
+	// answers before it accepts again; only accepted calls are recorded.
+	// scrobbleCut closes the connection unanswered; scrobbleLost records
+	// the call and then closes the connection, losing the response;
+	// scrobbleShort503 sends 503 headers and a truncated body.
+	scrobbleSeq []int
+}
+
+const (
+	scrobbleCut      = -1
+	scrobbleLost     = -2
+	scrobbleShort503 = -3
+)
+
+// closeUnanswered drops the connection without writing a response.
+func closeUnanswered(w http.ResponseWriter) {
+	if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+		conn.Close()
+	}
 }
 
 func (f *fakeTrakt) hit(path string) {
@@ -91,6 +111,9 @@ func (f *fakeTrakt) handler(t *testing.T) http.Handler {
 		json.NewEncoder(w).Encode(tokenResponse{AccessToken: "acc1", RefreshToken: "ref1", ExpiresIn: 3600, CreatedAt: time.Now().Unix()})
 	})
 	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		if f.beforeRefresh != nil {
+			f.beforeRefresh()
+		}
 		f.mu.Lock()
 		rs := f.refreshStatus
 		f.mu.Unlock()
@@ -109,15 +132,35 @@ func (f *fakeTrakt) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"username": "etherfan"})
 	})
-	mux.HandleFunc("/scrobbling/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/scrobble/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
 			w.WriteHeader(401)
 			return
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		body["_action"] = strings.TrimPrefix(r.URL.Path, "/scrobbling/")
+		body["_action"] = strings.TrimPrefix(r.URL.Path, "/scrobble/")
 		f.mu.Lock()
+		if len(f.scrobbleSeq) > 0 {
+			code := f.scrobbleSeq[0]
+			f.scrobbleSeq = f.scrobbleSeq[1:]
+			if code == scrobbleLost {
+				f.scrobbles = append(f.scrobbles, body)
+			}
+			f.mu.Unlock()
+			if code == scrobbleShort503 {
+				w.Header().Set("Content-Length", "64")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte("unavail"))
+				return
+			}
+			if code < 0 {
+				closeUnanswered(w)
+				return
+			}
+			w.WriteHeader(code)
+			return
+		}
 		f.scrobbles = append(f.scrobbles, body)
 		f.mu.Unlock()
 		w.WriteHeader(201)

@@ -183,27 +183,27 @@ func TestMultiLibraryPromotedHubsDedupesSubsetsAndCapsTotal(t *testing.T) {
 	}
 
 	// Overlapping subset rows must be suppressed (including 4 before its parent 2).
-	if _, ok := byID["movie.top10.3"]; ok {
-		t.Fatalf("overlapping Kids Movies Top 10 should have been suppressed: %+v", byID["movie.top10.3"])
+	if _, ok := byID["movie.top10@3"]; ok {
+		t.Fatalf("overlapping Kids Movies Top 10 should have been suppressed: %+v", byID["movie.top10@3"])
 	}
-	if _, ok := byID["tv.hiddengems.4"]; ok {
-		t.Fatalf("overlapping Kids Shows Hidden Gems should have been suppressed even when 4 precedes 2: %+v", byID["tv.hiddengems.4"])
+	if _, ok := byID["tv.hiddengems@4"]; ok {
+		t.Fatalf("overlapping Kids Shows Hidden Gems should have been suppressed even when 4 precedes 2: %+v", byID["tv.hiddengems@4"])
 	}
 
 	// Distinct subset rows must be kept and carry their library name.
-	if h, ok := byID["movie.hiddengems.3"]; !ok || h.Title != "Hidden Gems for You · Kids Movies" {
+	if h, ok := byID["movie.hiddengems@3"]; !ok || h.Title != "Hidden Gems for You · Kids Movies" {
 		t.Fatalf("distinct Kids Movies row = %+v, want title %q", h, "Hidden Gems for You · Kids Movies")
 	}
-	if h, ok := byID["tv.top10.4"]; !ok || h.Title != "Top 10 for You · Kids Shows" {
+	if h, ok := byID["tv.top10@4"]; !ok || h.Title != "Top 10 for You · Kids Shows" {
 		t.Fatalf("distinct Kids Shows row = %+v, want title %q", h, "Top 10 for You · Kids Shows")
 	}
 
 	// First library (Movies) keeps clean titles; TV Shows (non-first) qualifies generic
 	// titles without double-suffixing "Recently Added in TV Shows".
-	if h, ok := byID["movie.top10"]; !ok || h.Title != "Top 10 for You" {
+	if h, ok := byID["movie.top10@1"]; !ok || h.Title != "Top 10 for You" {
 		t.Fatalf("first library Top 10 = %+v, want unqualified title", h)
 	}
-	if h, ok := byID["tv.top10"]; !ok || h.Title != "Top 10 for You · TV Shows" {
+	if h, ok := byID["tv.top10@2"]; !ok || h.Title != "Top 10 for You · TV Shows" {
 		t.Fatalf("TV Shows Top 10 = %+v, want %q", h, "Top 10 for You · TV Shows")
 	}
 	if h, ok := byID["tv.recentlyadded.2"]; ok && strings.Contains(h.Title, "· TV Shows") {
@@ -219,7 +219,7 @@ func TestMultiLibraryPromotedHubsDedupesSubsetsAndCapsTotal(t *testing.T) {
 	// Per-directory fan-out for a subset library whose parent is pinned also
 	// suppresses overlapping rows and qualifies remaining rows.
 	_, _, _, perDirKids := decode("/hubs/promoted?contentDirectoryID=3&pinnedContentDirectoryID=1,3,4,2&count=4&excludeContinueWatching=1")
-	if len(perDirKids) != 1 || perDirKids[0].HubIdentifier != "movie.hiddengems.3" || perDirKids[0].Title != "Hidden Gems for You · Kids Movies" {
+	if len(perDirKids) != 1 || perDirKids[0].HubIdentifier != "movie.hiddengems@3" || perDirKids[0].Title != "Hidden Gems for You · Kids Movies" {
 		t.Fatalf("per-directory Kids Movies hubs = %+v, want only distinct Hidden Gems · Kids Movies", perDirKids)
 	}
 

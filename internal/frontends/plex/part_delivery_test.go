@@ -76,7 +76,7 @@ func deliveryFixture(t *testing.T, delivery string) (*fixture, *deliveryEngine, 
 	cfg.Quality.Default = "test"
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "test", MaxHeight: 1080}}
 	cfg.Quality.Rules = nil
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Plex.Delivery = delivery
 	releases := []core.Release{{ID: "hd", GUID: "hd", Indexer: "offline", Name: "Fjord.Harbor.1999.1080p.WEB-DL.H264-GRP", Size: 8000 << 20, PubDate: time.Now().Add(-24 * time.Hour), NZBURL: "offline"}}
 	rs := resolver.New(&issue94Indexer{releases}, nil, nil, cfg, resolver.Options{})

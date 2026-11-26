@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -17,24 +18,42 @@ func (c *Catalog) CountUnplayedAired(ctx context.Context, userID int64, keys []c
 	if c == nil || c.db == nil || userID == 0 || len(keys) == 0 {
 		return out, nil
 	}
-	shows := make([]core.RatingKey, 0, len(keys))
-	seen := map[core.RatingKey]bool{}
+	var shows, seasons []core.RatingKey
 	for _, key := range keys {
 		out[key] = 0
-		var show core.RatingKey
 		switch key.Kind() {
 		case core.KindShow:
-			show = key
+			shows = append(shows, key)
 		case core.KindSeason:
-			show = core.ShowKey(key.TMDB())
-		default:
-			continue
-		}
-		if !seen[show] {
-			seen[show] = true
-			shows = append(shows, show)
+			seasons = append(seasons, key)
 		}
 	}
+	if len(seasons) > 0 {
+		filter, args := c.keyMembership("key", false, uniqueRatingKeys(seasons))
+		rows, err := c.db.QueryContext(ctx, `SELECT DISTINCT show_key FROM catalog_titles WHERE type='season' AND `+filter, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var show core.RatingKey
+			if err := rows.Scan(&show); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			shows = append(shows, show)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, season := range seasons {
+			if !season.Allocated() {
+				shows = append(shows, core.ShowKey(season.TMDB()))
+			}
+		}
+	}
+	shows = uniqueRatingKeys(shows)
 	if len(shows) == 0 {
 		return out, nil
 	}
@@ -52,39 +71,37 @@ func (c *Catalog) CountUnplayedAired(ctx context.Context, userID int64, keys []c
 	const chunk = 200
 	for start := 0; start < len(shows); start += chunk {
 		part := shows[start:min(start+chunk, len(shows))]
-		args := []any{now}
-		for _, show := range part {
-			args = append(args, int64(show))
+		scope, args, err := c.currentEpisodeScope(ctx, part)
+		if err != nil {
+			return nil, err
 		}
-		args = append(args, userID)
+		args = append(args, now, time.Unix(now, 0).UTC().Format(time.DateOnly), userID)
 		ratingSQL := ""
 		if restrict {
-			ratingSQL = ` AND e.content_rating_rank>0 AND e.content_rating_rank<=? AND e.enforcement_rating<>'XXX'`
+			ratingSQL = ` AND t.content_rating_rank>0 AND t.content_rating_rank<=? AND t.enforcement_rating<>'XXX'`
 			args = append(args, rank)
 			if core.PlexSaferRating(ctx) && c.saferRating != nil {
-				ratingSQL += ` AND ` + c.saferRating.HideExceeding("e.key")
+				ratingSQL += ` AND ` + c.saferRating.HideExceeding("t.key")
 				args = append(args, rank)
 			}
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT e.show_key, e.season, COUNT(*)
-FROM catalog_titles e
-WHERE e.type='episode' AND e.adult=0 AND e.release_known=1 AND e.released_ts<=?
-AND e.show_key IN (`+placeholders(len(part))+`)
-AND NOT EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id=? AND w.rating_key=e.key AND w.view_count>0)`+ratingSQL+`
-GROUP BY e.show_key, e.season`, args...)
+		rows, err := c.db.QueryContext(ctx, scope+`SELECT e.show_key,e.season_key,COUNT(*)
+ FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key
+ WHERE t.adult=0 AND `+scopedAired+`
+ AND NOT EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id=? AND w.rating_key=e.key AND w.view_count>0)`+ratingSQL+`
+ GROUP BY e.show_key,e.season_key`, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var show int64
-			var season, count int
+			var show, season core.RatingKey
+			var count int
 			if err := rows.Scan(&show, &season, &count); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			showKey := core.RatingKey(show)
-			showTotals[showKey] += count
-			seasonTotals[core.SeasonKey(showKey.TMDB(), season)] += count
+			showTotals[show] += count
+			seasonTotals[season] += count
 		}
 		err = rows.Err()
 		rows.Close()

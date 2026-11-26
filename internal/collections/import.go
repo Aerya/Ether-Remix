@@ -47,7 +47,7 @@ func ImportTitlesTx(ctx context.Context, tx *sql.Tx, id, userID int64, name stri
 			memberKeys = append(memberKeys, k)
 		}
 	}
-	sp := core.CollectionSpec{Name: name, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "titles", Keys: ks}}, Match: "all", Sort: "source", Refresh: "live", Enabled: true, OwnerUserID: userID, Targets: core.CollectionTargets{CollectionsTab: true, Users: core.UserTargets{IDs: []int64{userID}}}}
+	sp := core.CollectionSpec{Name: name, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "titles", Keys: ks}}, Match: "all", Sort: "source", Refresh: "live", Enabled: true, OwnerUserID: userID, BrowseInApps: true}
 	raw, err := json.Marshal(sp)
 	if err != nil {
 		return 0, err

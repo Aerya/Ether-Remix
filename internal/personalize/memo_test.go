@@ -114,9 +114,7 @@ func TestAssembledScreensAreMemoised(t *testing.T) {
 	}
 	// So does a layout change.
 	gets = h.cat.callCount("get")
-	if _, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindTop10, Status: "off"}}}}}); err != nil {
-		t.Fatal(err)
-	}
+	mustSavePage(t, h.e, rpage(core.PageHome, prow(KindTop10, core.PlacementHide, 0)))
 	hubs, _ := h.e.HomeHubsFor(ctx, &u, hc, 12)
 	for _, hb := range hubs {
 		if hb.ID == "home.top10" {

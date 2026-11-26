@@ -440,12 +440,18 @@ func (s *StreamSources) prepareDirectURL(ctx context.Context, r core.Release, ra
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("plugin stream %q invalid url: %w", r.Name, core.ErrSourceUnavailable)
 	}
+	if mgr := s.manager(); mgr != nil {
+		if err := mgr.CheckIndexerNetwork(u.Hostname()); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.RLock()
 	deb := s.debrid
 	s.mu.RUnlock()
 
 	httpRel := r
 	httpRel.Protocol = core.ProtocolHTTP
+	httpRel.PluginStream = true
 	httpRel.StreamURL = u.String()
 	httpRel.StreamHeaders = headers
 	httpRel.StreamOrigin = origin
@@ -457,17 +463,18 @@ func (s *StreamSources) prepareDirectURL(ctx context.Context, r core.Release, ra
 		size = 100 << 20
 	}
 	p := debrid.Payload{
-		Key:       r.ID,
-		ReleaseID: r.ID,
-		Provider:  "direct",
-		Kind:      debrid.KindHTTP,
-		Path:      r.Name,
-		Size:      size,
-		Link:      u.String(),
-		URL:       u.String(),
-		Headers:   headers,
-		Origin:    origin,
-		Release:   r.Name,
+		Key:          r.ID,
+		ReleaseID:    r.ID,
+		Provider:     "direct",
+		PluginStream: true,
+		Kind:         debrid.KindHTTP,
+		Path:         r.Name,
+		Size:         size,
+		Link:         u.String(),
+		URL:          u.String(),
+		Headers:      headers,
+		Origin:       origin,
+		Release:      r.Name,
 	}
 	return p.Encode(), nil
 }

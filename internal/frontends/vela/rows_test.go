@@ -2,14 +2,17 @@ package vela
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -129,7 +132,7 @@ func TestVelaRowSizeAndContinuation(t *testing.T) {
 						t.Fatal("shared conversion changed row title or receipt", item)
 					}
 				}
-				if row["receiptToken"] != "row-receipt" || row["style"] != "shelf" || row["previewOnFocus"] != true {
+				if row["receiptToken"] != "row-receipt" || row["style"] != nil || row["role"] != "movie" || row["previewOnFocus"] != true {
 					t.Fatal("row metadata lost", row)
 				}
 				cursor, err := i.readRowToken(r, viewer, row["nextCursor"].(string))
@@ -260,5 +263,78 @@ func TestVelaRowFeaturedBackfill(t *testing.T) {
 			t.Fatal("continuation failed", rows, err)
 		}
 		shelf = rows[0]
+	}
+}
+
+// remintSource re-mints every row view id per generation, as the experience
+// does when the feed is rebuilt, and forgets the old snapshots.
+type remintSource struct {
+	frontendtest.Experience
+	generation int
+}
+
+func (f *remintSource) ListRowViews(context.Context, frontend.RowViewRequest) ([]frontend.RowView, error) {
+	present := []core.RowPresentation{{}, {RowID: "rLib", Library: 12}, {RowID: "rBecause"}, {RowID: "rBecause"}}
+	keys := []string{"home.continue", "movies.trending", "home.because.1", "home.because.2"}
+	rows := make([]frontend.RowView, len(keys))
+	for n := range rows {
+		rows[n] = frontend.RowView{ID: fmt.Sprintf("g%d-%d", f.generation, n), Key: keys[n], Title: "Shelf", Kind: "taste", Layout: frontend.RowLayout{Present: present[n]}}
+	}
+	return rows, nil
+}
+
+func (f *remintSource) ResolveRowView(_ context.Context, q frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
+	if !strings.HasPrefix(q.ID, fmt.Sprintf("g%d-", f.generation)) {
+		return frontend.RowViewPage{}, frontend.ErrNotFound
+	}
+	return frontend.RowViewPage{Entries: []frontend.RowEntry{{Kind: frontend.RowEntryTitle, Title: &frontend.Title{Key: frontend.MovieKey(1), Title: "Movie"}}}}, nil
+}
+
+// A recompute re-mints every row id; key stays, and the old id is the same
+// 409 cursor_expired for every row kind.
+func TestVelaRowKeyStableAcrossRemint(t *testing.T) {
+	source := &remintSource{}
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := &instance{seal: seal, host: frontend.Host{Experience: source}, rowMeta: map[string]frontend.RowView{}}
+	viewer := &frontend.Viewer{ID: 1}
+	list := func() []object {
+		r := httptest.NewRequest(http.MethodGet, "/vela/v0/rows", nil)
+		r.Header.Set("X-Vela-Device-Id", "device")
+		rows, _, err := i.home(r, viewer, "token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	byID := func(id string) ([]object, error) {
+		r := httptest.NewRequest(http.MethodGet, "/vela/v0/rows/"+id, nil)
+		r.Header.Set("X-Vela-Device-Id", "device")
+		r.SetPathValue("id", id)
+		rows, _, err := i.home(r, viewer, "token")
+		return rows, err
+	}
+	want := []string{"home.continue", "rLib@12", "rBecause", "rBecause#2"}
+	before := list()
+	source.generation++
+	after := list()
+	for n := range want {
+		if before[n]["key"] != want[n] || after[n]["key"] != want[n] || before[n]["id"] == after[n]["id"] {
+			t.Fatalf("row %d: before=%v/%v after=%v/%v want key %s", n, before[n]["id"], before[n]["key"], after[n]["id"], after[n]["key"], want[n])
+		}
+		current, err := byID(after[n]["id"].(string))
+		if err != nil || current[0]["key"] != want[n] {
+			t.Fatalf("row %d: /rows/{id} key=%v err=%v", n, current, err)
+		}
+		if _, err := byID(before[n]["id"].(string)); !errors.Is(err, frontend.ErrRowViewStale) {
+			t.Fatalf("row %d: superseded id answered %v, want cursor_expired", n, err)
+		}
+	}
+	w := httptest.NewRecorder()
+	fail(w, frontend.ErrRowViewStale)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "cursor_expired") {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }

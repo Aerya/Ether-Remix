@@ -39,11 +39,10 @@ import (
 
 const (
 	// plezyPlayProbeWait bounds the play-time re-fetch's wait for the
-	// shared resolve+probe flight. Cold remux resolves routinely take
-	// 4-6 s; moving that wait onto the metadata re-ask costs no time to
-	// first frame because the following file.mkv joins the same flight.
-	// The wait stays bounded by the request context.
-	plezyPlayProbeWait = 12 * time.Second
+	// shared resolve+probe flight. The playback manager stops waiting
+	// early while the source is still being searched; the following
+	// file.mkv joins the same flight.
+	plezyPlayProbeWait = playIntentProbeWait
 	// plezyVersionProbeWait bounds parallel header probes on free-source
 	// non-Auto versions during a Plezy play-time metadata read (#678).
 	plezyVersionProbeWait = 4 * time.Second
@@ -225,14 +224,17 @@ func (s *Server) runPlayIntentProbes(ctx context.Context, pr *Request, t *fronte
 	if pr == nil || pr.User == nil || t == nil || s.playback() == nil {
 		return
 	}
-	pr.playIntentVersionKey = t.Key
 	probeCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
 	vhp, hasVersionProber := s.playback().(frontend.VersionHeaderProber)
 	caps := s.clientCapsForKey(pr, t.Key)
 
+	// playIntentVersionKey lets this title's version menu read beyond the
+	// local caches. It is set only once the source is known, so rendering
+	// never waits on a cold search either.
 	if exact || autoProbe == nil {
+		pr.playIntentVersionKey = t.Key
 		if hasVersionProber {
 			vCtx, vCancel := context.WithTimeout(probeCtx, versionTail)
 			_ = vhp.ProbeVersionHeaders(vCtx, pr.User, t.Key, caps)
@@ -241,27 +243,36 @@ func (s *Server) runPlayIntentProbes(ctx context.Context, pr *Request, t *fronte
 		return
 	}
 	if !hasVersionProber {
-		_ = autoProbe(probeCtx)
+		if autoProbe(probeCtx) == nil {
+			pr.playIntentVersionKey = t.Key
+		}
 		return
 	}
 
 	autoDone := make(chan struct{})
 	versionsDone := make(chan struct{})
 	vCtx, vCancel := context.WithCancel(frontend.WithVersionProbeSearchWait(probeCtx, autoDone))
-	defer func() {
-		vCancel()
-		<-versionsDone
-	}()
+	// Cancelling ends the version probes; the response never waits for
+	// them to wind down.
+	defer vCancel()
 
 	go func() {
 		defer close(versionsDone)
 		_ = vhp.ProbeVersionHeaders(vCtx, pr.User, t.Key, caps)
 	}()
 
+	var autoErr error
 	func() {
 		defer close(autoDone)
-		_ = autoProbe(probeCtx)
+		autoErr = autoProbe(probeCtx)
 	}()
+	if autoErr != nil {
+		// Auto's source is still being searched (or failed): the version
+		// probes would wait on the same search. Answer now; the playback
+		// decision waits for the flight instead.
+		return
+	}
+	pr.playIntentVersionKey = t.Key
 
 	select {
 	case <-versionsDone:

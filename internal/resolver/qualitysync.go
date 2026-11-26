@@ -92,16 +92,15 @@ func (s *QualitySyncer) Sync(ctx context.Context) (QualitySyncReport, error) {
 	}
 	cfg := s.deps.Config()
 	type target struct {
-		name  string
-		media string
-		imp   core.ProfileImport
-		plan  QualityImportPlan
+		name string
+		imp  core.ProfileImport
+		plan QualityImportPlan
 	}
 	var targets []target
 	failed := false
 	for _, prof := range cfg.Quality.Profiles {
 		imp := prof.Import
-		if imp == nil || strings.TrimSpace(imp.Source) == "" {
+		if imp == nil || strings.TrimSpace(imp.Source) == "" || imp.NoSync {
 			continue
 		}
 		plan, err := s.plan(ctx, *imp, cfg)
@@ -127,7 +126,7 @@ func (s *QualitySyncer) Sync(ctx context.Context) (QualitySyncReport, error) {
 		if plan.MinimumWarning != "" {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: %s", prof.Name, plan.MinimumWarning))
 		}
-		targets = append(targets, target{name: prof.Name, media: prof.MediaType, imp: *imp, plan: plan})
+		targets = append(targets, target{name: prof.Name, imp: *imp, plan: plan})
 	}
 	if err := ctx.Err(); err != nil {
 		return report, err
@@ -137,11 +136,18 @@ func (s *QualitySyncer) Sync(ctx context.Context) (QualitySyncReport, error) {
 		// Update may re-run this mutation against fresher settings.
 		report.ProfilesUpdated, report.FormatsAdded, report.FormatsUpdated, report.FormatsRemoved = 0, 0, 0, 0
 		desired := map[string]bool{}
+		for _, prof := range c.Quality.Profiles {
+			if prof.Import != nil && prof.Import.NoSync {
+				for id := range prof.CustomFormatScores {
+					desired[id] = true
+				}
+			}
+		}
 		for _, t := range targets {
 			for _, def := range t.plan.Definitions {
 				desired[formatID(def)] = true
 			}
-			s.apply(c, t.name, t.media, t.imp, t.plan, now, &report)
+			s.apply(c, t.name, t.imp, t.plan, now, &report)
 		}
 		if failed {
 			// A failed or unusable profile still references its old formats;
@@ -233,12 +239,32 @@ func (s *QualitySyncer) plan(ctx context.Context, imp core.ProfileImport, cfg co
 		if qimp.App != "" {
 			app = qimp.App
 		}
-		return PlanQualityImport(qimp, app, found, cfg), nil
+		plan := PlanQualityImport(qimp, app, found, cfg)
+		plan.Database = strings.TrimSpace(imp.Database)
+		return plan, nil
 	case ImportSourceDictionarry, ImportSourceProfilarr:
 		if s.deps.Dictionarry == nil {
 			return QualityImportPlan{}, errors.New("Profilarr (Dictionarry) is not configured")
 		}
-		qimp, found, err := s.deps.Dictionarry.Import(ctx, app, profileID)
+		client := s.deps.Dictionarry
+		if dbID := strings.TrimSpace(imp.Database); dbID != "" {
+			foundDB := false
+			for _, db := range cfg.Quality.Databases {
+				if db.ID == dbID {
+					norm, err := config.NormalizeProfileDatabase(db.Repo, db.Branch)
+					if err != nil {
+						return QualityImportPlan{}, fmt.Errorf("custom database %q: %w", dbID, err)
+					}
+					client = s.deps.Dictionarry.ForDatabase(dbID, norm.ArchiveURL)
+					foundDB = true
+					break
+				}
+			}
+			if !foundDB {
+				return QualityImportPlan{}, fmt.Errorf("custom database %q is no longer configured", dbID)
+			}
+		}
+		qimp, found, err := client.Import(ctx, app, profileID)
 		if err != nil {
 			return QualityImportPlan{}, err
 		}
@@ -254,10 +280,10 @@ func (s *QualitySyncer) plan(ctx context.Context, imp core.ProfileImport, cfg co
 
 // apply updates one saved profile in place and upserts the definitions its
 // plan scores.
-func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.ProfileImport, plan QualityImportPlan, now time.Time, report *QualitySyncReport) {
+func (s *QualitySyncer) apply(c *config.Config, name string, saved core.ProfileImport, plan QualityImportPlan, now time.Time, report *QualitySyncReport) {
 	idx := -1
 	for i := range c.Quality.Profiles {
-		if c.Quality.Profiles[i].Name == name && c.Quality.Profiles[i].MediaType == media {
+		if c.Quality.Profiles[i].Name == name {
 			idx = i
 			break
 		}
@@ -266,7 +292,7 @@ func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.P
 		// Renamed since the snapshot: identity still finds it.
 		for i := range c.Quality.Profiles {
 			p := c.Quality.Profiles[i]
-			if p.MediaType == media && p.Import != nil && p.Import.Source == saved.Source && p.Import.App == saved.App && p.Import.Profile == saved.Profile {
+			if p.Import != nil && p.Import.Source == saved.Source && p.Import.App == saved.App && p.Import.Profile == saved.Profile && p.Import.Database == saved.Database {
 				idx = i
 				break
 			}
@@ -277,7 +303,7 @@ func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.P
 	}
 	cur := c.Quality.Profiles[idx]
 	// A same-name replacement during the fetch must not become guide-owned.
-	if cur.Import == nil || cur.Import.Source != saved.Source || cur.Import.App != saved.App || cur.Import.Profile != saved.Profile {
+	if cur.Import == nil || cur.Import.NoSync || cur.Import.Source != saved.Source || cur.Import.App != saved.App || cur.Import.Profile != saved.Profile || cur.Import.Database != saved.Database {
 		return
 	}
 	app := plan.App
@@ -289,10 +315,6 @@ func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.P
 	}
 	next := plan.Profile
 	next.Name = cur.Name
-	next.MediaType = cur.MediaType
-	if next.MediaType == "" {
-		next.MediaType = core.MediaTypeForApp(app)
-	}
 	// Rules, plugin steps, Ether's own format scores and size policy are
 	// the owner's tuning, not part of the guide's definition.
 	next.ReleaseRules = cur.ReleaseRules
@@ -346,7 +368,7 @@ func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.P
 			def.App = app
 		}
 		if plan.Source != "" {
-			def.ManagedBy = plan.Source + ":" + app
+			def.ManagedBy = managedBySource(plan.Source, plan.Database, app)
 		}
 		at := -1
 		for i := range c.Resolver.CustomFormats {

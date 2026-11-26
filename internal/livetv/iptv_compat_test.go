@@ -144,7 +144,7 @@ func ownedRelayFixture(t *testing.T, s *Service, ss *session, hls core.HLSSessio
 		ss.ctx = t.Context()
 	}
 	p := s.newRelayProducer(ss, core.MediaInfo{}, core.ClientCaps{}, dec, cut)
-	if err := p.adopt("relay-fixture", hls, func() {}, core.MediaInfo{}, dec, cut); err != nil {
+	if err := p.adopt("relay-fixture", hls, func() {}, core.MediaInfo{}, dec, cut, true); err != nil {
 		t.Fatal(err)
 	}
 	ss.owned = s.runRelay(ss, p)

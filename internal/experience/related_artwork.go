@@ -11,8 +11,9 @@ import (
 // RelatedArtworkDeps uses the same cache-only authorization and descriptor
 // source as item artwork; it never resolves media or fetches catalogue data.
 type RelatedArtworkDeps struct {
-	Authorize func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Viewer, error)
-	List      func(context.Context, *core.Viewer, core.Device, core.RatingKey) ([]frontend.Image, bool, error)
+	Authorize  func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Viewer, error)
+	StoredItem func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	List       func(context.Context, *core.Viewer, core.Device, core.RatingKey) ([]frontend.Image, bool, error)
 }
 
 type RelatedArtworkService struct{ deps RelatedArtworkDeps }
@@ -68,14 +69,31 @@ func (s *RelatedArtworkService) RelatedArtwork(ctx context.Context, viewer *core
 		}
 		return &frontend.ArtworkOwner{Item: key, Images: images, Authoritative: complete}, nil
 	}
-	switch key.Kind() {
-	case core.KindEpisode:
-		result.Season, err = parent(key.Parent())
-		if err == nil {
-			result.Series, err = parent(key.Parent().Parent())
+	var season, show core.RatingKey
+	if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
+		if s.deps.StoredItem != nil {
+			item, readErr := s.deps.StoredItem(ctx, frontend.ItemRequest{Viewer: active, Device: device, Key: key})
+			if readErr == nil {
+				show = seriesOfTitle(item.Title)
+				if key.Kind() == core.KindEpisode {
+					season = item.Title.ParentKey
+					if season == 0 {
+						season = item.Title.Key.Parent()
+					}
+				}
+			} else if !errors.Is(readErr, core.ErrNotFound) {
+				return frontend.RelatedArtwork{}, readErr
+			}
+		} else if key.Kind() == core.KindEpisode {
+			season = key.Parent()
+			show = season.Parent()
+		} else {
+			show = key.Parent()
 		}
-	case core.KindSeason:
-		result.Series, err = parent(key.Parent())
+	}
+	result.Season, err = parent(season)
+	if err == nil {
+		result.Series, err = parent(show)
 	}
 	if err != nil {
 		return frontend.RelatedArtwork{}, err

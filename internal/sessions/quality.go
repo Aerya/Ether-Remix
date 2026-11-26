@@ -94,6 +94,13 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 			kbps = limit
 		}
 	}
+	if b.deps.ApplyRuleLimits != nil {
+		probe := s.caps
+		probe.MaxBitrateKbps = 0
+		if limit := b.deps.ApplyRuleLimits(ctx, probe, viewer, nil).MaxBitrateKbps; limit > 0 && (kbps == 0 || limit < kbps) {
+			kbps = limit
+		}
+	}
 	if s.caps.Remote && b.deps.RemoteUploadCap != nil {
 		if limit, fromBudget := b.deps.RemoteUploadCap(ctx, s.playID, true, true, kbps, ps.Info.BitrateKbps); fromBudget && limit > 0 && (kbps == 0 || limit < kbps) {
 			kbps = limit

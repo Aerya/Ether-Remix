@@ -182,6 +182,12 @@ func (s *Service) HomeRevision(ctx context.Context, viewer *core.User) (frontend
 		return frontend.HomeRevision{}, true, nil
 	}
 	rev, err := s.d.HomeRevision(ctx, viewer)
+	// The policy epoch also moves on catalogue, guide and favourite writes:
+	// only a restricted viewer's Home depends on it, so an unrestricted
+	// viewer's Home isn't rebuilt (or a bootstrap retried) for them.
+	if err == nil && !ViewerRestricted(s.d.Visibility.Policy, viewer) {
+		rev.Policy = 0
+	}
 	return rev, true, err
 }
 func (s *Service) NoProviderWait(ctx context.Context) context.Context {

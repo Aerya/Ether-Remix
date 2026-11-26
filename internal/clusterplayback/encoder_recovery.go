@@ -143,6 +143,10 @@ func (r *Runtime) recoverEncoder(ctx context.Context, old *execution) error {
 	// request already fetching the former generation must recheck before writing.
 	x.output.mu.Lock()
 	defer x.output.mu.Unlock()
+	if x.output.unbuffered {
+		// A segment past the watermark was delivered unretained.
+		return remotetranscode.ErrUnsupported
+	}
 	snapshot, err = r.o.OutputBuffer.Snapshot(old.route.Fence.Session)
 	if err != nil {
 		return err

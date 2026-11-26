@@ -1,0 +1,1 @@
+function e(e,t){return`library:${e}/${t}`}function t(e,t){let n=new URLSearchParams({page:e});return t&&n.set(`row`,t),`/recommendations?${n}`}function n(n,r){return t(e(n,r))}function r(e){return`/recommendations?${new URLSearchParams({add:`collection:${e}`})}`}function i(e){return`/recommendations?${new URLSearchParams({add:e})}`}export{n as i,r as n,t as r,i as t};

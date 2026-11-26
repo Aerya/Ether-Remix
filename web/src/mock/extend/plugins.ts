@@ -50,6 +50,7 @@ interface PluginHealth {
 }
 
 interface PluginDetail extends PluginSummary {
+  listItems?: { requested: number; granted: number };
   manifest: Record<string, unknown>;
   permissions: {
     lines: string[];
@@ -428,6 +429,7 @@ function fixturePlugins(): Fixture[] {
     },
   };
   const wrapped: PluginDetail = {
+    listItems: { requested: 100, granted: 100 },
     id: "community.example.wrapped",
     name: "Ether Wrapped",
     version: "1.0.1",
@@ -479,6 +481,7 @@ function fixturePlugins(): Fixture[] {
         "Reads watch history",
         "Creates and updates collections",
         "Gets play and new-release events",
+        "Syncs up to 100 titles per list",
       ],
       declared: {
         catalog: "read",
@@ -687,14 +690,71 @@ function fixturePlugins(): Fixture[] {
     streamAddon,
     {
       detail: sports,
-      settings: { leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"] },
+      settings: {
+        leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"],
+        favoriteTeams: ["nba:bos"],
+        region: "us",
+      },
       schema: {
-        fields: [
+        groups: [
           {
-            key: "leagues",
-            kind: "list",
-            label: "Leagues",
-            help: "Leagues included in the live event feed.",
+            key: "general",
+            label: "Feeds and teams",
+            fields: [
+              {
+                key: "leagues",
+                kind: "multiSelect",
+                label: "Leagues",
+                hint: "Leagues included in the live event feed.",
+                options: [
+                  { value: "nfl", label: "NFL" },
+                  { value: "nba", label: "NBA" },
+                  { value: "nhl", label: "NHL" },
+                  { value: "mlb", label: "MLB" },
+                  { value: "mls", label: "MLS" },
+                  { value: "epl", label: "Premier League" },
+                  { value: "laliga", label: "La Liga" },
+                  { value: "bundesliga", label: "Bundesliga" },
+                  { value: "seriea", label: "Serie A" },
+                  { value: "ligue1", label: "Ligue 1" },
+                  { value: "ucl", label: "UEFA Champions League" },
+                  { value: "ncaaf", label: "College Football" },
+                  { value: "ncaam", label: "Men's College Basketball" },
+                  { value: "wnba", label: "WNBA" },
+                  { value: "f1", label: "Formula 1" },
+                  { value: "ufc", label: "UFC" },
+                  { value: "pga", label: "PGA Tour" },
+                ],
+              },
+              {
+                key: "favoriteTeams",
+                kind: "multiSelect",
+                search: true,
+                label: "Followed teams",
+                hint: "Search teams to follow across leagues.",
+                placeholder: "Search teams…",
+              },
+            ],
+          },
+          {
+            key: "tuning",
+            label: "Broadcast and polling",
+            hint: "Rarely needed; defaults match league schedules.",
+            advanced: true,
+            fields: [
+              {
+                key: "region",
+                kind: "select",
+                label: "Broadcast region",
+                options: [
+                  { value: "us", label: "United States" },
+                  { value: "ca", label: "Canada" },
+                  { value: "gb", label: "United Kingdom" },
+                  { value: "eu", label: "Europe" },
+                  { value: "au", label: "Australia" },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -1096,12 +1156,12 @@ function descriptorsFromManifest(
 export function createPluginsMock(): {
   handle: ExtendHandler;
   descriptors: () => Descriptor[];
+  pluginEnabled: (id: string) => boolean | undefined;
   version: () => number;
 } {
   let version = 1;
   const fixtures = fixturePlugins();
   const books = addonDetail("demo", "Open Library", "books.example", []);
-  books.stremioOnly = false;
   books.manifest = {
     id: "demo",
     name: "Open Library",
@@ -1136,16 +1196,45 @@ export function createPluginsMock(): {
     ],
     resources: ["catalog"],
   };
-  fixtures.push({
-    detail: books,
-    settings: {},
-    schema: {},
-    descriptors: [],
-    journal: [],
-    shadowJournal: [],
-    logs: [],
-    calls: [],
-  });
+  const clips = addonDetail("demo-clips", "Studio Clips", "clips.example", []);
+  clips.manifest = {
+    id: clips.id,
+    name: clips.name,
+    version: clips.version,
+    ether: {
+      protocol: 1,
+      kind: "integration",
+      contributes: {
+        mediaKinds: [
+          {
+            key: "clip",
+            label: "Clips",
+            library: { name: "Studio Clips" },
+            levels: [{ key: "clip", label: "Clip", playable: true }],
+            present: {},
+            browse: { search: true },
+            sync: { mode: "push" },
+          },
+        ],
+      },
+    },
+  };
+  for (const detail of [books, clips]) {
+    detail.stremioOnly = false;
+    detail.sourceKind = "studio";
+    delete detail.host;
+    delete detail.roles;
+    fixtures.push({
+      detail,
+      settings: {},
+      schema: {},
+      descriptors: [],
+      journal: [],
+      shadowJournal: [],
+      logs: [],
+      calls: [],
+    });
+  }
   fixtures.push({
     detail: cinema,
     settings: {},
@@ -1294,6 +1383,40 @@ export function createPluginsMock(): {
         stremioOnly: false,
       };
     }
+    if (rawUrl.includes("lists")) {
+      // A list plugin: the review shows how many titles each list syncs.
+      return {
+        manifest: {
+          id: "community.example.anime-dubs",
+          version: "1.2.0",
+          name: "Anime dubs",
+          ether: {
+            protocol: 1,
+            kind: "extension",
+            summary: "Anime with an English dub, as lists for your libraries",
+            author: { name: "Community author", url: rawUrl },
+            capabilities: ["list_source"],
+            permissions: { network: ["api.example-anime.org"] },
+            contributes: {
+              listSources: [
+                {
+                  key: "dubbed",
+                  label: "Anime with an English dub",
+                  catalog: "dubbed",
+                  maxItems: 2000,
+                },
+              ],
+            },
+          },
+        },
+        permissions: ["Connects to api.example-anime.org", "Syncs up to 2,000 titles per list"],
+        listItems: { requested: 2000, granted: 2000 },
+        needsViewers: false,
+        needsFolders: false,
+        verified: false,
+        stremioOnly: false,
+      };
+    }
     const isFolderUrl = rawUrl.includes("folder");
     const isViewerUrl = rawUrl.includes("viewer");
     const isOperatorUrl = rawUrl.includes("operator");
@@ -1340,6 +1463,11 @@ export function createPluginsMock(): {
       stremioOnly: rawUrl.includes("stremio"),
     };
   }
+
+  const runtimePolicy: {
+    runtimeLimits: Record<string, unknown>;
+    runtimeOverrides: Record<string, Record<string, unknown>>;
+  } = { runtimeLimits: {}, runtimeOverrides: {} };
 
   const handle: ExtendHandler = (method, seg, q, body) => {
     if (seg[0] !== "plugins") return null;
@@ -1429,6 +1557,14 @@ export function createPluginsMock(): {
       f.detail.capabilities = f.detail.roles.filter((r) => r.on).map((r) => r.role);
       bump();
       return json({ roles: f.detail.roles });
+    }
+    if (seg[1] === "runtime-limits" && seg.length === 2) {
+      if (method === "PUT") {
+        const req = (body ?? {}) as { plugin?: string; limits?: Record<string, unknown> };
+        if (req.plugin) runtimePolicy.runtimeOverrides[req.plugin] = req.limits ?? {};
+        else runtimePolicy.runtimeLimits = req.limits ?? {};
+      }
+      return json(runtimePolicy);
     }
     if (method === "POST" && seg[1] === "install" && seg[2] === "preview") {
       const req = (body && typeof body === "object" ? body : {}) as { url?: string };
@@ -1656,6 +1792,29 @@ export function createPluginsMock(): {
       return json({ status: "saved" });
     }
     if (method === "GET" && seg[2] === "options") {
+      if (seg[3] === "favoriteTeams") {
+        const needle = (q.get("q") ?? "").trim().toLowerCase();
+        const teams = [
+          { value: "nba:bos", label: "Boston Celtics", hint: "NBA" },
+          { value: "nba:lal", label: "Los Angeles Lakers", hint: "NBA" },
+          { value: "nba:tor", label: "Toronto Raptors", hint: "NBA" },
+          { value: "nhl:bos", label: "Boston Bruins", hint: "NHL" },
+          { value: "nhl:tor", label: "Toronto Maple Leafs", hint: "NHL" },
+          { value: "mlb:bos", label: "Boston Red Sox", hint: "MLB" },
+          { value: "nfl:ne", label: "New England Patriots", hint: "NFL" },
+          { value: "epl:ars", label: "Arsenal", hint: "Premier League" },
+        ];
+        return json({
+          options: needle
+            ? teams.filter(
+                (t) =>
+                  t.label.toLowerCase().includes(needle) ||
+                  t.hint.toLowerCase().includes(needle) ||
+                  t.value.toLowerCase().includes(needle),
+              )
+            : [],
+        });
+      }
       return json({
         options: [
           { value: "us", label: "United States" },
@@ -1808,7 +1967,26 @@ export function createPluginsMock(): {
 
   return {
     handle,
-    descriptors: () => fixtures.filter((f) => f.detail.enabled).flatMap((f) => f.descriptors),
+    pluginEnabled: (id) => byId(id)?.detail.enabled,
+    descriptors: () =>
+      fixtures
+        .filter((f) => f.detail.enabled)
+        .flatMap((f) => [
+          ...f.descriptors,
+          // A Stremio add-on with its subtitles role on is a subtitle
+          // provider, as on the real server.
+          ...(f.detail.stremioOnly && f.detail.roles?.some((r) => r.role === "subtitles" && r.on)
+            ? [
+                {
+                  kind: "subtitleProvider",
+                  id: `plugin:${f.detail.id}/subtitles`,
+                  owner: f.detail.id,
+                  label: { resolved: f.detail.name },
+                  meta: {},
+                } satisfies Descriptor,
+              ]
+            : []),
+        ]),
     version: () => version,
   };
 }

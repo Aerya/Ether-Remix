@@ -1,0 +1,6322 @@
+{
+  "$defs": {
+    "Action": {
+      "enum": [
+        "addToPlaylist",
+        "back",
+        "cancelQuick",
+        "clearSearch",
+        "close",
+        "collectionMore",
+        "dismiss",
+        "focusSearch",
+        "goSecure",
+        "guide",
+        "home",
+        "library",
+        "libraryFilter",
+        "libraryMore",
+        "librarySort",
+        "librarySortFlip",
+        "libraryView",
+        "live",
+        "moreRow",
+        "multiview",
+        "navigate",
+        "only",
+        "open",
+        "openHit",
+        "openLink",
+        "openPicker",
+        "pageNext",
+        "pagePrev",
+        "person",
+        "personMore",
+        "pickHero",
+        "play",
+        "playExtra",
+        "playlists",
+        "plugin",
+        "preview",
+        "reset",
+        "retry",
+        "retryDescriptive",
+        "search",
+        "searchDirection",
+        "searchKind",
+        "searchLibrary",
+        "searchMore",
+        "searchSort",
+        "select",
+        "setParam",
+        "signIn",
+        "signOut",
+        "startQuick",
+        "switchProfile",
+        "toggle",
+        "tuneIn",
+        "unmute",
+        "watch",
+        "zap"
+      ]
+    },
+    "AlertFrame": {
+      "additionalProperties": false,
+      "description": "/live/stream `event: alert` (alerts=1), the frame a toast surface draws.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "body",
+        "id",
+        "kind",
+        "title"
+      ],
+      "type": "object"
+    },
+    "BoxNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "children": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "controlStates": {
+          "description": "A pressable box shows Exact's hover wash under its content (as a compiled button does) unless false.",
+          "type": "boolean"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "fit": {
+          "description": "Renderer 17, in the shell: a navigation row kept to one line in the room its parent box gives it (the\nparent's width, so give the row a parent whose width does not follow it). The renderer measures every\nchild of the row, a repeat's items one by one; the destinations (children pressing home, library or live)\nthat do not fit beside the others leave from the row's end, last first, and Home always stays. Then\n`nav.more` holds (draw a More control in the row on it: it is measured as if shown), `dest.more` holds for\neach library left out, `nav.liveMore` for Live TV, and `nav.moreOn` while the current section is one of them.",
+          "enum": [
+            "nav"
+          ]
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "pager": {
+          "additionalProperties": false,
+          "description": "A row's pager (inside a home row): this box scrolls sideways; `pageNext`/`pagePrev {row.id}` move it by\nmax(200, width - 2 x inset - peek) px, and `pager.*` say whether it overflows and is at an end.",
+          "properties": {
+            "inset": {
+              "type": "number"
+            },
+            "peek": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "press": {
+          "$ref": "#/$defs/Press",
+          "description": "Pressing it: `press` with an optional Template argument (`toggle` and `open`/`close` take a flag name)."
+        },
+        "readingStop": {
+          "description": "Renderer 18: on TV this box, which presses nothing, still takes focus (wearing the focus ring) so the\nremote reaches it and a screen reader reads it as one passage, by its `label` or else its text: a menu's\nAbout line below its last control. Elsewhere it is an ordinary box (its text selectable on the web).",
+          "type": "boolean"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "box"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "description": "One test on the binding vocabulary or the skin's own flags; a node's `when` list must all hold.",
+      "properties": {
+        "is": {
+          "description": "set: non-empty / true / non-zero (default). eq/ne: equals `value`. gt/lt: numeric. mod: `value` \"n:r\", the number % n == r.",
+          "enum": [
+            "eq",
+            "gt",
+            "lt",
+            "mod",
+            "ne",
+            "set"
+          ]
+        },
+        "not": {
+          "type": "boolean"
+        },
+        "test": {
+          "description": "A binding key (`card.played`, `hero.backdrop`, `env.small`), or `flag:<name>`.",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "test"
+      ],
+      "type": "object"
+    },
+    "GridNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "as": {
+          "type": "string"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "default": {
+                  "type": "number"
+                },
+                "small": {
+                  "type": "number"
+                },
+                "tv": {
+                  "type": "number"
+                },
+                "wide": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "default"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exclude": {
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "item": {
+          "$ref": "#/$defs/Node"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "over": {
+          "type": "string"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "grid"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "as",
+        "columns",
+        "item",
+        "over",
+        "type"
+      ],
+      "type": "object"
+    },
+    "IconNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "fillRule": {
+          "enum": [
+            "evenodd",
+            "nonzero"
+          ]
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "icon"
+        },
+        "viewBox": {
+          "type": "string"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ImageNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "alt": {
+          "type": "string"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "fade": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SectionsNode"
+            },
+            {
+              "$ref": "#/$defs/ShelfNode"
+            },
+            {
+              "$ref": "#/$defs/GridNode"
+            },
+            {
+              "$ref": "#/$defs/TabsNode"
+            },
+            {
+              "$ref": "#/$defs/TableNode"
+            },
+            {
+              "$ref": "#/$defs/LineGraphNode"
+            },
+            {
+              "$ref": "#/$defs/PlayerNode"
+            },
+            {
+              "$ref": "#/$defs/ParamInputNode"
+            },
+            {
+              "$ref": "#/$defs/TitleCardNode"
+            },
+            {
+              "$ref": "#/$defs/MarqueeNode"
+            },
+            {
+              "$ref": "#/$defs/BoxNode"
+            },
+            {
+              "$ref": "#/$defs/TextNode"
+            },
+            {
+              "$ref": "#/$defs/ImageNode"
+            },
+            {
+              "$ref": "#/$defs/IconNode"
+            },
+            {
+              "$ref": "#/$defs/RepeatNode"
+            },
+            {
+              "$ref": "#/$defs/UseNode"
+            },
+            {
+              "$ref": "#/$defs/SlotNode"
+            },
+            {
+              "$ref": "#/$defs/WidgetNode"
+            }
+          ],
+          "description": "Renderer 19: drawn instead when the source is empty, refused or fails to load."
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "src": {
+          "type": "string"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "image"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "src",
+        "type"
+      ],
+      "type": "object"
+    },
+    "LineGraphNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "default": {
+                  "type": "string"
+                },
+                "small": {
+                  "type": "string"
+                },
+                "tv": {
+                  "type": "string"
+                },
+                "wide": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "default"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "live": {
+          "type": "string"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "series": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "sides": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "subject": {
+          "type": "string"
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "lineGraph"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "series",
+        "type"
+      ],
+      "type": "object"
+    },
+    "MarqueeNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "as": {
+          "type": "string"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exclude": {
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "item": {
+          "$ref": "#/$defs/Node"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "over": {
+          "type": "string"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "speed": {
+          "type": "number"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "marquee"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "as",
+        "item",
+        "over",
+        "type"
+      ],
+      "type": "object"
+    },
+    "MotionPreset": {
+      "additionalProperties": false,
+      "properties": {
+        "delay": {
+          "type": "number"
+        },
+        "direction": {
+          "enum": [
+            "alternate",
+            "normal"
+          ]
+        },
+        "duration": {
+          "type": "number"
+        },
+        "easing": {
+          "type": "string"
+        },
+        "fill": {
+          "enum": [
+            "both",
+            "forwards",
+            "none"
+          ]
+        },
+        "iterations": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "infinite"
+            }
+          ]
+        },
+        "keyframes": {
+          "description": "A compiled keyframes name (docs/skin-schema.md lists them) or `none`.",
+          "type": "string"
+        },
+        "still": {
+          "additionalProperties": false,
+          "description": "What runs instead under reduced motion.",
+          "properties": {
+            "duration": {
+              "type": "number"
+            },
+            "keyframes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "duration",
+            "keyframes"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "duration",
+        "keyframes"
+      ],
+      "type": "object"
+    },
+    "NavigateAction": {
+      "additionalProperties": false,
+      "description": "Vela-native navigation, also the `navigate` of an action answer (#/$defs/NavigateAction).",
+      "properties": {
+        "action": {
+          "const": "navigate"
+        },
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "page": {
+              "type": "string"
+            },
+            "route": {
+              "enum": [
+                "guide",
+                "home",
+                "library",
+                "live",
+                "search",
+                "title"
+              ]
+            },
+            "screen": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "args"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SectionsNode"
+        },
+        {
+          "$ref": "#/$defs/ShelfNode"
+        },
+        {
+          "$ref": "#/$defs/GridNode"
+        },
+        {
+          "$ref": "#/$defs/TabsNode"
+        },
+        {
+          "$ref": "#/$defs/TableNode"
+        },
+        {
+          "$ref": "#/$defs/LineGraphNode"
+        },
+        {
+          "$ref": "#/$defs/PlayerNode"
+        },
+        {
+          "$ref": "#/$defs/ParamInputNode"
+        },
+        {
+          "$ref": "#/$defs/TitleCardNode"
+        },
+        {
+          "$ref": "#/$defs/MarqueeNode"
+        },
+        {
+          "$ref": "#/$defs/BoxNode"
+        },
+        {
+          "$ref": "#/$defs/TextNode"
+        },
+        {
+          "$ref": "#/$defs/ImageNode"
+        },
+        {
+          "$ref": "#/$defs/IconNode"
+        },
+        {
+          "$ref": "#/$defs/RepeatNode"
+        },
+        {
+          "$ref": "#/$defs/UseNode"
+        },
+        {
+          "$ref": "#/$defs/SlotNode"
+        },
+        {
+          "$ref": "#/$defs/WidgetNode"
+        }
+      ]
+    },
+    "ParamInputNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "param": {
+          "type": "string"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "paramInput"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "param",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ParamSpec": {
+      "additionalProperties": false,
+      "description": "Ether-owned: a page parameter. Values travel as `p.<name>` on data reads.",
+      "properties": {
+        "default": {
+          "type": "string"
+        },
+        "enum": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max": {
+          "type": "number"
+        },
+        "type": {
+          "enum": [
+            "bool",
+            "date",
+            "enum",
+            "int",
+            "ref",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "PlayerNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "player"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "channel",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Presentation": {
+      "enum": [
+        "homeRow",
+        "page",
+        "playerOverlay",
+        "section",
+        "titlePanel",
+        "toast"
+      ]
+    },
+    "Press": {
+      "additionalProperties": false,
+      "description": "A press: an action with a Template argument, or (renderer 19) named Template arguments.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Action"
+        },
+        "arg": {
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "focus": {
+          "type": "string"
+        },
+        "optimistic": {
+          "additionalProperties": false,
+          "description": "Screens: a client-only patch applied until the plugin action answers.",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "record": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "RepeatNode": {
+      "additionalProperties": false,
+      "description": "Repeat a template over a collection from the vocabulary (`home.rows`, `row.items`, `home.heroes`, `nav.destinations`).",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "as": {
+          "description": "Renderer 19 (screens): the item's name (`{game.sides.0.score}`), an offset, a record key left out\nbefore `limit`, an identity template, and a time filter (only items whose `at` <= `time`).",
+          "type": "string"
+        },
+        "asOf": {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "time": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "at",
+            "time"
+          ],
+          "type": "object"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exclude": {
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "item": {
+          "$ref": "#/$defs/Node"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "over": {
+          "type": "string"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "skip": {
+          "type": "number"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "repeat"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "item",
+        "over",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ScreenActionAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "navigate": {
+          "$ref": "#/$defs/NavigateAction"
+        },
+        "records": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "rev": {
+                "type": "number"
+              },
+              "value": {}
+            },
+            "required": [
+              "rev",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "refresh": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "toast": {
+          "description": "Plain text, at most 200 characters.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ScreenActionArg": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "ScreenActionRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScreenActionArg"
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "page": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "tz": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "args",
+        "page",
+        "params"
+      ],
+      "type": "object"
+    },
+    "ScreenData": {
+      "additionalProperties": false,
+      "description": "GET /screens/{id}/pages/{page}/data?sources=&p.<param>=&tz=",
+      "properties": {
+        "errors": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SourceError"
+          },
+          "type": "object"
+        },
+        "live": {
+          "additionalProperties": false,
+          "properties": {
+            "topic": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic"
+          ],
+          "type": "object"
+        },
+        "records": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "rev": {
+                "type": "number"
+              },
+              "value": {}
+            },
+            "required": [
+              "rev",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "rev": {
+          "type": "number"
+        },
+        "sources": {
+          "additionalProperties": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "records",
+        "rev",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "ScreenDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "confirm": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "Served by Ether from the manifest: the plugin actions this page may call.",
+          "type": "object"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SectionsNode"
+            },
+            {
+              "$ref": "#/$defs/ShelfNode"
+            },
+            {
+              "$ref": "#/$defs/GridNode"
+            },
+            {
+              "$ref": "#/$defs/TabsNode"
+            },
+            {
+              "$ref": "#/$defs/TableNode"
+            },
+            {
+              "$ref": "#/$defs/LineGraphNode"
+            },
+            {
+              "$ref": "#/$defs/PlayerNode"
+            },
+            {
+              "$ref": "#/$defs/ParamInputNode"
+            },
+            {
+              "$ref": "#/$defs/TitleCardNode"
+            },
+            {
+              "$ref": "#/$defs/MarqueeNode"
+            },
+            {
+              "$ref": "#/$defs/BoxNode"
+            },
+            {
+              "$ref": "#/$defs/TextNode"
+            },
+            {
+              "$ref": "#/$defs/ImageNode"
+            },
+            {
+              "$ref": "#/$defs/IconNode"
+            },
+            {
+              "$ref": "#/$defs/RepeatNode"
+            },
+            {
+              "$ref": "#/$defs/UseNode"
+            },
+            {
+              "$ref": "#/$defs/SlotNode"
+            },
+            {
+              "$ref": "#/$defs/WidgetNode"
+            }
+          ]
+        },
+        "focus": {
+          "additionalProperties": false,
+          "properties": {
+            "initial": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "keyframes": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "opacity": {
+                  "type": "number"
+                },
+                "rotate": {
+                  "type": "number"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "translate": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "description": "As skin keyframes, plus `color` to a `$ui` token.",
+          "type": "object"
+        },
+        "kind": {
+          "const": "screen"
+        },
+        "loading": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SectionsNode"
+            },
+            {
+              "$ref": "#/$defs/ShelfNode"
+            },
+            {
+              "$ref": "#/$defs/GridNode"
+            },
+            {
+              "$ref": "#/$defs/TabsNode"
+            },
+            {
+              "$ref": "#/$defs/TableNode"
+            },
+            {
+              "$ref": "#/$defs/LineGraphNode"
+            },
+            {
+              "$ref": "#/$defs/PlayerNode"
+            },
+            {
+              "$ref": "#/$defs/ParamInputNode"
+            },
+            {
+              "$ref": "#/$defs/TitleCardNode"
+            },
+            {
+              "$ref": "#/$defs/MarqueeNode"
+            },
+            {
+              "$ref": "#/$defs/BoxNode"
+            },
+            {
+              "$ref": "#/$defs/TextNode"
+            },
+            {
+              "$ref": "#/$defs/ImageNode"
+            },
+            {
+              "$ref": "#/$defs/IconNode"
+            },
+            {
+              "$ref": "#/$defs/RepeatNode"
+            },
+            {
+              "$ref": "#/$defs/UseNode"
+            },
+            {
+              "$ref": "#/$defs/SlotNode"
+            },
+            {
+              "$ref": "#/$defs/WidgetNode"
+            }
+          ]
+        },
+        "motion": {
+          "additionalProperties": {
+            "$ref": "#/$defs/MotionPreset"
+          },
+          "type": "object"
+        },
+        "page": {
+          "type": "string"
+        },
+        "palette": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "At most 8 literal colours, `$palette.<name>`, for ink drawn on data colours.",
+          "type": "object"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamSpec"
+          },
+          "type": "object"
+        },
+        "presentation": {
+          "$ref": "#/$defs/Presentation"
+        },
+        "refresh": {
+          "description": "Re-read the non-lazy sources this often while shown (seconds, at least 60).",
+          "type": "number"
+        },
+        "renderer": {
+          "description": "The lowest RENDERER_VERSION that draws this document (19 or more).",
+          "type": "number"
+        },
+        "requires": {
+          "description": "Blocks and kit templates the document cannot do without, by name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": 1
+        },
+        "screen": {
+          "description": "Plugin-scoped screen (or surface) id and the page within it.",
+          "type": "string"
+        },
+        "sources": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SourceSpec"
+          },
+          "type": "object"
+        },
+        "strings": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "One locale, already chosen by Ether. A string may hold holes.",
+          "type": "object"
+        },
+        "templates": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "tokens": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "`$name` in style values: `$ui.*`, numbers, and min()/max()/color-mix() over them.",
+          "type": "object"
+        },
+        "tree": {
+          "$ref": "#/$defs/Node"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "page",
+        "presentation",
+        "renderer",
+        "schema",
+        "screen",
+        "sources",
+        "title",
+        "tree",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ScreenDocumentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "href": {
+          "type": "string"
+        },
+        "renderer": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "href",
+        "renderer"
+      ],
+      "type": "object"
+    },
+    "ScreenNavigationEntry": {
+      "additionalProperties": false,
+      "description": "The navigation entry of a plugin screen (bootstrap `navigation`).",
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/ScreenDocumentRef"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "screen"
+        },
+        "page": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "document",
+        "id",
+        "kind",
+        "page",
+        "title"
+      ],
+      "type": "object"
+    },
+    "SectionsNode": {
+      "additionalProperties": false,
+      "description": "Renderer 19 blocks (docs/plugin-screens.md: Building blocks).",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "children": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "sections"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "children",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ShelfNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "as": {
+          "type": "string"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "empty": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SectionsNode"
+            },
+            {
+              "$ref": "#/$defs/ShelfNode"
+            },
+            {
+              "$ref": "#/$defs/GridNode"
+            },
+            {
+              "$ref": "#/$defs/TabsNode"
+            },
+            {
+              "$ref": "#/$defs/TableNode"
+            },
+            {
+              "$ref": "#/$defs/LineGraphNode"
+            },
+            {
+              "$ref": "#/$defs/PlayerNode"
+            },
+            {
+              "$ref": "#/$defs/ParamInputNode"
+            },
+            {
+              "$ref": "#/$defs/TitleCardNode"
+            },
+            {
+              "$ref": "#/$defs/MarqueeNode"
+            },
+            {
+              "$ref": "#/$defs/BoxNode"
+            },
+            {
+              "$ref": "#/$defs/TextNode"
+            },
+            {
+              "$ref": "#/$defs/ImageNode"
+            },
+            {
+              "$ref": "#/$defs/IconNode"
+            },
+            {
+              "$ref": "#/$defs/RepeatNode"
+            },
+            {
+              "$ref": "#/$defs/UseNode"
+            },
+            {
+              "$ref": "#/$defs/SlotNode"
+            },
+            {
+              "$ref": "#/$defs/WidgetNode"
+            }
+          ]
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exclude": {
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "item": {
+          "$ref": "#/$defs/Node"
+        },
+        "itemWidth": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "default": {
+                  "type": "string"
+                },
+                "small": {
+                  "type": "string"
+                },
+                "tv": {
+                  "type": "string"
+                },
+                "wide": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "default"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "over": {
+          "type": "string"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stableOrder": {
+          "type": "boolean"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "shelf"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "as",
+        "item",
+        "over",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SlotNode": {
+      "additionalProperties": false,
+      "description": "A foundation slot: `children` (the route content the shell wraps), `searchField`.",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "inner": {
+          "$ref": "#/$defs/Style"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "slot": {
+          "enum": [
+            "children",
+            "searchField"
+          ]
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "slot"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "slot",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SourceError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "retry": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "SourceSpec": {
+      "additionalProperties": {},
+      "description": "Ether-owned: a named data source. Vela reads only `lazy` and the served `deps`.",
+      "properties": {
+        "deps": {
+          "description": "Served by Ether: the page params this source's arguments read (a change re-reads it).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "from": {
+          "type": "string"
+        },
+        "lazy": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "type": "object"
+    },
+    "StreamRecords": {
+      "additionalProperties": false,
+      "description": "/live/stream?topic=&since= `event: records`.",
+      "properties": {
+        "records": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "rev": {
+                "type": "number"
+              },
+              "value": {}
+            },
+            "required": [
+              "rev",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "records"
+      ],
+      "type": "object"
+    },
+    "StreamSource": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "type": "string"
+            },
+            "rev": {
+              "type": "number"
+            },
+            "screen": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "surface": {},
+            "value": {}
+          },
+          "required": [
+            "page",
+            "rev",
+            "screen",
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "page": {},
+            "rev": {
+              "type": "number"
+            },
+            "screen": {},
+            "source": {
+              "type": "string"
+            },
+            "surface": {
+              "type": "string"
+            },
+            "value": {}
+          },
+          "required": [
+            "rev",
+            "source",
+            "surface",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Style": {
+      "additionalProperties": false,
+      "properties": {
+        "-webkit-text-stroke": {
+          "type": "string"
+        },
+        "align-items": {
+          "type": "string"
+        },
+        "align-self": {
+          "type": "string"
+        },
+        "animation": {
+          "type": "string"
+        },
+        "aspect-ratio": {
+          "type": "string"
+        },
+        "backdrop-filter": {
+          "type": "string"
+        },
+        "background-color": {
+          "type": "string"
+        },
+        "background-image": {
+          "type": "string"
+        },
+        "border": {
+          "type": "string"
+        },
+        "border-bottom-color": {
+          "type": "string"
+        },
+        "border-bottom-width": {
+          "type": "string"
+        },
+        "border-color": {
+          "type": "string"
+        },
+        "border-left-color": {
+          "type": "string"
+        },
+        "border-left-width": {
+          "type": "string"
+        },
+        "border-radius": {
+          "type": "string"
+        },
+        "border-style": {
+          "type": "string"
+        },
+        "border-top-color": {
+          "type": "string"
+        },
+        "border-top-width": {
+          "type": "string"
+        },
+        "border-width": {
+          "type": "string"
+        },
+        "bottom": {
+          "type": "string"
+        },
+        "box-shadow": {
+          "type": "string"
+        },
+        "box-sizing": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "color-scheme": {
+          "type": "string"
+        },
+        "column-gap": {
+          "type": "string"
+        },
+        "corner-shape": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "display": {
+          "type": "string"
+        },
+        "filter": {
+          "type": "string"
+        },
+        "flex": {
+          "type": "string"
+        },
+        "flex-basis": {
+          "type": "string"
+        },
+        "flex-direction": {
+          "type": "string"
+        },
+        "flex-grow": {
+          "type": "string"
+        },
+        "flex-shrink": {
+          "type": "string"
+        },
+        "flex-wrap": {
+          "type": "string"
+        },
+        "font-family": {
+          "type": "string"
+        },
+        "font-size": {
+          "type": "string"
+        },
+        "font-style": {
+          "type": "string"
+        },
+        "font-variant-numeric": {
+          "type": "string"
+        },
+        "font-weight": {
+          "type": "string"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "grid-column": {
+          "type": "string"
+        },
+        "grid-row": {
+          "type": "string"
+        },
+        "grid-template-columns": {
+          "type": "string"
+        },
+        "grid-template-rows": {
+          "type": "string"
+        },
+        "height": {
+          "type": "string"
+        },
+        "inset": {
+          "type": "string"
+        },
+        "justify-content": {
+          "type": "string"
+        },
+        "left": {
+          "type": "string"
+        },
+        "letter-spacing": {
+          "type": "string"
+        },
+        "line-clamp": {
+          "type": "string"
+        },
+        "line-height": {
+          "type": "string"
+        },
+        "margin": {
+          "type": "string"
+        },
+        "margin-bottom": {
+          "type": "string"
+        },
+        "margin-left": {
+          "type": "string"
+        },
+        "margin-right": {
+          "type": "string"
+        },
+        "margin-top": {
+          "type": "string"
+        },
+        "mask-image": {
+          "type": "string"
+        },
+        "max-height": {
+          "type": "string"
+        },
+        "max-width": {
+          "type": "string"
+        },
+        "min-height": {
+          "type": "string"
+        },
+        "min-width": {
+          "type": "string"
+        },
+        "object-fit": {
+          "type": "string"
+        },
+        "opacity": {
+          "type": "string"
+        },
+        "order": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "string"
+        },
+        "outline-offset": {
+          "type": "string"
+        },
+        "overflow": {
+          "type": "string"
+        },
+        "overflow-x": {
+          "type": "string"
+        },
+        "overflow-y": {
+          "type": "string"
+        },
+        "padding": {
+          "type": "string"
+        },
+        "padding-bottom": {
+          "type": "string"
+        },
+        "padding-left": {
+          "type": "string"
+        },
+        "padding-right": {
+          "type": "string"
+        },
+        "padding-top": {
+          "type": "string"
+        },
+        "perspective": {
+          "type": "string"
+        },
+        "pointer-events": {
+          "type": "string"
+        },
+        "position": {
+          "type": "string"
+        },
+        "right": {
+          "type": "string"
+        },
+        "rotate": {
+          "type": "string"
+        },
+        "row-gap": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "string"
+        },
+        "scroll-behavior": {
+          "type": "string"
+        },
+        "scroll-padding-left": {
+          "type": "string"
+        },
+        "scroll-snap-align": {
+          "type": "string"
+        },
+        "scroll-snap-type": {
+          "type": "string"
+        },
+        "scrollbar-width": {
+          "type": "string"
+        },
+        "text-align": {
+          "type": "string"
+        },
+        "text-overflow": {
+          "type": "string"
+        },
+        "text-shadow": {
+          "type": "string"
+        },
+        "text-transform": {
+          "type": "string"
+        },
+        "top": {
+          "type": "string"
+        },
+        "transform-origin": {
+          "type": "string"
+        },
+        "transition": {
+          "type": "string"
+        },
+        "translate": {
+          "type": "string"
+        },
+        "white-space": {
+          "type": "string"
+        },
+        "width": {
+          "type": "string"
+        },
+        "z-index": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SurfaceContext": {
+      "additionalProperties": false,
+      "description": "The host context a surface document reads as `{context.<name>}`. Sent to Ether as p.event, p.channel,\np.title, p.kind and p.alert.ref only; chrome, pictureTime and delayed stay on the client.",
+      "properties": {
+        "alert": {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "at",
+            "body",
+            "id",
+            "kind",
+            "title"
+          ],
+          "type": "object"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "chrome": {
+          "type": "boolean"
+        },
+        "delayed": {
+          "type": "boolean"
+        },
+        "event": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "channel",
+            "programme",
+            "title"
+          ]
+        },
+        "pictureTime": {
+          "description": "Wall-clock time of the frame on screen (behind live when timeshifted).",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SurfaceContribution": {
+      "additionalProperties": false,
+      "description": "A surface a client may show (bootstrap `surfaces`, filtered, capped and ordered by Ether). `when` is\nevaluated by Vela locally. Routes: GET /surfaces/{id}/document, GET /surfaces/{id}/data?p.event=&p.channel=\n&p.title=&p.kind=&p.alert.ref=&tz= (404: draw nothing), POST /surfaces/{id}/actions/{action}.\n`id` is \"<pluginShort>.<id>\".",
+      "properties": {
+        "anchor": {
+          "description": "playerOverlay only.",
+          "enum": [
+            "bottom",
+            "topLeft",
+            "topRight"
+          ]
+        },
+        "document": {
+          "$ref": "#/$defs/ScreenDocumentRef"
+        },
+        "id": {
+          "type": "string"
+        },
+        "presentation": {
+          "enum": [
+            "homeRow",
+            "playerOverlay",
+            "titlePanel",
+            "toast"
+          ]
+        },
+        "setting": {
+          "additionalProperties": false,
+          "description": "A player-menu switch (required on every player overlay). `enabled` is the viewer's remembered\nchoice; PUT /surfaces/{id}/setting {enabled} (204) changes it, per viewer.",
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "default",
+            "id",
+            "label"
+          ],
+          "type": "object"
+        },
+        "ttl": {
+          "description": "toast only: seconds on screen, 8..30.",
+          "type": "number"
+        },
+        "visibility": {
+          "description": "playerOverlay only: always shown, only with the chrome, or a viewer switch in the player menu.",
+          "enum": [
+            "always",
+            "chrome",
+            "toggle"
+          ]
+        },
+        "when": {
+          "$ref": "#/$defs/SurfaceWhen"
+        }
+      },
+      "required": [
+        "document",
+        "id",
+        "presentation"
+      ],
+      "type": "object"
+    },
+    "SurfaceRow": {
+      "additionalProperties": false,
+      "description": "A row a plugin's homeRow surface fills, a stub in page order among the rows (bootstrap, /rows,\na library's rows tab): no items, receiptToken or continuation. The id is opaque (never parse it):\n`plugin`, `surface` (the wire id, as bootstrap `surfaces` lists it) and `library` say what it is.\nSent only to a client with X-Vela-Screen-Renderer, for a surface published for the viewer.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "surface"
+        },
+        "library": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "plugin",
+        "surface"
+      ],
+      "type": "object"
+    },
+    "SurfaceWhen": {
+      "additionalProperties": false,
+      "properties": {
+        "alert": {
+          "additionalProperties": false,
+          "properties": {
+            "plugin": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin"
+          ],
+          "type": "object"
+        },
+        "event": {
+          "additionalProperties": false,
+          "description": "The playing live channel's event belongs to this feed (fully qualified, as the session's liveEvent.feed).",
+          "properties": {
+            "feed": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "feed"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "channel",
+            "programme",
+            "title"
+          ]
+        },
+        "titleKind": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TableNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "compact": {
+          "type": "boolean"
+        },
+        "data": {
+          "type": "string"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "focusRows": {
+          "type": "number"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "highlight": {
+          "description": "false: ignore rows' `highlight` (a game's own tables are not lit, as standings are). Default true.",
+          "type": "boolean"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "table"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "data",
+        "type"
+      ],
+      "type": "object"
+    },
+    "TabsNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "after": {
+          "description": "Nodes drawn after the options inside the same scroll and focus row (Sports' Hide scores switch).",
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "all": {
+          "type": "string"
+        },
+        "as": {
+          "type": "string"
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "bind": {
+          "additionalProperties": false,
+          "properties": {
+            "clear": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "param": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "chip": {
+          "type": "string"
+        },
+        "count": {
+          "type": "string"
+        },
+        "default": {
+          "type": "string"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "over": {
+          "type": "string"
+        },
+        "pin": {
+          "description": "With `bind.param`: on first draw an empty param takes the resolved `default` (history replace, no re-read), so a later\nchange of the default does not move the selection.",
+          "type": "boolean"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "size": {
+          "enum": [
+            "small"
+          ]
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "tabs"
+        },
+        "value": {
+          "type": "string"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "as",
+        "bind",
+        "label",
+        "over",
+        "type",
+        "value"
+      ],
+      "type": "object"
+    },
+    "TextNode": {
+      "additionalProperties": false,
+      "description": "A text. One that is exactly `{env.viewerInitial}` and sets its own width and height is the viewer's\nbadge: the renderer draws the viewer's avatar over it, clipped to its shape, where the server gives one.",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "text"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "text",
+        "type"
+      ],
+      "type": "object"
+    },
+    "TitleCardNode": {
+      "additionalProperties": false,
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "titleCard"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        }
+      },
+      "required": [
+        "item",
+        "type"
+      ],
+      "type": "object"
+    },
+    "UseNode": {
+      "additionalProperties": false,
+      "description": "A template from the document's `templates`, inlined where it is used.\nRenderer 16 supplies velaSummary: an overflow-measured, expandable title synopsis.",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "children": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "press": {
+          "$ref": "#/$defs/Press"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "template": {
+          "type": "string"
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "use"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        },
+        "with": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Renderer 19: arguments read as `{arg.<name>}` in the template; children fill its `children` slot.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "template",
+        "type"
+      ],
+      "type": "object"
+    },
+    "WidgetNode": {
+      "additionalProperties": false,
+      "description": "Widgets: `install`, `observe`, `liveTile`; `searchInput` (params placeholder, label, placeholderColor; its node style sets the\ntext's colour and font) within 3 levels of home or the shell; `sentinel` (params.on: `row` | `home` | `library`) asks for\nthe next page; `select` (params options: library.genres | library.sorts | library.kinds, action, arg with {value},\nnone: a leading empty option's label, label) is the platform select styled by its node.",
+      "properties": {
+        "a11y": {
+          "additionalProperties": false,
+          "description": "The press button's accessibility state and role.",
+          "properties": {
+            "checked": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "current": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "expanded": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "haspopup": {
+              "type": "string"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "pressed": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "role": {
+              "type": "string"
+            },
+            "selected": {
+              "items": {
+                "$ref": "#/$defs/Condition"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "above": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "active": {
+          "$ref": "#/$defs/Style",
+          "description": "While pressed (pointer down), over the hover style: e.g. { scale: '0.97' } as a compiled control's press scale."
+        },
+        "below": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Style"
+          },
+          "type": "object"
+        },
+        "disabled": {
+          "description": "A pressable box: disabled while these hold, drawn with `disabledStyle`.",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "disabledStyle": {
+          "$ref": "#/$defs/Style"
+        },
+        "escape": {
+          "description": "Escape clears this flag and moves focus to `returnFocus` (an element id).",
+          "type": "string"
+        },
+        "exit": {
+          "description": "A motion preset played as the node leaves.",
+          "type": "string"
+        },
+        "focus": {
+          "$ref": "#/$defs/Style"
+        },
+        "group": {
+          "description": "A group's hover or focus (`group: true` on an ancestor) applies `groupHover` here; its keyboard focus `groupFocus`.",
+          "type": "boolean"
+        },
+        "groupFocus": {
+          "$ref": "#/$defs/Style"
+        },
+        "groupHover": {
+          "$ref": "#/$defs/Style"
+        },
+        "hover": {
+          "$ref": "#/$defs/Style",
+          "description": "Pointer hover and keyboard focus overlays (the renderer tracks both)."
+        },
+        "id": {
+          "description": "A box's element id (`detail-scroll-{env.entry}`: the route's scroll the navigation restores).",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layoutTransition": {
+          "type": "string"
+        },
+        "level": {
+          "type": "number"
+        },
+        "motion": {
+          "description": "A motion preset by name (`motion` table), its delay staggered by the item index.",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Renderer 19, screens: lazy sources read when this node is about to draw.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onChange": {
+          "additionalProperties": false,
+          "description": "Renderer 19: play a motion preset when the filled value changes (a score pops).",
+          "properties": {
+            "motion": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "motion",
+            "value"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "returnFocus": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sharedElement": {
+          "type": "string"
+        },
+        "small": {
+          "$ref": "#/$defs/Style"
+        },
+        "stagger": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "step"
+          ],
+          "type": "object"
+        },
+        "states": {
+          "description": "The first state whose conditions hold replaces `style` on the same element (transitions run).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "focus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupFocus": {
+                "$ref": "#/$defs/Style"
+              },
+              "groupHover": {
+                "$ref": "#/$defs/Style"
+              },
+              "hover": {
+                "$ref": "#/$defs/Style"
+              },
+              "label": {
+                "type": "string"
+              },
+              "style": {
+                "$ref": "#/$defs/Style"
+              },
+              "when": {
+                "items": {
+                  "$ref": "#/$defs/Condition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "style",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/Style",
+          "description": "Overrides by viewport: `small` under 640 px, `wide` from 1200 px, `tv` on a TV (renderer 19)."
+        },
+        "testId": {
+          "type": "string"
+        },
+        "tv": {
+          "$ref": "#/$defs/Style"
+        },
+        "type": {
+          "const": "widget"
+        },
+        "when": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "type": "array"
+        },
+        "wide": {
+          "$ref": "#/$defs/Style"
+        },
+        "widget": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "widget"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://vela.app/schemas/plugin-screen.v1.json",
+  "$ref": "#/$defs/ScreenDocument",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated by tools/screen-schema.ts from packages/protocol/screen.ts and skin.ts. Do not edit.",
+  "title": "Vela plugin screen document"
+}

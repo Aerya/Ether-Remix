@@ -29,6 +29,7 @@ func rankView(t core.Title) core.Title {
 // cache as from the database.
 func TestRankingWindowMatchesFullBrowse(t *testing.T) {
 	c := newChunkTestCatalog(t)
+	c.FreezeCacheMinute()
 	ctx := context.Background()
 	const person = 7
 	var titles []core.Title

@@ -56,7 +56,12 @@ func copyPlanValue(v any) any {
 // outputSnapshot contains only immutable inputs and a private plan, never a
 // copied mutex or the live SSE signal/event ring.
 func (s *playSession) outputSnapshot() *playSession {
-	return &playSession{plan: copyPlanValue(s.plan).(object), source: s.source, seek: s.seek,
+	var archive *catchUpPlayback
+	if s.archive != nil {
+		copy := *s.archive
+		archive = &copy
+	}
+	return &playSession{archive: archive, position: s.position, plan: copyPlanValue(s.plan).(object), source: s.source, seek: s.seek,
 		qualityRungs: s.qualityRungs, media: s.media, subtitleFormats: s.subtitleFormats,
 		canBurn: s.canBurn, preparation: s.preparation, diagnostics: s.diagnostics}
 }
@@ -89,6 +94,14 @@ func (s *playSession) applyOutput(copy *playSession) {
 	for _, key := range []string{"audioTracks", "subtitleTracks", "selectedAudioTrackId", "preparation", "live"} {
 		if value, ok := copy.plan[key]; ok {
 			s.plan[key] = value
+		}
+	}
+	if copy.archive != nil {
+		s.archive = copy.archive
+		for _, key := range []string{"catchUp", "durationSeconds"} {
+			if value, ok := copy.plan[key]; ok {
+				s.plan[key] = value
+			}
 		}
 	}
 	s.diagnostics = copy.diagnostics

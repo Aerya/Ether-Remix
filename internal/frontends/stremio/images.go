@@ -104,20 +104,31 @@ func (i *instance) artwork(r *http.Request, credential string, viewer *frontend.
 // Stremio's 100 KB poster limit).
 const tmdbPosterBase = "https://image.tmdb.org/t/p/w342"
 
+func directMetadataArtwork(path, tmdbBase string) string {
+	if frontend.ValidArtworkPath(path) {
+		return tmdbBase + path
+	}
+	u, err := url.Parse(path)
+	if err == nil && u.Scheme == "https" && u.Host == "artworks.thetvdb.com" && u.User == nil && u.Path != "" {
+		return u.String()
+	}
+	return ""
+}
+
 // generatedPosterWidth keeps Ether's generated poster at about 11 KB
 // (15 KB as a data URI), under Stremio's recommended 50 KB.
 const generatedPosterWidth = 200
 
 // directPoster is a poster URL a Stremio client loads without reaching
-// Ether: TMDB's CDN for a real poster, else Ether's generated poster as a
+// Ether: a provider CDN for a real poster, else Ether's generated poster as a
 // data: URI. stremio-core accepts the URL and stremio-web uses an image
 // source; native Android TV/mobile rendering still needs device proof.
 // Both come only for titles the
 // experience already returned to this viewer; the generated one is read
 // through the same artwork authorization as every other frontend.
 func (i *instance) directPoster(r *http.Request, viewer *frontend.Viewer, device frontend.Device, title frontend.Title) string {
-	if frontend.ValidArtworkPath(title.PosterPath) {
-		return tmdbPosterBase + title.PosterPath
+	if url := directMetadataArtwork(title.PosterPath, tmdbPosterBase); url != "" {
+		return url
 	}
 	if !frontend.NeedsGeneratedPoster(&title) || i.host.Artwork == nil || viewer == nil {
 		return ""
@@ -151,8 +162,8 @@ func (i *instance) backdropArtwork(r *http.Request, credential string, viewer *f
 	base := i.imageBase(r)
 	if !ok || base == nil {
 		for _, title := range titles {
-			if frontend.ValidArtworkPath(title.BackdropPath) {
-				out[title.Key] = "https://image.tmdb.org/t/p/w780" + title.BackdropPath
+			if url := directMetadataArtwork(title.BackdropPath, "https://image.tmdb.org/t/p/w780"); url != "" {
+				out[title.Key] = url
 			}
 		}
 		return out

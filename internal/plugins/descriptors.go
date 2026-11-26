@@ -24,6 +24,7 @@ func textOf(plugin, s string) extend.Text {
 // DescriptorsFor builds the registry descriptors a manifest contributes.
 // Exported for the kit and Studio previews.
 func DescriptorsFor(man Manifest) []extend.Descriptor {
+	isStremio := man.SpeaksStremio()
 	man.Ether = man.EffectiveEther()
 	id := man.ID
 	c := man.Ether.Contributes
@@ -139,15 +140,24 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindMetadataProvider, "metadata", textOf(id, man.Name), c.Metadata)
 	}
 	if man.HasCapability(CapSubtitles) && c.Subtitles != nil {
-		add(extend.KindSubtitleProvider, "subtitles", textOf(id, man.Name), map[string]any{
-			"languages": c.Subtitles.Languages, "formats": c.Subtitles.Formats})
+		meta := map[string]any{
+			"languages": c.Subtitles.Languages,
+			"formats":   c.Subtitles.Formats,
+		}
+		if isStremio {
+			meta["stremio"] = true
+		}
+		add(extend.KindSubtitleProvider, "subtitles", textOf(id, man.Name), meta)
 	}
 	if man.HasCapability(CapMarkers) && c.Markers != nil {
 		add(extend.KindMarkerSource, "markers", textOf(id, man.Name), map[string]any{"kinds": c.Markers.Kinds})
 	}
 	if man.HasCapability(CapStreamSource) && c.Source != nil {
-		add(extend.KindSourceKind, "stream", textOf(id, man.Name), map[string]any{
-			"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits})
+		cfg := map[string]any{"class": c.Source.Class, "abilities": c.Source.Abilities, "limits": c.Source.Limits}
+		if c.Source.Search != nil {
+			cfg["search"] = c.Source.Search
+		}
+		add(extend.KindSourceKind, "stream", textOf(id, man.Name), cfg)
 	}
 	if man.HasCapability(CapDebridProvider) && c.Source != nil {
 		add(extend.KindSourceKind, "debrid", textOf(id, man.Name), map[string]any{"class": "debrid", "abilities": c.Source.Abilities})
@@ -302,7 +312,11 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		return []string{"Adds channel styles and licensed artwork. Runs no code."}, false, false
 	}
 	if man.Ether == nil {
-		return []string{"Connects to the add-on address you gave"}, false, false
+		lines = []string{"Connects to the add-on address you gave"}
+		if n := man.ListItemsRequested(); n > 0 {
+			lines = append(lines, listItemsLine(n))
+		}
+		return lines, false, false
 	}
 	if man.Ether.Stremio {
 		lines = append(lines, "Connects to the add-on it was made from")
@@ -400,8 +414,14 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapLiveEvents) {
 		lines = append(lines, "Provides live event feeds")
 	}
+	if man.HasCapability(CapScreens) {
+		lines = append(lines, screensPermissionLine(man))
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
+	}
+	if n := man.ListItemsRequested(); n > 0 {
+		lines = append(lines, listItemsLine(n))
 	}
 	return lines, needsViewers, needsFolders
 }
@@ -537,6 +557,12 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapLiveEvents) && next.HasCapability(CapLiveEvents) {
 		added = append(added, "Provides live event feeds")
+	}
+	if !cur.HasCapability(CapScreens) && next.HasCapability(CapScreens) {
+		added = append(added, screensPermissionLine(next))
+	}
+	if n := next.ListItemsRequested(); n > cur.ListItemsRequested() {
+		added = append(added, listItemsLine(n))
 	}
 	return added
 }

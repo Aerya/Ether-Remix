@@ -7,7 +7,7 @@ import {
 import { Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api, apiFetch, errorMessage } from "../lib/api";
 import { t, tn } from "../i18n";
 import { BUILTIN, textOf, useRegistry, type Descriptor } from "../lib/extend";
@@ -49,10 +49,21 @@ interface PluginActionOutcome {
  */
 export function CommandSearch({ compact = false }: { compact?: boolean } = {}) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const routeKey = `${location.pathname}${location.search}`;
+  const prevRoute = useRef(routeKey);
+  const [resetKey, setResetKey] = useState(0);
   const { descriptors } = useRegistry("page", "navItem", "command");
   const live = useRef<Descriptor[]>([]);
   live.current = descriptors;
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (prevRoute.current === routeKey) return;
+    prevRoute.current = routeKey;
+    setDialogOpen(false);
+    setResetKey((k) => k + 1);
+  }, [routeKey]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const navigatedRef = useRef(false);
@@ -336,12 +347,28 @@ export function CommandSearch({ compact = false }: { compact?: boolean } = {}) {
   }
 
   return (
-    <GlobalSearch
+    <div
       className="w-full max-w-md"
-      search={search}
-      minimumQueryLength={1}
-      onNavigate={(hit) => runHit(hit.href)}
-      labels={labels}
-    />
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        const input = event.currentTarget.querySelector<HTMLInputElement>("input");
+        if (input?.value) {
+          input.blur();
+          setResetKey((k) => k + 1);
+        }
+      }}
+    >
+      <GlobalSearch
+        key={resetKey}
+        className="w-full"
+        search={search}
+        minimumQueryLength={1}
+        onNavigate={(hit) => {
+          runHit(hit.href);
+          setResetKey((k) => k + 1);
+        }}
+        labels={labels}
+      />
+    </div>
   );
 }

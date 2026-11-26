@@ -118,8 +118,11 @@ func (s *Server) handleMetadataTree(w http.ResponseWriter, r *http.Request) {
 	}
 	// Episode reads describe exactly their ancestor chain, never siblings.
 	if title.Type == frontend.TypeEpisode {
-		season := metadataTreeItem{ID: int64(frontend.SeasonKey(key.TMDB(), key.Season())), MetadataItem: []metadataTreeItem{node}}
-		node = metadataTreeItem{ID: int64(frontend.ShowKey(key.TMDB())), Title: title.ShowTitle, MetadataItem: []metadataTreeItem{season}}
+		season, show := s.presentedParent(r.Context(), pr, title), titleShow(title)
+		if season != 0 && show != 0 {
+			parent := metadataTreeItem{ID: int64(season), MetadataItem: []metadataTreeItem{node}}
+			node = metadataTreeItem{ID: int64(show), Title: title.ShowTitle, MetadataItem: []metadataTreeItem{parent}}
+		}
 	}
 	s.write(w, r, metadataTree{Size: 1, MetadataItem: []metadataTreeItem{node}})
 }

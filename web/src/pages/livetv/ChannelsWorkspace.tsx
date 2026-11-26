@@ -1952,6 +1952,7 @@ const ChannelListRow = memo(function ChannelListRow({
 }) {
   const providerLabel = c.group || (c.kind === "virtual" ? t("Virtual") : "");
   const ownerGroupNames = memberGroups?.map((g) => g.name).join(", ") ?? "";
+  const archiveDays = c.archiveDays ?? 0;
   const visibleInSelected =
     selectedApp === "all" ? true : channelVisibleInApp(c, selectedApp, memberGroups);
 
@@ -2016,6 +2017,7 @@ const ChannelListRow = memo(function ChannelListRow({
       <button
         type="button"
         aria-label={`${c.number} ${c.name}`}
+        aria-describedby={archiveDays > 0 ? `archive-days-${c.id}` : undefined}
         onClick={() => onOpen(c.id)}
         className="flex min-w-0 flex-1 items-center gap-3 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
@@ -2041,16 +2043,23 @@ const ChannelListRow = memo(function ChannelListRow({
             <span className="truncate text-sm font-medium text-fg">{c.name}</span>
             {!c.enabled ? <Badge>{t("Off air")}</Badge> : null}
           </span>
-          <span className="block truncate text-xs text-fg-muted">
-            {providerLabel}
-            {providerLabel && ownerGroupNames ? " · " : ""}
-            {ownerGroupNames ? <span className="text-fg">{ownerGroupNames}</span> : null}
-            {!covered ? (
-              <>
-                {providerLabel || ownerGroupNames ? " · " : ""}
-                <span className="font-medium text-warning">{t("needs a guide")}</span>
-              </>
+          <span className="flex items-center gap-2 text-xs text-fg-muted">
+            {archiveDays > 0 ? (
+              <Badge id={`archive-days-${c.id}`} className="shrink-0 whitespace-nowrap">
+                {tn(archiveDays, "Catch-up: {count} day", "Catch-up: {count} days")}
+              </Badge>
             ) : null}
+            <span className="truncate">
+              {providerLabel}
+              {providerLabel && ownerGroupNames ? " · " : ""}
+              {ownerGroupNames ? <span className="text-fg">{ownerGroupNames}</span> : null}
+              {!covered ? (
+                <>
+                  {providerLabel || ownerGroupNames ? " · " : ""}
+                  <span className="font-medium text-warning">{t("needs a guide")}</span>
+                </>
+              ) : null}
+            </span>
           </span>
         </span>
       </button>

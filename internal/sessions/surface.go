@@ -150,6 +150,35 @@ func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, i
 	return core.Decision{}, core.ErrNotAvailable
 }
 
+func (s surface) OriginalRange(ctx context.Context, a frontend.SessionAccess, id, release, revision string) core.OriginalRange {
+	if a.Protocol == s.protocol {
+		if reader, ok := s.broker.(frontend.OriginalRangeReader); ok {
+			return reader.OriginalRange(ctx, a, id, release, revision)
+		}
+	}
+	return core.OriginalRange{}
+}
+
+func (s surface) OriginalPlaybackState(ctx context.Context, a frontend.SessionAccess, id string) (frontend.OriginalPlaybackState, error) {
+	if a.Protocol != s.protocol {
+		return frontend.OriginalPlaybackState{}, core.ErrUnauthorized
+	}
+	if reader, ok := s.broker.(frontend.OriginalPlaybackReader); ok {
+		return reader.OriginalPlaybackState(ctx, a, id)
+	}
+	return frontend.OriginalPlaybackState{}, core.ErrNotAvailable
+}
+
+func (s surface) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
+	if a.Protocol != s.protocol {
+		return core.Release{}, core.MediaInfo{}, core.ErrUnauthorized
+	}
+	if reader, ok := s.broker.(frontend.PlayingReleaseReader); ok {
+		return reader.PlayingRelease(ctx, a, id)
+	}
+	return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
+}
+
 func (s surface) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id string, index int, format string) (string, error) {
 	if a.Protocol != s.protocol {
 		return "", core.ErrUnauthorized
@@ -374,6 +403,28 @@ func (s surface) TrickplaySheet(ctx context.Context, a frontend.SessionAccess, i
 		return nil, core.ErrNotAvailable
 	}
 	return tiles.TrickplaySheet(ctx, a, item, index)
+}
+
+func (s surface) SessionTrickplayOffer(ctx context.Context, a frontend.SessionAccess, sessionID string) (frontend.TrickplayOffer, error) {
+	if a.Protocol != s.protocol {
+		return frontend.TrickplayOffer{}, core.ErrUnauthorized
+	}
+	tp, ok := s.broker.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplayOffer{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplayOffer(ctx, a, sessionID)
+}
+
+func (s surface) SessionTrickplaySheet(ctx context.Context, a frontend.SessionAccess, sessionID string, width, index int, unchanged func(frontend.TrickplayOffer) bool) (frontend.TrickplaySheetResult, error) {
+	if a.Protocol != s.protocol {
+		return frontend.TrickplaySheetResult{}, core.ErrUnauthorized
+	}
+	tp, ok := s.broker.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplaySheetResult{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplaySheet(ctx, a, sessionID, width, index, unchanged)
 }
 
 func (s surface) TrickplayAvailable(id string) bool {
@@ -684,9 +735,9 @@ func (s surface) NewDownloadQueuePersistence(queue frontend.DownloadQueueStore, 
 	return DownloadQueuePersistence{Queue: q, DB: db, Artifacts: artifacts, Log: log, Expiry: expiry, StorageID: storageID, Users: users}
 }
 
-func (s surface) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+func (s surface) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if rt := s.runtime(); rt != nil {
-		return rt.PrepareSource(ctx, viewer, key, caps, release, wait)
+		return rt.PrepareSource(core.WithLiveApp(ctx, string(s.protocol)), viewer, key, caps, release, exact, wait)
 	}
 	return nil, core.ErrNotAvailable
 }

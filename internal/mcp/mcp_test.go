@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/agent"
 	"github.com/braedonsaunders/ether/internal/agent/builtin"
 	"github.com/braedonsaunders/ether/internal/agent/tools"
 	_ "github.com/braedonsaunders/ether/internal/auth"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/mcp"
@@ -35,8 +37,10 @@ func (m testMembers) ActiveUser(ctx context.Context, id int64) (*core.User, erro
 }
 
 type stubServices struct {
-	blocked   []string
-	approvals map[string]builtin.ApprovalInfo
+	blocked        []string
+	approvals      map[string]builtin.ApprovalInfo
+	quality        config.Quality
+	qualityUpdates int
 }
 
 func (s *stubServices) ServerStatus(ctx context.Context) (builtin.ServerStatus, error) {
@@ -119,15 +123,64 @@ func (s *stubServices) Approval(ctx context.Context, id string) (builtin.Approva
 func (s *stubServices) Profiles(ctx context.Context) ([]builtin.ProfileInfo, error) {
 	return []builtin.ProfileInfo{{Name: "Default"}}, nil
 }
-func (s *stubServices) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
+func (s *stubServices) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
 	return nil
 }
 
-func (s *stubServices) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
+func (s *stubServices) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
 	return nil
 }
-func (s *stubServices) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
+func (s *stubServices) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
 	return nil
+}
+func (s *stubServices) ensureQuality() {
+	if len(s.quality.Profiles) == 0 {
+		s.quality = config.DefaultQuality()
+	}
+}
+func (s *stubServices) QualityRules(ctx context.Context, includeDevices bool) (builtin.QualityRulesSnapshot, error) {
+	s.ensureQuality()
+	profiles := make([]string, 0, len(s.quality.Profiles))
+	for _, p := range s.quality.Profiles {
+		profiles = append(profiles, p.Name)
+	}
+	return builtin.QualityRulesSnapshot{
+		Default:     s.quality.Default,
+		DefaultAway: s.quality.DefaultAway,
+		Profiles:    profiles,
+		Rules:       append([]config.QualityRule(nil), s.quality.Rules...),
+	}, nil
+}
+func (s *stubServices) ExplainQuality(ctx context.Context, req builtin.QualityExplainRequest) (resolver.QualityAnswer, error) {
+	s.ensureQuality()
+	return resolver.ExplainQuality(resolver.QualityQuestion{
+		Quality: s.quality,
+		Caps:    core.ClientCaps{Remote: req.Remote, HDR10: true, DolbyVision: true},
+		Kind:    req.Kind,
+	}), nil
+}
+func (s *stubServices) ValidateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	s.ensureQuality()
+	cfg := config.Defaults("")
+	cfg.Quality = s.quality
+	cfg.Quality.Rules = append([]config.QualityRule(nil), s.quality.Rules...)
+	if err := mutate(&cfg.Quality); err != nil {
+		return config.Quality{}, err
+	}
+	config.AssignRuleIDs(&cfg.Quality)
+	if errs := admin.ValidateConfig(cfg); len(errs) > 0 {
+		return config.Quality{}, tools.Userf("%s %s", errs[0].Field, errs[0].Message)
+	}
+	return cfg.Quality, nil
+}
+func (s *stubServices) UpdateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	next, err := s.ValidateQuality(ctx, mutate)
+	if err != nil {
+		return config.Quality{}, err
+	}
+	s.qualityUpdates++
+	s.quality = next
+	return next, nil
 }
 func (s *stubServices) Frontends(ctx context.Context) ([]builtin.FrontendInfo, error) {
 	return []builtin.FrontendInfo{{ID: "plex", Name: "Plex", Enabled: true}}, nil
@@ -147,19 +200,20 @@ func newTestCatalogue(t *testing.T, svc *stubServices) *tools.Catalogue {
 	t.Helper()
 	cat := tools.NewCatalogue()
 	deps := builtin.Deps{
-		Status:      svc,
-		Playback:    svc,
-		Resolver:    stubResolver{svc},
-		Logs:        svc,
-		Catalog:     svc,
-		Collections: svc,
-		LiveTV:      svc,
-		Sources:     svc,
-		Plugins:     svc,
-		Approvals:   svc,
-		Profiles:    svc,
-		Frontends:   svc,
-		Server:      svc,
+		Status:       svc,
+		Playback:     svc,
+		Resolver:     stubResolver{svc},
+		Logs:         svc,
+		Catalog:      svc,
+		Collections:  svc,
+		LiveTV:       svc,
+		Sources:      svc,
+		Plugins:      svc,
+		Approvals:    svc,
+		Profiles:     svc,
+		QualityRules: svc,
+		Frontends:    svc,
+		Server:       svc,
 		OwnerUser: func(ctx context.Context) (*core.User, error) {
 			return &core.User{ID: 1, Username: "owner", IsOwner: true}, nil
 		},
@@ -310,18 +364,23 @@ func TestMCPBoundaryAuthResourcesAndScopes(t *testing.T) {
 	for _, raw := range readTools {
 		readNames[raw.(map[string]any)["name"].(string)] = true
 	}
-	if !readNames["quality_profiles"] {
-		t.Fatal("read scope must see quality_profiles")
+	for _, name := range []string{"quality_profiles", "quality_rules_list", "quality_explain", "livetv_look_draft"} {
+		if !readNames[name] {
+			t.Fatalf("read scope must see %s", name)
+		}
 	}
-	if !readNames["livetv_look_draft"] {
-		t.Fatal("read scope must see the public look draft")
-	}
-	for _, name := range []string{"look_draft", "channel_summary", "livetv_look_save", "livetv_channel_look", "livetv_channel_apply", "quality_order_set"} {
+	for _, name := range []string{
+		"look_draft", "channel_summary", "livetv_look_save", "livetv_channel_look", "livetv_channel_apply",
+		"quality_order_set", "quality_rule_add", "quality_rule_edit", "quality_rule_move", "quality_defaults_set",
+	} {
 		if readNames[name] {
 			t.Fatalf("read scope exposes console-only or write tool %s", name)
 		}
 	}
-	for _, name := range []string{"livetv_look_save", "livetv_channel_look", "livetv_channel_apply", "quality_order_set"} {
+	for _, name := range []string{
+		"livetv_look_save", "livetv_channel_look", "livetv_channel_apply",
+		"quality_order_set", "quality_rule_add", "quality_rule_edit", "quality_rule_move", "quality_defaults_set",
+	} {
 		_, denied := postRPC(t, h, "tok-read", "tools/call", map[string]any{"name": name, "arguments": map[string]any{}})
 		if denied["error"] == nil {
 			t.Fatalf("read scope called write proposal %s", name)
@@ -333,6 +392,22 @@ func TestMCPBoundaryAuthResourcesAndScopes(t *testing.T) {
 	})
 	if deniedCall["error"] == nil {
 		t.Fatalf("expected error calling write tool with read scope, got %v", deniedCall)
+	}
+
+	// Read scope can call quality_rules_list and quality_explain cleanly.
+	_, rulesReadBody := postRPC(t, h, "tok-read", "tools/call", map[string]any{
+		"name":      "quality_rules_list",
+		"arguments": map[string]any{},
+	})
+	if rulesReadBody["error"] != nil {
+		t.Fatalf("quality_rules_list failed for read token: %v", rulesReadBody)
+	}
+	_, explainReadBody := postRPC(t, h, "tok-read", "tools/call", map[string]any{
+		"name":      "quality_explain",
+		"arguments": map[string]any{"remote": true},
+	})
+	if explainReadBody["error"] != nil {
+		t.Fatalf("quality_explain failed for read token: %v", explainReadBody)
 	}
 
 	// 5. Full scope sees every read tool plus the write tools; calling a write
@@ -347,8 +422,10 @@ func TestMCPBoundaryAuthResourcesAndScopes(t *testing.T) {
 	for _, raw := range fullTools {
 		fullNames[raw.(map[string]any)["name"].(string)] = true
 	}
-	if !fullNames["livetv_channel_apply"] {
-		t.Fatal("full scope must expose the owner channel proposal")
+	for _, name := range []string{"livetv_channel_apply", "quality_rule_add", "quality_rule_edit", "quality_rule_move", "quality_defaults_set"} {
+		if !fullNames[name] {
+			t.Fatalf("full scope must expose %s", name)
+		}
 	}
 
 	_, propBody := postRPC(t, h, "tok-full", "tools/call", map[string]any{
@@ -369,6 +446,16 @@ func TestMCPBoundaryAuthResourcesAndScopes(t *testing.T) {
 	}
 	if len(onApprovals) != 1 || onApprovals[0].ID != approvalID {
 		t.Fatalf("expected OnApproval callback for %s, got %+v", approvalID, onApprovals)
+	}
+
+	// Quality rule write over MCP also proposes without mutating.
+	_, qrPropBody := postRPC(t, h, "tok-full", "tools/call", map[string]any{
+		"name":      "quality_rule_add",
+		"arguments": map[string]any{"name": "Away cap", "where": "away", "maxBitrateKbps": 8000},
+	})
+	qrStructured := qrPropBody["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if qrStructured["status"] != "pending_approval" || svc.qualityUpdates != 0 {
+		t.Fatalf("expected quality_rule_add pending_approval without mutation, got %v (updates=%d)", qrStructured, svc.qualityUpdates)
 	}
 
 	// Polling approval_status over MCP returns the pending approval.

@@ -5,6 +5,7 @@ import { Artwork } from "../../components/Artwork";
 import { HourStrip, DivergingBars, Meter } from "../../components/charts";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
+import { PAGE_HOME } from "../../lib/pages";
 import { api } from "../../lib/api";
 import type { TasteProfile, ViewerDetail } from "../../lib/contract";
 import { formatNumber, formatPercent } from "../../lib/format";
@@ -21,9 +22,9 @@ export function ViewerDashboard({
 }) {
   const home = useAsync(
     (signal) =>
-      api.viewerHome(
-        viewer.id,
-        { device: "tv", section: "home", at: new Date().toISOString() },
+      api.previewPage(
+        PAGE_HOME,
+        { viewer: viewer.id, device: "tv", at: new Date().toISOString() },
         signal,
       ),
     [viewer.id],

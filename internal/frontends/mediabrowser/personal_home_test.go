@@ -259,16 +259,16 @@ func TestPersonalHomeViewsAreStableRankedAndAttributed(t *testing.T) {
 	if shows.Code != 200 || json.Unmarshal(shows.Body.Bytes(), &categories) != nil || len(categories) != 1 || categories[0]["RecommendationType"] != "SimilarToLikedItem" || categories[0]["Items"].([]any)[0].(map[string]any)["Name"] != "Shown" {
 		t.Fatal(shows.Code, shows.Body.String())
 	}
-	off := mount(1, frontend.Settings{"homeRows": false})
+	off := mount(1, frontend.Settings{"homeRowCount": float64(0)})
 	offViews := call(off, http.MethodGet, "/UserViews", "")
 	var onlyLibrary struct{ Items []map[string]any }
 	if json.Unmarshal(offViews.Body.Bytes(), &onlyLibrary) != nil || len(onlyLibrary.Items) != 1 || onlyLibrary.Items[0]["Name"] != "Movies" {
 		t.Fatal(offViews.Body.String())
 	}
-	if err := (Jellyfin{}).ValidateSettings(frontend.Settings{"homeRows": false, "homeRowCount": float64(4), "homeRowKinds": []any{"trending"}}); err != nil {
+	if err := (Jellyfin{}).ValidateSettings(frontend.Settings{"homeRowCount": float64(4)}); err != nil {
 		t.Fatal(err)
 	}
-	if (Jellyfin{}).ValidateSettings(frontend.Settings{"homeRowCount": float64(99)}) == nil || (Emby{}).ValidateSettings(frontend.Settings{"extra": true}) == nil {
+	if (Jellyfin{}).ValidateSettings(frontend.Settings{"homeRowCount": float64(99)}) == nil || (Jellyfin{}).ValidateSettings(frontend.Settings{"homeRows": true}) == nil || (Emby{}).ValidateSettings(frontend.Settings{"homeRowKinds": []any{"trending"}}) == nil {
 		t.Fatal("invalid personalization settings accepted")
 	}
 }
@@ -305,7 +305,7 @@ func TestNowAvailableLibraryDoesNotUseThePersonalizedRowBudget(t *testing.T) {
 		return &v, nil
 	}}
 	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, Experience: exp, Sessions: frontendtest.Sessions{}, Config: func() frontend.Settings {
-		return frontend.Settings{"homeRowCount": float64(1), "homeRowKinds": []any{"trending"}}
+		return frontend.Settings{"homeRowCount": float64(1)}
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -528,7 +528,7 @@ func TestAlwaysRowsNeverDroppedByPersonalHomeCountOrKindFilter(t *testing.T) {
 		Experience: exp,
 		Sessions:   frontendtest.Sessions{},
 		Config: func() frontend.Settings {
-			return frontend.Settings{"homeRowCount": float64(1), "homeRowKinds": []any{"trending"}}
+			return frontend.Settings{"homeRowCount": float64(1)}
 		},
 	})
 	if err != nil {

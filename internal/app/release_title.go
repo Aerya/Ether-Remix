@@ -16,10 +16,10 @@ import (
 // ID. A first-ranked search hit alone is not enough: every result/page counts
 // toward ambiguity. Existing catalogue aliases are checked before this lookup.
 func (a *App) releaseTitleIDs(ctx context.Context, kind core.MediaType, title string) (core.IDs, error) {
-	if a.tmdb == nil {
-		return core.IDs{}, errors.New("metadata unavailable")
+	if a.tmdb == nil || !a.tmdb.HasKey() {
+		return core.IDs{}, nil
 	}
-	if strings.TrimSpace(title) == "" {
+	if strings.TrimSpace(title) == "" || releaseparse.IsObfuscated(title) || releaseparse.TitleTooGeneric(title) {
 		return core.IDs{}, nil
 	}
 	switch kind {
@@ -79,8 +79,10 @@ func (a *App) releaseTitleIDs(ctx context.Context, kind core.MediaType, title st
 // mis-tagged on a TV episode). Any conflict that maps to another title of the
 // same media type or cannot be verified returns TitleIDConflict.
 func (a *App) verifyTitleIDs(ctx context.Context, kind core.MediaType, reported, expected core.IDs) (resolver.TitleIDVerdict, error) {
-	if a.tmdb == nil {
-		return resolver.TitleIDConflict, errors.New("metadata unavailable")
+	if a.tmdb == nil || !a.tmdb.HasKey() {
+		// The verifier caches definitive verdicts. Unavailable metadata must
+		// leave the conflict unresolved so adding a key can retry it.
+		return resolver.TitleIDConflict, core.ErrUnsupported
 	}
 	if expected.TMDB <= 0 {
 		return resolver.TitleIDConflict, nil

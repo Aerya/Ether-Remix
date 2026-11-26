@@ -69,6 +69,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate and ScreensPutRecords are the screens pushes
+	// (docs/plugin-screens.md); both need the screens capability.
+	ScreensInvalidate(ctx context.Context, pluginID string) (int, error)
+	ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded completion against the owner's configured
 	// language model (requires permissions.ai: "complete", or "complete+search"
 	// when viewerToken identifies an active frontend-adapter search call; #702).
@@ -162,6 +167,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
+	mux.HandleFunc("POST /ether/plugin-host/screens/invalidate", h.screensInvalidate)
+	mux.HandleFunc("POST /ether/plugin-host/screens/records", h.screensPutRecords)
 	h.mux = mux
 	return h
 }
@@ -408,16 +415,16 @@ func (h *HostHandler) setWatchState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ViewerID int64  `json:"viewerId"`
 		TitleID  string `json:"titleId"`
-		Watched  bool   `json:"watched"`
+		Watched  *bool  `json:"watched"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	if body.ViewerID <= 0 || body.TitleID == "" {
-		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId and titleId are required")
+	if body.ViewerID <= 0 || body.TitleID == "" || body.Watched == nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId, titleId and watched are required")
 		return
 	}
-	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, body.Watched)) {
+	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, *body.Watched)) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -637,15 +644,33 @@ func (h *HostHandler) cacheDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+type streamViewerTokenKey struct{}
+
+func withStreamViewerToken(ctx context.Context, token string) context.Context {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, streamViewerTokenKey{}, token)
+}
+
+func streamViewerToken(ctx context.Context) string {
+	tok, _ := ctx.Value(streamViewerTokenKey{}).(string)
+	return tok
+}
+
 // frontendStreamURL mints a scoped stream ticket for one of the plugin's
 // own kind items and returns the Ether stream URL (spec §6.5). The viewer
-// id is the one the adapter proxied the request for.
+// id is the one the adapter proxied the request for; when X-Ether-Viewer-Token
+// is forwarded, Ether also binds the active adapter route and request origin
+// for absolute stream URLs (#772).
 func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ViewerID  int64  `json:"viewerId"`
 		ItemRef   string `json:"itemRef"`
 		PartIndex *int   `json:"partIndex,omitempty"`
 		Source    string `json:"source,omitempty"`
+		Absolute  bool   `json:"absolute,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
@@ -658,33 +683,35 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
 		return
 	}
+	ctx := withStreamViewerToken(r.Context(), r.Header.Get(HeaderViewerToken))
 	var (
 		u   string
 		err error
 	)
-	if body.Source != "" {
+	if body.Source != "" || body.Absolute {
 		oh, ok := h.host.(interface {
 			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
 		})
 		if !ok {
-			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support stream URL options")
 			return
 		}
-		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+		u, err = oh.StreamURLWithOptions(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
 			PartIndex: body.PartIndex,
 			Source:    body.Source,
+			Absolute:  body.Absolute,
 		})
 	} else if body.PartIndex != nil {
 		if oh, ok := h.host.(interface {
 			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
 		}); ok {
-			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+			u, err = oh.StreamURLWithOptions(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
 		} else if ph, ok := h.host.(interface {
 			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 		}); ok {
-			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
+			u, err = ph.StreamPartURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
 		} else {
-			u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+			u, err = h.host.StreamURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef)
 			if err == nil {
 				sep := "?"
 				if strings.Contains(u, "?") {
@@ -694,7 +721,7 @@ func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	} else {
-		u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+		u, err = h.host.StreamURL(ctx, pluginIDOf(r), body.ViewerID, body.ItemRef)
 	}
 	if !h.finishErr(w, err) {
 		return
@@ -742,6 +769,28 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) screensInvalidate(w http.ResponseWriter, r *http.Request) {
+	n, err := h.host.ScreensInvalidate(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
+}
+
+func (h *HostHandler) screensPutRecords(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Records json.RawMessage `json:"records"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	n, err := h.host.ScreensPutRecords(r.Context(), pluginIDOf(r), body.Records)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
 }
 
 func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {

@@ -48,7 +48,7 @@ func (c *Client) emitRequestFailed(kind string, err error, latency time.Duration
 		IndexerName: c.Name(),
 		Kind:        kind,
 		StatusCode:  statusCode,
-		Error:       err.Error(),
+		Error:       classifyIndexerError(err),
 		LatencyMS:   latency.Milliseconds(),
 	})
 }

@@ -48,6 +48,12 @@ type candRow struct {
 	// at all is its kind's surfaces (kinds.go, surfaces.go); owner
 	// collection rows carry their own targeting.
 	typed map[core.MediaType][]candItem
+	// relaxed (and relaxedTyped) are the row's titles without the viewer's
+	// language gate, in-language first: a row the owner pins, shows or
+	// lists on a Curated page uses them, so the gate re-ranks the row
+	// instead of emptying it. Nil when the gate removed nothing.
+	relaxed      []candItem
+	relaxedTyped map[core.MediaType][]candItem
 	// hub is set for rows that arrive as finished hubs (owner collections,
 	// Continue Watching); assembly keeps their identity.
 	hub *core.Hub
@@ -60,6 +66,10 @@ type candRow struct {
 	// sectionTitles name the row on the Movies and TV Shows pages when it
 	// differs from its Home title (crowd rows).
 	sectionTitles map[core.MediaType]string
+	// filtered counts what the viewer filters removed while the row was
+	// built (row_filters.go); the designer preview explains an empty row
+	// with it.
+	filtered *rowFilterStats
 }
 
 // userModel is everything precomputed for one viewer: the taste model and
@@ -107,6 +117,9 @@ type builder struct {
 	// policy epoch for shared browses (shared_sources.go), read on first use.
 	epochRead, epochOK bool
 	epoch              int64
+	// tally counts the current generator's filtered candidates
+	// (row_filters.go).
+	tally *rowFilterStats
 }
 
 type fitMemo struct {
@@ -270,7 +283,19 @@ func (b *builder) rankWith(items []core.Title, score scorer, requireNotable bool
 	n := len(items)
 	for i := range items {
 		t := &items[i]
-		if seen[t.Key] || !b.fresh(t) || requireNotable && !b.notable(t) {
+		if seen[t.Key] {
+			continue
+		}
+		if !b.fresh(t) {
+			if c := b.tally.of(t.Type); c != nil && b.watchedOrStarted(t) {
+				c.history++
+			}
+			continue
+		}
+		if requireNotable && !b.notable(t) {
+			if c := b.tally.of(t.Type); c != nil {
+				c.notable++
+			}
 			continue
 		}
 		seen[t.Key] = true

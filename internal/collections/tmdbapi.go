@@ -70,10 +70,20 @@ func newTMDBAPI(c TMDB, now func() time.Time) *tmdbAPI {
 	return &tmdbAPI{c: c, now: now, genres: map[string]map[int]string{}}
 }
 
+func (a *tmdbAPI) configured() bool {
+	if a == nil || a.c == nil {
+		return false
+	}
+	if keyed, ok := a.c.(interface{ HasKey() bool }); ok {
+		return keyed.HasKey()
+	}
+	return true
+}
+
 var errNoTMDB = errors.New("TMDB is not configured")
 
 func (a *tmdbAPI) get(ctx context.Context, path string, q url.Values, out any) error {
-	if a == nil || a.c == nil {
+	if !a.configured() {
 		return errNoTMDB
 	}
 	return a.c.GetJSON(ctx, path, q, out)

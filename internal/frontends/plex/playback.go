@@ -68,6 +68,14 @@ const (
 // playbackMessageFor is playbackMessage with the wording for a viewer whose
 // own account has video transcoding switched off.
 func (s *Server) playbackMessageFor(pr *Request, err error) string {
+	if pr != nil {
+		if msg := frontend.VideoEncoderCapacityMessage(err, pr.Language); msg != "" {
+			return msg
+		}
+		if msg := frontend.IndexersPausedMessage(err, pr.Language); msg != "" {
+			return msg
+		}
+	}
 	if pr != nil && pr.User != nil && errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		return frontend.VideoTranscodingOffMessage(s.policy(), pr.User)
 	}
@@ -77,6 +85,9 @@ func (s *Server) playbackMessageFor(pr *Request, err error) string {
 func playbackMessage(err error) string {
 	// Ether-Remix : téléchargement sur le client torrent local, en option.
 	if msg := frontend.LocalDownloadMessage(err, ""); msg != "" {
+		return msg
+	}
+	if msg := frontend.VideoEncoderCapacityMessage(err); msg != "" {
 		return msg
 	}
 	var bedtime *frontend.ErrBedtime
@@ -140,6 +151,9 @@ func (s *Server) writeStartErr(w http.ResponseWriter, r *http.Request, pr *Reque
 	if pr != nil && pr.User != nil {
 		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
 	}
+	if frontend.WriteIndexersPaused(w, err, notificationLanguage(r)) {
+		return
+	}
 	// A completed attempt is terminal. Retry-After on a 503 makes media
 	// loaders retry while waiting for a timeline they may never send.
 	// PMS start.* documents 400/403/404 for unsuccessful starts.
@@ -166,7 +180,7 @@ func writePlaybackStatus(w http.ResponseWriter, status int) {
 // notCachedMessage words a failure whose every cause is frontend.ErrNotCached:
 // the account's download limit or a refused download first (the owner can
 // act on those), then what the resolver said about the owner's setting and
-// Usenet (*frontend.UncachedError), the same reason Quality › History records.
+// Usenet (*frontend.UncachedError), the same reason Releases › History records.
 func notCachedMessage(err error) string {
 	switch {
 	case errors.Is(err, frontend.ErrDownloadPaused):
@@ -326,6 +340,9 @@ type playRequest struct {
 	// /video/:/transcode/universal/subtitles (conversion). Response
 	// shaping, zeroed by sameSettings.
 	softText bool
+	// A fresh HLS decision can stage changed settings while the old output
+	// continues to serve URLs already issued to the player.
+	restartEncoder bool
 }
 
 // androidFamilyClient reports whether the decision lists every probed track.
@@ -448,8 +465,9 @@ func (p playRequest) sameSettings(other playRequest) bool {
 	p.mediaID, other.mediaID = 0, 0
 	p.softText, other.softText = false, false
 	p.subNamed, other.subNamed = false, false
-	// Only subtitles=none changes what the encoder delivers; the other
-	// modes shape the response.
+	p.restartEncoder, other.restartEncoder = false, false
+	// The burn option is compared in opts. Of the remaining modes, only
+	// none changes what the encoder delivers.
 	if (p.subtitles == "none") == (other.subtitles == "none") {
 		p.subtitles, other.subtitles = "", ""
 	}
@@ -501,6 +519,9 @@ func mergeSessionProfile(pr *Request, entry *transcodeEntry) *Request {
 	}
 	rc := entry.requested.client
 	cp := *pr
+	// Native media loaders can omit the playback header. Republishing the
+	// decision from start must keep it on the same broker playback.
+	cp.SessionID = cmp.Or(cp.SessionID, entry.playbackID)
 	cp.Product = cmp.Or(cp.Product, rc.product, entry.caps.Product)
 	cp.Version = cmp.Or(cp.Version, rc.version, entry.caps.Version)
 	cp.Platform = cmp.Or(cp.Platform, rc.platform, entry.caps.Platform)
@@ -676,7 +697,10 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		}
 	}
 	if tt == "audio" || tt == "music" {
-		if rawContainer := strings.ToLower(strings.TrimSpace(q.Get("container"))); rawContainer != "" && len(p.caps.HLSContainers) == 0 {
+		// Containers from video transcode targets do not describe music
+		// output. The music target is applied after the source is probed.
+		p.caps.HLSContainers = nil
+		if rawContainer := strings.ToLower(strings.TrimSpace(q.Get("container"))); rawContainer != "" {
 			p.caps.HLSContainers = []string{rawContainer}
 		}
 	}
@@ -822,6 +846,13 @@ func (s *Server) resumeStartHint(ctx context.Context, pr *Request, p playRequest
 	return 0
 }
 
+func (p *playRequest) sourceDecisionContext(ctx context.Context) context.Context {
+	if p.audioSel >= 0 || p.audioStream != nil || p.subSel >= 0 || p.subStream != nil {
+		return ctx
+	}
+	return frontend.WithSourceDecision(ctx, frontend.SourceDecision{Options: p.opts})
+}
+
 // sourceSelectionCaps keeps request quality limits at delivery selection. Device
 // decoder limits and owner quality rules still govern which source may open.
 // An HD output request may softly prefer a suitable HD source on new admission.
@@ -894,7 +925,7 @@ func applySelections(p *playRequest, info frontend.MediaInfo, langs []string) {
 	p.opts.SubtitleStream = -1
 	if p.subSet && p.subSel >= 0 && p.subSel < len(info.Streams) && info.Streams[p.subSel].Type == "subtitle" {
 		st := info.Streams[p.subSel]
-		if !st.External {
+		if !st.External || (p.opts.BurnTextSubtitles && st.ExternalURL != "") {
 			p.opts.SubtitleStream = st.Index
 		}
 	}
@@ -953,6 +984,9 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			release = ps.Resolution.Release.ID
 		}
 		s.playIDs.endAdmission(ik, p.mediaID, release, admitted, s.now())
+		if admitted {
+			s.trackRestarts.admitted(ik, p.variantRelease, release, s.now())
+		}
 	}()
 	dec, err := s.openPlexPlan(ctx, pr, p, func(ctx context.Context) (frontend.PlanAdmission, error) {
 		var prepErr error
@@ -971,6 +1005,33 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		// The chosen sidecar has to be on this media before track resolution.
 		// Otherwise a language already present in the probe drops it, and the
 		// decision either selects the other track or no subtitle at all.
+		// With no subtitle in the request, a sidecar this client was shown
+		// selected (a cached OpenSubtitles file) is what it expects to see.
+		// Cached sidecars omit a language the file embeds, so without this the
+		// rules pick the embedded track (often an image subtitle the client
+		// was never shown) and the shown-only burn rule then plays None.
+		// An embedded text track of the same language still wins: it needs
+		// no burn and plays as before. A remembered Off wins over the shown
+		// sidecar: the viewer turned subtitles off for this title.
+		if !p.subNamed && !p.subSet {
+			if shown, _ := s.playIDs.shownSubtitles(ik, s.now()); len(shown) > 0 {
+				for i := range shown {
+					want := shown[i]
+					if !want.External || want.ExternalURL == "" || frontend.IsImageSubtitle(want.Codec) {
+						continue
+					}
+					if slices.ContainsFunc(ps.Info.Streams, func(st frontend.StreamInfo) bool {
+						return st.Type == "subtitle" && !st.External && !frontend.IsImageSubtitle(st.Codec) && sameLanguage(st.Language, want.Language)
+					}) {
+						continue
+					}
+					if !s.rememberedSubtitleOff(ctx, pr, p.key) {
+						p.subStream, p.subSel, p.subSet = &want, -1, true
+					}
+					break
+				}
+			}
+		}
 		if p.subNamed && p.subStream != nil && p.subStream.External {
 			cp := *ps
 			cp.Info = infoWithExactSidecar(ps.Info, p.subStream)
@@ -978,18 +1039,16 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		} else {
 			ps = ensureSelectedSidecar(ps, p.subStream)
 		}
+		// "burn" explicitly asks the server to render text as well as image
+		// subtitles, including a selected sidecar.
+		p.opts.BurnTextSubtitles = p.subtitles == "burn"
 		resolvePlaySelection(p, ps.Info)
 		s.applyStreamPreferences(ctx, pr, p, t, ps.Info)
 		applySelections(p, ps.Info, s.audioLanguages(pr.User))
 		s.selectLegacyDecoderAudio(pr, p, ps.Info)
-		switch {
-		case p.subtitles == "none" && !keepsSelectedSubtitle(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts):
+		if p.subtitles == "none" && !keepsSelectedSubtitle(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts) {
 			// The track stays selected; nothing delivers it.
 			p.opts.SubtitleStream = -1
-		case p.opts.BurnSubtitles && (browserClient(pr) || plexAndroidClient(pr)):
-			// These players explicitly request a burn when their selected
-			// rendering mode will not draw a soft text track.
-			p.opts.BurnTextSubtitles = true
 		}
 		if androidImageSubtitle(pr, ps.Info, p.opts) {
 			dec := frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{})
@@ -1021,13 +1080,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		}
 		s.burnOnlyShownSubtitle(pr, p, ps.Info)
 		if ps.Info.Video() == nil {
-			directContainers, directCodecs := directMusicProfile(pr.ProfileExtra)
-			if len(directContainers) > 0 {
-				p.caps.Containers = addUnique(p.caps.Containers, directContainers...)
-			}
-			if len(directCodecs) > 0 {
-				p.caps.AudioCodecs = addUnique(p.caps.AudioCodecs, directCodecs...)
-			}
+			applyMusicDirectPlay(&p.caps, pr.ProfileExtra, ps.Info, p.opts.AudioStream)
 			if len(p.caps.HLSContainers) == 0 && len(p.caps.TranscodeAudioCodecs) == 0 {
 				targetContainers, targetCodecs := streamingMusicTarget(pr.ProfileExtra, p.protocol)
 				if len(targetContainers) > 0 {
@@ -1097,7 +1150,6 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	if err != nil {
 		return t, nil, frontend.Decision{}, err
 	}
-	p.mediaID = s.admittedMedia(p)
 	admitted = true
 	if v := ps.Info.Video(); v != nil {
 		s.log.Debug("playback media decision", "key", p.key, "client", pr.ClientID, "device", pr.Device, "model", pr.Model, "platformVersion", pr.PlatformVersion, "video", v.Codec, "videoProfile", v.Profile, "height", v.Height, "bitDepth", v.BitDepth, "transfer", v.ColorTransfer, "dvProfile", v.DolbyVisionProfile, "dvLevel", v.DolbyVisionLevel, "dvCompatibility", v.DolbyVisionCompatibilityID, "kind", dec.Kind, "outputContainer", dec.Container, "videoCopy", dec.VideoCopy, "audioCopy", dec.AudioCopy, "hdrCap", p.caps.HDR10, "dvCap", p.caps.DolbyVision, "profileExtra", pr.ProfileExtra)
@@ -1108,11 +1160,20 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	}
 	s.observePlaybackDecision(ctx, pr, p, ps)
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	s.transcodes.put(&transcodeEntry{
+	next := &transcodeEntry{
 		id: p.sessionID, playID: ps.ID, playbackID: pr.SessionID, userID: pr.User.ID, clientID: pr.ClientID, key: p.key,
 		requested: requested,
 		decision:  dec, info: ps.Info, subtitle: subtitle, caps: p.caps, opts: p.opts, offset: p.offset, updatedAt: s.now(),
-	})
+	}
+	if old, ok := s.transcodes.get(next.id); ok && old.started &&
+		old.requested.protocol == "hls" && next.requested.protocol == "hls" &&
+		old.key == next.key && old.userID == next.userID && old.clientID == next.clientID &&
+		(old.playbackID == next.playbackID || next.playbackID == "") {
+		next.started, next.offset, next.playbackID = true, old.offset, old.playbackID
+		next.requested.restartEncoder = old.requested.restartEncoder || old.playID != next.playID ||
+			!next.requested.sameSettings(entryExpectedStart(old)) || !reflect.DeepEqual(next.opts, old.opts)
+	}
+	s.transcodes.put(next)
 	return t, ps, dec, nil
 }
 
@@ -1277,7 +1338,9 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	}
 	// Wait for the result instead of converting slow preparation to an error.
 	// A genuine failure is answered now so admission does not repeat the search.
-	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), "", false); err != nil {
+	// A restart after a track change waits for the release being watched.
+	release, exact := s.restartRelease(s.playIdentityFor(pr, p.key), "")
+	if _, err := pw.PrepareWithin(p.sourceDecisionContext(ctx), decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), release, exact); err != nil {
 		return t, err
 	}
 	return nil, nil
@@ -1295,7 +1358,7 @@ func (s *Server) decisionError(ctx context.Context, pr *Request, t *frontend.Tit
 	s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), msg)
 	mc := libraryContainer()
 	if t != nil {
-		mc = s.itemContainer(t.Type)
+		mc = s.titleContainer(ctx, t)
 		md := s.metadata(ctx, pr, t, renderOpts{detail: true})
 		decisionItem(&md) // shaped and typed like a successful decision's item
 		mc.Metadata = []model.Metadata{md}
@@ -1344,7 +1407,7 @@ func decisionItem(md *model.Metadata) {
 }
 
 func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend.Title, ps *frontend.PlaySession, dec frontend.Decision, p playRequest) *model.MediaContainer {
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true})
 	decisionItem(&md)
 	// With hasMDE=1 and direct play allowed, the client's own decision
@@ -1368,7 +1431,7 @@ func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend
 	// change, and answering direct play makes it keep ranging the original
 	// part instead of calling start (#420).
 	belowSource := !dec.VideoCopy && qualityBelowSource(p.caps, ps.Info)
-	mdeDirect := p.mde && p.opts.DirectPlay && !belowSource && !dec.StripDolbyVision && !(plexAndroidClient(pr) && dec.BurnSubtitles) && (!pm4k || dec.Kind == frontend.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
+	mdeDirect := p.mde && p.opts.DirectPlay && !belowSource && !dec.StripDolbyVision && !dec.BurnSubtitles && (!pm4k || dec.Kind == frontend.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
 		!(onDemandSession(ps) && (mustConvert || (p.opts.DirectStream && dec.Kind != frontend.DecisionDirectPlay)))
 	shown := dec
 	if mdeDirect {
@@ -1482,9 +1545,12 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		if p.mediaID != int64(t.Key) {
 			m.ID = p.mediaID
 			m.Part[0].ID = p.mediaID
-			m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", p.mediaID, stamp, containerExt(m.Container))
+			m.Part[0].Key = mediaPartKey(p.mediaID, stamp, info)
 		}
 		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
+	}
+	if ps.OriginalRevision != "" {
+		m.Part[0].Key += "?sourceRevision=" + ps.OriginalRevision
 	}
 	if ps.Resolution != nil && s.trickplayAvailable(frontend.TrickplayCacheKey(ps)) {
 		m.Part[0].Indexes = "sd"
@@ -1877,6 +1943,9 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	if s.handleExtraPlayback(w, r) {
 		return
 	}
+	if !s.admitStart(w, r) {
+		return
+	}
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	unlockOwner, locked := s.lockPlaybackRequest(w, r)
@@ -1896,14 +1965,9 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logPlaybackStart(r, p)
 	if !s.decisionArmed(pr, p.key) {
-		if tt := chi.URLParam(r, "ttype"); tt == "audio" || tt == "music" {
-			owner := decisionOwner(pr)
-			owner.Generation = p.sessionID
-			s.decisionArms.Arm(owner, p.key)
-		} else {
-			writePlaybackStatus(w, http.StatusBadRequest)
-			return
-		}
+		// admitStart decided; a stop since then ended this delivery.
+		writePlaybackStatus(w, http.StatusBadRequest)
+		return
 	}
 	unlockEncoder, lockErr := s.lockEncoder(ctx, p.sessionID)
 	if lockErr != nil {
@@ -2005,7 +2069,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		return dec
 	})
 	if existing, ok := s.plexHLSSession(p.sessionID); ok && existing != nil {
-		if entry.started && entry.offset == p.offset {
+		if entry.started && !entry.requested.restartEncoder && entry.offset == p.offset {
 			dec = liveSessionDecision(existing, dec)
 			s.rebindSessionTranscode(entry)
 			s.notePlexEncoder(p.sessionID, frontend.StreamHLS, dec, p.offset)
@@ -2020,7 +2084,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	if dec.VideoCopy {
 		resumeHint = s.resumeStartHint(ctx, pr, p, entry, priorEntry)
 	}
-	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
+	hs, err := s.startPlexHLS(ctx, pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
 		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,
@@ -2335,8 +2399,8 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if s.liveTVEnabled() && pr.User != nil && id != "" {
-			if liveID, le, ok := s.liveManifests.lookup(id); ok && le.userID == pr.User.ID {
+		if s.svc().liveTV != nil && pr.User != nil && id != "" {
+			if liveID, le, ok := s.liveManifests.lookup(id); ok && le.userID == pr.User.ID && (s.liveTVEnabled() || s.isCatchUpSession(pr.User, liveID)) {
 				s.liveManifests.dropByID(liveID)
 				_ = s.svc().liveTV.Stop(r.Context(), liveID, pr.User)
 				w.WriteHeader(http.StatusOK)
@@ -2391,6 +2455,7 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 		// Retire a superseded encoder without releasing that prepared source,
 		// including stops that omit the external playback identifier.
 		superseded := s.playbackOwners.Stale(e.userID, e.clientID, e.key, e.playbackID)
+		s.trackRestarts.stopped(playIdentityKey{userID: e.userID, clientID: e.clientID, key: e.key}, s.liveRelease(e.userID, e.clientID, e.key), s.now())
 		// Another encoder, or a replacement decision, still owns this source.
 		// Broker Stop would release it. The last encoder stops the broker
 		// session that owns the source.
@@ -2480,7 +2545,7 @@ func liveSessionDecision(hs frontend.HLSSession, fallback frontend.Decision) fro
 }
 
 func (s *Server) transcodeEntryLive(te *transcodeEntry) bool {
-	if te == nil || !te.started || te.failErr != nil {
+	if te == nil || !te.started {
 		return false
 	}
 	if s.transcoder() != nil || s.broker() != nil {
@@ -3244,7 +3309,9 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.observeClientAdmission(pr, caps)
-		ps, err = s.prepareForRelease(ctx, pr.User, key, caps, releaseID)
+		// A restart after a track change keeps the release being watched.
+		prepareRelease, exact := s.restartRelease(s.playIdentityFor(pr, key), releaseID)
+		ps, err = s.prepareForRelease(ctx, pr.User, key, caps, prepareRelease, exact)
 		if err != nil {
 			s.log.Info("direct play failed", "key", key, "reason", playbackMessage(err), "err", err)
 			s.writePartErr(w, r, pr, err)
@@ -3270,6 +3337,9 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			release = ps.Resolution.Release.ID
 		}
 		s.playIDs.admit(s.playIdentityFor(pr, key), media, release, !ok, s.now())
+		if !ok {
+			s.trackRestarts.admitted(s.playIdentityFor(pr, key), releaseID, release, s.now())
+		}
 		s.playbackOwners.Bind(pr.User.ID, pr.ClientID, key, pr.SessionID, ps.ID, false, s.now())
 		sessionID := pr.SessionID
 		if sessionID == "" {
@@ -3281,6 +3351,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		}
 		partPlay.opts.DirectPlay = true
 		partPlay.opts.DirectStream = true
+		applyMusicDirectPlay(&partPlay.caps, pr.ProfileExtra, ps.Info, -1)
 		// A part range of a playback that is already on the broker must not
 		// open a second session. That open supersedes the live encoder.
 		already := false
@@ -3330,14 +3401,31 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 	}
 	downloadServed = true
 	cw := s.newCountWriter(w, r)
-	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
+	q := parts.Request(r)
+	var recoverOriginal func()
+	if reader, ok := s.broker().(frontend.OriginalRangeReader); ok && !download {
+		if rt := s.brokerRuntime(); rt != nil {
+			access := s.plexAccess(pr)
+			if id, err := rt.PlexSessionForSource(q.Context(), access, key, ps.ID); err == nil {
+				request := reader.OriginalRange(q.Context(), access, id, releaseID, q.URL.Query().Get("sourceRevision"))
+				if recover := request.Lost; recover != nil {
+					request.Lost = func() { recoverOriginal = recover }
+					q = q.WithContext(frontend.WithOriginalRange(q.Context(), request))
+				}
+			}
+		}
+	}
+	s.plexSources().ServePart(cw, q, ps.ID)
 	cw.finish()
+	if recoverOriginal != nil {
+		recoverOriginal()
+	}
 }
 
 // Part acquisition failures distinguish an absent provider file from a failed
 // upstream transport; the conversion start routes retain their own contract.
 func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Request, err error) {
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) || errors.Is(err, frontend.ErrArchiveUnstreamable) || psePartTerminal(err) {
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) || errors.Is(err, frontend.ErrArchiveUnstreamable) || psePartTerminal(err) || errors.As(err, new(*frontend.IndexersPausedError)) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
@@ -3465,6 +3553,11 @@ func (s *Server) handlePartSelect(w http.ResponseWriter, r *http.Request) {
 		}
 		s.playIDs.pickSubtitle(s.playIdentityFor(pr, frontend.RatingKey(id)), picked, s.now())
 	}
+	if !key.IsPluginKey() && (audio != nil || audioDefault || sub != nil || clearSub || subDefault) {
+		// The client restarts playback for the new track; that restart
+		// keeps the release being watched (track_restart.go).
+		s.trackRestarts.pin(s.playIdentityFor(pr, key), s.liveRelease(pr.User.ID, pr.ClientID, key), s.now())
+	}
 	s.rememberStreamRequest(r, pr.User, frontend.RatingKey(id))
 	w.WriteHeader(http.StatusOK)
 }
@@ -3516,6 +3609,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		writeHTTPError(w, status)
+		return
+	}
+	if binding.Info.Type == "lyrics" {
+		s.serveLyricStream(w, r, pr.User, binding.Key)
 		return
 	}
 	// Embedded tracks cannot be removed from the media bytes. PMS accepts

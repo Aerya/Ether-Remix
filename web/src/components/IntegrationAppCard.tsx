@@ -26,6 +26,7 @@ import { t } from "../i18n";
  *   enabled?: boolean;
  *   onToggle?: (enabled: boolean) => void;
  *   configureHref?: string;
+ *   onConfigure?: () => void;
  *   configureLabel?: string;
  *   toggleLabel?: string;
  *   label?: string;
@@ -66,6 +67,8 @@ interface IntegrationAppCardProps {
   onToggle?: (enabled: boolean) => void;
   /** In-app route for the configure control, for example `/apps/plex`. */
   configureHref?: string;
+  /** Open the integration's drawer in place. */
+  onConfigure?: () => void;
   /** Visible configure label. Defaults to "Configure". */
   configureLabel?: string;
   /**
@@ -105,6 +108,7 @@ export function IntegrationAppCard({
   enabled,
   onToggle,
   configureHref,
+  onConfigure,
   configureLabel,
   toggleLabel,
   label,
@@ -114,6 +118,11 @@ export function IntegrationAppCard({
 }: IntegrationAppCardProps) {
   const showSwitch = typeof onToggle === "function";
   const switchDisabled = disabled || busy;
+  const configureContent = (configureHref || onConfigure) && (
+    <>
+      {configureLabel ?? t("Configure")} <ArrowRight size={14} />
+    </>
+  );
   return (
     <article
       id={identity.id}
@@ -145,13 +154,22 @@ export function IntegrationAppCard({
         <p>{description}</p>
         {details}
       </div>
-      {configureHref || action ? (
+      {configureContent || action ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {action}
           {configureHref ? (
             <Link to={configureHref} className={cn(configureClass)}>
-              {configureLabel ?? t("Configure")} <ArrowRight size={14} />
+              {configureContent}
             </Link>
+          ) : onConfigure ? (
+            <button
+              type="button"
+              className={cn(configureClass)}
+              disabled={busy}
+              onClick={onConfigure}
+            >
+              {configureContent}
+            </button>
           ) : null}
         </div>
       ) : null}

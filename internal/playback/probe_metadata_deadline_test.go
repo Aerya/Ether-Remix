@@ -171,17 +171,21 @@ func TestPlayProbeMetadataWaitCap(t *testing.T) {
 	if got := probeMetadataWait(longCtx); got != maxProbeMetadataWait {
 		t.Fatalf("browsing probeMetadataWait(30s) = %s, want %s", got, maxProbeMetadataWait)
 	}
-	// Play-intent re-ask wait allows up to 12 s (exceeding the 4 s browsing cap).
+	// A play-intent read never holds a client longer than a browsing probe;
+	// while the source is still being searched it waits less still.
+	if maxPlayProbeMetadataWait > maxProbeMetadataWait || playProbeSearchWait >= maxPlayProbeMetadataWait {
+		t.Fatalf("play-intent waits %s / search %s exceed the browsing cap %s", maxPlayProbeMetadataWait, playProbeSearchWait, maxProbeMetadataWait)
+	}
 	if got := playProbeMetadataWait(longCtx); got != maxPlayProbeMetadataWait {
 		t.Fatalf("playProbeMetadataWait(30s) = %s, want %s", got, maxPlayProbeMetadataWait)
 	}
 	if got := playProbeMetadataWait(context.Background()); got != maxPlayProbeMetadataWait {
 		t.Fatalf("playProbeMetadataWait(background) = %s, want %s", got, maxPlayProbeMetadataWait)
 	}
-	midCtx, cancelMid := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancelMid()
-	if got := playProbeMetadataWait(midCtx); got <= maxProbeMetadataWait || got > 8*time.Second {
-		t.Fatalf("playProbeMetadataWait(8s) = %s, want in (%s, 8s]", got, maxProbeMetadataWait)
+	shortCtx, cancelShort := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelShort()
+	if got := playProbeMetadataWait(shortCtx); got <= 0 || got > 2*time.Second {
+		t.Fatalf("playProbeMetadataWait(2s) = %s, want in (0, 2s]", got)
 	}
 }
 

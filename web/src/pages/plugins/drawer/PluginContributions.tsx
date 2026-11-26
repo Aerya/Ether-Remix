@@ -1,4 +1,4 @@
-import { pluginCollectionHref } from "../../collections/links";
+import { addRowHref } from "../../../lib/recommendations";
 import { Badge, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
 import {
   ArrowUpRight,
@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { addonsApi } from "../../../components/addons/addons";
+import { settingHref } from "../../../components/SettingFocus";
 import { t, tn } from "../../../i18n";
 import { apiFetch, errorMessage } from "../../../lib/api";
 import { invalidateRegistry, textOf, useRegistry } from "../../../lib/extend";
@@ -43,9 +44,9 @@ const META: Record<
   list_source: {
     icon: Library,
     title: () => t("Catalogues"),
-    about: () => t("Lists that fill collections and Home rows, refreshed in the background."),
-    href: "/collections/new",
-    link: () => t("Make a collection"),
+    about: () => t("Lists you can add as rows on Home or a library page, or save as a collection."),
+    href: "/recommendations",
+    link: () => t("Open Recommendations"),
   },
   debrid_provider: {
     icon: Film,
@@ -67,7 +68,7 @@ const META: Record<
     title: () => t("Subtitles"),
     about: () =>
       t("Offered beside your other subtitle providers; a file downloads only when picked."),
-    href: "/playback/subtitles",
+    href: settingHref("/services/overview", "subtitle-providers"),
     link: () => t("Open subtitle providers"),
   },
   metadata: {
@@ -254,11 +255,7 @@ function PartRows({
                       : t("Not used yet")
                   }
                   action={
-                    <RowLink
-                      to={pluginCollectionHref(d.id, textOf(d.label))}
-                      label={t("Make a collection")}
-                      onClose={onClose}
-                    />
+                    <RowLink to={addRowHref(d.id)} label={t("Add as a row")} onClose={onClose} />
                   }
                 />
               );

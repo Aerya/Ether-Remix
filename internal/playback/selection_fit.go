@@ -51,7 +51,7 @@ func (m *Manager) sessionFitsSelection(s *session, caps core.ClientCaps, prefer 
 
 // promotePreparedLocked moves a deferred preparation onto id and returns any
 // sessions it supersedes on this client surface. Caller holds m.mu.
-func (m *Manager) promotePreparedLocked(id, variantID identity, prep *session) []string {
+func (m *Manager) promotePreparedLocked(id, variantID identity, prep *session, replaceOtherTitles bool) []string {
 	if prep == nil || prep.closed || m.sessions[prep.id] != prep {
 		return nil
 	}
@@ -70,6 +70,9 @@ func (m *Manager) promotePreparedLocked(id, variantID identity, prep *session) [
 	prep.mu.Lock()
 	prep.preparedOnly = false
 	prep.mu.Unlock()
+	if !replaceOtherTitles {
+		return replaced
+	}
 	for _, o := range m.sessions {
 		if o != prep && o.ident.userID == id.userID && o.ident.clientID == id.clientID && o.ident.surface == id.surface && o.ident.key != id.key {
 			replaced = append(replaced, o.id)

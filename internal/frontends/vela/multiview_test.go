@@ -38,10 +38,12 @@ type mvBrokerLiveFake struct {
 	active  map[string]core.ClientCaps
 	stopped []string
 	capErr  func(channel string, caps core.ClientCaps) error
+	windows map[string]frontend.LiveWindow
+	onTune  func(id, channel string, caps core.ClientCaps)
 }
 
 func newMVBrokerLiveFake() *mvBrokerLiveFake {
-	return &mvBrokerLiveFake{active: map[string]core.ClientCaps{}}
+	return &mvBrokerLiveFake{active: map[string]core.ClientCaps{}, windows: map[string]frontend.LiveWindow{}}
 }
 
 func (*mvBrokerLiveFake) Allowed(_ context.Context, _ *core.Viewer, ch string) error {
@@ -67,6 +69,9 @@ func (l *mvBrokerLiveFake) TuneMedia(_ context.Context, _ *core.Viewer, ch strin
 	l.seq++
 	id := fmt.Sprintf("live-%d", l.seq)
 	l.active[id] = caps
+	if l.onTune != nil {
+		l.onTune(id, ch, caps)
+	}
 	h := 1080
 	if caps.MaxHeight > 0 && caps.MaxHeight < h {
 		h = caps.MaxHeight
@@ -90,6 +95,19 @@ func (l *mvBrokerLiveFake) Stop(_ context.Context, _ *core.Viewer, id string) er
 	delete(l.active, id)
 	l.stopped = append(l.stopped, id)
 	return nil
+}
+
+func (l *mvBrokerLiveFake) LiveWindow(_ context.Context, id string) (frontend.LiveWindow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.active[id]; !ok {
+		return frontend.LiveWindow{}, core.ErrNotFound
+	}
+	w, ok := l.windows[id]
+	if !ok {
+		return frontend.LiveWindow{}, core.ErrNotAvailable
+	}
+	return w, nil
 }
 
 func (l *mvBrokerLiveFake) count() int {
@@ -226,6 +244,7 @@ func newVelaMultiviewHarness(t *testing.T, live *mvBrokerLiveFake) (http.Handler
 		Sessions:     sessions.BindSurface(broker, "vela"),
 		LiveTV:       mvLiveGuideFake{},
 		Capabilities: frontendtest.Capabilities{},
+		Now:          func() time.Time { return time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC) },
 	}
 	inst, err := (Frontend{DB: db, ReplayKey: make([]byte, 32)}).Mount(ctx, host)
 	if err != nil {
@@ -898,4 +917,187 @@ func TestVelaMultiviewDeadIPTVChannelMatchesSingleChannelErrorAndOmitsFocused(t 
 	if wMissing.Code != http.StatusNotFound || missingDoc["error"].(map[string]any)["code"] != "not_found" {
 		t.Fatalf("missing multiview group = %d %#v, want 404 not_found", wMissing.Code, missingDoc)
 	}
+}
+
+func TestVelaMultiviewReplanKeepsLiveEdgeAndPositionAligned(t *testing.T) {
+	live := newMVBrokerLiveFake()
+	const segmentSec = 2.0
+	const maxBehindSec = 3 * segmentSec
+
+	// Simulate:
+	// - live-1 (480p): already running 360 s into a broadcast ([336, 360])
+	// - live-2 (720p): fresh replan rendition with 3 segments buffered ([0, 6], seq 181)
+	// - live-3 (480p): fresh return rendition after old 480p released ([0, 6], seq 242)
+	// - live-4 (1080p): joining an already-running shared rendition ([456, 480], seq 228)
+	plannedWindows := map[string]frontend.LiveWindow{
+		"live-1": {Anchor: frontend.LiveAnchor{MediaSequence: 168, WindowStartSeconds: 336}, LiveEdgeSeconds: 360},
+		"live-2": {Anchor: frontend.LiveAnchor{MediaSequence: 181, WindowStartSeconds: 0}, LiveEdgeSeconds: 6},
+		"live-3": {Anchor: frontend.LiveAnchor{MediaSequence: 242, WindowStartSeconds: 0}, LiveEdgeSeconds: 6},
+		"live-4": {Anchor: frontend.LiveAnchor{MediaSequence: 228, WindowStartSeconds: 456}, LiveEdgeSeconds: 480},
+	}
+	live.onTune = func(id, _ string, _ core.ClientCaps) {
+		if w, ok := plannedWindows[id]; ok {
+			live.windows[id] = w
+		}
+	}
+
+	h, _ := newVelaMultiviewHarness(t, live)
+	do := func(method, path string, payload any) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		var body *bytes.Reader
+		if payload != nil {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.NewReader(b)
+		} else {
+			body = bytes.NewReader(nil)
+		}
+		r := httptest.NewRequest(method, path, body)
+		r.Header.Set("Authorization", "Bearer tok-1")
+		r.Header.Set("X-Vela-Device-Id", "web-1")
+		r.Header.Set("X-Vela-Version", "0.2.45")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var doc map[string]any
+		if w.Body.Len() > 0 {
+			_ = json.Unmarshal(w.Body.Bytes(), &doc)
+		}
+		return w, doc
+	}
+	assertAligned := func(label string, plan map[string]any, wantSeq int64, wantStart, wantEdge float64) {
+		t.Helper()
+		liveDoc, ok := plan["live"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing plan.live: %#v", label, plan)
+		}
+		anchorDoc, ok := liveDoc["anchor"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing plan.live.anchor: %#v", label, liveDoc)
+		}
+		seq := int64(anchorDoc["mediaSequence"].(float64))
+		start := liveDoc["windowStartSeconds"].(float64)
+		edge := liveDoc["liveEdgeSeconds"].(float64)
+		pos := plan["positionSeconds"].(float64)
+		if seq != wantSeq || start != wantStart || edge != wantEdge {
+			t.Fatalf("%s: live={seq:%d start:%.2f edge:%.2f}, want {seq:%d start:%.2f edge:%.2f}", label, seq, start, edge, wantSeq, wantStart, wantEdge)
+		}
+		behind := edge - pos
+		if behind < -1e-6 || behind > maxBehindSec+1e-6 {
+			t.Fatalf("%s: liveEdgeSeconds - positionSeconds = %.2fs (edge=%.2f pos=%.2f start=%.2f), want within [0, %.2fs]", label, behind, edge, pos, start, maxBehindSec)
+		}
+		if pos < start-1e-6 || pos > edge+1e-6 {
+			t.Fatalf("%s: positionSeconds %.2f outside live window [%.2f, %.2f]", label, pos, start, edge)
+		}
+	}
+
+	webClient := map[string]any{
+		"device":      map[string]any{"id": "web-1", "name": "Chrome", "platform": "web", "appVersion": "0.2.45"},
+		"containers":  []string{"mp4", "webm"},
+		"videoCodecs": []string{"h264"},
+		"audioCodecs": []string{"aac"},
+		"hls":         false,
+		"mse":         true,
+		"maxHeight":   1080,
+	}
+
+	w, gDoc := do(http.MethodPost, "/vela/v0/multiview", map[string]any{"device": "web-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /multiview = %d %s", w.Code, w.Body.String())
+	}
+	groupID := gDoc["groupId"].(string)
+
+	// 1. Open tile 0 at 480p on an already-running broadcast rendition [336, 360].
+	w, playDoc := do(http.MethodPost, "/vela/v0/playback", map[string]any{
+		"idempotencyKey": "replan-timeline-open",
+		"channelId":      "showcase-chroma-80",
+		"client":         webClient,
+		"multiview":      map[string]any{"groupId": groupID, "tile": 0, "maxHeight": 480},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("open tile = %d %s", w.Code, w.Body.String())
+	}
+	sessID := playDoc["sessionId"].(string)
+	assertAligned("initial 480p join", playDoc, 168, 336, 360)
+
+	// Player observes playback 3.4 s behind the 360 s live edge.
+	w, _ = do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/observations", map[string]any{
+		"idempotencyKey":   "obs-1",
+		"sourceGeneration": 1,
+		"seekGeneration":   1,
+		"sequence":         1,
+		"positionSeconds":  356.6,
+		"state":            "playing",
+		"selectedPathId":   "primary",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("observe 480p = %d %s", w.Code, w.Body.String())
+	}
+
+	// 2. Replan 480p -> 720p (fresh rendition [0, 6]): edge, window start and
+	// position stay on the new playlist's timeline (3.4 s behind, not 363 s).
+	w, replan720 := do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 720,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan 720p = %d %s", w.Code, w.Body.String())
+	}
+	assertAligned("replan 480p->720p", replan720, 181, 0, 6)
+
+	// Player reloads the rotated 720p URL and reports position 2.6 s on gen 2.
+	w, _ = do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/observations", map[string]any{
+		"idempotencyKey":   "obs-2",
+		"sourceGeneration": 2,
+		"seekGeneration":   2,
+		"sequence":         2,
+		"positionSeconds":  2.6,
+		"state":            "playing",
+		"selectedPathId":   "primary",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("observe 720p = %d %s", w.Code, w.Body.String())
+	}
+	w, snap720 := do(http.MethodGet, "/vela/v0/sessions/"+sessID, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("snapshot 720p = %d %s", w.Code, w.Body.String())
+	}
+	assertAligned("after 720p observation", snap720["plan"].(map[string]any), 181, 0, 6)
+
+	// 3. Replan back to 480p grid (fresh rendition [0, 6]): edge minus position
+	// stays ~3.4 s rather than jumping to 486 s.
+	w, replan480 := do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 480,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan 480p = %d %s", w.Code, w.Body.String())
+	}
+	assertAligned("replan 720p->480p", replan480, 242, 0, 6)
+
+	// Player reports position 2.6 s on gen 3.
+	w, _ = do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/observations", map[string]any{
+		"idempotencyKey":   "obs-3",
+		"sourceGeneration": 3,
+		"seekGeneration":   3,
+		"sequence":         3,
+		"positionSeconds":  2.6,
+		"state":            "playing",
+		"selectedPathId":   "primary",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("observe 480p return = %d %s", w.Code, w.Body.String())
+	}
+
+	// 4. Replan onto an already-running shared 1080p rendition ([456, 480]):
+	// positionSeconds rebases onto [456, 480] so behind-live stays ~3.4 s.
+	w, replan1080 := do(http.MethodPost, "/vela/v0/sessions/"+sessID+"/commands", map[string]any{
+		"kind":      "replan",
+		"maxHeight": 1080,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replan 1080p shared = %d %s", w.Code, w.Body.String())
+	}
+	assertAligned("replan 480p->shared 1080p", replan1080, 228, 456, 480)
 }

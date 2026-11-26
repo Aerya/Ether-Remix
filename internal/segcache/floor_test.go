@@ -40,9 +40,14 @@ func TestMinFreeBytes(t *testing.T) {
 }
 
 func TestFreeSpaceFloorEvictsOldestUnprotected(t *testing.T) {
-	c := openT(t, t.TempDir(), 0) // unlimited budget
-	now := time.Unix(1_800_000_000, 0)
-	c.now = func() time.Time { return now }
+	// Install the clock before the eviction worker starts.
+	var clock atomic.Int64
+	clock.Store(time.Unix(1_800_000_000, 0).UnixNano())
+	c, err := openLocal(t.TempDir(), 0, nil, func() time.Time { return time.Unix(0, clock.Load()) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
 	vol := &fakeVolume{total: 1000} // floor: 50 bytes
 	vol.cache = func() int64 { used, _ := c.Usage(); return used }
 	c.SetDiskUsage(vol.usage)
@@ -63,14 +68,14 @@ func TestFreeSpaceFloorEvictsOldestUnprotected(t *testing.T) {
 	}
 	// Another program fills the disk: 700 + 200 cache leaves 100 free.
 	vol.other.Store(700)
-	now = now.Add(floorStatEvery)
+	clock.Add(int64(floorStatEvery))
 	c.evict()
 	if used, _ := c.Usage(); used != 200 {
 		t.Fatalf("evicted above the floor: %d", used)
 	}
 	// 780 + 200 leaves 20 free, 30 short of the 50-byte floor.
 	vol.other.Store(780)
-	now = now.Add(floorStatEvery)
+	clock.Add(int64(floorStatEvery))
 	c.evict()
 	if used, _ := c.Usage(); used != 170 {
 		t.Fatalf("used %d after floor eviction, want 170", used)
@@ -97,7 +102,7 @@ func TestFreeSpaceFloorEvictsOldestUnprotected(t *testing.T) {
 	}
 	// The disk fills completely: everything unprotected goes, pins stay.
 	vol.other.Store(1000)
-	now = now.Add(floorStatEvery)
+	clock.Add(int64(floorStatEvery))
 	c.evict()
 	if used, _ := c.Usage(); used != 50 {
 		t.Fatalf("used %d, want only the pinned 50", used)

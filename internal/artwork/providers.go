@@ -51,7 +51,7 @@ func (im *Images) PosterGeneration() uint64 {
 }
 
 // GetPoster never sends provider URLs to a client. Missing IDs, unsupported
-// title kinds and every provider failure use the original TMDB artwork.
+// title kinds and provider failures use the original catalogue artwork.
 func (im *Images) GetPoster(ctx context.Context, t *core.Title, fallback string, w int) ([]byte, string, error) {
 	p := im.posterSettings()
 	if p.Enabled && p.Validate() == nil {
@@ -79,6 +79,9 @@ func (im *Images) GetPoster(ctx context.Context, t *core.Title, fallback string,
 				}
 			}
 		}
+	}
+	if strings.HasPrefix(fallback, "http://") || strings.HasPrefix(fallback, "https://") {
+		return im.GetUntrustedURL(ctx, fallback)
 	}
 	return im.Get(ctx, fallback, w)
 }

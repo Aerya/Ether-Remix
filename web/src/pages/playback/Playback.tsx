@@ -1,12 +1,13 @@
 import * as S from "../settings/schema";
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ConfigSection } from "../../components/ConfigSection";
 import { SectionHeading } from "../../components/feedback";
-import { DomainPage, useRouteTab } from "../../components/layout";
+import { DomainPage, SubtabNav, useRouteTab } from "../../components/layout";
 import { localized, t, tx } from "../../i18n";
 import { useLocale } from "../../i18n/react";
+import { settingHref } from "../../components/SettingFocus";
 import { DeviceCapabilities } from "./Devices";
 import {
   HardwareStatus,
@@ -18,14 +19,17 @@ import {
 import { MarkerCoverage } from "./Markers";
 import { SkipButtons } from "./SkipButtons";
 import { HouseholdAudio } from "./HouseholdAudio";
-import { SubtitleProviders } from "./SubtitleProviders";
 import { Prerolls } from "./Prerolls";
 import { SubtitleTiming } from "./SubtitleTiming";
+
+/** Where subtitle providers are set up: their group of cards in Integrations. */
+const SUBTITLE_PROVIDERS_HREF = settingHref("/services/overview", "subtitle-providers");
 
 const TABS = localized(
   () =>
     [
-      { key: "subtitles", label: t("Audio & subtitles") },
+      { key: "audio", label: t("Audio") },
+      { key: "subtitles", label: t("Subtitles") },
       { key: "transcoding", label: t("Streams & transcoding") },
       { key: "devices", label: t("App compatibility") },
       { key: "extras", label: t("Extras") },
@@ -52,12 +56,18 @@ const VIDEO_TRANSCODING_OFF_DISABLED = new Set([
 ]);
 
 /**
- * How a chosen release reaches the screen: audio and subtitles, streams and
+ * How a chosen release reaches the screen: audio, subtitles, streams and
  * transcoding, what each app can play, and what plays around the title.
  * Forms stay mounted across tabs, so edits on several tabs save together.
  */
 export default function Playback() {
   const tab = useRouteTab(TABS);
+  const { section } = useParams();
+  const navigate = useNavigate();
+  // Subtitles splits into how subtitles behave (settings) and the tool that
+  // repairs a downloaded file (timing). The settings draft stays mounted on
+  // both, so an unsaved change survives a look at the tool.
+  const subtitlesPart = tab === "subtitles" && section === "timing" ? "timing" : "settings";
   const { locale } = useLocale();
   const { dashboard } = useApp();
   const hw = useHardwareStatus(tab === "transcoding");
@@ -126,24 +136,36 @@ export default function Playback() {
         label={t("Up next")}
       />
       {tab === "subtitles" ? (
-        <>
-          <HouseholdAudio />
-          <p className="max-w-3xl text-sm text-fg-muted">
-            {tx(
-              "When someone turns subtitles on and the file has none, Ether downloads them from OpenSubtitles. The account is set up in {link}.",
-              {
-                link: (
-                  <Link to="/services/overview" className="text-primary underline">
-                    {t("Integrations")}
-                  </Link>
-                ),
-              },
-            )}
-          </p>
-          <SubtitleProviders />
-          <SubtitleTiming />
-        </>
+        <SubtabNav
+          ariaLabel={t("Subtitles sections")}
+          active={subtitlesPart}
+          onSelect={(key) =>
+            navigate(key === "timing" ? "/playback/subtitles/timing" : "/playback/subtitles")
+          }
+          tabs={[
+            { key: "settings", label: t("Settings") },
+            { key: "timing", label: t("Timing fixes") },
+          ]}
+        />
       ) : null}
+      {tab === "audio" || tab === "subtitles" ? (
+        <HouseholdAudio part={tab} hidden={tab === "subtitles" && subtitlesPart === "timing"} />
+      ) : null}
+      {tab === "subtitles" && subtitlesPart === "settings" ? (
+        <p className="max-w-3xl text-sm text-fg-muted">
+          {tx(
+            "Missing subtitles are downloaded from the subtitle providers you set up in {link}.",
+            {
+              link: (
+                <Link to={SUBTITLE_PROVIDERS_HREF} className="font-medium text-primary underline">
+                  {t("Integrations")}
+                </Link>
+              ),
+            },
+          )}
+        </p>
+      ) : null}
+      {tab === "subtitles" && subtitlesPart === "timing" ? <SubtitleTiming /> : null}
     </DomainPage>
   );
 }

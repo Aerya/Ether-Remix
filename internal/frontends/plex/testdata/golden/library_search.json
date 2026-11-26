@@ -29,17 +29,7 @@
             {
               "id": 1000000000000550,
               "duration": 8340000,
-              "bitrate": 7600,
-              "width": 1920,
-              "height": 1080,
-              "aspectRatio": 1.78,
-              "audioChannels": 6,
-              "audioCodec": "eac3",
-              "videoCodec": "h264",
-              "videoResolution": "1080",
               "container": "mkv",
-              "videoFrameRate": "24p",
-              "videoProfile": "high",
               "hasVoiceActivity": false,
               "Part": [
                 {
@@ -47,9 +37,7 @@
                   "key": "/library/parts/1000000000000550/1790812800/file.mkv",
                   "duration": 8340000,
                   "file": "/ether/Fjord Harbor (1999).mkv",
-                  "size": 8000000000,
-                  "container": "mkv",
-                  "videoProfile": "high"
+                  "container": "mkv"
                 }
               ]
             }

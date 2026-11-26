@@ -5,6 +5,7 @@ package transcode
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -252,7 +254,7 @@ func (m *Manager) stageExternalSubtitles(dir string, info core.MediaInfo, source
 type Manager struct {
 	textCues     textCueStore
 	slotChanged  chan struct{}
-	slotViewers  int
+	slotViewers  list.List
 	slotHolders  []*transcodeSlot
 	subtitleMu   sync.Mutex
 	continuousWG sync.WaitGroup
@@ -826,6 +828,11 @@ func (m *Manager) transcodeFullLocked(group, except string) bool {
 	return m.cfg.MaxTranscodes > 0 && m.encodingLocked(except) >= m.cfg.MaxTranscodes
 }
 
+func validArchiveInput(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "http" && u.Hostname() == "127.0.0.1" && u.Port() != "" && u.User == nil
+}
+
 // StartHLS implements core.Transcoder. A replacement cannot begin until the
 // prior exact session has completed its process and directory cleanup.
 func (m *Manager) StartHLS(ctx context.Context, req core.HLSRequest) (core.HLSSession, error) {
@@ -871,6 +878,12 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	}
 	if req.InputURL == "" {
 		return nil, errors.New("transcode: StartHLS: empty input URL")
+	}
+	if req.ArchiveInput && !validArchiveInput(req.InputURL) {
+		return nil, core.ErrEncoderInputUnverified
+	}
+	if req.OpenArchiveRange != nil && (!req.ArchiveInput || req.LiveInput || req.Info.Duration <= 0) {
+		return nil, core.ErrEncoderInputUnverified
 	}
 	if req.InputLease != nil && req.LiveInput {
 		// Scoped VOD inputs cannot expand a playlist into provider requests
@@ -961,6 +974,11 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		adapt.FastStart = req.Ramp.Segments > 0
 		adapt.RampSegs, adapt.RampDur = req.Ramp.Segments, req.Ramp.Duration
 	}
+	if req.ArchiveInput {
+		// A sequential range should run to completion without a mode change
+		// or additional preflight readers on its provider connection.
+		adapt.FastStart, adapt.Governor, adapt.Ladder, adapt.LadderUnderCopy = false, false, false, false
+	}
 	if videoOff {
 		// Video transcoding is off for movies and shows: never start encoded
 		// fast-start ramps, governor clamps or lower-bitrate encode rungs.
@@ -971,7 +989,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		// on that same clock; never change the timeline on a VSR fallback.
 		adapt.FastStart = false
 	}
-	atCap := m.transcodeFullLocked(req.MultiviewGroup, req.SessionID)
+	atCap := m.transcodeFullLocked(req.MultiviewGroup, req.SessionID) || m.slotViewers.Len() > 0
 	m.mu.Unlock()
 	id := req.SessionID
 	if id == "" {
@@ -987,7 +1005,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		return nil, err
 	}
 	healTimestamps := false
-	if !videoOff && !(req.LazyStart && req.QualityRungs) && !atCap && proto == core.ProtocolHLS && (d.Container == ContainerMPEGTS || d.Container == ContainerFMP4) {
+	if !req.ArchiveInput && !videoOff && !(req.LazyStart && req.QualityRungs) && !atCap && proto == core.ProtocolHLS && (d.Container == ContainerMPEGTS || d.Container == ContainerFMP4) {
 		if damaged, heal := m.copyDamage(ctx, req, d, life); damaged {
 			healTimestamps = heal
 			d.Kind, d.VideoCopy, d.VideoCodec = core.DecisionTranscode, false, "h264"
@@ -1257,7 +1275,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	// One bounded packet sample provides representative copy bandwidth
 	// and, for a seek, a proven encoded-ramp handover. It cannot establish
 	// the bitrate of future unseen scenes or change a published timeline.
-	if proto == core.ProtocolHLS && req.Resume == nil && req.Ramp.Version == 0 && !ValidCopyTimeline(req) && !req.LiveInput &&
+	if proto == core.ProtocolHLS && req.Resume == nil && req.Ramp.Version == 0 && !ValidCopyTimeline(req) && !req.LiveInput && !req.ArchiveInput &&
 		d.VideoCopy && len(req.Info.Keyframes) == 0 && plan != nil {
 		sample := m.sampleCopyIndex(ctx, req, offset, life)
 		points := sample.points
@@ -1299,27 +1317,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			startSeg = at
 		}
 	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return nil, errors.New("transcode: manager closed")
+	if err := m.admitStartEncoding(ctx, req, life, d.EncodesVideo(req.Info)); err != nil {
+		return nil, err
 	}
-	if !req.LiveInput && d.EncodesVideo(req.Info) && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff()) {
-		m.mu.Unlock()
-		return nil, ErrVideoTranscodingDisabled
-	}
-	if d.EncodesVideo(req.Info) {
-		for m.transcodeFullLocked(req.MultiviewGroup, "") && m.preemptBackgroundLocked() {
-		}
-		if m.transcodeFullLocked(req.MultiviewGroup, "") {
-			n := m.encodingLocked("")
-			m.mu.Unlock()
-			return nil, fmt.Errorf("%w (%d running)", ErrTooManyTranscodes, n)
-		}
-	}
-	life.multiviewGroup = req.MultiviewGroup
-	life.encoding.Store(d.EncodesVideo(req.Info))
-	m.mu.Unlock()
 
 	safe := unsafeID.ReplaceAllString(id, "_")
 	if len(safe) > 48 {
@@ -1343,6 +1343,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	}
 	s := &Session{
 		mediaGeneration:         mediaGeneration,
+		archiveInput:            req.ArchiveInput,
+		archiveTrim:             req.ArchiveTrim,
+		openArchiveRange:        req.OpenArchiveRange,
 		serialRungs:             req.QualityRungs,
 		copyOrigin:              copyOrigin,
 		androidMatroskaHLS:      d.AndroidMatroskaHLS,
@@ -1370,6 +1373,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			liveInput:          req.LiveInput,
 			noVideoTranscode:   req.NoVideoTranscode,
 			liveFromBacklog:    req.LiveInput && req.LiveFromBacklog,
+			liveEndOnEOF:       req.LiveEndOnEOF,
 			loopInput:          len(slateData) > 0,
 			input:              req.InputURL,
 			inputHeaders:       inputHeaders,

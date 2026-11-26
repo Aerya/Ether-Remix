@@ -1,5 +1,6 @@
 import { Bell, Blocks, FolderOpen, Globe, Library, Network, Plug, Puzzle, Tv } from "lucide-react";
 import { createElement, type ReactNode } from "react";
+import { settingHref } from "../../components/SettingFocus";
 import { getLocale, t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
 import { textOf, type Descriptor } from "../../lib/extend";
@@ -88,16 +89,9 @@ export interface ScreenContribution {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
   frontends?: string[];
-  sections?: {
-    id?: string;
-    type: string;
-    title?: string;
-    feed?: string;
-    league?: string;
-    leagues?: { id: string; name: string }[];
-  }[];
+  /** Page id to document file (or renderer variants). */
+  pages?: Record<string, string | string[]>;
 }
 
 export interface PluginFeedHealth {
@@ -138,6 +132,8 @@ export interface PluginScreenFrontendOverview {
   name: string;
   published: boolean;
   reason: string;
+  /** The owner's switch, for document screens and surfaces. */
+  enabled?: boolean;
 }
 
 export interface PluginScreenOverview {
@@ -146,6 +142,9 @@ export interface PluginScreenOverview {
   icon?: string;
   feed?: string;
   frontends: PluginScreenFrontendOverview[];
+  /** "screen" or "surface"; absent on 0.3.19 section screens. */
+  kind?: "screen" | "surface";
+  presentation?: string;
 }
 
 export interface PluginLiveEventCompetitor {
@@ -235,14 +234,23 @@ export interface RuntimeLimits {
   archiveExpandedBytes?: number;
   archiveMembers?: number;
   maxItems?: number;
+  /** Owner limit on titles one sync of each plugin list reads (config only). */
+  listItems?: number;
   memoryBytes: number;
   deadline: string;
   unitBudget: number;
   poolSize?: number;
 }
 
+/** Titles one sync of each plugin list reads: asked for and allowed. */
+export interface ListItemsGrant {
+  requested: number;
+  granted: number;
+}
+
 export interface PluginDetail extends PluginSummary {
   runtimeLimits?: RuntimeLimits;
+  listItems?: ListItemsGrant;
   manifest: PluginManifest;
   permissions: {
     lines: string[];
@@ -279,6 +287,7 @@ export interface PluginDetail extends PluginSummary {
 
 export interface InstallPreview {
   runtimeLimits?: RuntimeLimits;
+  listItems?: ListItemsGrant;
   manifest: PluginManifest;
   /** Manifest summary with any "$t:" reference resolved by the server. */
   summary?: string;
@@ -443,7 +452,20 @@ const LOCAL_REACH_PREFIX = "May reach on your network: ";
 const CONNECTS_PREFIX = "Connects to ";
 const ADDS_SCREEN_PREFIX = "Adds a screen: ";
 
+const LIST_ITEMS_LINE = /^Syncs up to ([\d,]+) titles per list$/;
+
+/** The review line for a list size, from the server's English line. */
+export function listItemsLine(count: number): string {
+  return t("Syncs up to {count} titles per list", {
+    count: new Intl.NumberFormat(getLocale()).format(count),
+  });
+}
+
 export function translatePermissionLine(line: string): string {
+  const listItems = LIST_ITEMS_LINE.exec(line);
+  if (listItems) {
+    return listItemsLine(Number(listItems[1]!.replace(/,/g, "")));
+  }
   if (line.startsWith(LOCAL_REACH_PREFIX)) {
     return t("May reach on your network: {hosts}", {
       hosts: line.slice(LOCAL_REACH_PREFIX.length),
@@ -681,8 +703,8 @@ export function buildPlacements(
         href = "/collections/new";
         break;
       case "rowSource":
-        area = t("Home rows");
-        href = "/home";
+        area = t("Recommendations");
+        href = "/recommendations";
         break;
       case "liveTVSource":
         area = t("Live TV");
@@ -702,6 +724,9 @@ export function buildPlacements(
         href = "/notifications";
         break;
       case "subtitleProvider":
+        area = t("Integrations");
+        href = settingHref("/services/overview", "subtitle-providers");
+        break;
       case "markerSource":
         area = t("Playback");
         href = "/playback";
@@ -788,6 +813,13 @@ function languageOptions(): { value: string; label: string }[] {
   return LANGUAGE_CODES.map((code) => ({ value: code, label: names?.of(code) ?? code }));
 }
 
+interface RawFieldOption {
+  value: string;
+  label: string;
+  hint?: string;
+  description?: string;
+}
+
 interface RawField {
   key?: string;
   name?: string;
@@ -807,9 +839,12 @@ interface RawField {
   step?: number;
   unit?: string;
   numeric?: boolean;
-  options?: { value: string; label: string }[];
+  options?: RawFieldOption[];
+  /** Runtime option source (plugin /ether/options) for select-like fields. */
+  optionsFrom?: string;
   enum?: string[];
   fields?: RawField[];
+  search?: boolean;
 }
 
 /**
@@ -829,7 +864,9 @@ export function selectFieldsNeedingOptions(schema: Record<string, unknown>): str
       if (
         key &&
         (f.kind === "select" || f.kind === "multiSelect") &&
-        (!Array.isArray(f.options) || f.options.length === 0)
+        !f.search &&
+        (!Array.isArray(f.options) || f.options.length === 0) &&
+        (!Array.isArray(f.enum) || f.enum.length === 0)
       ) {
         out.push(key);
       }
@@ -842,7 +879,7 @@ export function selectFieldsNeedingOptions(schema: Record<string, unknown>): str
 
 function toFieldDef(
   raw: RawField,
-  dynamicOptions: Record<string, { value: string; label: string }[]>,
+  dynamicOptions: Record<string, RawFieldOption[]>,
   viewers: Viewer[] | null,
   currentValue: unknown,
 ): FieldDef | null {
@@ -920,8 +957,6 @@ function toFieldDef(
     case "hidden":
       return { key, label, help, kind: "hidden" };
     case "list":
-    case "orderedList":
-    case "multiSelect":
       return {
         key,
         label,
@@ -930,6 +965,45 @@ function toFieldDef(
         placeholder: raw.placeholder,
         numeric: raw.numeric,
       };
+    case "orderedList":
+    case "multiSelect": {
+      const baseOpts =
+        raw.options && raw.options.length > 0
+          ? raw.options.map((o) => ({
+              value: String(o.value),
+              label: String(o.label),
+              description: o.hint ?? o.description,
+            }))
+          : raw.enum
+            ? raw.enum.map((e) => ({ value: String(e), label: String(e) }))
+            : (dynamicOptions[key] ?? []).map((o) => ({
+                value: String(o.value),
+                label: String(o.label),
+                description: o.hint ?? o.description,
+              }));
+      if (kind === "orderedList" && baseOpts.length === 0 && !raw.optionsFrom) {
+        // An ordered list with no choices to order is a free list of entries.
+        return {
+          key,
+          label,
+          help,
+          kind: "list",
+          placeholder: raw.placeholder,
+          numeric: raw.numeric,
+        };
+      }
+      return {
+        key,
+        label,
+        help,
+        kind: kind === "orderedList" ? "orderedList" : "multiSelect",
+        options: baseOpts,
+        optionsFrom: raw.optionsFrom,
+        placeholder: raw.placeholder,
+        search: raw.search,
+        numeric: raw.numeric,
+      };
+    }
     case "language": {
       const opts = languageOptions();
       if (
@@ -1012,7 +1086,7 @@ function toFieldDef(
 export function schemaToFieldGroups(
   schema: Record<string, unknown>,
   values: Record<string, unknown>,
-  dynamicOptions: Record<string, { value: string; label: string }[]>,
+  dynamicOptions: Record<string, RawFieldOption[]>,
   viewers: Viewer[] | null,
 ): FieldGroup[] {
   if (!schema || Object.keys(schema).length === 0) return [];
@@ -1021,15 +1095,20 @@ export function schemaToFieldGroups(
     return (
       schema.groups as {
         id?: string;
+        key?: string;
         title?: string;
+        label?: string;
         description?: string;
+        hint?: string;
+        advanced?: boolean;
         fields?: RawField[];
       }[]
     )
       .map((g, idx) => ({
-        id: g.id ?? `group-${idx}`,
-        title: g.title,
-        description: g.description,
+        id: g.id ?? g.key ?? `group-${idx}`,
+        title: g.title ?? g.label,
+        description: g.description ?? g.hint,
+        advanced: Boolean(g.advanced),
         fields: (g.fields ?? [])
           .map((f) => toFieldDef(f, dynamicOptions, viewers, values[f.key ?? f.name ?? ""]))
           .filter((x): x is FieldDef => x !== null),

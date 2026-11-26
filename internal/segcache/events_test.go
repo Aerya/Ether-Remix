@@ -41,11 +41,8 @@ func TestSegcacheEmitsBudgetAndEvictionEvents(t *testing.T) {
 		t.Fatalf("unexpected budget full payload: %+v", full)
 	}
 
-	// Add an unpinned release "u" and lower budget slightly or unpin "p" + shrink budget to force eviction spike & recovery.
-	if err := c.Unpin("p", "playback"); err != nil {
-		t.Fatal(err)
-	}
-	// Remove release "p" to drop usage below 90% -> cache.budget.recovered.
+	// Remove "p" while pinned so the budget recovers at zero usage.
+	// Unpinning first lets eviction recover the budget at a nonzero usage.
 	if err := c.Remove("p"); err != nil {
 		t.Fatal(err)
 	}

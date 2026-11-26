@@ -229,7 +229,12 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 			Reason:    "Serving original container byte ranges",
 		})
 	}
-	if !s.directRangeCompatible() {
+	original := core.OriginalRangeFrom(r.Context())
+	s.mu.Lock()
+	recovered := s.originalRevision
+	rangeGen := s.cur
+	s.mu.Unlock()
+	if (recovered != "" && original.Revision != recovered) || (recovered == "" && !s.directRangeCompatible()) {
 		// The client still holds the original file's container headers and
 		// byte coordinates. A remux handoff needs a new playback decision;
 		// retrying this URL must never return bytes from a different file.
@@ -246,14 +251,21 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		contentType:           s.contentType,
 		deferStatusOnZeroRead: true,
 	}
-	if s.cur != nil {
-		if ct := contentTypeForInfo(s.cur.infoSnapshot(), s.cur.src.Name(), sourceMIME(s.cur.src)); ct != "" && ct != "application/octet-stream" {
+	name := s.name
+	if recovered != "" && rangeGen != nil {
+		rep.size = rangeGen.src.Size()
+		rep.etag = `"` + recovered + `"`
+		rep.modTime = time.Time{} // only the fresh revision validates replacement ranges
+		name = rangeGen.src.Name()
+	}
+	if rangeGen != nil {
+		if ct := contentTypeForInfo(rangeGen.infoSnapshot(), name, sourceMIME(rangeGen.src)); ct != "" && ct != "application/octet-stream" {
 			rep.contentType = ct
 		}
 	}
 	policy, customResponse := core.RangeResponseFrom(r.Context())
 	if customResponse && policy.MIME != nil {
-		if pm := policy.MIME(s.name); pm != "" && (pm != "application/octet-stream" || !strings.HasPrefix(rep.contentType, "audio/")) {
+		if pm := policy.MIME(name); pm != "" && (pm != "application/octet-stream" || !strings.HasPrefix(rep.contentType, "audio/")) {
 			rep.contentType = pm
 		}
 	}
@@ -301,7 +313,14 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 				w = meter
 			}
 		}
-		err := m.streamClient(r.Context(), w, s, start, length)
+		var pinned *generation
+		if recovered != "" || original.Revision != "" {
+			pinned = rangeGen
+		}
+		err := m.streamClientRange(r.Context(), w, s, start, length, pinned, recovered != "")
+		if errors.Is(err, core.ErrOriginalLost) && original.Lost != nil {
+			original.Lost()
+		}
 		if meter != nil {
 			meter.flush(m.now())
 		}
@@ -343,16 +362,29 @@ type directReadBudgetKey struct{}
 
 // streamClient writes [vstart, vstart+length) of the session's virtual file.
 func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vstart, length int64) error {
+	return m.streamClientRange(ctx, w, s, vstart, length, nil, false)
+}
+
+func (m *Manager) streamClientRange(ctx context.Context, w io.Writer, s *session, vstart, length int64, pinned *generation, freshCoordinates bool) error {
 	if ctx.Value(directReadBudgetKey{}) == nil {
 		ctx = context.WithValue(ctx, directReadBudgetKey{}, 25*time.Second)
 	}
 	g, compatible := s.directRangeGeneration()
-	if !compatible {
+	if pinned != nil && g != pinned {
+		return errEndResponse
+	}
+	if g == nil || (!compatible && !freshCoordinates) {
 		return errEndResponse
 	}
 	vend := vstart + length
 	vpos := vstart
-	srcpos := s.toSource(g, vpos)
+	srcpos := vpos
+	if !freshCoordinates {
+		srcpos = s.toSource(g, vpos)
+	}
+	if failure := g.sourceFailure(); errors.Is(failure, core.ErrOriginalLost) {
+		return failure
+	}
 	count := func(n int) {
 		now := m.now()
 		s.addBytes(n, now)
@@ -379,10 +411,10 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 		case errors.Is(rerr, errRetired):
 			// Another reader failed over while we were between chunks.
 			ng := s.current()
-			if ng == g || ng == nil {
+			if pinned != nil || ng == g || ng == nil {
 				return rerr
 			}
-			if m.RequiresRemux(s.id) {
+			if !s.directRangeCompatible() {
 				return errEndResponse
 			}
 			at = g.timeMapSnapshot().TimeAt(srcpos)
@@ -397,6 +429,9 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 			g, srcpos = ng, pos
 			continue
 		case errors.Is(rerr, errDirectReadDeadline) && ctx.Err() == nil:
+			if freshCoordinates {
+				return core.ErrSourceUnavailable
+			}
 			// The backend has not returned a chunk in the entire budget;
 			// do not wait for its internal retries before replacing it.
 			m.log.Warn("direct-play source read stalled", "session", s.id, "release", g.releaseID(), "offset", srcpos)
@@ -430,7 +465,16 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 			// The source reached its real end before the virtual range did
 			// (a spliced lower-bitrate release): not a read failure.
 			return errShortSource
+		case errors.Is(rerr, core.ErrOriginalLost):
+			g.noteReadFailure(rerr)
+			if core.OriginalRangeFrom(ctx).Lost == nil {
+				m.forgetUnreadable(s, g, "provider lost original file")
+			}
+			return rerr
 		case recoverableSourceFailure(rerr) && ctx.Err() == nil:
+			if freshCoordinates {
+				return rerr
+			}
 			boundedDirect := false
 			if retry, ok := g.src.(core.DirectPlayRetrier); ok && errors.Is(rerr, core.ErrSourceUnavailable) && !permanentSourceFailure(rerr) {
 				if retry.RetryDirectPlay() {
@@ -455,6 +499,9 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 					return errEndResponse
 				}
 				return err
+			}
+			if ng != g && (pinned != nil || !s.directRangeCompatible()) {
+				return errEndResponse
 			}
 			if vpos == vstart {
 				// Nothing of this range was written yet: map the whole range.
@@ -545,7 +592,7 @@ func (s *session) directRangeCompatible() bool {
 func (s *session) directRangeGeneration() (*generation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cur, s.cur != nil && !s.requiresRemux &&
+	return s.cur, !s.closed && s.cur != nil && s.originalRevision == "" && !s.requiresRemux &&
 		(spliceable(s.container, s.name) || (s.virtualGen != nil && s.cur.releaseID() == s.virtualGen.releaseID() && s.cur.src.Size() == s.virtual.Size))
 }
 

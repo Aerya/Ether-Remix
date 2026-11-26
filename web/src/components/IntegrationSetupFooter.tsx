@@ -5,11 +5,15 @@ export function IntegrationSetupFooter({
   onCancel,
   onSave,
   disabled,
+  saveDisabled,
+  saveLabel,
   form,
 }: {
   onCancel: () => void;
   onSave?: () => void;
   disabled?: boolean;
+  saveDisabled?: boolean;
+  saveLabel?: string;
   form?: string;
 }) {
   return (
@@ -19,12 +23,12 @@ export function IntegrationSetupFooter({
       </Button>
       <Button
         size="sm"
-        disabled={disabled}
+        disabled={disabled || saveDisabled}
         type={form ? "submit" : "button"}
         form={form}
         onClick={onSave}
       >
-        {t("Save and enable")}
+        {saveLabel ?? t("Save and enable")}
       </Button>
     </div>
   );

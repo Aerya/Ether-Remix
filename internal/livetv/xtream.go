@@ -3,7 +3,6 @@ package livetv
 import (
 	"context"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/xtream"
 	"io"
 	"net/url"
 	"regexp"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/xtream"
 )
 
 // Xtream Codes panels are read through their JSON API (player_api.php), the
@@ -30,7 +31,8 @@ func (v xtValue) int() int                      { return int(xtream.Value(v).Int
 func (v xtValue) truthy() bool { return v != "" && v != "0" && !strings.EqualFold(string(v), "false") }
 
 type xtreamLogin struct {
-	UserInfo *struct {
+	ServerInfo xtream.ServerInfo `json:"server_info"`
+	UserInfo   *struct {
 		Auth           xtValue  `json:"auth"`
 		Status         string   `json:"status"`
 		Message        string   `json:"message"`
@@ -48,14 +50,16 @@ type xtreamCategory struct {
 }
 
 type xtreamStream struct {
-	Num        xtValue `json:"num"`
-	Name       string  `json:"name"`
-	Type       string  `json:"stream_type"`
-	StreamID   xtValue `json:"stream_id"`
-	Icon       string  `json:"stream_icon"`
-	EPGID      string  `json:"epg_channel_id"`
-	Adult      xtValue `json:"is_adult"`
-	CategoryID xtValue `json:"category_id"`
+	Archive     xtValue `json:"tv_archive"`
+	ArchiveDays xtValue `json:"tv_archive_duration"`
+	Num         xtValue `json:"num"`
+	Name        string  `json:"name"`
+	Type        string  `json:"stream_type"`
+	StreamID    xtValue `json:"stream_id"`
+	Icon        string  `json:"stream_icon"`
+	EPGID       string  `json:"epg_channel_id"`
+	Adult       xtValue `json:"is_adult"`
+	CategoryID  xtValue `json:"category_id"`
 }
 
 // xtreamAPI is one panel login.
@@ -93,14 +97,14 @@ func (x xtreamAPI) get(ctx context.Context, action string, into any) error {
 // account signs in and reports the login's state. A login the panel
 // refuses, or one that is no longer active, stops the import so the stored
 // lineup is kept.
-func (x xtreamAPI) account(ctx context.Context, now time.Time) (*ProviderAccount, error) {
+func (x xtreamAPI) account(ctx context.Context, now time.Time) (*ProviderAccount, string, error) {
 	var login xtreamLogin
 	if err := x.get(ctx, "", &login); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	u := login.UserInfo
 	if u == nil || !u.Auth.truthy() {
-		return nil, fmt.Errorf("the Xtream panel refused this username and password")
+		return nil, "", fmt.Errorf("the Xtream panel refused this username and password")
 	}
 	acct := &ProviderAccount{
 		Status: strings.TrimSpace(u.Status), Trial: u.IsTrial.truthy(),
@@ -120,11 +124,15 @@ func (x xtreamAPI) account(ctx context.Context, now time.Time) (*ProviderAccount
 		// Panel messages may echo the credential-bearing request URL.
 		switch strings.ToLower(acct.Status) {
 		case "expired", "disabled", "banned":
-			return acct, fmt.Errorf("the Xtream account is %s", strings.ToLower(acct.Status))
+			return acct, "", fmt.Errorf("the Xtream account is %s", strings.ToLower(acct.Status))
 		}
-		return acct, fmt.Errorf("the Xtream account is not active")
+		return acct, "", fmt.Errorf("the Xtream account is not active")
 	}
-	return acct, nil
+	timezone := string(login.ServerInfo.Timezone)
+	if _, err := time.LoadLocation(timezone); err != nil || timezone == "Local" {
+		timezone = ""
+	}
+	return acct, timezone, nil
 }
 
 // xtreamOutput is the stream container Ether asks the panel for: the
@@ -166,7 +174,7 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 		return Fetched{}, fmt.Errorf("source is not an Xtream login")
 	}
 	x := newXtreamAPI(s, src.Auth)
-	acct, err := x.account(ctx, s.o.Now())
+	acct, timezone, err := x.account(ctx, s.o.Now())
 	if err != nil {
 		if len(src.Logins) > 0 {
 			src.Account = acct
@@ -178,6 +186,7 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 		return Fetched{}, err
 	}
 	src.Account = acct
+	src.ArchiveTimezone = timezone
 	if src.LiveTV != nil && !*src.LiveTV {
 		src.PlaylistURL, src.GuideURL = "", ""
 		return Fetched{}, nil
@@ -248,6 +257,9 @@ func xtreamChannels(sourceID, base string, a *SourceAuth, output string, cats []
 			ID: id, Name: strings.TrimSpace(st.Name), Logo: strings.TrimSpace(st.Icon), GuideID: epgID, ProviderGuideID: epgID,
 			Group: names[string(st.CategoryID)], SourceID: sourceID, Kind: "iptv", Enabled: true, StreamURL: streamURL,
 			adult: st.Adult.truthy(),
+		}
+		if days := st.ArchiveDays.int(); st.Archive.truthy() && days > 0 {
+			c.Archive = &ChannelArchive{Days: min(days, 30), Mode: "xtream"}
 		}
 		if c.Name == "" {
 			c.Name = "Channel " + sid
