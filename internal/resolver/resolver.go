@@ -2880,6 +2880,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 
 // metadataMatch is independent metadata evidence, separate from reported IDs.
 func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool, metadataMatch bool) string {
+	rel = pseTitleWithNumber(rel, sreq) // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	if releaseparse.IsPlaceholderResult(rel.Name) {
 		return "indexer placeholder"
 	}
