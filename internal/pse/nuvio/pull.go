@@ -36,13 +36,45 @@ func (s *Service) Sync(ctx context.Context, user int64) (Summary, error) {
 	return s.pull(ctx, l), nil
 }
 
+// SyncInBackground vérifie la liaison puis lance Sync sans attendre ; un
+// cycle déjà en cours pour ce spectateur n'est pas doublé.
+func (s *Service) SyncInBackground(ctx context.Context, user int64) error {
+	l, ok, err := s.Store.Get(ctx, user)
+	if err != nil {
+		return err
+	}
+	if !ok || !l.Chosen {
+		return userError{"Choisissez d'abord un profil Nuvio"}
+	}
+	if !l.Pull {
+		return userError{"La récupération Nuvio → Ether est désactivée"}
+	}
+	m := s.cycleLock(user)
+	if !m.TryLock() {
+		return nil
+	}
+	m.Unlock()
+	go func() {
+		if _, err := s.Sync(ctx, user); err != nil {
+			s.log().Warn("nuvio: synchronisation manuelle en échec", "user", user, "err", err)
+		}
+	}()
+	return nil
+}
+
 const (
-	cycleTimeout = 2 * time.Minute
+	// firstImportTimeout borne le premier import complet d'un profil.
+	firstImportTimeout = 15 * time.Minute
+	cycleTimeout       = 2 * time.Minute
 	watchedFull  = 24 * time.Hour
 )
 
 func (s *Service) pull(ctx context.Context, l Link) Summary {
-	ctx, cancel := context.WithTimeout(ctx, cycleTimeout)
+	timeout := cycleTimeout
+	if l.cursor == 0 {
+		timeout = firstImportTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var sum Summary
 	cur := cursors{progress: l.cursor, watchedAt: l.watchedAt, watchedCur: l.watchedCur, watchedFull: l.watchedFull}

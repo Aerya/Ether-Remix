@@ -58,14 +58,14 @@ it("starts the link and shows the code", async () => {
 
 it("shows the linked state, counters and syncs on demand", async () => {
   vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-    if (path.endsWith("/sync")) return { summary: { imported: 2, unknown: 0 }, status: linked };
+    if (path.endsWith("/sync")) return { running: true, status: linked };
     return linked;
   });
   render(<ViewerNuvio viewerId={7} />);
   expect((await screen.findAllByText(/Enfants/)).length).toBeGreaterThan(0);
   expect(screen.getByRole("checkbox", { name: "Nuvio → Ether" })).toBeTruthy();
   expect(screen.getByRole("checkbox", { name: "Ether → Nuvio" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /Synchroniser maintenant|Sync now/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Récupérer depuis Nuvio|Fetch from Nuvio/ }));
   await waitFor(() =>
     expect(vi.mocked(apiFetch).mock.calls.some((c) => c[0] === "/pse/viewers/7/nuvio/sync")).toBe(
       true,

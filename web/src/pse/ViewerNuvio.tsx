@@ -161,17 +161,24 @@ export function ViewerNuvio({ viewerId }: { viewerId: number }) {
   const sync = () =>
     run(
       async () => {
-        const res = await apiFetch<{
-          summary: { imported: number; unknown: number };
-          status: NuvioStatus;
-        }>(api(viewerId, "/sync"), { method: "POST" });
+        const before = status.data?.link?.lastCycle ?? 0;
+        const res = await apiFetch<{ running: boolean; status: NuvioStatus }>(
+          api(viewerId, "/sync"),
+          { method: "POST" },
+        );
         status.setData(res.status);
         toast.success(
           L(
-            `${res.summary.imported} élément(s) importé(s), ${res.summary.unknown} non reconnu(s).`,
-            `${res.summary.imported} item(s) imported, ${res.summary.unknown} not recognised.`,
+            "Récupération lancée en arrière-plan : les compteurs se mettront à jour à la fin.",
+            "Fetch started in the background: the counters update when it ends.",
           ),
         );
+        for (let i = 0; i < 180; i++) {
+          await new Promise((r) => setTimeout(r, 5000));
+          const st = await apiFetch<NuvioStatus>(api(viewerId));
+          status.setData(st);
+          if ((st.link?.lastCycle ?? 0) !== before) break;
+        }
       },
       L("Synchronisation impossible", "Sync failed"),
     );
@@ -383,7 +390,7 @@ export function ViewerNuvio({ viewerId }: { viewerId: number }) {
                     disabled={busy || !link.pull}
                     onClick={() => void sync()}
                   >
-                    {L("Synchroniser maintenant", "Sync now")}
+                    {L("Récupérer depuis Nuvio", "Fetch from Nuvio")}
                   </Button>
                 }
               />

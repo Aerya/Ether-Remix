@@ -72,13 +72,14 @@ func (s *Service) Handler(exists func(ctx context.Context, id int64) bool) http.
 		reply(w, st, err)
 	}))
 	mux.HandleFunc("POST /{id}/nuvio/sync", viewer(func(w http.ResponseWriter, r *http.Request, id int64) {
-		sum, err := s.Sync(r.Context(), id)
-		if err != nil {
+		// Le cycle tourne en arrière-plan : un premier import peut dépasser
+		// le délai d'une requête du navigateur.
+		if err := s.SyncInBackground(context.WithoutCancel(r.Context()), id); err != nil {
 			fail(w, err)
 			return
 		}
 		st, _ := s.State(r.Context(), id)
-		writeJSON(w, http.StatusOK, map[string]any{"summary": sum, "status": st})
+		writeJSON(w, http.StatusAccepted, map[string]any{"running": true, "status": st})
 	}))
 	mux.HandleFunc("DELETE /{id}/nuvio", viewer(func(w http.ResponseWriter, r *http.Request, id int64) {
 		if err := s.Unlink(r.Context(), id); err != nil {
