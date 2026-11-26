@@ -373,10 +373,31 @@ export function ViewerNuvio({ viewerId }: { viewerId: number }) {
               <SettingsRow
                 title={L("État", "Status")}
                 description={
-                  <span>
-                    {L("Dernier cycle", "Last cycle")} : {when(link.lastCycle)} ·{" "}
-                    {L("importés", "imported")} {link.imported} · {L("envoyés", "sent")} {link.sent}{" "}
-                    · {L("non reconnus", "not recognised")} {link.unknown}
+                  <span className="block space-y-1">
+                    <span className="block">
+                      {L("Dernier cycle", "Last cycle")} : {when(link.lastCycle)}
+                    </span>
+                    <span className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                      <span>
+                        <strong className="text-fg">{link.imported}</strong>{" "}
+                        {L("importés", "imported")}
+                      </span>
+                      <span>
+                        <strong className="text-fg">{link.sent}</strong> {L("envoyés", "sent")}
+                      </span>
+                      <span>
+                        <strong className="text-fg">{link.unknown}</strong>{" "}
+                        {L("non reconnus", "not recognised")}
+                      </span>
+                    </span>
+                    {!link.pull ? (
+                      <span className="block text-xs">
+                        {L(
+                          "Activez « Nuvio → Ether » pour récupérer l'historique.",
+                          "Turn on “Nuvio → Ether” to fetch the history.",
+                        )}
+                      </span>
+                    ) : null}
                     {link.lastError ? (
                       <span role="alert" className="block text-danger">
                         {link.lastError}
