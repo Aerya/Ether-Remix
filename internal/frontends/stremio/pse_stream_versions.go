@@ -119,7 +119,7 @@ func pseSelect(opts pseLinkOptions, ranked []frontend.ReleaseVariant) []frontend
 	uniq := ranked[:0:0]
 	for _, v := range ranked {
 		k := strings.ToLower(v.Release.Name) + "|" + strings.ToLower(v.Release.FileName)
-		if !seen[k] {
+		if k == "|" || !seen[k] {
 			seen[k] = true
 			uniq = append(uniq, v)
 		}
