@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +27,7 @@ func (s *Service) Handler(exists func(ctx context.Context, id int64) bool) http.
 		}
 	}
 	fail := func(w http.ResponseWriter, err error) {
+		slog.Default().Warn("nuvio: requête admin en échec", "err", err)
 		code, msg := http.StatusBadGateway, "Nuvio est injoignable ou a refusé la demande"
 		switch {
 		case errors.Is(err, ErrNoLogin):
