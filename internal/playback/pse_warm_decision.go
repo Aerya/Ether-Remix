@@ -26,7 +26,7 @@ func pseNoReleaseErr(err error) bool {
 	if !errors.Is(err, core.ErrNotAvailable) {
 		return false
 	}
-	for _, other := range []error{core.ErrNotCached, core.ErrSourceUnavailable, core.ErrVideoTranscodingDisabled, core.ErrForegroundOnly, core.ErrBudgetExhausted, core.ErrDownloadQueued, context.Canceled, context.DeadlineExceeded} {
+	for _, other := range []error{core.ErrNotCached, core.ErrNoSources, core.ErrSourceUnavailable, core.ErrVideoTranscodingDisabled, core.ErrForegroundOnly, core.ErrBudgetExhausted, core.ErrDownloadQueued, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, other) {
 			return false
 		}

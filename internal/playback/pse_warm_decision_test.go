@@ -44,7 +44,7 @@ func TestNoReleaseVerdictIgnoresUncachedAndTransientFailures(t *testing.T) {
 	if !pseNoReleaseErr(core.ErrNotAvailable) {
 		t.Fatal("plain not available is a verdict")
 	}
-	for _, err := range []error{core.ErrNotCached, core.ErrDownloadQueued, core.ErrSourceUnavailable, core.ErrForegroundOnly, errors.Join(core.ErrNotAvailable, core.ErrBudgetExhausted), context.DeadlineExceeded, nil} {
+	for _, err := range []error{core.ErrNoSources, core.ErrNoTorrentSources, core.ErrNotCached, core.ErrDownloadQueued, core.ErrSourceUnavailable, core.ErrForegroundOnly, errors.Join(core.ErrNotAvailable, core.ErrBudgetExhausted), context.DeadlineExceeded, nil} {
 		if pseNoReleaseErr(err) {
 			t.Fatalf("%v must not be a verdict", err)
 		}
