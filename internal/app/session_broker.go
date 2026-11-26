@@ -113,7 +113,8 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			// Handle authorization must see the same stable logical selectors
 			// that detail pages issued. Concrete sources are checked when the
 			// selected slot is resolved, never by reranking this listing.
-			return scorecardVariants(core.WithLocalResponse(ctx), a, v, t, caps)
+			offered, err := scorecardVariants(core.WithLocalResponse(ctx), a, v, t, caps)
+			return pseRankedOffers(ctx, a, v, t, caps, offered, err) // PSE-HOOK: releases classées offertes aux versions Stremio — voir docs/pse/FORK.fr.md
 		},
 		SelectScopedTracks: func(ctx context.Context, viewer *core.Viewer, device core.Device, title *core.Title, info core.MediaInfo, opts core.DecideOptions, audioSet, subtitleSet bool) (core.DecideOptions, error) {
 			if a.trackprefs == nil {

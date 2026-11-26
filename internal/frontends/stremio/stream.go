@@ -139,6 +139,10 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	if i.pseNoSource(ctx, w, credential, plan) {
 		return
 	}
+	// PSE-HOOK: liste de versions, affichage et nombre réglés par le lien — voir docs/pse/FORK.fr.md
+	if i.pseVersionStreams(ctx, w, r, credential, viewer, device, plan, base, lazy) {
+		return
+	}
 	base.Path = strings.TrimSuffix(base.Path, "/image/") + lazy
 	stream := map[string]any{"name": "Ether", "url": base.String()}
 	if label := i.autoVersionName(r, viewer, device, key); label != "" {

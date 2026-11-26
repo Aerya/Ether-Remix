@@ -14,7 +14,10 @@ func (i *instance) registerPSEFilesOnlyRoutes() error {
 	if err := i.router.Handle(http.MethodGet, "/{credential}/"+pseFilesSegment+"/manifest.json", http.HandlerFunc(i.pseFilesManifest)); err != nil {
 		return err
 	}
-	return i.router.Handle(http.MethodGet, "/{credential}/"+pseFilesSegment+"/stream/{type}/{id}", http.HandlerFunc(i.stream))
+	if err := i.router.Handle(http.MethodGet, "/{credential}/"+pseFilesSegment+"/stream/{type}/{id}", http.HandlerFunc(i.stream)); err != nil {
+		return err
+	}
+	return i.registerPSELinkOptionRoutes() // options d'affichage et de nombre de flux, dans l'URL
 }
 
 func (i *instance) pseFilesManifest(w http.ResponseWriter, r *http.Request) {
