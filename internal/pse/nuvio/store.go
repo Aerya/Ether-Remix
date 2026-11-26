@@ -23,8 +23,6 @@ CREATE TABLE pse_nuvio_links(
   expires_at INTEGER NOT NULL DEFAULT 0,
   cursor INTEGER NOT NULL DEFAULT 0,
   watched_at INTEGER NOT NULL DEFAULT 0,
-  watched_cursor INTEGER NOT NULL DEFAULT 0,
-  watched_full INTEGER NOT NULL DEFAULT 0,
   pull_on INTEGER NOT NULL DEFAULT 1,
   push_on INTEGER NOT NULL DEFAULT 1,
   last_cycle INTEGER NOT NULL DEFAULT 0,
@@ -33,6 +31,11 @@ CREATE TABLE pse_nuvio_links(
   unknown INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT ''
 );
+`)
+	// v2 : curseurs des vus (relecture bornée).
+	store.Register("pse_nuvio_links", 2, `
+ALTER TABLE pse_nuvio_links ADD COLUMN watched_cursor INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pse_nuvio_links ADD COLUMN watched_full INTEGER NOT NULL DEFAULT 0;
 `)
 	store.RegisterViewerTable("pse_nuvio_links", "pse_nuvio_links", "user_id", store.ViewerMergeDrop)
 }
