@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
@@ -16,15 +17,18 @@ import (
 
 func TestPSEParseLinkOptions(t *testing.T) {
 	for in, want := range map[string]pseLinkOptions{
-		"direct-1":    {pseFormatDirect, 1},
-		"compact-3":   {pseFormatCompact, 3},
-		"detaille-10": {pseFormatDetailed, 10},
+		"direct-1":                     {Format: pseFormatDirect, Legacy: 1},
+		"compact-3":                    {Format: pseFormatCompact, Legacy: 3},
+		"detaille-10":                  {Format: pseFormatDetailed, Legacy: 10},
+		"detaille-2160.2-1080.3-720.1": {Format: pseFormatDetailed, Quotas: []pseQuota{{2160, 2}, {1080, 3}, {720, 1}}},
+		"compact-1080.0":               {Format: pseFormatCompact, Quotas: []pseQuota{{1080, 0}}},
 	} {
-		if got, ok := pseParseLinkOptions(in); !ok || got != want {
+		got, ok := pseParseLinkOptions(in)
+		if !ok || fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("%q: %v %v", in, got, ok)
 		}
 	}
-	for _, in := range []string{"", "compact", "compact-", "compact-0", "compact-11", "compact-x", "compact--2", "fancy-2", "-3", "compact-+3", "compact-003"} {
+	for _, in := range []string{"", "compact", "compact-", "compact-0", "compact-11", "compact-x", "compact--2", "fancy-2", "-3", "compact-003", "compact-2160.9-1080.9", "compact-2160.1-2160.1", "compact-480.1", "compact-1080", "compact-1080.", "compact-.2"} {
 		if _, ok := pseParseLinkOptions(in); ok {
 			t.Errorf("%q must be rejected", in)
 		}
@@ -55,14 +59,72 @@ func (fakeHandles) Issue(_ context.Context, _ frontend.VersionScope, _ frontend.
 	return "h-" + id, nil
 }
 
-func versionList(t *testing.T, path string, versions []frontend.Version) *httptest.ResponseRecorder {
+type fakeEditions struct {
+	cold   bool
+	ranked []frontend.ReleaseVariant
+}
+
+func (*fakeEditions) Editions(context.Context, *frontend.Viewer, frontend.Device, frontend.RatingKey) ([]frontend.Version, error) {
+	return nil, nil
+}
+func (*fakeEditions) Variants(context.Context, frontend.ResolveRequest, int) ([]frontend.ReleaseVariant, error) {
+	return nil, nil
+}
+func (*fakeEditions) Available(context.Context, frontend.RatingKey) (bool, bool) { return false, false }
+
+func (f *fakeEditions) RankedReleases(context.Context, frontend.ResolveRequest) ([]frontend.ReleaseVariant, error) {
+	if f.cold {
+		return nil, nil
+	}
+	return f.ranked, nil
+}
+
+func (f *fakeEditions) RefillSearchCache(*frontend.Title) <-chan struct{} {
+	if !f.cold {
+		return nil
+	}
+	f.cold = false
+	done := make(chan struct{})
+	close(done)
+	return done
+}
+
+func rel(id string, height int, src frontend.ReleaseVariant) frontend.ReleaseVariant {
+	src.ID = id
+	src.Release.ID = id
+	src.Release.Info.Height = height
+	return src
+}
+
+func testRanked() []frontend.ReleaseVariant {
+	r1 := rel("a", 2160, frontend.ReleaseVariant{})
+	r1.Release.Name = "Film.2160p.REMUX.DV.MULTI-FLUX"
+	r1.Release.Indexer, r1.Release.Size = "Alkolites", 8<<30
+	r1.Release.Info.Source, r1.Release.Info.DolbyVision = "remux", true
+	r1.Release.Info.VideoCodec, r1.Release.Info.AudioCodec, r1.Release.Info.Channels, r1.Release.Info.Group = "hevc", "eac3", "5.1", "FLUX"
+	r1.Release.Info.Languages = []string{"french", "english"}
+	r1.Release.DebridCached = []string{"alldebrid"}
+	return []frontend.ReleaseVariant{
+		r1,
+		rel("b", 2160, frontend.ReleaseVariant{}),
+		rel("c", 2160, frontend.ReleaseVariant{}),
+		rel("x1080", 1080, frontend.ReleaseVariant{}),
+		rel("d", 1080, frontend.ReleaseVariant{}),
+		rel("e", 720, frontend.ReleaseVariant{}),
+		rel("f", 480, frontend.ReleaseVariant{}),
+	}
+}
+
+func versionList(t *testing.T, path string, ed *fakeEditions) *httptest.ResponseRecorder {
 	t.Helper()
 	exp := frontendtest.Experience{ItemFunc: func(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error) {
-		return frontend.ItemDetail{Versions: versions}, nil
+		d := frontend.ItemDetail{Versions: []frontend.Version{{ID: "ether:auto", Name: "Auto · 1080p"}}}
+		d.Title.Type, d.Title.Runtime = "movie", 2*time.Hour
+		return d, nil
 	}}
 	host := frontend.Host{
 		Identity:   frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return &frontend.Viewer{ID: 7}, nil }},
-		Experience: exp, Sessions: frontendtest.Sessions{}, LazyStreams: &versionLazy{}, VersionHandles: fakeHandles{},
+		Experience: exp, Sessions: frontendtest.Sessions{}, LazyStreams: &versionLazy{}, VersionHandles: fakeHandles{}, Editions: ed,
 		Capabilities: frontendtest.Capabilities{}, ClientIP: func(*http.Request) (netip.Addr, bool) { return netip.MustParseAddr("192.168.1.7"), true },
 		SecurePortalURL: func(context.Context, *http.Request) (string, error) { return "https://ether.example/ether/me", nil },
 	}
@@ -75,17 +137,6 @@ func versionList(t *testing.T, path string, versions []frontend.Version) *httpte
 	return w
 }
 
-func testVersions() []frontend.Version {
-	hdr := true
-	return []frontend.Version{
-		{ID: "ether:auto", Name: "Auto · 2160p WEB-DL · DD+ 5.1 · FLUX", Media: frontend.MediaInfo{Size: 8 << 30, Streams: []frontend.StreamInfo{{Type: "video", Codec: "hevc", Width: 3840, Height: 1600, ColorTransfer: "smpte2084", HDR10Plus: &hdr}, {Type: "audio", Codec: "eac3", Channels: 6, Language: "fre"}}}, FileName: "Film.2160p.WEB-DL.DDP5.1-FLUX.mkv"},
-		{ID: "r1", Name: "1080p Blu-ray · AMIABLE", Edition: "Director's Cut", Media: frontend.MediaInfo{Size: 3 << 30}},
-		{ID: "ph", Name: "Same-quality version 1"},
-		{ID: "bad", Name: "720p WEB-DL"},
-		{ID: "r3", Name: "720p HDTV"},
-	}
-}
-
 func streamsOf(t *testing.T, w *httptest.ResponseRecorder) []map[string]any {
 	t.Helper()
 	var body struct{ Streams []map[string]any }
@@ -95,70 +146,87 @@ func streamsOf(t *testing.T, w *httptest.ResponseRecorder) []map[string]any {
 	return body.Streams
 }
 
+func urls(s []map[string]any) string {
+	var out []string
+	for _, x := range s {
+		u := x["url"].(string)
+		out = append(out, u[strings.LastIndex(u[:strings.LastIndex(u, "/")], "/")+1:strings.LastIndex(u, "/")])
+	}
+	return strings.Join(out, ",")
+}
+
+const listPath = "/stremio/grant/o/%s/stream/movie/tmdb:42.json"
+
 func TestVersionListDirectKeepsSingleStream(t *testing.T) {
-	for _, path := range []string{"/stremio/grant/stream/movie/tmdb:42.json", "/stremio/grant/o/direct-5/stream/movie/tmdb:42.json"} {
-		s := streamsOf(t, versionList(t, path, testVersions()))
-		if len(s) != 1 || s[0]["name"] != "Ether" || s[0]["description"] != "Auto · 2160p WEB-DL · DD+ 5.1 · FLUX" {
+	for _, path := range []string{"/stremio/grant/stream/movie/tmdb:42.json", fmt.Sprintf(listPath, "direct-1")} {
+		s := streamsOf(t, versionList(t, path, &fakeEditions{ranked: testRanked()}))
+		if len(s) != 1 || s[0]["name"] != "Ether" || s[0]["description"] != "Auto · 1080p" {
 			t.Fatalf("%s: %v", path, s)
 		}
 	}
 }
 
-func TestVersionListCompactSkipsPlaceholdersAndFailures(t *testing.T) {
-	w := versionList(t, "/stremio/grant/o/compact-5/stream/movie/tmdb:42.json", testVersions())
-	s := streamsOf(t, w)
-	if len(s) != 3 {
-		t.Fatalf("want auto + 2 (placeholder and failed handle dropped): %s", w.Body.String())
-	}
-	if s[0]["name"] != "Ether 2160p" || !strings.Contains(s[0]["url"].(string), "/sessions/lazy/auto/file") {
-		t.Fatalf("auto: %v", s[0])
-	}
-	if s[1]["description"] != "1080p Blu-ray · AMIABLE · 3,0 Go · Director's Cut" || !strings.Contains(s[1]["url"].(string), "/sessions/lazy/h-r1/file") {
-		t.Fatalf("second: %v", s[1])
-	}
-	if s[1]["behaviorHints"].(map[string]any)["bingeGroup"] != "ether-1080p" {
-		t.Fatalf("hints: %v", s[1])
-	}
-	for _, x := range s {
-		if strings.Contains(x["description"].(string), "Same-quality") || strings.Contains(x["description"].(string), "\n") {
-			t.Fatalf("compact line: %v", x)
-		}
+func TestVersionListQuotasPerQuality(t *testing.T) {
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "compact-2160.2-1080.1-720.0"), &fakeEditions{ranked: testRanked()}))
+	if got := urls(s); got != "auto,h-a,h-b,h-x1080" {
+		t.Fatalf("got %s", got)
 	}
 }
 
-func TestVersionListCountBoundsStreams(t *testing.T) {
-	if s := streamsOf(t, versionList(t, "/stremio/grant/o/compact-2/stream/movie/tmdb:42.json", testVersions())); len(s) != 2 {
-		t.Fatalf("got %d", len(s))
-	}
-	if s := streamsOf(t, versionList(t, "/stremio/grant/fichiers/o/compact-1/stream/movie/tmdb:42.json", testVersions())); len(s) != 1 {
-		t.Fatalf("got %d", len(s))
+func TestVersionListLegacyTotal(t *testing.T) {
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "compact-3"), &fakeEditions{ranked: testRanked()}))
+	if got := urls(s); got != "auto,h-a,h-b" {
+		t.Fatalf("got %s", got)
 	}
 }
 
-func TestVersionListDetailed(t *testing.T) {
-	s := streamsOf(t, versionList(t, "/stremio/grant/o/detaille-2/stream/movie/tmdb:42.json", testVersions()))
-	if s[0]["name"] != "Ether ⚡ 2160p" {
-		t.Fatalf("name: %v", s[0]["name"])
+func TestVersionListColdSearchIsAwaited(t *testing.T) {
+	ed := &fakeEditions{cold: true, ranked: testRanked()}
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "compact-2160.1"), ed))
+	if len(s) != 2 {
+		t.Fatalf("got %v", s)
 	}
-	desc := s[0]["description"].(string)
-	for _, want := range []string{"2160p • WEB-DL • HDR10+", "🌐 FR • 💾 8,0 Go", "🎞 HEVC • 🔊 DD+ 5.1 • 👥 FLUX", "📁 Film.2160p.WEB-DL.DDP5.1-FLUX.mkv"} {
-		if !strings.Contains(desc, want) {
-			t.Errorf("missing %q in %q", want, desc)
-		}
+}
+
+func TestVersionListWithoutRankedKeepsAuto(t *testing.T) {
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "detaille-2160.2"), &fakeEditions{}))
+	if len(s) != 1 || s[0]["description"] != "Auto · 1080p" {
+		t.Fatalf("got %v", s)
 	}
-	hints := s[0]["behaviorHints"].(map[string]any)
-	if hints["bingeGroup"] != "ether-2160p" || hints["videoSize"].(float64) != float64(8<<30) {
-		t.Fatalf("hints: %v", hints)
+}
+
+func TestVersionListDetailedFormat(t *testing.T) {
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "detaille-2160.2"), &fakeEditions{ranked: testRanked()}))
+	if len(s) != 3 || s[0]["name"] != "[AD⚡] Ether" {
+		t.Fatalf("got %v", s)
+	}
+	want := "Auto\n2160p • REMUX • DV • 📶 9,5 Mb/s\n🇫🇷🇬🇧 • 💾 8,0 Go • 🔎 Alkolites\n🎧 HEVC • EAC3 5.1 • FLUX\n📁 Film.2160p.REMUX.DV.MULTI-FLUX"
+	if s[0]["description"] != want {
+		t.Fatalf("description:\n%v\nwant:\n%s", s[0]["description"], want)
+	}
+	if s[2]["name"] != "Ether" || strings.HasPrefix(s[2]["description"].(string), "Auto") {
+		t.Fatalf("third: %v", s[2])
+	}
+	if h := s[0]["behaviorHints"].(map[string]any); h["bingeGroup"] != "ether-2160p" || h["videoSize"].(float64) != float64(8<<30) {
+		t.Fatalf("hints: %v", h)
+	}
+}
+
+func TestVersionListCompactIsOneLine(t *testing.T) {
+	s := streamsOf(t, versionList(t, fmt.Sprintf(listPath, "compact-2160.1"), &fakeEditions{ranked: testRanked()}))
+	d := s[0]["description"].(string)
+	if strings.Contains(d, "\n") || d != "Auto · 2160p · REMUX · DV · EAC3 5.1 · 8,0 Go · FLUX" {
+		t.Fatalf("compact: %q", d)
 	}
 }
 
 func TestInvalidLinkOptionsAre404(t *testing.T) {
-	for _, path := range []string{"/stremio/grant/o/compact-99/stream/movie/tmdb:42.json", "/stremio/grant/o/zzz/manifest.json", "/stremio/grant/fichiers/o/compact/manifest.json"} {
-		if w := versionList(t, path, testVersions()); w.Code != 404 {
+	for _, path := range []string{fmt.Sprintf(listPath, "compact-99"), "/stremio/grant/o/zzz/manifest.json", "/stremio/grant/fichiers/o/compact/manifest.json"} {
+		if w := versionList(t, path, &fakeEditions{}); w.Code != 404 {
 			t.Errorf("%s: %d", path, w.Code)
 		}
 	}
-	if w := versionList(t, "/stremio/grant/o/detaille-3/manifest.json", nil); w.Code != 200 {
+	if w := versionList(t, "/stremio/grant/o/detaille-2160.2-1080.3-720.1/manifest.json", &fakeEditions{}); w.Code != 200 {
 		t.Errorf("manifest: %d", w.Code)
 	}
 }

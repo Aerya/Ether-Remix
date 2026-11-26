@@ -43,27 +43,33 @@ it("offers the catalogue link and the files-only link for Stremio", async () => 
   );
 });
 
-it("builds the link and QR code from the display and count choices", async () => {
+it("builds the link and QR code from the display and quota choices", async () => {
   const connection = {
     surface: "stremio",
     url: "https://ether.example/stremio/secret/manifest.json",
     qr: "data:image/png;base64,AA==",
     filesUrl: "https://ether.example/stremio/secret/fichiers/manifest.json",
     filesQr: "data:image/png;base64,BB==",
-    "qr:detaille-5": "data:image/png;base64,CC==",
-    "filesQr:compact-3": "data:image/png;base64,DD==",
+    "qr:detaille": "data:image/png;base64,CC==",
+    "filesQr:compact": "data:image/png;base64,DD==",
   };
-  expect(stremioOptionsSegment({ format: "direct", count: 5 })).toBeNull();
-  expect(stremioOptionsSegment({ format: "compact", count: 99 })).toBe("compact-10");
-  expect(chosenStremioLink(connection, false, { format: "direct", count: 5 })).toBe(connection);
-  expect(chosenStremioLink(connection, false, { format: "detaille", count: 5 })).toMatchObject({
-    url: "https://ether.example/stremio/secret/o/detaille-5/manifest.json",
+  const quotas = { q2160: 2, q1080: 3, q720: 1 };
+  expect(stremioOptionsSegment({ format: "direct", ...quotas })).toBeNull();
+  expect(stremioOptionsSegment({ format: "compact", q2160: 9, q1080: 0, q720: 1 })).toBe(
+    "compact-2160.5-1080.0-720.1",
+  );
+  expect(chosenStremioLink(connection, false, { format: "direct", ...quotas })).toBe(connection);
+  expect(chosenStremioLink(connection, false, { format: "detaille", ...quotas })).toMatchObject({
+    url: "https://ether.example/stremio/secret/o/detaille-2160.2-1080.3-720.1/manifest.json",
     qr: "data:image/png;base64,CC==",
   });
-  expect(chosenStremioLink(connection, true, { format: "compact", count: 3 })).toMatchObject({
-    url: "https://ether.example/stremio/secret/fichiers/o/compact-3/manifest.json",
+  expect(chosenStremioLink(connection, true, { format: "compact", ...quotas })).toMatchObject({
+    url: "https://ether.example/stremio/secret/fichiers/o/compact-2160.2-1080.3-720.1/manifest.json",
     qr: "data:image/png;base64,DD==",
   });
+  expect(chosenStremioLink(connection, false, { format: "detaille", ...quotas, q720: 0 }).qr).toBe(
+    "",
+  );
 
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const body = init?.method === "POST" ? connection : { apps: ["stremio"] };
@@ -73,10 +79,14 @@ it("builds the link and QR code from the display and count choices", async () =>
   fireEvent.click(await screen.findByRole("button", { name: "Create connection" }));
   fireEvent.click(await screen.findByRole("radio", { name: /detailed/i }));
   expect(
-    screen.getByDisplayValue("https://ether.example/stremio/secret/o/detaille-5/manifest.json"),
+    screen.getByDisplayValue(
+      "https://ether.example/stremio/secret/o/detaille-2160.2-1080.3-720.1/manifest.json",
+    ),
   ).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "1080p" }), { target: { value: "0" } });
   expect(
-    screen.getByDisplayValue("https://ether.example/stremio/secret/o/detaille-3/manifest.json"),
+    screen.getByDisplayValue(
+      "https://ether.example/stremio/secret/o/detaille-2160.2-1080.0-720.1/manifest.json",
+    ),
   ).toBeInTheDocument();
 });

@@ -18,43 +18,71 @@ const (
 	pseFormatDirect       = "direct"
 	pseFormatCompact      = "compact"
 	pseFormatDetailed     = "detaille"
-	pseMaxStreams         = 10
+	pseMaxStreams         = 15
+	pseLegacyMaxStreams   = 10
 )
 
+// pseQuota est le nombre de flux voulus pour une qualité (2160, 1080, 720).
+type pseQuota struct{ Height, Count int }
+
+// pseLinkOptions : le format d'affichage et, soit des quotas par qualité
+// (« 2160.2-1080.3-720.1 »), soit — ancien lien « detaille-7 » — un nombre
+// total de flux Auto compris (Legacy).
 type pseLinkOptions struct {
 	Format string
-	Count  int
+	Legacy int
+	Quotas []pseQuota
 }
 
 type pseLinkOptionsKey struct{}
 
-// pseParseLinkOptions lit « <format>-<n> » (format direct, compact ou
-// detaille ; n de 1 à 10).
+// pseParseLinkOptions lit « <format>-<quotas> » (format direct, compact ou
+// detaille ; quotas « 2160.2-1080.3-720.1 », au plus 15 flux en tout, ou un
+// nombre de 1 à 10 pour les anciens liens).
 func pseParseLinkOptions(seg string) (pseLinkOptions, bool) {
-	cut := strings.LastIndexByte(seg, '-')
-	if cut <= 0 {
+	format, rest, found := strings.Cut(seg, "-")
+	if !found || (format != pseFormatDirect && format != pseFormatCompact && format != pseFormatDetailed) {
 		return pseLinkOptions{}, false
 	}
-	format := seg[:cut]
-	if format != pseFormatDirect && format != pseFormatCompact && format != pseFormatDetailed {
+	if n, ok := pseSmallInt(rest, 2); ok {
+		if n < 1 || n > pseLegacyMaxStreams || (len(rest) == 2 && rest[0] == '0') {
+			return pseLinkOptions{}, false
+		}
+		return pseLinkOptions{Format: format, Legacy: n}, true
+	}
+	opts := pseLinkOptions{Format: format}
+	seen, total := map[int]bool{}, 0
+	for _, part := range strings.Split(rest, "-") {
+		h, c, ok := strings.Cut(part, ".")
+		height, okH := pseSmallInt(h, 4)
+		count, okC := pseSmallInt(c, 2)
+		if !ok || !okH || !okC || (height != 2160 && height != 1080 && height != 720) || seen[height] || count > pseMaxStreams {
+			return pseLinkOptions{}, false
+		}
+		seen[height] = true
+		total += count
+		opts.Quotas = append(opts.Quotas, pseQuota{height, count})
+	}
+	if total > pseMaxStreams {
 		return pseLinkOptions{}, false
 	}
-	digits := seg[cut+1:]
-	if len(digits) == 0 || len(digits) > 2 || strings.TrimLeft(digits, "0123456789") != "" {
-		return pseLinkOptions{}, false
+	return opts, true
+}
+
+// pseSmallInt lit un entier décimal d'au plus max chiffres.
+func pseSmallInt(s string, max int) (int, bool) {
+	if s == "" || len(s) > max || strings.TrimLeft(s, "0123456789") != "" {
+		return 0, false
 	}
-	n, err := strconv.Atoi(digits)
-	if err != nil || n < 1 || n > pseMaxStreams {
-		return pseLinkOptions{}, false
-	}
-	return pseLinkOptions{Format: format, Count: n}, true
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 func pseLinkOptionsFrom(ctx context.Context) pseLinkOptions {
 	if o, ok := ctx.Value(pseLinkOptionsKey{}).(pseLinkOptions); ok {
 		return o
 	}
-	return pseLinkOptions{Format: pseFormatDirect, Count: 1}
+	return pseLinkOptions{Format: pseFormatDirect, Legacy: 1}
 }
 
 // pseWithOptions lit le segment {opts} ; un segment invalide répond 404.

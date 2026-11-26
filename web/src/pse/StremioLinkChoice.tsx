@@ -4,8 +4,13 @@ import { getLocale } from "../i18n";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 
 export type StremioFormat = "direct" | "compact" | "detaille";
-export type StremioOptions = { format: StremioFormat; count: number };
-export const DEFAULT_STREMIO_OPTIONS: StremioOptions = { format: "direct", count: 5 };
+export type StremioQuotas = { q2160: number; q1080: number; q720: number };
+export type StremioOptions = { format: StremioFormat } & StremioQuotas;
+export const DEFAULT_STREMIO_QUOTAS: StremioQuotas = { q2160: 2, q1080: 3, q720: 1 };
+export const DEFAULT_STREMIO_OPTIONS: StremioOptions = {
+  format: "direct",
+  ...DEFAULT_STREMIO_QUOTAS,
+};
 
 export type StremioLinks = {
   surface: string;
@@ -15,16 +20,22 @@ export type StremioLinks = {
   filesQr?: string;
 };
 
-// Segment d'options du lien (« compact-5 »), absent pour l'affichage direct.
+const clampQuota = (n: number) => Math.min(5, Math.max(0, Math.round(n) || 0));
+
+// Segment d'options du lien (« compact-2160.2-1080.3-720.1 »), absent pour
+// l'affichage direct. Un nombre par qualité, de 0 (aucune) à 5.
 export function stremioOptionsSegment(options: StremioOptions): string | null {
   if (options.format === "direct") return null;
-  const count = Math.min(10, Math.max(1, Math.round(options.count) || 1));
-  return `${options.format}-${count}`;
+  return `${options.format}-2160.${clampQuota(options.q2160)}-1080.${clampQuota(options.q1080)}-720.${clampQuota(options.q720)}`;
 }
 
+const DEFAULT_SEGMENT = (format: string) =>
+  `${format}-2160.${DEFAULT_STREMIO_QUOTAS.q2160}-1080.${DEFAULT_STREMIO_QUOTAS.q1080}-720.${DEFAULT_STREMIO_QUOTAS.q720}`;
+
 // Lien et QR code à afficher selon le choix : le lien « fichiers seuls » n'existe
-// que si le serveur l'a fourni ; l'affichage et le nombre s'ajoutent à l'URL
-// (…/o/<format>-<n>/manifest.json), le QR code correspondant vient du serveur.
+// que si le serveur l'a fourni ; l'affichage et les quotas s'ajoutent à l'URL
+// (…/o/<format>-<quotas>/manifest.json). Le serveur ne fournit le QR code que
+// pour les quotas par défaut : sinon il est masqué (le lien se copie).
 export function chosenStremioLink<T extends StremioLinks>(
   connection: T,
   filesOnly: boolean,
@@ -37,21 +48,22 @@ export function chosenStremioLink<T extends StremioLinks>(
     : connection;
   const segment = stremioOptionsSegment(options);
   if (!segment) return files ? { ...connection, url: base.url, qr: base.qr } : connection;
-  const key = `${files ? "filesQr" : "qr"}:${segment}`;
+  const key = `${files ? "filesQr" : "qr"}:${options.format}`;
   const qr = (connection as Record<string, unknown>)[key];
   return {
     ...connection,
     url: base.url.replace(/\/manifest\.json$/, `/o/${segment}/manifest.json`),
-    qr: typeof qr === "string" ? qr : "",
+    qr: segment === DEFAULT_SEGMENT(options.format) && typeof qr === "string" ? qr : "",
   };
 }
 
-const SAMPLE_COMPACT = "WEB-DL · DD+ 5.1 · 8,1 Go · Director's Cut";
+const SAMPLE_COMPACT = "2160p · REMUX · DV · EAC3 5.1 · 8,0 Go · FLUX";
 const SAMPLE_DETAILED = [
-  "2160p • BluRay REMUX • HDR10",
-  "🌐 FR, EN • 💾 8,1 Go",
-  "🎞 HEVC • 🔊 DD+ 5.1 • 👥 FLUX",
-  "📁 Film.2160p.REMUX-FLUX.mkv",
+  "[AD⚡] Ether",
+  "2160p • REMUX • DV • 📶 9,5 Mb/s",
+  "🇫🇷🇬🇧 • 💾 8,0 Go • 🔎 Alkolites",
+  "🎧 HEVC • EAC3 5.1 • FLUX",
+  "📁 Film.2160p.REMUX.DV.MULTI-FLUX.mkv",
 ].join("\n");
 
 // Deux liens Stremio pour un même profil : avec les catalogues de ses
@@ -157,22 +169,44 @@ export function StremioLinkChoice({
             </label>
           ))}
           {options.format !== "direct" && (
-            <label className="flex items-center gap-2 text-sm">
-              <span className="font-medium">{L("Nombre de versions", "Number of versions")}</span>
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={options.count}
-                onChange={(event) =>
-                  onOptionsChange({
-                    ...options,
-                    count: Math.min(10, Math.max(1, Math.round(Number(event.target.value)) || 1)),
-                  })
-                }
-                className="w-20 rounded-md border border-border bg-transparent px-2 py-1"
-              />
-            </label>
+            <div className="space-y-1 text-sm">
+              <span className="block font-medium">
+                {L("Versions par qualité (0 = aucune)", "Versions per quality (0 = none)")}
+              </span>
+              <span className="flex flex-wrap gap-3">
+                {(
+                  [
+                    ["q2160", "4K"],
+                    ["q1080", "1080p"],
+                    ["q720", "720p"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-1">
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={5}
+                      aria-label={label}
+                      value={options[key]}
+                      onChange={(event) =>
+                        onOptionsChange({
+                          ...options,
+                          [key]: clampQuota(Number(event.target.value)),
+                        })
+                      }
+                      className="w-16 rounded-md border border-border bg-transparent px-2 py-1"
+                    />
+                  </label>
+                ))}
+              </span>
+              <span className="block text-fg-muted">
+                {L(
+                  "Le flux Auto vient toujours en premier, en plus de ces versions.",
+                  "The Auto stream always comes first, on top of these versions.",
+                )}
+              </span>
+            </div>
           )}
         </fieldset>
       )}
