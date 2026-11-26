@@ -261,6 +261,17 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "nuvio",
+		Title:       tx("Nuvio", "Nuvio"),
+		Description: tx("Chaque spectateur peut relier un profil Nuvio (Profil › Connexion et appareils) : reprise et historique synchronisés dans les deux sens, et installation de son lien Stremio dans Nuvio.", "Each viewer can link a Nuvio profile (Profile › Sign-in & devices): resume points and history synced both ways, and installation of their Stremio link in Nuvio."),
+		Fields: []Field{
+			{Key: "PSE_NUVIO_INTERVAL", Kind: KindDuration, Default: "5m", Placeholder: "5m", Label: tx("Fréquence de lecture de Nuvio", "How often Nuvio is read"),
+				Help: tx("Délai entre deux lectures de l'historique Nuvio des spectateurs reliés. Minimum 1m.", "Delay between two reads of linked viewers' Nuvio history. At least 1m.")},
+			{Key: "PSE_NUVIO_ANON_KEY", Advanced: true, Kind: KindKey, Default: "", Label: tx("Clé publique de Nuvio (remplacement)", "Nuvio public key (override)"),
+				Help: tx("La clé « anon » publique de Nuvio est intégrée ; ne la remplacez que si Nuvio la change.", "Nuvio's public “anon” key is built in; only override it if Nuvio changes it.")},
+		},
+	},
+	{
 		ID:          "music",
 		Title:       tx("Musique", "Music"),
 		Description: tx("Catalogue Deezer public, lu par vos comptes AllDebrid, Real-Debrid, TorBox ou un addon Eclipse ; rien n'est stocké sur disque. Visible dans Plex, Jellyfin et les clients Subsonic (Feishin, Symfonium…, adresse de la console, authentification « legacy »).", "Public Deezer catalogue, played through your AllDebrid, Real-Debrid, TorBox accounts or an Eclipse addon; nothing is stored on disk. Shown in Plex, Jellyfin and Subsonic clients (Feishin, Symfonium…, console address, “legacy” authentication)."),

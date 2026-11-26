@@ -22,6 +22,7 @@ func (a *App) buildPSEIndexer() {
 	a.pseThemes()
 	a.buildPSEScrob()
 	a.startPSEScrobPush()
+	a.startPSENuvio()
 	a.startSeerrCatalog()
 	a.startPSETorrent()
 	a.startPSEXdcc()

@@ -116,5 +116,10 @@ func (i *instance) registerPSELinkOptionRoutes() error {
 			return err
 		}
 	}
+	for _, prefix := range []string{base, "/{credential}/" + pseFilesSegment + "/" + pseLinkOptionsSegment + "/{opts}"} {
+		if err := i.registerPSENuvioRoutes(prefix, pseWithOptions); err != nil { // player et library (Nuvio)
+			return err
+		}
+	}
 	return nil
 }
