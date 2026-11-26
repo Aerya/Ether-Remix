@@ -36,6 +36,10 @@ export const REMIX_UPDATES = [
         "Stremio: two links per profile. “With the profile's catalogues” also publishes one row per collection of the granted Remix libraries (parental controls and language respected); “Files only” publishes no catalogue and only serves playback. Already installed links gain the Remix catalogues.",
       ],
       [
+        "Stremio et Nuvio : quand aucune source n'existe pour un titre (ex. film tout juste sorti en salle), la liste de flux reste vide au lieu de proposer une lecture qui reste bloquée en mise en mémoire tampon.",
+        "Stremio and Nuvio: when no source exists for a title (e.g. a film just out in cinemas), the stream list stays empty instead of offering playback that stays stuck buffering.",
+      ],
+      [
         "Lecture : un profil limité aux bibliothèques Remix (ex. enfants) peut lire leurs titres dans Stremio, Nuvio et Jellyfin ; ils étaient visibles mais refusés (erreur 503).",
         "Playback: a viewer limited to Remix libraries (e.g. kids) can play their titles in Stremio, Nuvio and Jellyfin; they were visible but refused (503 error).",
       ],

@@ -317,6 +317,7 @@ type Manager struct {
 	warm           map[identity]*warmEntry
 	warmRequests   map[warmBudgetKey][]time.Time
 	warmMisses     map[identity]time.Time // warm-ups that ended without a source (warmMissTTL)
+	pseNoRelease   pseNoRelease           // PSE-HOOK: verdict « aucune release » des échauffements (pse_warm_decision.go)
 	// onDemandWarmAt / onDemandWarmByAddon budget add-on streams opened
 	// by warm-ups (onDemandWarmAdmit); lazily created under mu.
 	onDemandWarmAt      map[int64]time.Time
