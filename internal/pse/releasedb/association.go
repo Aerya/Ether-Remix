@@ -99,6 +99,17 @@ type AssociationAudit struct {
 // a private quarantine table; no descriptor or private URL enters the report.
 // Call with indexing stopped. Batches bound write transactions and memory.
 func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (string, error), apply bool) (AssociationAudit, error) {
+	// Coordinate cache invalidation with a full playable rebuild.
+	if apply {
+		unlock, err := NewStore(db).lockPlayable(ctx)
+		if err != nil {
+			return AssociationAudit{}, err
+		}
+		defer unlock()
+		if v, ok := playableBuilds.Load(db); ok {
+			v.(*playableBuild).invalidated = true
+		}
+	}
 	report := AssociationAudit{Sources: map[string]map[string]int{}}
 	requests, err := AssociationRequests(ctx, db)
 	if err != nil {

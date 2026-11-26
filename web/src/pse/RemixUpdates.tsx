@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-remix-media-logo",
+    id: "2026-11-26-playable-rebuild",
     version: "current",
+    date: "2026-11-26",
+    title: ["Recalcul fiable des gros catalogues", "Reliable large catalogue rebuilds"],
+    items: [
+      [
+        "Les profils qualité disposent d’un délai de recalcul indépendant. Le catalogue lisible précédent reste disponible jusqu’à la publication complète ; une interruption ne laisse plus une table partiellement reconstruite.",
+        "Quality profiles have an independent rebuild timeout. The previous playable catalogue remains available until the complete result is published; interruptions no longer leave a partially rebuilt table.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-remix-media-logo",
+    version: "0.2.37-remix.143.1",
     date: "2026-11-24",
     title: ["Le logo Remix-Media dans la console", "Remix-Media logo in the console"],
     items: [

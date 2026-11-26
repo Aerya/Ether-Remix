@@ -51,6 +51,9 @@ func (a *App) refreshPSEQuality(ctx context.Context, th *themes.Service) error {
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.SetMembers(m)
 	st := releasedb.NewStore(a.db)
 	if _, err := st.SyncPlayable(ctx, releasedb.Playable()); err != nil && ctx.Err() == nil {

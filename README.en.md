@@ -89,6 +89,8 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 
 Searches and imports retain references meeting active Remix criteria in a shared index. Rejected links are not stored; old links are cleaned up after profiles and exceptions are refreshed. At playback, Remix offers references that are still usable, applies language and quality rules, then searches other sources when necessary. Movie or episode identity is still verified; a stored reference does not guarantee availability.
 
+Playable catalogue rebuilds retain the previous counts until the complete result is published. An interruption also preserves the previous signature so the next cycle can retry. Calculation has an independent 30-minute budget and publishes batched writes in a single transaction.
+
 Under **Remix → Indexing**, a single switch, **Automatically search for releases**, prepares catalogue titles in the background. Choose sources on the same page; pace and budgets live in advanced settings. Disabling automatic search preserves the index, browsing and playback reuse.
 
 Background search does not download or unlock files. A remote addon may still make its own calls. For shows, the initial pass covers **S01E01**: other episodes are retained as they are searched, without implying a complete season. [How the index works](docs/pse/RELEASE_LIBRARY.en.md).

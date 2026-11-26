@@ -2,6 +2,8 @@
 
 Searches and imports automatically retain references in a shared index, reused during playback. Under **Remix → Indexing**, the single **Automatically search for releases** switch (`PSE_INDEXER`) controls background searches. It remains off by default; stopping it does not delete the index or disable browsing and reuse. The old `PSE_RELEASE_LIBRARY` setting is ignored regardless of its value. Existing sources, budgets and pauses are preserved.
 
+Playable catalogue rebuilds retain the previous counts until the complete result is published. An interruption also preserves the previous signature so the next cycle can retry. Calculation has an independent 30-minute budget and publishes batched writes in a single transaction.
+
 Actual searches and SFR imports for catalogue titles populate the library. Alkodiques file links preserve the verified AllDebrid file path without adding magnets. Private references and headers are encrypted with Remix's configuration key and never sent to the browser.
 
 Playback offers recent references to the existing resolver, preserving language, quality, player constraints and checks. Stored alternatives can be reused before a rescue search if candidates fail or do not qualify. Resolution, validation and buffering still take time. Background and manual searches continue querying sources.
