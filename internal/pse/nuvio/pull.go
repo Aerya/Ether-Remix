@@ -66,7 +66,7 @@ const (
 	// firstImportTimeout borne le premier import complet d'un profil.
 	firstImportTimeout = 15 * time.Minute
 	cycleTimeout       = 2 * time.Minute
-	watchedFull  = 24 * time.Hour
+	watchedFull        = 24 * time.Hour
 )
 
 func (s *Service) pull(ctx context.Context, l Link) Summary {
