@@ -76,6 +76,7 @@ Les fichiers d'Ether ne sont modifiés que pour des **points d'accroche** : quel
 | `internal/frontends/mediabrowser/release_versions.go` (`mediaSourceName`) | montage dans le nom de version Jellyfin/Emby (Plezy, Jellyfin) |
 | `internal/frontends/mediabrowser/browse.go` (fiche d'un titre) | lance la recherche de releases quand la fiche Jellyfin a des versions provisoires, puis la reconstruit (`internal/frontends/mediabrowser/pse_detail_refill.go`) |
 | `internal/frontends/mediabrowser/library_activity.go` (`libraryActivity` : taille demandée et filtre des derniers ajouts) | règles d'exclusion des derniers ajouts Jellyfin de Films et Séries (`PSE_JELLYFIN_LATEST_FILTERS`, `internal/pse/latestfilter`, `internal/frontends/mediabrowser/pse_latest_filter.go`, alias `internal/frontend/pse_latest_filter.go`) |
+| `internal/app/session_broker.go` (`librarySessionTitle`) | lecture d'un titre d'une bibliothèque Remix accordée à un profil limité aux bibliothèques Remix (`frontend.PSEThemeGrant`, test `internal/app/pse_session_theme_grant_test.go`) |
 | `web/src/pages/viewers/ViewerAccess.tsx` (`ViewerLibraries`) | cases des bibliothèques Remix dans l'accès d'un spectateur restreint, marqueur 5100, enregistrement bloqué si leur lecture échoue (`web/src/pse/ViewerRemixLibraries.tsx`) |
 | `.github/workflows/pr-image-build.yml` (`paths-ignore`) | pas d'image d'aperçu pour une PR qui ne touche que la documentation (`*.md`, `docs/`, `LICENSE`) ou la configuration GitHub (`.github/`) ; `pr-image-publish.yml` ne tourne qu'après un build réussi, il est donc ignoré aussi |
 
