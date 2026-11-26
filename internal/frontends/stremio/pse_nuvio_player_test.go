@@ -213,3 +213,53 @@ func TestNuvioLibraryActions(t *testing.T) {
 		t.Fatalf("variante o/ : %v", e.played)
 	}
 }
+
+type nuvioBackendFake struct {
+	mu       sync.Mutex
+	progress []frontend.OfflineProgress
+	played   []core.RatingKey
+}
+
+func (b *nuvioBackendFake) Resolve(_ context.Context, imdb, kind string, season, episode int) (core.RatingKey, bool) {
+	if kind == "episode" {
+		return core.EpisodeKey(2, season, episode), true
+	}
+	return core.MovieKey(1), true
+}
+func (b *nuvioBackendFake) Progress(_ context.Context, user int64, _ core.RatingKey, p frontend.OfflineProgress) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if user != 7 {
+		return core.ErrNotFound
+	}
+	b.progress = append(b.progress, p)
+	return nil
+}
+func (b *nuvioBackendFake) Played(_ context.Context, _ int64, k core.RatingKey, played bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if played {
+		b.played = append(b.played, k)
+	}
+	return nil
+}
+
+// Titre interdit au contrôle parental : l'historique est écrit quand même,
+// pour le spectateur du lien ; un jeton invalide reste refusé (401).
+func TestNuvioWritesHistoryEvenWhenTitleIsHidden(t *testing.T) {
+	h, e := newNuvioInstance(t, true) // l'expérience refuse tout titre
+	b := &nuvioBackendFake{}
+	frontend.SetPSENuvioBackend(b)
+	t.Cleanup(func() { frontend.SetPSENuvioBackend(nil) })
+	nuvioCall(h, http.MethodGet, "/stremio/grant/player/movie/tt0000001/action=pause&currentTime=5000&duration=10000.json")
+	nuvioCall(h, http.MethodGet, "/stremio/grant/library/series/tt0000002/action=watched&videoId=tt0000002:1:4.json")
+	if len(b.progress) != 1 || b.progress[0].Position != 5*time.Second || len(b.played) != 1 || b.played[0] != core.EpisodeKey(2, 1, 4) {
+		t.Fatalf("historique : %+v %v", b.progress, b.played)
+	}
+	if len(e.progress) != 0 || len(e.played) != 0 {
+		t.Fatal("le chemin avec test de visibilité ne doit pas servir")
+	}
+	if nuvioCall(h, http.MethodGet, "/stremio/nope/player/movie/tt0000001.json?action=pause&currentTime=5").Code != 401 {
+		t.Fatal("jeton invalide accepté")
+	}
+}

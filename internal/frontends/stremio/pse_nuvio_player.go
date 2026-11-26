@@ -160,14 +160,34 @@ func (i *instance) pseNuvioKey(r *http.Request, viewer *frontend.Viewer, device 
 	return key, err == nil
 }
 
+// pseNuvioKeyFor résout l'identifiant par le catalogue quand l'écriture directe
+// est branchée (sans test de visibilité), sinon par l'expérience.
+func (i *instance) pseNuvioKeyFor(r *http.Request, backend frontend.PSENuvioBackend, viewer *frontend.Viewer, device frontend.Device, typ, raw string) (frontend.RatingKey, bool) {
+	if backend == nil {
+		return i.pseNuvioKey(r, viewer, device, typ, raw)
+	}
+	id, err := ids.ParseStremio(raw)
+	if err != nil || id.Source != "imdb" {
+		return 0, false
+	}
+	switch {
+	case typ == "movie" && !id.HasEpisode:
+		return backend.Resolve(r.Context(), id.ID, "movie", 0, 0)
+	case typ == "series" && id.HasEpisode:
+		return backend.Resolve(r.Context(), id.ID, "episode", id.Season, id.Episode)
+	}
+	return 0, false
+}
+
 func (i *instance) pseNuvioPlayer(w http.ResponseWriter, r *http.Request) {
 	viewer, device, typ, raw, ok := i.pseNuvioStart(w, r)
 	if !ok {
 		return
 	}
 	defer pseNuvioDone(w)
+	backend := frontend.PSENuvio()
 	writer, isWriter := i.host.Experience.(frontend.OfflineProgressWriter)
-	if !isWriter {
+	if backend == nil && !isWriter {
 		return
 	}
 	extra := pseNuvioExtra(r)
@@ -180,7 +200,7 @@ func (i *instance) pseNuvioPlayer(w http.ResponseWriter, r *http.Request) {
 	if err1 != nil || pos < 0 || dur < 0 {
 		return
 	}
-	key, ok := i.pseNuvioKey(r, viewer, device, typ, raw)
+	key, ok := i.pseNuvioKeyFor(r, backend, viewer, device, typ, raw)
 	if !ok {
 		return
 	}
@@ -195,6 +215,10 @@ func (i *instance) pseNuvioPlayer(w http.ResponseWriter, r *http.Request) {
 	}
 	frontend.PSENuvioIncoming(viewer.ID, key)
 	ctx := frontend.WithWatchOrigin(r.Context(), frontend.WatchOrigin{Surface: "nuvio", ClientID: device.ID})
+	if backend != nil {
+		_ = backend.Progress(ctx, viewer.ID, key, sample) // historique écrit même si le titre n'est plus visible
+		return
+	}
 	_ = writer.SetOfflineProgress(ctx, viewer, key, sample)
 }
 
@@ -204,6 +228,7 @@ func (i *instance) pseNuvioLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer pseNuvioDone(w)
+	backend := frontend.PSENuvio()
 	extra := pseNuvioExtra(r)
 	ctx := frontend.WithWatchOrigin(r.Context(), frontend.WatchOrigin{Surface: "nuvio", ClientID: device.ID})
 	switch action := extra.Get("action"); action {
@@ -221,13 +246,15 @@ func (i *instance) pseNuvioLibrary(w http.ResponseWriter, r *http.Request) {
 			videoIDs = videoIDs[:200]
 		}
 		for _, vid := range videoIDs {
-			key, ok := i.pseNuvioKey(r, viewer, device, typ, strings.TrimSpace(vid))
+			key, ok := i.pseNuvioKeyFor(r, backend, viewer, device, typ, strings.TrimSpace(vid))
 			// Sans videoId, seul un film se marque : une série entière ne l'est pas.
 			if !ok || (!explicit && key.Kind() != frontend.KindMovie) {
 				continue
 			}
 			frontend.PSENuvioIncoming(viewer.ID, key)
-			if action == "watched" {
+			if backend != nil {
+				_ = backend.Played(ctx, viewer.ID, key, action == "watched")
+			} else if action == "watched" {
 				_ = i.host.Experience.SetPlayed(ctx, viewer, key)
 			} else {
 				_ = i.host.Experience.SetUnplayed(ctx, viewer, key)

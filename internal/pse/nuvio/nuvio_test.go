@@ -128,20 +128,16 @@ type applied struct {
 }
 
 // fakeApplier ignore une observation qui n'est pas plus récente que la
-// précédente, et refuse les titres interdits.
+// précédente.
 type fakeApplier struct {
-	mu        sync.Mutex
-	last      map[core.RatingKey]time.Time
-	got       []applied
-	forbidden map[core.RatingKey]bool
+	mu   sync.Mutex
+	last map[core.RatingKey]time.Time
+	got  []applied
 }
 
 func (a *fakeApplier) Apply(ctx context.Context, _ int64, k core.RatingKey, p frontend.OfflineProgress) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.forbidden[k] {
-		return core.ErrNotFound
-	}
 	if a.last == nil {
 		a.last = map[core.RatingKey]time.Time{}
 	}
@@ -431,17 +427,21 @@ func TestInstallAddonKeepsOthers(t *testing.T) {
 	}
 }
 
-func TestPullDoesNotWriteForbiddenTitle(t *testing.T) {
+// Le contrôle parental ne touche pas l'historique : tout titre reconnu du
+// catalogue est écrit, avec sa date d'origine, par le chemin direct de l'état.
+func TestPullKeepsWholeHistory(t *testing.T) {
 	f := newFake(t)
 	s, ap := newService(t, f)
 	link(t, s, f)
-	ap.forbidden = map[core.RatingKey]bool{core.MovieKey(1): true}
 	base := time.Now().Add(-time.Hour).UnixMilli()
 	f.progress = []map[string]any{{"content_id": "tt0000001", "content_type": "movie", "video_id": "tt0000001", "position": 1000, "duration": 2000, "last_watched": base}}
-	f.watched = []map[string]any{{"content_id": "tt0000001", "content_type": "movie", "watched_at": base}}
+	f.watched = []map[string]any{{"content_id": "tt0000002", "content_type": "series", "season": 1, "episode": 2, "watched_at": base - 5000}}
 	sum, err := s.Sync(context.Background(), 7)
-	if err != nil || len(ap.got) != 0 || sum.Imported != 0 || sum.Unknown != 2 {
-		t.Fatalf("titre interdit écrit : %+v %v %v", sum, err, ap.got)
+	if err != nil || len(ap.got) != 2 || sum.Imported != 2 || sum.Unknown != 0 {
+		t.Fatalf("historique : %+v %v %v", sum, err, ap.got)
+	}
+	if ap.got[1].p.ObservedAt.UnixMilli() != base-5000 || !ap.got[1].p.Played {
+		t.Fatalf("date d'origine : %+v", ap.got[1])
 	}
 }
 

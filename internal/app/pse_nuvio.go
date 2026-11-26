@@ -94,8 +94,9 @@ func (a *App) startPSENuvio() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go svc.Run(ctx)
 	unsub := a.state.Subscribe(svc.Handle)
+	frontend.SetPSENuvioBackend(nuvioBackend{a})
 	frontend.SetPSENuvioIncoming(func(user int64, key core.RatingKey) { svc.MarkIncoming(user, key) })
-	a.closers = append(a.closers, func() { unsub(); cancel(); frontend.SetPSENuvioIncoming(nil) })
+	a.closers = append(a.closers, func() { unsub(); cancel(); frontend.SetPSENuvioIncoming(nil); frontend.SetPSENuvioBackend(nil) })
 }
 
 // pseNuvioAPI sert /ether/api/pse/viewers/{id}/nuvio….
@@ -124,27 +125,39 @@ func pseIsNuvioPath(p string) bool {
 	return strings.HasPrefix(p, "/viewers/") && strings.Contains(p, "/nuvio")
 }
 
-// nuvioWriter écrit comme un lecteur Stremio : droits sur le titre, contrôle
-// parental et visibilité du spectateur sont vérifiés par le service d'expérience.
+// nuvioWriter écrit l'historique directement dans l'état, sans test de
+// visibilité : le contrôle parental évolue dans le temps et ne s'applique qu'à
+// la lecture ; l'historique d'un compte est conservé entièrement. Un titre doit
+// seulement être reconnu dans le catalogue.
 type nuvioWriter struct{ a *App }
 
 func (w nuvioWriter) Apply(ctx context.Context, user int64, key core.RatingKey, p frontend.OfflineProgress) error {
-	if w.a.users == nil {
+	if w.a.state == nil {
 		return core.ErrNotAvailable
 	}
-	exp, err := w.a.newSurfaceExperience("stremio")
-	if err != nil {
-		return err
-	}
-	writer, ok := exp.(frontend.OfflineProgressWriter)
-	if !ok {
+	_, err := w.a.state.ApplyOfflineProgress(ctx, user, key, p)
+	return err
+}
+
+// nuvioBackend sert les ressources player et library de l'addon Stremio.
+type nuvioBackend struct{ a *App }
+
+func (b nuvioBackend) Resolve(ctx context.Context, imdb, kind string, season, episode int) (core.RatingKey, bool) {
+	return nuvioCatalog{b.a}.KeyFor(ctx, nuvio.Target{IMDB: imdb, Series: kind == "episode", Season: season, Episode: episode})
+}
+
+func (b nuvioBackend) Progress(ctx context.Context, user int64, key core.RatingKey, p frontend.OfflineProgress) error {
+	return nuvioWriter{b.a}.Apply(ctx, user, key, p)
+}
+
+func (b nuvioBackend) Played(ctx context.Context, user int64, key core.RatingKey, played bool) error {
+	if b.a.state == nil {
 		return core.ErrNotAvailable
 	}
-	viewer, err := w.a.users.ActiveUser(ctx, user)
-	if err != nil {
-		return err
+	if played {
+		return b.a.state.Scrobble(ctx, user, key)
 	}
-	return writer.SetOfflineProgress(ctx, viewer, key, p)
+	return b.a.state.Unscrobble(ctx, user, key)
 }
 
 func hostOnly(h string) string {
