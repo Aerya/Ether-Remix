@@ -95,7 +95,7 @@ func (s *Service) resolveQuick(ctx context.Context, req core.ResolveRequest, pro
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if index < 0 && source == "torrent" && core.PlaybackIntent(ctx) {
+		if index < 0 && source == "torrent" && core.PlaybackIntent(ctx) && !core.NoDownloadQueue(ctx) { // PSE-HOOK: recherche sans file de téléchargement — voir docs/pse/FORK.fr.md
 			if queuedIndex, queuedPayload, queuedErr, handled := s.uncachedOutcome(stage, candidates, eligible, &trace); handled {
 				index, payload, err = queuedIndex, queuedPayload, queuedErr
 			}

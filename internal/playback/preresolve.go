@@ -896,6 +896,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 				}
 				if err != nil || res == nil {
 					lastErr = err
+					if len(tried) == 0 && !detailOnly {
+						m.pseNoteNoRelease(id, err) // PSE-HOOK: verdict « aucune release » — voir docs/pse/FORK.fr.md
+					}
 					break
 				}
 			}

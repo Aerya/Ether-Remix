@@ -135,6 +135,10 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	if warm, ok := i.host.LazyStreams.(frontend.LazyStreamWarmer); ok {
 		warm.Warm(ctx, credential, plan)
 	}
+	// PSE-HOOK: aucun flux quand aucune source n'existe — voir docs/pse/FORK.fr.md
+	if i.pseNoSource(ctx, w, credential, plan) {
+		return
+	}
 	base.Path = strings.TrimSuffix(base.Path, "/image/") + lazy
 	stream := map[string]any{"name": "Ether", "url": base.String()}
 	if label := i.autoVersionName(r, viewer, device, key); label != "" {
