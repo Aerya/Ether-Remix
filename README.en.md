@@ -112,7 +112,7 @@ When an indexer throttles Ether (HTTP 429), playback names it and shows when it 
 | Plex | Plex apps, Plexamp and Kodi with PM4K. |
 | Jellyfin / Emby | Infuse, Swiftfin, Findroid, Streamyfin and compatible TV clients. Emby for TV 2.x on Apple TV is not supported. |
 | Silo | Silo clients on desktop, mobile and TV. |
-| Stremio | Personal addon; requires an HTTPS address. Two links per profile: with catalogues (Movies, Shows and one row per collection of the granted Remix libraries) or files only (playback only). |
+| Stremio | Personal addon; requires an HTTPS address. Two links per profile: with catalogues (Movies, Shows and one row per collection of the granted Remix libraries) or files only (playback only). Display (Direct, Compact, Detailed) and number of versions (1 to 10) set per link: the Auto stream then the other versions of the title. |
 | WebDAV | Infuse, VLC, Kodi and rclone. |
 | IPTV / local network | M3U, XMLTV, Xtream and DLNA, depending on enabled access methods. |
 | Subsonic | Symfonium, Feishin, Supersonic, DSub and other compatible clients. |

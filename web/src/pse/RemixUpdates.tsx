@@ -36,6 +36,10 @@ export const REMIX_UPDATES = [
         "Stremio: two links per profile. “With the profile's catalogues” also publishes one row per collection of the granted Remix libraries (parental controls and language respected); “Files only” publishes no catalogue and only serves playback. Already installed links gain the Remix catalogues.",
       ],
       [
+        "Stremio et Nuvio : liste de versions réglée par lien. Dans Se connecter, choisissez l'affichage (Direct, Compact ou Détaillé) et le nombre de versions (1 à 10) : Ether propose alors le flux Auto puis les autres versions de la fiche, avec leur qualité, audio, taille et montage. Les liens déjà installés ne changent pas.",
+        "Stremio and Nuvio: version list set per link. Under Connect, pick the display (Direct, Compact or Detailed) and the number of versions (1 to 10): Ether then offers the Auto stream followed by the other versions of the title, with quality, audio, size and cut. Already installed links do not change.",
+      ],
+      [
         "Stremio et Nuvio : quand aucune source n'existe pour un titre (ex. film tout juste sorti en salle), la liste de flux reste vide au lieu de proposer une lecture qui reste bloquée en mise en mémoire tampon.",
         "Stremio and Nuvio: when no source exists for a title (e.g. a film just out in cinemas), the stream list stays empty instead of offering playback that stays stuck buffering.",
       ],

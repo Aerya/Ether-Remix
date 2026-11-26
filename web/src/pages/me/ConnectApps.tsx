@@ -11,7 +11,12 @@ import {
 } from "../../components/integration-brands";
 import { StremioMark } from "../sources/marks";
 import { t } from "../../i18n";
-import { StremioLinkChoice, chosenStremioLink } from "../../pse/StremioLinkChoice"; // PSE-HOOK: lien Stremio fichiers seuls
+import {
+  DEFAULT_STREMIO_OPTIONS,
+  StremioLinkChoice,
+  chosenStremioLink,
+  type StremioOptions,
+} from "../../pse/StremioLinkChoice"; // PSE-HOOK: lien Stremio fichiers seuls
 
 type AdapterMeta = {
   name: string;
@@ -56,7 +61,8 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
   const [adapters, setAdapters] = useState<Record<string, AdapterMeta>>({});
   const [connection, setConnection] = useState<Connection>();
   const [filesOnly, setFilesOnly] = useState(false); // PSE-HOOK: lien Stremio fichiers seuls
-  const shown = connection && chosenStremioLink(connection, filesOnly);
+  const [linkOptions, setLinkOptions] = useState<StremioOptions>(DEFAULT_STREMIO_OPTIONS); // PSE-HOOK: lien Stremio, affichage et nombre de versions
+  const shown = connection && chosenStremioLink(connection, filesOnly, linkOptions);
 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -211,7 +217,13 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
           <div className="min-w-0 max-h-[calc(100dvh-14rem)] space-y-5 overflow-y-auto">
             <p className="text-sm text-fg-muted">{t("This secret is shown only once.")}</p>
             {shown && (
-              <StremioLinkChoice connection={shown} filesOnly={filesOnly} onChange={setFilesOnly} />
+              <StremioLinkChoice
+                connection={shown}
+                filesOnly={filesOnly}
+                onChange={setFilesOnly}
+                options={linkOptions}
+                onOptionsChange={setLinkOptions}
+              />
             )}
             <ConnectionField label={t("Server URL")} value={shown?.url ?? connection.url} />
             {connection.username && (

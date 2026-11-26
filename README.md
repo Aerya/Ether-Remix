@@ -110,7 +110,7 @@ Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique 
 | Plex | Applications Plex, Plexamp et Kodi avec PM4K. |
 | Jellyfin / Emby | Infuse, Swiftfin, Findroid, Streamyfin et clients TV compatibles. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
 | Silo | Clients Silo sur ordinateur, mobile et TV. |
-| Stremio | Extension personnelle ; adresse HTTPS nécessaire. Deux liens au choix par profil : avec les catalogues (Films, Séries et une rangée par collection des bibliothèques Remix accordées) ou uniquement les fichiers (lecture seule). |
+| Stremio | Extension personnelle ; adresse HTTPS nécessaire. Deux liens au choix par profil : avec les catalogues (Films, Séries et une rangée par collection des bibliothèques Remix accordées) ou uniquement les fichiers (lecture seule). Affichage (Direct, Compact, Détaillé) et nombre de versions (1 à 10) réglables par lien : le flux Auto puis les autres versions de la fiche. |
 | WebDAV | Infuse, VLC, Kodi et rclone. |
 | IPTV / réseau local | M3U, XMLTV, Xtream et DLNA, selon les accès activés. |
 | Subsonic | Symfonium, Feishin, Supersonic, DSub et autres clients compatibles. |
