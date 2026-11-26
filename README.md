@@ -1,4 +1,6 @@
 <p align="center">
+
+Le dépôt est désormais hébergé dans **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. L’adresse Docker historique `ghcr.io/aerya/ether-remix:latest` reste prise en charge par un miroir ; aucune modification n’est requise pour les installations existantes. La nouvelle adresse est `ghcr.io/remix-media/ether-remix:latest`. [Transition Docker](docs/pse/DOCKER-MIGRATION.fr.md).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/ether-remix-signature-dark.svg">
     <img src=".github/assets/ether-remix-signature-light.svg" width="560" alt="Ether Remix">
@@ -75,7 +77,7 @@ Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options,
 | Films, séries et animés | Préférences VF/MULTi, qualité, catalogue filtré, exceptions VOSTFR et sous-titres SubMaker. |
 | Sources vidéo | Debrid, Usenet, addons Stremio, Prowlarr/Jackett/NZBHydra2, base StreamFusion Reborn et SeerrCatalog. Clients torrent, XDCC et FTP/SFTP en option. |
 | Fichiers locaux | Vidéos et musique depuis vos dossiers ou montages réseau, sans déplacer ni supprimer les originaux. |
-| Bibliothèques et accueil | Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur : bibliothèques Remix au choix par spectateur, avec ou sans les sections de base, dans Plex, Stremio et Jellyfin. |
+| Bibliothèques et accueil | Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur : bibliothèques Remix au choix par spectateur, avec ou sans les sections de base, dans Plex, Stremio et Jellyfin. Dans Jellyfin, des règles d'exclusion (genre, pays, langue…, comme dans « Modifier la collection ») retirent des titres (ex. animation, documentaires) des derniers ajouts de Films et Séries. |
 | Musique | Catalogue Deezer, sources musicales activées (dont OpenDeezer, avec votre compte Deezer), fichiers locaux et iBroadcast ; accès depuis Plexamp, Jellyfin ou Subsonic, avec playlists personnelles. |
 | Suivi | Progression et historique par spectateur, activité vidéo et musicale, Scrob, Last.fm et statistiques des sources. |
 | Continuer à regarder | Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. Toutes les séries en cours y figurent, et la rangée s'affiche instantanément : l'épisode suivant de chaque série est calculé à l'avance, à chaque visionnage ou nouvel épisode. |
@@ -86,6 +88,8 @@ Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options,
 ## Un seul index de releases
 
 Les recherches et imports conservent dans un index commun les références conformes aux critères Remix actifs. Les liens hors critères sont refusés ; les anciens liens sont nettoyés après actualisation des profils et exceptions. À la lecture, Remix propose les références encore utilisables, applique les critères de langue et de qualité, puis recherche d’autres sources si nécessaire. L’identité du film ou de l’épisode reste vérifiée ; une référence enregistrée ne garantit pas sa disponibilité.
+
+Le recalcul du catalogue lisible conserve les compteurs précédents jusqu’à la publication complète des nouveaux résultats. Une interruption conserve aussi la signature précédente ; le prochain cycle peut réessayer. Le calcul dispose d’un budget indépendant de 30 minutes et publie ses écritures par lots dans une seule transaction.
 
 Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquement des releases**, prépare les contenus du catalogue en arrière-plan. Les sources se choisissent sur la même page ; cadence et budgets sont dans les réglages avancés. Désactiver cette recherche conserve l’index, sa consultation et son utilisation à la lecture.
 
@@ -160,3 +164,5 @@ Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://ecli
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
 
 Les contributions passent par une PR vers `main`, avec CI et détection des secrets obligatoires. Les PR de `kesurof/Ether-Remix` ouvertes par `kesurof` fusionnent automatiquement après validation. [Règles de contribution et synchronisation](docs/pse/FORK.fr.md).
+
+Le logo Remix-Media identifie la console ; le numéro de version et le lien Remix du pied de menu ouvrent ce dépôt, à côté du crédit Ether.

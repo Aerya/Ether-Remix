@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   enable:
-    if: github.repository == 'Aerya/Ether-Remix'
+    if: github.repository == 'Remix-Media/Ether-Remix'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

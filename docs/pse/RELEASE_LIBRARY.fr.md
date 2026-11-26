@@ -2,6 +2,8 @@
 
 Les recherches et imports conservent automatiquement leurs références dans un index commun, réutilisé à la lecture. Dans **Remix → Indexation**, le seul interrupteur **Rechercher automatiquement des releases** (`PSE_INDEXER`) contrôle les recherches de fond. Il reste désactivé par défaut ; l’arrêter n’efface pas l’index et ne désactive ni sa consultation ni sa réutilisation. L’ancien réglage `PSE_RELEASE_LIBRARY` est ignoré, quelle que soit sa valeur. Les sources, budgets et pauses déjà configurés sont conservés.
 
+Le recalcul du catalogue lisible conserve les compteurs précédents jusqu’à la publication complète des nouveaux résultats. Une interruption conserve aussi la signature précédente ; le prochain cycle peut réessayer. Le calcul dispose d’un budget indépendant de 30 minutes et publie ses écritures par lots dans une seule transaction.
+
 Les recherches réelles alimentent la bibliothèque, ainsi que l’import SFR pour les titres du catalogue. Les liens fichiers Alkodiques conservent le chemin AllDebrid vérifié, sans ajout de magnet. Les références et éventuels en-têtes privés sont chiffrés avec la clé de configuration de Remix et ne sont jamais envoyés au navigateur.
 
 À la lecture, les références encore récentes sont proposées au moteur existant : langue, qualité, contraintes du lecteur et vérifications restent applicables. Le moteur peut réutiliser les alternatives conservées puis faire une recherche de secours si elles échouent ou ne conviennent pas. Le gain dépend du temps de résolution, de contrôle et de mise en tampon ; aucune lecture instantanée n’est garantie. Les recherches d’indexation et les recherches manuelles continuent à interroger les sources.

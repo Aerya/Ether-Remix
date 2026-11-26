@@ -51,6 +51,7 @@ import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-r
 import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
 import { ImportedSources } from "./ImportedSources";
 import { VostfrTitles } from "./VostfrTitles";
+import { JellyfinLatestFilters } from "./JellyfinLatestFilters";
 
 /**
  * Page « Ether-Remix » de la console (nom public du fork), en sept onglets : Vue
@@ -83,6 +84,7 @@ interface Field {
     | "filter"
     | "feeds"
     | "url"
+    | "json"
     | "secret";
   label: Text;
   help: Text;
@@ -534,7 +536,7 @@ function PseSettings() {
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
               {content !== "musique"
                 ? current.features
-                    .filter((f) => f.id === "librarysort")
+                    .filter((f) => f.id === "librarysort" || f.id === "jellyfinlatest")
                     .map((f) => renderFeature(f))
                 : null}
               {content !== "musique" && mode === "expert" ? <XperienceImport /> : null}
@@ -746,6 +748,14 @@ function FeatureSection({
           control: row(fd),
         }))}
       />
+    );
+  if (feature.id === "jellyfinlatest")
+    return (
+      <div id="pse-jellyfinlatest">
+        <SettingsSection title={T(feature.title)} description={T(feature.description)}>
+          <JellyfinLatestFilters />
+        </SettingsSection>
+      </div>
     );
   if (feature.id === "sfr")
     return (

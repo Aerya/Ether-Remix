@@ -1,4 +1,6 @@
 <p align="center">
+
+The repository now lives in **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. The historical Docker address `ghcr.io/aerya/ether-remix:latest` remains supported through a mirror; existing installations do not need to change. The new address is `ghcr.io/remix-media/ether-remix:latest`. [Docker transition](docs/pse/DOCKER-MIGRATION.en.md).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/ether-remix-signature-dark.svg">
     <img src=".github/assets/ether-remix-signature-light.svg" width="560" alt="Ether Remix">
@@ -75,7 +77,7 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 | Movies, shows and anime | French/MULTi preferences, quality rules, catalogue filters, subtitled exceptions and SubMaker subtitles. |
 | Video sources | Debrid, Usenet, Stremio addons, Prowlarr/Jackett/NZBHydra2, StreamFusion Reborn database and SeerrCatalog. Optional torrent clients, XDCC and FTP/SFTP. |
 | Local files | Video and music from folders or mounted network shares, without moving or deleting originals. |
-| Libraries and home | Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions: Remix libraries chosen per viewer, with or without the base sections, in Plex, Stremio and Jellyfin. |
+| Libraries and home | Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions: Remix libraries chosen per viewer, with or without the base sections, in Plex, Stremio and Jellyfin. In Jellyfin, exclusion rules (genre, country, language… as in “Edit collection”) can remove titles (e.g. animation, documentaries) from Movies and Shows latest additions. |
 | Music | Deezer catalogue, enabled music sources (including OpenDeezer, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
 | Tracking | Per-viewer progress and history, video and music activity, Scrob, Last.fm and source statistics. |
 | Continue Watching | An old show with a newly released episode comes back to the top of the row, ranked by the release date. Settings in Remix → Playback → Continue watching: shows examined (200 by default), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows. Every show in progress is listed, and the row appears instantly: each show's next episode is computed ahead of time, on every viewing or new episode. |
@@ -86,6 +88,8 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 ## One release index
 
 Searches and imports retain references meeting active Remix criteria in a shared index. Rejected links are not stored; old links are cleaned up after profiles and exceptions are refreshed. At playback, Remix offers references that are still usable, applies language and quality rules, then searches other sources when necessary. Movie or episode identity is still verified; a stored reference does not guarantee availability.
+
+Playable catalogue rebuilds retain the previous counts until the complete result is published. An interruption also preserves the previous signature so the next cycle can retry. Calculation has an independent 30-minute budget and publishes batched writes in a single transaction.
 
 Under **Remix → Indexing**, a single switch, **Automatically search for releases**, prepares catalogue titles in the background. Choose sources on the same page; pace and budgets live in advanced settings. Disabling automatic search preserves the index, browsing and playback reuse.
 
@@ -160,3 +164,5 @@ Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclip
 [License](LICENSE) · [Legal information](LEGAL.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 Contributions use a pull request to `main`, with required CI and secret detection. PRs authored by `kesurof` from `kesurof/Ether-Remix` merge automatically after validation. [Contribution and synchronization rules](docs/pse/FORK.fr.md).
+
+The Remix-Media logo identifies the console; the version number and Remix footer link open this repository, alongside the Ether credit.

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -182,6 +183,7 @@ type ftpTestServer struct {
 	open      atomic.Int32
 	peak      atomic.Int32
 	transfers atomic.Int64
+	freed     chan struct{}
 }
 
 func startFTP(t *testing.T, root string, maxConns int) *ftpTestServer {
@@ -190,7 +192,7 @@ func startFTP(t *testing.T, root string, maxConns int) *ftpTestServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &ftpTestServer{addr: ln.Addr().String(), root: root, maxConns: int32(maxConns)}
+	s := &ftpTestServer{addr: ln.Addr().String(), root: root, maxConns: int32(maxConns), freed: make(chan struct{}, 1)}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
@@ -204,10 +206,40 @@ func startFTP(t *testing.T, root string, maxConns int) *ftpTestServer {
 	return s
 }
 
+// countSession laisse les anciennes sessions traiter QUIT avant de compter
+// leur remplaçante : ftp.ServerConn.Quit ferme le client sans attendre le
+// serveur. Le pic est historique ; attendre seulement à la fin du test ne
+// pourrait donc pas corriger ce décalage. Un dépassement persistant reste
+// compté et refusé par la réponse 421.
+func (s *ftpTestServer) countSession() int32 {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		n := s.open.Load()
+		if s.maxConns <= 0 || n < s.maxConns {
+			if s.open.CompareAndSwap(n, n+1) {
+				return n + 1
+			}
+			continue
+		}
+		select {
+		case <-s.freed:
+		case <-timer.C:
+			return s.open.Add(1)
+		}
+	}
+}
+
 func (s *ftpTestServer) session(c net.Conn) {
 	defer c.Close()
-	n := s.open.Add(1)
-	defer s.open.Add(-1)
+	n := s.countSession()
+	defer func() {
+		s.open.Add(-1)
+		select {
+		case s.freed <- struct{}{}:
+		default:
+		}
+	}()
 	for {
 		p := s.peak.Load()
 		if n <= p || s.peak.CompareAndSwap(p, n) {

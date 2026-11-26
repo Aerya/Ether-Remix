@@ -51,6 +51,8 @@ Le guide détaillé pas à pas se trouve, repliable, dans **Accueil** ; il ne mo
 
 ## Installation
 
+[Migration vers Remix-Media : les installations existantes gardent leur adresse Docker.](DOCKER-MIGRATION.fr.md)
+
 L’image Docker est publique. Aucune connexion à GHCR ni aucun jeton GitHub ne sont nécessaires pour la télécharger.
 
 ```yaml
@@ -103,6 +105,8 @@ Les références issues des recherches et imports sont conservées automatiqueme
 | `PSE_POSTER_REFRESH_HOURS` | `24` | Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), délai en heures (1 à 168) au bout duquel les applications reprennent ses affiches. Ether utilisait 6 heures. |
 | `PSE_LIBRARY_SORT` | `release` | Tri des bibliothèques Films et Séries à l'ouverture : `release` (date de sortie, du plus récent au plus ancien) ou `title` (titre, A → Z). Un tri choisi dans l'application reste prioritaire. |
 | `PSE_LIGHT_LISTS` | `on` | Une bibliothèque, une rangée, une collection ou un catalogue Stremio n'affiche que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue, aucun préchauffage debrid. Les détails ne partent qu'à l'ouverture d'une fiche ou à la lecture. `off` rétablit le comportement d'Ether. |
+| `PSE_JELLYFIN_LATEST_FILTERS` | vide | Carte « Jellyfin : derniers ajouts » (onglet Contenus). Règles d'exclusion des derniers ajouts Jellyfin de Films et Séries, éditées comme dans « Modifier la collection » (genre, pays, langue, studio, année, note…) ; le bouton « Appliquer le modèle par défaut » propose animation, documentaires, émissions, Inde et langues indiennes. JSON `{"movie":{"exclude":[…]},"show":{…}}`, API `GET`/`PUT /ether/api/pse/jellyfin-latest`. Vide : comportement d'Ether ; Plex n'est pas concerné. |
+| `PSE_JELLYFIN_LATEST_EXCLUDE_COUNTRIES` / `PSE_JELLYFIN_LATEST_EXCLUDE_LANGUAGES` | vide | Même filtre par pays de production (code ISO, ex. `IN`) et par langue originale (ISO 639-1, ex. `hi,ta`). |
 | `PSE_FRENCH` | `off` | `on` active le catalogue en français : pages Films et Séries, rangées de l'accueil (dont Tendances), collections et titres similaires. Les collections de sorties à venir, la watchlist et la reprise de lecture restent intactes. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Pays dont une sortie numérique ou physique compte (codes ISO). `FR,CA` ajoute le Canada, pas toujours doublé en français. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Langues de release indexée qui comptent (`vfq` pour le québécois seul, `vff`…). |

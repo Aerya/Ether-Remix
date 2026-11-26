@@ -1,5 +1,5 @@
 // Executed only from protected main, never from a pull request checkout.
-const repository = 'Aerya/Ether-Remix';
+const repository = 'Remix-Media/Ether-Remix';
 function isKesurof(pr) {
   return pr.user?.login === 'kesurof' &&
     pr.head?.repo?.full_name === 'kesurof/Ether-Remix' &&

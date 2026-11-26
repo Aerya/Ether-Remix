@@ -2,6 +2,7 @@ package console
 
 import (
 	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
+	"github.com/braedonsaunders/ether/internal/pse/latestfilter"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 )
 
@@ -22,6 +23,7 @@ const (
 	KindMulti     = "multi"
 	KindCountries = "countries"
 	KindFilter    = "filter"
+	KindJSON      = "json" // JSON validé par une fonction dédiée (éditeur de règles de la carte)
 	KindURL       = "url"
 	KindFeeds     = "feeds"  // liste de flux : JSON [{name, url, key}], clés masquées à l'affichage
 	KindKey       = "key"    // clé d'API, masquée à l'affichage
@@ -201,6 +203,15 @@ var Features = communityFields([]Feature{
 			{Key: "PSE_LIBRARY_SORT", Kind: KindSelect, Default: "release", Label: tx("Tri par défaut", "Default sort"),
 				Help:    tx("Plex applique ce tri tant que vous n'en avez pas choisi un autre. Jellyfin Web et Infuse gardent leur propre tri : changez-le une fois dans l'application.", "Plex uses this sort until you pick another. Jellyfin Web and Infuse keep their own: change it once in the app."),
 				Options: []Option{{"release", tx("Date de sortie, du plus récent au plus ancien", "Release date, newest first")}, {"title", tx("Titre (A → Z)", "Title (A → Z)")}}},
+		},
+	},
+	{
+		ID:          "jellyfinlatest",
+		Title:       tx("Jellyfin : derniers ajouts de Films et Séries", "Jellyfin: Movies and Shows latest additions"),
+		Description: tx("Retire des titres de la rangée « Derniers ajouts » des bibliothèques Films et Séries dans Jellyfin et Plezy, par exemple quand une bibliothèque dédiée (Animés, Documentaires) existe déjà. Les règles sont celles de « Modifier la collection ». Plex et les autres bibliothèques ne changent pas. Aucune règle : comportement d'Ether.", "Removes titles from the Movies and Shows “Latest” row in Jellyfin and Plezy, e.g. when a dedicated library (Anime, Documentaries) already exists. Rules work like “Edit collection”. Plex and other libraries are unchanged. No rule: Ether's behaviour."),
+		Fields: []Field{
+			// JSON édité par l'éditeur de règles de la carte (GET/PUT /pse/jellyfin-latest).
+			{Key: latestfilter.Key, Kind: KindJSON, Default: "", Label: tx("Règles d'exclusion", "Exclusion rules")},
 		},
 	},
 	{

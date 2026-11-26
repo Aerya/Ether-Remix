@@ -116,7 +116,7 @@ export function AllDebridMediaFlow() {
       </p>
       <div className="flex flex-wrap gap-4 text-sm underline">
         <a
-          href="https://github.com/Aerya/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation"
+          href="https://github.com/Remix-Media/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation"
           target="_blank"
           rel="noopener noreferrer"
         >

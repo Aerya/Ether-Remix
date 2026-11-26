@@ -26,8 +26,52 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-music-flows",
+    id: "2026-11-26-playable-rebuild",
     version: "current",
+    date: "2026-11-26",
+    title: ["Recalcul fiable des gros catalogues", "Reliable large catalogue rebuilds"],
+    items: [
+      [
+        "Les profils qualité disposent d’un délai de recalcul indépendant. Le catalogue lisible précédent reste disponible jusqu’à la publication complète ; une interruption ne laisse plus une table partiellement reconstruite.",
+        "Quality profiles have an independent rebuild timeout. The previous playable catalogue remains available until the complete result is published; interruptions no longer leave a partially rebuilt table.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-remix-media-logo",
+    version: "0.2.37-remix.143.1",
+    date: "2026-11-24",
+    title: ["Le logo Remix-Media dans la console", "Remix-Media logo in the console"],
+    items: [
+      [
+        "Le logo rejoint l’en-tête et le lien Remix du pied de menu. Le numéro de version ouvre le nouveau dépôt ; le crédit et le lien du projet originel Ether restent disponibles.",
+        "The logo appears in the header and the Remix footer link. The version number opens the new repository; the original Ether project credit and link remain available.",
+      ],
+      [
+        "Lire la version : le montage (Director’s Cut, Extended…) apparaît aussi dans le libellé de la version Auto et des alternatives, pas seulement dans les autres versions.",
+        "Play version: the cut (Director’s Cut, Extended…) also appears in the Auto and alternative version labels, not only in other versions.",
+      ],
+      [
+        "Jellyfin : des règles d'exclusion, éditées comme dans « Modifier la collection » (genre, pays, langue…), retirent des titres (ex. animation, documentaires, émissions) des derniers ajouts de Films et Séries ; un modèle par défaut est proposé.",
+        "Jellyfin: exclusion rules, edited like “Edit collection” (genre, country, language…), remove titles (e.g. animation, documentaries, shows) from Movies and Shows latest additions; a default template is offered.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-remix-media",
+    version: "0.2.37-remix.138.1",
+    date: "2026-11-24",
+    title: ["Remix rejoint Remix-Media", "Remix moves to Remix-Media"],
+    items: [
+      [
+        "Le dépôt GitHub rejoint l’organisation Remix-Media. Les installations Docker existantes peuvent garder ghcr.io/aerya/ether-remix : un miroir maintient cette adresse. La nouvelle adresse est ghcr.io/remix-media/ether-remix ; les volumes et réglages restent identiques.",
+        "The GitHub repository moves to Remix-Media. Existing Docker installations may keep ghcr.io/aerya/ether-remix: a mirror maintains this address. The new address is ghcr.io/remix-media/ether-remix; volumes and settings stay the same.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-music-flows",
+    version: "0.2.37-remix.137.1",
     date: "2026-11-24",
     title: ["Playlists programmées et mixes personnels", "Scheduled playlists and personal mixes"],
     items: [

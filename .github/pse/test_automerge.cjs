@@ -1,13 +1,13 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {run, isKesurof, canEnable, needsImage} = require('./automerge.cjs');
-const repo = {full_name: 'Aerya/Ether-Remix'};
+const repo = {full_name: 'Remix-Media/Ether-Remix'};
 const fixture = () => ({number: 1, node_id: 'PR_test', state: 'open', draft: false,
   user: {login: 'kesurof'}, head: {sha: 'abc', repo: {full_name: 'kesurof/Ether-Remix', owner: {login: 'kesurof'}}},
   base: {ref: 'main', repo: structuredClone(repo)}, auto_merge: null});
 function harness(pr, event = 'pull_request_target') {
   const calls = [];
-  const context = {repo: {owner: 'Aerya', repo: 'Ether-Remix'}, payload: {pull_request: structuredClone(pr)}};
+  const context = {repo: {owner: 'Remix-Media', repo: 'Ether-Remix'}, payload: {pull_request: structuredClone(pr)}};
   if (event === 'workflow_run') {
     context.payload = {workflow_run: {head_sha: 'abc', path: '.github/workflows/pse-ci.yml', event: 'pull_request', conclusion: 'success'}};
   }
@@ -65,7 +65,7 @@ test('aucune publication avec CI en échec, conflit, ou PR non fusionnée', asyn
 test('publication après fusion confirmée ; aucun doublon si déjà construite', async () => {
   const pr = fixture(); Object.assign(pr, {merged: true, state: 'closed', merge_commit_sha: 'merged'});
   const h = harness(pr, 'workflow_run'); await run(h);
-  assert.deepEqual(h.calls, [['dispatch', {owner: 'Aerya', repo: 'Ether-Remix', workflow_id: 'pse-docker.yml', ref: 'main'}]]);
+  assert.deepEqual(h.calls, [['dispatch', {owner: 'Remix-Media', repo: 'Ether-Remix', workflow_id: 'pse-docker.yml', ref: 'main'}]]);
   h.calls.length = 0;
   h.github.rest.actions.listWorkflowRuns = async () => ({data: {workflow_runs: [{}]}});
   await run(h); assert.deepEqual(h.calls, []);
@@ -75,7 +75,7 @@ test('si tout est déjà vert, fusion native protégée et publication, sans byp
   const pr = fixture(); const h = harness(pr);
   h.github.graphql = async () => { throw new Error('Pull request is in clean status'); };
   h.github.rest.pulls.merge = async value => {
-    assert.deepEqual(value, {owner: 'Aerya', repo: 'Ether-Remix', pull_number: 1, sha: 'abc', merge_method: 'squash'});
+    assert.deepEqual(value, {owner: 'Remix-Media', repo: 'Ether-Remix', pull_number: 1, sha: 'abc', merge_method: 'squash'});
     Object.assign(pr, {merged: true, state: 'closed', merge_commit_sha: 'merged'});
   };
   await run(h); assert.equal(h.calls[0][0], 'dispatch');

@@ -158,7 +158,7 @@ func (r *AddonRegistry) Refresh(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, addonRegistryURL, nil)
-	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Aerya/Ether-Remix)")
+	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Remix-Media/Ether-Remix)")
 	req.Header.Set("Accept", "application/json")
 	hc := r.client
 	if hc == nil {

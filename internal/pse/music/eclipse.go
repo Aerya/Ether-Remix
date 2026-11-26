@@ -120,7 +120,7 @@ func (e *Eclipse) getJSON(ctx context.Context, u string) (any, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Aerya/Ether-Remix)")
+	req.Header.Set("User-Agent", "Ether-Remix/1.0 (+https://github.com/Remix-Media/Ether-Remix)")
 	res, err := e.http.Do(req)
 	if err != nil {
 		var ue *url.Error
