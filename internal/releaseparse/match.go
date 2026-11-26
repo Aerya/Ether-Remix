@@ -22,9 +22,10 @@ var diacritics = map[rune]rune{
 	'ł': 'l', 'ð': 'd', 'þ': 't', 'ğ': 'g', 'ř': 'r', 'ť': 't', 'ď': 'd',
 }
 
-// NormalizeTitle lowercases, strips diacritics and punctuation, expands
-// "&" to "and", and drops a leading article, for title comparisons.
-func NormalizeTitle(s string) string {
+// normalizeTitleFields lowercases, collapses dotted initialisms, strips
+// diacritics and punctuation, expands "&" to "and", and splits into tokens
+// while preserving any leading article.
+func normalizeTitleFields(s string) []string {
 	s = strings.TrimSpace(s)
 	if strings.ContainsAny(s, ".*") {
 		s = collapseDottedInitialisms(s)
@@ -49,14 +50,23 @@ func NormalizeTitle(s string) string {
 			b.WriteRune(' ')
 		}
 	}
-	fields := strings.Fields(b.String())
+	return strings.Fields(b.String())
+}
+
+func stripLeadingArticle(fields []string) []string {
 	if len(fields) > 1 {
 		switch fields[0] {
 		case "the", "a", "an", "le", "la", "les", "der", "die", "das", "el", "il":
-			fields = fields[1:]
+			return fields[1:]
 		}
 	}
-	return strings.Join(fields, " ")
+	return fields
+}
+
+// NormalizeTitle lowercases, strips diacritics and punctuation, expands
+// "&" to "and", and drops a leading article, for title comparisons.
+func NormalizeTitle(s string) string {
+	return strings.Join(stripLeadingArticle(normalizeTitleFields(s)), " ")
 }
 
 // collapseDottedInitialisms joins single-letter sequences separated by dots
@@ -229,6 +239,80 @@ func subtitlePrefix(raw string) string {
 	return prefix
 }
 
+// possessiveCreditStem returns the rest of a title that opens with a named
+// person's possessive credit, which release names usually leave out:
+// "Seol Min-seok's Naked World History" -> "Naked World History",
+// "Tom Clancy's Jack Ryan" -> "Jack Ryan", "설민석의 벌거벗은 세계사" ->
+// "벌거벗은 세계사". It returns "" for titles whose possessive is part of the
+// name itself ("Grey's Anatomy", "Hell's Kitchen", "The Handmaid's Tale",
+// "사랑의 불시착"): the possessor must be a two- or three-word capitalised
+// name (or a Hangul name ending in 의 that is not a pronoun) and the rest must
+// still be distinctive on its own.
+func possessiveCreditStem(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	for _, sep := range []string{"'s ", "’s ", "'S ", "’S "} {
+		idx := strings.Index(s, sep)
+		if idx <= 0 {
+			continue
+		}
+		owner := strings.Fields(s[:idx])
+		rest := strings.TrimSpace(s[idx+len(sep):])
+		if len(owner) < 2 || len(owner) > 3 {
+			return ""
+		}
+		switch strings.ToLower(owner[0]) {
+		case "the", "a", "an":
+			return ""
+		}
+		for _, w := range owner {
+			r := []rune(w)
+			if !unicode.IsUpper(r[0]) {
+				return ""
+			}
+		}
+		words := strings.Fields(NormalizeTitle(rest))
+		letters := 0
+		for _, w := range words {
+			letters += len([]rune(w))
+		}
+		if len(words) < 2 || letters < 8 {
+			return ""
+		}
+		return rest
+	}
+	fields := strings.Fields(s)
+	if len(fields) < 2 {
+		return ""
+	}
+	owner := []rune(fields[0])
+	if len(owner) < 3 || len(owner) > 5 || owner[len(owner)-1] != '의' {
+		return ""
+	}
+	for _, r := range owner {
+		if !unicode.In(r, unicode.Hangul) {
+			return ""
+		}
+	}
+	switch fields[0] {
+	case "당신의", "우리의", "우리들의", "그녀의", "그들의", "너희의", "자네의":
+		return ""
+	}
+	rest := strings.Join(fields[1:], " ")
+	syllables := 0
+	for _, r := range rest {
+		if unicode.In(r, unicode.Hangul) {
+			syllables++
+		}
+	}
+	if syllables < 4 {
+		return ""
+	}
+	return rest
+}
+
 // splitAKA splits a title on whole-word "AKA" or "A.K.A." into its
 // alternative names, or returns nil when no AKA separator is present.
 func splitAKA(s string) []string {
@@ -348,6 +432,15 @@ func TitlesMatch(a, b string) bool {
 			return true
 		}
 	}
+	// A presenter's or creator's possessive credit that the release name
+	// leaves out ("Seol Min-seok's Naked World History" vs
+	// "Naked.World.History.E150", "설민석의 벌거벗은 세계사" vs "벌거벗은 세계사").
+	if sa := possessiveCreditStem(a); sa != "" && TitlesMatch(sa, b) {
+		return true
+	}
+	if sb := possessiveCreditStem(b); sb != "" && TitlesMatch(a, sb) {
+		return true
+	}
 	return false
 }
 
@@ -396,6 +489,9 @@ func TitleAliases(title string) []string {
 		}
 	}
 	if p := subtitlePrefix(raw); p != "" {
+		add(p)
+	}
+	if p := possessiveCreditStem(raw); p != "" {
 		add(p)
 	}
 	if parts := splitAKA(raw); len(parts) > 0 {
@@ -537,6 +633,119 @@ func HasUsableInfo(info core.ReleaseInfo) bool {
 	return info.Height > 0 || info.Source != core.SourceUnknown || info.VideoCodec != ""
 }
 
+// genericTitleStopwords holds articles, contractions, and core function words
+// across the supported release languages. A release whose parsed title consists
+// solely of these tokens (or too few non-stopword characters) cannot identify
+// a show or movie on its own during title-mismatch recovery.
+var genericTitleStopwords = map[string]bool{
+	// English
+	"a": true, "an": true, "the": true,
+	"and": true, "or": true, "nor": true, "but": true,
+	"of": true, "in": true, "on": true, "at": true, "to": true, "for": true, "by": true, "as": true,
+	"it": true, "is": true, "be": true,
+	// French
+	"le": true, "la": true, "les": true, "l": true,
+	"un": true, "une": true, "des": true, "du": true, "de": true, "d": true,
+	"au": true, "aux": true, "et": true, "ou": true, "en": true,
+	// Spanish
+	"el": true, "los": true, "las": true,
+	"uno": true, "una": true, "unos": true, "unas": true,
+	"al": true, "del": true, "y": true, "e": true, "o": true, "u": true, "por": true,
+	// German
+	"der": true, "die": true, "das": true, "den": true, "dem": true,
+	"ein": true, "eine": true, "einen": true, "einem": true, "einer": true, "eines": true,
+	"und": true, "oder": true, "von": true, "vom": true, "zum": true, "zur": true,
+	"im": true, "am": true, "zu": true, "mit": true, "auf": true, "aus": true,
+	// Italian
+	"il": true, "lo": true, "i": true, "gli": true,
+	"di": true, "da": true, "su": true,
+	"dello": true, "della": true, "dei": true, "degli": true, "delle": true,
+	"allo": true, "alla": true, "ai": true, "agli": true, "alle": true,
+	"nel": true, "nello": true, "nella": true, "nei": true, "negli": true, "nelle": true,
+	// Portuguese
+	"os": true, "um": true, "uma": true, "uns": true, "umas": true,
+	"do": true, "dos": true, "no": true, "na": true, "nos": true, "nas": true,
+	// Dutch and Nordic
+	"het": true, "een": true, "det": true, "ett": true, "och": true, "og": true,
+	// Russian
+	"и": true, "в": true, "во": true, "на": true, "по": true, "из": true, "от": true,
+	"до": true, "за": true, "для": true, "без": true, "или": true, "но": true,
+	"к": true, "с": true, "у": true, "о": true, "об": true, "а": true,
+}
+
+// TitleTooGeneric reports whether title is too generic to identify a show or
+// movie during title-mismatch recovery: empty after normalization, made only
+// of articles/stopwords, or too short once stopwords are excluded. Plain
+// exact title matching is unaffected; this only guards recovery paths.
+func TitleTooGeneric(title string) bool {
+	fields := normalizeTitleFields(title)
+	if len(fields) == 0 {
+		return true
+	}
+	nonStopRunes := 0
+	hasWideScript := false
+	for _, tok := range fields {
+		if genericTitleStopwords[tok] {
+			continue
+		}
+		for _, r := range tok {
+			nonStopRunes++
+			if !hasWideScript && unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana) {
+				hasWideScript = true
+			}
+		}
+	}
+	if nonStopRunes == 0 {
+		return true
+	}
+	if hasWideScript {
+		return nonStopRunes < 2
+	}
+	return nonStopRunes < 3
+}
+
+// TitleLeadingFragment reports whether parsed is a strict leading token prefix
+// of want (for example "The" against "The Mentalist", "Star" against "Star
+// Trek", or "Walking" against "The Walking Dead"). Equal titles return false.
+func TitleLeadingFragment(parsed, want string) bool {
+	// A disambiguating qualifier ("Doctor Who (2005)", "Shameless (US)") is
+	// not more of the name: a release named without it is the same show.
+	pa, wa := normalizeTitleFields(parsed), trimTitleQualifiers(normalizeTitleFields(want))
+	if isStrictTokenPrefix(pa, wa) {
+		return true
+	}
+	return isStrictTokenPrefix(stripLeadingArticle(pa), stripLeadingArticle(wa))
+}
+
+// titleQualifierCountries are the country codes catalogues append to tell
+// same-named shows apart.
+var titleQualifierCountries = map[string]bool{"us": true, "uk": true, "au": true, "ca": true, "nz": true, "ie": true, "za": true, "in": true, "kr": true, "jp": true, "de": true, "fr": true, "es": true, "it": true, "nl": true, "se": true, "no": true, "dk": true, "br": true, "mx": true}
+
+// trimTitleQualifiers drops trailing year and country-code tokens.
+func trimTitleQualifiers(tokens []string) []string {
+	for len(tokens) > 1 {
+		last := tokens[len(tokens)-1]
+		isYear := len(last) == 4 && (strings.HasPrefix(last, "19") || strings.HasPrefix(last, "20")) && strings.Trim(last, "0123456789") == ""
+		if !isYear && !titleQualifierCountries[last] {
+			break
+		}
+		tokens = tokens[:len(tokens)-1]
+	}
+	return tokens
+}
+
+func isStrictTokenPrefix(prefix, full []string) bool {
+	if len(prefix) == 0 || len(prefix) >= len(full) {
+		return false
+	}
+	for i := range prefix {
+		if prefix[i] != full[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // EpisodeMatchesAbsolute reports whether parsed info is the episode whose
 // number counted from the series start is absolute: an anime release
 // numbered that way ("Show - 1071" or "Show S10E01 (0337)").
@@ -597,6 +806,27 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 	return false
 }
 
+// SeasonNumberingUnderCour reports whether a release or file labelled with
+// cour (part) cour > 1 may still be matched by its season-counted numbering.
+// "Show.S04.Part.2.S04E09" counts E09 within season 4, so a request without
+// a cour mapping matches it like any S04E09; "[Group] Show S01 Part 2 - 01"
+// (courRelative) counts within the cour and only a cour mapping can place
+// it. Anime without a mapping keeps the cour reading: its "Part 2" releases
+// usually restart numbering. A mapped request reads season numbering only
+// inside its own cour.
+func SeasonNumberingUnderCour(cour int, courRelative bool, reqCour int, anime bool) bool {
+	switch {
+	case cour <= 1:
+		return true
+	case courRelative:
+		return false
+	case reqCour > 0:
+		return reqCour == cour
+	default:
+		return !anime
+	}
+}
+
 // EpisodeMatchesRequest reports whether parsed info matches req's canonical
 // episode, verified absolute count, anime cour mapping, configured release
 // numbering aliases, or exact broadcast air date. Shared by the resolver and
@@ -621,7 +851,9 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 				(req.CourTVDBSeason > 0 && EpisodeMatches(info, req.CourTVDBSeason, req.CourEpisode))) {
 			return true
 		}
-		return false
+		if !SeasonNumberingUnderCour(info.Cour, info.CourRelative, req.Cour, req.Anime) {
+			return false
+		}
 	}
 	if EpisodeMatchesNumbering(info, req.Season, req.Episode, abs) {
 		return true
@@ -636,7 +868,7 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 			return true
 		}
 	}
-	if req.Season > 0 && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
+	if (req.Season > 0 || req.EpisodeSource == core.MetadataTVDB) && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
 		if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
 			return true
 		}

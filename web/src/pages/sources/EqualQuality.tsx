@@ -64,7 +64,7 @@ function SourceStartupNote() {
 }
 
 /**
- * Which kind of source leads, for every profile (Quality › Profiles). The
+ * Which kind of source leads, for every profile (Releases › Profiles). The
  * first three choices only decide between releases that are equal after the
  * profile's ranking ladder; the "Always" choices put that source first
  * whatever the other has (resolver.sourcePreference + sourceAlwaysFirst).
@@ -72,13 +72,14 @@ function SourceStartupNote() {
 export function SourceOrderSection() {
   const { config, resolver } = useResolver();
   const saved = useMemo(() => (resolver ? sourceOrderValue(resolver) : null), [resolver]);
-  const { draft, setDraft, dirty, reset } = useDraft(saved);
+  const { draft, setDraft, reset } = useDraft(saved);
+  const dirty = draft !== null && draft !== saved;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (draft === null) return null;
   async function submit() {
-    if (draft === null) return;
+    if (draft === null || !dirty || saving) return;
     setSaving(true);
     setError(null);
     try {
@@ -118,6 +119,7 @@ export function SourceOrderSection() {
               options={SOURCE_PREFERENCE}
               ariaLabel={t("Which source goes first")}
               searchable={false}
+              disabled={saving}
             />
           </div>
         }

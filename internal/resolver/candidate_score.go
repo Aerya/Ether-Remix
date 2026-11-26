@@ -16,18 +16,12 @@ import (
 )
 
 // ResolveSourceProfile looks up the quality profile for a plugin source query.
-// An empty name selects the owner's default profile (media-neutral Default,
-// then DefaultMovie, then DefaultTV, then the first configured profile).
+// An empty name selects the owner's Default profile, then the first
+// configured profile.
 func ResolveSourceProfile(q config.Quality, name string) (core.QualityProfile, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
-		if p, ok := core.FindProfile(q.Profiles, q.Default, core.MediaAny); ok {
-			return p, nil
-		}
-		if p, ok := core.FindProfile(q.Profiles, q.DefaultMovie, core.MediaMovie); ok {
-			return p, nil
-		}
-		if p, ok := core.FindProfile(q.Profiles, q.DefaultTV, core.MediaTV); ok {
+		if p, ok := core.FindProfile(q.Profiles, q.Default); ok {
 			return p, nil
 		}
 		if len(q.Profiles) > 0 {
@@ -35,7 +29,7 @@ func ResolveSourceProfile(q config.Quality, name string) (core.QualityProfile, e
 		}
 		return defaultProfile(), nil
 	}
-	if p, ok := core.FindProfile(q.Profiles, trimmed, core.MediaAny); ok {
+	if p, ok := core.FindProfile(q.Profiles, trimmed); ok {
 		return p, nil
 	}
 	for _, p := range q.Profiles {
@@ -45,7 +39,7 @@ func ResolveSourceProfile(q config.Quality, name string) (core.QualityProfile, e
 	}
 	switch strings.ToLower(trimmed) {
 	case core.MediaMovie, core.MediaTV:
-		return chooseProfileForMedia(q, core.ClientCaps{}, nil, strings.ToLower(trimmed), "").profile, nil
+		return evaluate(q, core.ClientCaps{}, nil, mediaTarget(trimmed)).choice.profile, nil
 	}
 	return core.QualityProfile{}, fmt.Errorf("%w: %q", ErrUnknownProfile, trimmed)
 }

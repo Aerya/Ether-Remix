@@ -94,6 +94,9 @@ var (
 // signature weekly without changing the release, artifacts, or publication date.
 const ManifestLifetime = 30 * 24 * time.Hour
 
+// MaxReleaseNotesBytes bounds Markdown in manifests and in the console.
+const MaxReleaseNotesBytes = 64 << 10
+
 // MaxRolloutHours bounds a manifest's staged rollout to one week.
 const MaxRolloutHours = 7 * 24
 
@@ -222,6 +225,9 @@ func (m *Manifest) Validate() error {
 		if _, err := ParseVersion(m.MinVersion); err != nil {
 			return fmt.Errorf("updater: manifest minVersion: %w", err)
 		}
+	}
+	if len(m.Notes) > MaxReleaseNotesBytes {
+		return fmt.Errorf("updater: release notes exceed %d bytes", MaxReleaseNotesBytes)
 	}
 	if m.RolloutHours < 0 || m.RolloutHours > MaxRolloutHours {
 		return fmt.Errorf("updater: manifest rolloutHours %d (want 0..%d)", m.RolloutHours, MaxRolloutHours)

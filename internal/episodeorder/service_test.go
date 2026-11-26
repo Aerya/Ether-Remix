@@ -32,9 +32,10 @@ func (f fakeCatalog) Get(_ context.Context, k core.RatingKey) (*core.Title, erro
 	if k.Kind() == core.KindShow {
 		if f.show != nil {
 			value := *f.show
+			value.IDs.TMDB = k.TMDB()
 			return &value, nil
 		}
-		return &core.Title{Key: k, Type: core.TypeShow, Title: "Fixture"}, nil
+		return &core.Title{Key: k, Type: core.TypeShow, Title: "Fixture", IDs: core.IDs{TMDB: k.TMDB()}}, nil
 	}
 	for _, ep := range f.eps {
 		if ep.Key == k {

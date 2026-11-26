@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/agent/tools"
@@ -40,7 +41,7 @@ type Backends struct {
 	ViewerNames   func(ctx context.Context, ids []int64) (json.RawMessage, error)
 	// SetWatchState applies a watch-state write and returns its inverse
 	// (the previous state) for the journal.
-	SetWatchState func(ctx context.Context, viewerID int64, titleID string, watched bool) (previous bool, err error)
+	SetWatchState func(ctx context.Context, pluginID string, viewerID int64, titleID string, watched bool) (previous bool, err error)
 	// CollectionsUpsert creates or updates a collection and returns the
 	// previous document (empty when new) for the journal.
 	CollectionsUpsert func(ctx context.Context, doc json.RawMessage) (previous json.RawMessage, err error)
@@ -53,14 +54,20 @@ type Backends struct {
 	// source resolver and per-library blob cache.
 	KindUpsert           func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindUpsertStats      func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindUpsertUndo       func(ctx context.Context, pluginID, kindKey string, items []core.KindItem, snapshotPrevious bool) (KindUpsertUndo, error)
 	KindDelete           func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems            func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
 	KindItemsByID        func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
 	KindItemCount        func(ctx context.Context, pluginID string) (int, error)
 	KindVisible          func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
 	KindBrowse           func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	KindExpand           func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (pending bool, err error)
+	KindLiveSearch       func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources       func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+
+	NormalizeStoredReleaseLinks func(context.Context, []byte) ([]byte, error)
+
 	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
 	// before admitting a background check against the plugin's daily allowance.
 	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
@@ -111,7 +118,8 @@ type Deps struct {
 	Bus clusterbus.Bus
 	// FetchClient fetches manifests and artifacts; nil builds one from
 	// safefetch and egress CapPlugins. Tests inject an httptest client.
-	FetchClient *http.Client
+	FetchClient   *http.Client
+	IsIndexerHost func(string) bool
 	// CheckPackage runs the conformance kit during install previews.
 	CheckPackage func(context.Context, []byte, map[string][]byte) error
 	Backends     Backends
@@ -120,6 +128,11 @@ type Deps struct {
 
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
+	screenPushMu sync.RWMutex
+	screenPush   ScreenPush
+	// viewerState backs the kinds.state / kinds.favorite / kinds.played /
+	// kinds.rate / kinds.favorites / kinds.playlist* host services.
+	viewerState        atomic.Pointer[KindViewerState]
 	archiveDirectories archiveDirectoryCache
 	hashMu             sync.Mutex
 	hashJobs           map[string]*folderHashWork
@@ -1535,7 +1548,8 @@ func (m *Manager) OnRemove(fn func(ctx context.Context, id string)) {
 }
 
 // Prune applies the plugin retention that is not bounded at write time:
-// settled journal entries past JournalSettledMaxAge.
+// settled journal entries past JournalSettledMaxAge and live journal entries
+// past the per-plugin entry, age, or byte bounds.
 func (m *Manager) Prune(ctx context.Context) (int64, error) {
 	if m == nil || m.store == nil || m.store.db == nil {
 		return 0, nil

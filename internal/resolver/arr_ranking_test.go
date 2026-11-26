@@ -202,7 +202,6 @@ func TestImportedPackRanksAsItsAuthorsWrote(t *testing.T) {
 		{ID: "repack", Name: "Repack/Proper", App: AppRadarr, Specifications: []core.FormatSpecification{{Name: "r", Implementation: "ReleaseTitleSpecification", Fields: map[string]json.RawMessage{"value": []byte(`"\\b(repack\\d?|proper)\\b"`)}}}},
 	}
 	profile := imp.Profile
-	profile.MediaType = core.MediaMovie
 	for id, v := range map[string]int{"web-t1": 1700, "web-t2": 1650, "lq": -10000, "repack": 5} {
 		profile.CustomFormatScores[id] = v
 	}

@@ -121,7 +121,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil, CapLiveEvents: nil, CapScreens: nil,
 }
 
 var knownKinds = map[Kind]bool{
@@ -333,7 +333,7 @@ func (m Manifest) Validate() error {
 }
 
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI || c == CapLiveEvents || c == CapScreens
 }
 
 func unsafePath(p string) bool {
@@ -587,9 +587,6 @@ func contributesUseT(c Contributes) bool {
 	}
 	for _, sc := range c.Screens {
 		check(sc.Title)
-		for _, sec := range sc.Sections {
-			check(sec.Title)
-		}
 	}
 	return any
 }
@@ -619,6 +616,9 @@ func validateContributes(m Manifest, add func(string, string)) {
 		} else if !map[string]bool{"debrid": true, "usenet": true, "indexer": true, "direct": true}[c.Source.Class] {
 			add("ether.contributes.source.class", "must be debrid, usenet, indexer or direct")
 		}
+	}
+	if c.Source != nil && c.Source.Search != nil {
+		validateSourceSearch(c.Source.Search, m.HasCapability(CapStreamSource), e.Stremio, add)
 	}
 	if m.HasCapability(CapDebridProvider) && (c.Source == nil || c.Source.Class != "debrid") {
 		add("ether.contributes.source.class", "must be debrid for debrid_provider")
@@ -826,8 +826,8 @@ func validateContributes(m Manifest, add func(string, string)) {
 		if ls.Catalog == "" {
 			add(base+".catalog", "is required")
 		}
-		if ls.MaxItems < 0 || ls.MaxItems > 2000 {
-			add(base+".maxItems", "must be at most 2000")
+		if ls.MaxItems < 0 || ls.MaxItems > MaxListItems {
+			add(base+".maxItems", fmt.Sprintf("must be at most %d", MaxListItems))
 		}
 		if ls.Refresh != "" {
 			if d, err := time.ParseDuration(ls.Refresh); err != nil || d < time.Hour {
@@ -962,6 +962,7 @@ func validateContributes(m Manifest, add func(string, string)) {
 	validateLiveFeeds(m, add, label)
 	validateSetup(e, add, label)
 	validateScreens(m, add, label)
+	validateSurfaces(m, add, label)
 	if e.Kind == KindIntegration {
 		if c.Integration == nil {
 			add("ether.contributes.integration", "is required for the integration kind")
@@ -1114,4 +1115,42 @@ func CompareSemVer(a, b string) int {
 		return 1
 	}
 	return 0
+}
+
+// validateSourceSearch checks ether.contributes.source.search: the Newznab
+// categories (1000-8999, no duplicates) and typed lookups a stream_source
+// plugin answers on GET /ether/search.
+func validateSourceSearch(ss *SourceSearchMeta, streamSource, stremioMode bool, add func(field, msg string)) {
+	const base = "ether.contributes.source.search"
+	if !streamSource {
+		add(base, "needs the stream_source capability")
+	}
+	if stremioMode {
+		add(base, "is not available to plugins that answer Stremio add-on routes")
+	}
+	if len(ss.Categories) == 0 {
+		add(base+".categories", "must list at least one Newznab category (for example 3000 for audio, 7000 for books)")
+	}
+	if len(ss.Categories) > MaxSourceSearchCategories {
+		add(base+".categories", fmt.Sprintf("must list at most %d categories", MaxSourceSearchCategories))
+	}
+	seen := map[int]bool{}
+	for i, c := range ss.Categories {
+		if c < 1000 || c > 8999 {
+			add(fmt.Sprintf("%s.categories[%d]", base, i), "must be a Newznab category between 1000 and 8999")
+		} else if seen[c] {
+			add(fmt.Sprintf("%s.categories[%d]", base, i), "is listed twice")
+		}
+		seen[c] = true
+	}
+	if len(ss.Lookups) > MaxSourceSearchLookups {
+		add(base+".lookups", fmt.Sprintf("must list at most %d lookups", MaxSourceSearchLookups))
+	}
+	seenLookup := map[string]bool{}
+	for i, l := range ss.Lookups {
+		if !keyRe.MatchString(l) || seenLookup[l] {
+			add(fmt.Sprintf("%s.lookups[%d]", base, i), "must be a unique simple key such as album or book")
+		}
+		seenLookup[l] = true
+	}
 }

@@ -5,6 +5,7 @@
  */
 
 import { localized, msg, searchTerms, t } from "../i18n";
+import { settingHref } from "../components/SettingFocus";
 import { textOf, type Descriptor } from "./extend";
 import { pageRoute, searchTextOf, type PageMeta } from "./console-descriptors";
 
@@ -83,10 +84,12 @@ const PAGES = localized<PageDef[]>(() => [
     ),
   },
   {
-    href: "/home",
-    title: t("Home"),
+    href: "/recommendations",
+    title: t("Recommendations"),
     sections: [],
-    keywords: searchTerms(msg("designer rows layout overrides plex home")),
+    keywords: searchTerms(
+      msg("home rows pages designer layout personalized curated library recommended plex"),
+    ),
   },
   {
     href: "/collections",
@@ -214,8 +217,9 @@ const PAGES = localized<PageDef[]>(() => [
     ],
   },
   {
-    href: "/quality",
-    title: t("Quality"),
+    href: "/releases",
+    title: t("Releases"),
+    keywords: searchTerms(msg("quality")),
     sections: [
       {
         key: "profiles",
@@ -233,7 +237,7 @@ const PAGES = localized<PageDef[]>(() => [
       },
       {
         key: "check",
-        title: t("Check quality"),
+        title: t("Who gets what"),
         keywords: searchTerms(msg("who gets what viewer app device resolution hdr bitrate")),
       },
       {
@@ -265,6 +269,20 @@ const PAGES = localized<PageDef[]>(() => [
     title: t("Playback"),
     sections: [
       {
+        key: "audio",
+        title: t("Audio"),
+        keywords: searchTerms(
+          msg("audio languages original dub loudness night mode dialogue household"),
+        ),
+      },
+      {
+        key: "subtitles",
+        title: t("Subtitles"),
+        keywords: searchTerms(
+          msg("subtitles languages appearance style timing sync drift fix corrected copy"),
+        ),
+      },
+      {
         key: "transcoding",
         title: t("Streams & transcoding"),
         keywords: searchTerms(msg("ffmpeg hardware gpu streams at once limit rtx")),
@@ -285,11 +303,6 @@ const PAGES = localized<PageDef[]>(() => [
         keywords: searchTerms(
           msg("pre-roll preroll intro video before feature trailers cinema yt-dlp"),
         ),
-      },
-      {
-        key: "subtitles",
-        title: t("Audio & subtitles"),
-        keywords: searchTerms(msg("audio languages subtitles timing sync opensubtitles household")),
       },
     ],
   },
@@ -387,6 +400,14 @@ const PAGES = localized<PageDef[]>(() => [
         keywords: searchTerms(msg("llm ollama openai recaps search")),
       },
       {
+        key: "subtitle-providers",
+        href: settingHref("/services/overview", "subtitle-providers"),
+        title: t("Subtitle providers"),
+        keywords: searchTerms(
+          msg("subtitles providers opensubtitles subdl subsource stremio add-on plugin"),
+        ),
+      },
+      {
         key: "opensubtitles",
         href: "/services/overview#opensubtitles",
         title: "OpenSubtitles",
@@ -475,6 +496,7 @@ export function pagesFrom(pages: Descriptor<PageMeta>[]): PageDef[] {
       key: s.key,
       title: textOf(s.label),
       keywords: searchTextOf(s.keywords),
+      href: s.href,
     })),
     keywords: searchTextOf(p.meta?.keywords),
   }));

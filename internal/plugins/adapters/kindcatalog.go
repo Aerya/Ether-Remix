@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -33,6 +32,18 @@ const (
 	defaultLiveSearchTimeout = 2 * time.Second
 	maxLiveSearchPerPlugin   = 2
 	liveSearchBackgroundWait = 10 * time.Second
+	// liveSearchMemoTTL is how long a finished live search answers the same
+	// query again without calling the plugin; liveSearchMemoMax bounds the
+	// memo.
+	liveSearchMemoTTL = 10 * time.Minute
+	liveSearchMemoMax = 512
+	// liveSearchFailTTL keeps a failed or timed-out live search from being
+	// retried by every search (and keeping each one pending) for a while.
+	liveSearchFailTTL = 2 * time.Minute
+	// liveSearchPendingWindow is how long a search that does not wait still
+	// reports a running live search as pending: a plugin slower than this
+	// answers a later search instead of holding the client's retries.
+	liveSearchPendingWindow = 4 * time.Second
 )
 
 // KindCatalogDeps configures a KindCatalog adapter.
@@ -50,8 +61,26 @@ type KindCatalogDeps struct {
 }
 
 type liveSearchCall struct {
-	done  chan struct{}
+	done    chan struct{}
+	items   []core.KindItem
+	ok      bool // the plugin answered (possibly with no items)
+	started time.Time
+	// ctx bounds the detached call; cancel drops it. wants counts the
+	// searches that may still be superseded (core.SearchSuperseded) and
+	// want the answer; pinned marks one that cannot be, so it is never
+	// dropped. dropped: every search that wanted it was superseded. All
+	// three are guarded by KindCatalog.liveMu.
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wants   int
+	pinned  bool
+	dropped bool
+}
+
+type liveSearchMemo struct {
 	items []core.KindItem
+	at    time.Time
+	ttl   time.Duration
 }
 
 // KindCatalog bridges plugin media-kind declarations and lifecycle events to
@@ -78,6 +107,7 @@ type KindCatalog struct {
 	liveMu    sync.Mutex
 	liveCalls map[string]*liveSearchCall
 	liveSems  map[string]chan struct{}
+	liveMemo  map[string]liveSearchMemo
 
 	hydrateMu       sync.Mutex
 	hydrateInflight map[string]*containerHydrateCall
@@ -90,6 +120,7 @@ var (
 	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
 	_ experience.PluginLevelFacetLibraries   = (*KindCatalog)(nil)
 	_ experience.PluginBatchBrowseLibraries  = (*KindCatalog)(nil)
+	_ experience.PluginOptInLibraries        = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -123,6 +154,7 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 		quotas:            make(map[string]blobcache.Quota),
 		liveCalls:         make(map[string]*liveSearchCall),
 		liveSems:          make(map[string]chan struct{}),
+		liveMemo:          make(map[string]liveSearchMemo),
 		hydrateInflight:   make(map[string]*containerHydrateCall),
 		hydrateSems:       make(map[string]chan struct{}),
 	}
@@ -290,6 +322,7 @@ func kindPresentationInput(k plugins.MediaKindMeta) libraries.KindPresentationIn
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
+			Members:   lv.Members,
 		}
 	}
 	return libraries.KindPresentationInput{
@@ -457,6 +490,52 @@ func (c *KindCatalog) RootMediaType(ctx context.Context, lib core.Library) core.
 		return core.TypeMovie
 	}
 	return proj.Type
+}
+
+// OptInLibrary implements experience.PluginOptInLibraries: the library's
+// kind starts unpublished in protocol's app (manifest presentation
+// default:false), so it is private content an owner opted that app into.
+// Search reaches it only when the viewer scopes a search to it.
+func (c *KindCatalog) OptInLibrary(ctx context.Context, lib core.Library, protocol core.Protocol) bool {
+	if c == nil || c.items == nil {
+		return false
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return false
+	}
+	return presentationOptIn(rec.Decl.Present, protocol)
+}
+
+func presentationOptIn(p core.Presentations, protocol core.Protocol) bool {
+	var d *bool
+	switch protocol {
+	case "vela":
+		if p.Vela != nil {
+			d = p.Vela.Default
+		}
+	case "plex", "dlna", "webdav", "m3u":
+		if p.Plex != nil {
+			d = p.Plex.Default
+		}
+	case "jellyfin", "emby":
+		if p.MediaBrowser != nil {
+			d = p.MediaBrowser.Default
+		}
+	case "stremio":
+		if p.Stremio != nil {
+			d = p.Stremio.Default
+		}
+	case "xtream":
+		if p.Xtream != nil {
+			d = p.Xtream.Default
+		}
+	case "silo":
+		if p.Silo != nil {
+			d = p.Silo.Default
+		}
+	}
+	return d != nil && !*d
 }
 
 // Count implements experience.PluginLibraries.
@@ -1306,7 +1385,35 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 	if err != nil {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
-	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	parentLevelDecl, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	if parentLevelDecl.Members {
+		// A list's children are its members, in its order.
+		offset := 0
+		if cursor != "" {
+			if n, err := strconv.Atoi(cursor); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		if limit <= 0 {
+			limit = 200
+		}
+		members, total, err := c.items.MembersPage(ctx, parentItem.Ref, offset, limit)
+		if err != nil {
+			return experience.PluginBrowsePage{}, err
+		}
+		next := ""
+		if offset+limit < total {
+			next = strconv.Itoa(offset + limit)
+		}
+		titles := c.projectItems(ctx, rec, lib, members)
+		// Inside a list a member's number is its place in the list, so apps
+		// that order a container by disc and track number keep the list's order.
+		for i := range titles {
+			titles[i].ItemIndex = offset + i + 1
+			titles[i].Disc = 0
+		}
+		return experience.PluginBrowsePage{Items: titles, Total: total, TotalExact: false, NextCursor: next}, nil
+	}
 	_, parentRole := pluginitems.ResolveMediaClassAndRole(parentItem.Level, rec.Decl, lib.Present)
 	if cursor == "" && !core.NoContainerExpand(ctx) {
 		if rec.Decl.Browse.Expand.ExpandsLevel(parentItem.Level) {
@@ -1745,6 +1852,8 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		return nil, err
 	}
 	combined := localPage.Items
+	var namedKey core.RatingKey
+	var discography map[core.RatingKey]bool
 	if rec.Decl.Browse.LiveSearch && c.mgr != nil && c.IsPluginLibraryActive(ctx, lib) {
 		liveItems := c.runLiveSearch(ctx, rec, query, limit)
 		if len(liveItems) > 0 {
@@ -1770,6 +1879,10 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 				combined = merged
 			}
 		}
+		// A search that names an artist (or any container the kind expands on
+		// open) gets that container's whole discography, not only what the
+		// search itself happened to store: the same expansion its page runs.
+		combined, namedKey, discography = c.expandNamedContainer(ctx, rec, lib, query, combined)
 	}
 	refs := make([]core.ItemRef, len(combined))
 	for i, it := range combined {
@@ -1793,14 +1906,30 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 			}
 		}
 	}
+	namedScore := 0.0
 	for i := range projected {
 		projected[i].SearchScore = scorePluginSearchHit(projected[i], allowed[i], query)
+		if projected[i].Key == namedKey {
+			namedScore = projected[i].SearchScore
+		}
+	}
+	// The named artist's discography ranks right after the artist, ahead of
+	// tracks that merely mention the name.
+	if namedScore > 0 {
+		for i := range projected {
+			if discography[projected[i].Key] {
+				projected[i].SearchScore = max(projected[i].SearchScore, namedScore*0.98)
+			}
+		}
 	}
 	sort.SliceStable(projected, func(i, j int) bool {
 		if projected[i].SearchScore != projected[j].SearchScore {
 			return projected[i].SearchScore > projected[j].SearchScore
 		}
-		return projected[i].Popularity > projected[j].Popularity
+		if projected[i].Popularity != projected[j].Popularity {
+			return projected[i].Popularity > projected[j].Popularity
+		}
+		return projected[i].Key < projected[j].Key
 	})
 	return projected, nil
 }
@@ -1943,23 +2072,70 @@ func (c *KindCatalog) MembersOf(ctx context.Context, lib core.Library, keys []co
 }
 
 func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRecord, query string, limit int) []core.KindItem {
+	// A one- or two-letter prefix answers from the local index only: a
+	// remote lookup per keystroke is work the next keystroke throws away.
+	if core.IsShortSearch(query) {
+		return nil
+	}
+	superseded := core.SearchSuperseded(ctx)
+	select {
+	case <-superseded:
+		// The viewer already typed on: start nothing for this query.
+		return nil
+	default:
+	}
 	sfKey := rec.PluginID + "\x00" + rec.KindKey + "\x00" + strings.ToLower(strings.TrimSpace(query))
 	aiSearch := !c.customLiveTimeout && c.mgr != nil && c.mgr.AISearchGranted(ctx, rec.PluginID)
 	viewerID := core.CatalogViewerID(ctx)
 
 	c.liveMu.Lock()
+	if m, ok := c.liveMemo[sfKey]; ok {
+		if time.Since(m.at) < m.ttl {
+			c.liveMu.Unlock()
+			return m.items
+		}
+		delete(c.liveMemo, sfKey)
+	}
 	call, inflight := c.liveCalls[sfKey]
 	if !inflight {
-		call = &liveSearchCall{done: make(chan struct{})}
+		bgWait := liveSearchBackgroundWait
+		if aiSearch {
+			bgWait = plugins.AISearchRouteDeadline
+		}
+		callCtx, cancel := context.WithTimeout(c.syncCtx, bgWait)
+		call = &liveSearchCall{done: make(chan struct{}), started: time.Now(), ctx: callCtx, cancel: cancel}
 		c.liveCalls[sfKey] = call
 		sem := c.liveSems[rec.PluginID]
 		if sem == nil {
 			sem = make(chan struct{}, maxLiveSearchPerPlugin)
 			c.liveSems[rec.PluginID] = sem
 		}
-		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, aiSearch, call)
+		go c.execLiveSearch(sfKey, sem, rec, query, limit, viewerID, call)
+	}
+	if superseded == nil {
+		call.pinned = true
+	} else {
+		call.wants++
 	}
 	c.liveMu.Unlock()
+	if superseded != nil {
+		go c.releaseLiveSearchWant(sfKey, call, superseded)
+	}
+
+	// A search that must not wait (core.WithSearchPending) answers from the
+	// local store; the call finishes in the background, stores what it found
+	// and memoizes it, so asking again returns it at once.
+	if pending := core.SearchPendingFrom(ctx); pending != nil {
+		select {
+		case <-call.done:
+			return call.items
+		default:
+			if time.Since(call.started) < liveSearchPendingWindow {
+				pending.Mark()
+			}
+			return nil
+		}
+	}
 
 	budget := c.liveSearchTimeout
 	if aiSearch {
@@ -1983,19 +2159,52 @@ func (c *KindCatalog) runLiveSearch(ctx context.Context, rec pluginitems.KindRec
 	}
 }
 
-func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, viewerID int64, aiSearch bool, call *liveSearchCall) {
+// releaseLiveSearchWant drops a search's interest in call once a newer
+// search from the same viewer and client superseded it. The last interest
+// gone cancels the call, queued or running, unless a search that cannot be
+// superseded also wants it: a shared lookup still wanted keeps running.
+func (c *KindCatalog) releaseLiveSearchWant(sfKey string, call *liveSearchCall, superseded <-chan struct{}) {
+	select {
+	case <-call.done:
+		return
+	case <-superseded:
+	}
+	c.liveMu.Lock()
+	call.wants--
+	drop := call.wants <= 0 && !call.pinned && !call.dropped
+	if drop {
+		call.dropped = true
+		// A later search for the same words starts a fresh call.
+		if c.liveCalls[sfKey] == call {
+			delete(c.liveCalls, sfKey)
+		}
+	}
+	c.liveMu.Unlock()
+	if drop {
+		call.cancel()
+	}
+}
+
+func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec pluginitems.KindRecord, query string, limit int, viewerID int64, call *liveSearchCall) {
 	defer func() {
 		close(call.done)
 		c.liveMu.Lock()
-		delete(c.liveCalls, sfKey)
+		if c.liveCalls[sfKey] == call {
+			delete(c.liveCalls, sfKey)
+		}
+		switch {
+		case call.ok:
+			c.rememberLiveSearch(sfKey, call.items, liveSearchMemoTTL)
+		case call.dropped:
+			// Dropped before the plugin answered: no failure to remember,
+			// so the same words typed again ask the plugin afresh.
+		default:
+			c.rememberLiveSearch(sfKey, nil, liveSearchFailTTL)
+		}
 		c.liveMu.Unlock()
 	}()
 
-	bgWait := liveSearchBackgroundWait
-	if aiSearch {
-		bgWait = plugins.AISearchRouteDeadline
-	}
-	bgCtx, cancel := context.WithTimeout(c.syncCtx, bgWait)
+	bgCtx, cancel := call.ctx, call.cancel
 	defer cancel()
 	if viewerID > 0 {
 		bgCtx = plugins.WithViewer(bgCtx, viewerID)
@@ -2021,7 +2230,11 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		return
 	}
 	var page core.KindPage
-	if err := json.Unmarshal(resp.Body, &page); err != nil || len(page.Items) == 0 {
+	if err := json.Unmarshal(resp.Body, &page); err != nil {
+		return
+	}
+	if len(page.Items) == 0 {
+		call.ok = true
 		return
 	}
 	if _, err := c.items.UpsertPinnedItems(bgCtx, rec.PluginID, rec.KindKey, page.Items); err != nil {
@@ -2035,6 +2248,28 @@ func (c *KindCatalog) execLiveSearch(sfKey string, sem chan struct{}, rec plugin
 		}
 	}
 	call.items = stored
+	call.ok = true
+}
+
+// rememberLiveSearch memoizes a finished live search; c.liveMu is held.
+func (c *KindCatalog) rememberLiveSearch(sfKey string, items []core.KindItem, ttl time.Duration) {
+	now := time.Now()
+	if len(c.liveMemo) >= liveSearchMemoMax {
+		oldestKey, oldest := "", now
+		for k, m := range c.liveMemo {
+			if now.Sub(m.at) >= m.ttl {
+				delete(c.liveMemo, k)
+				continue
+			}
+			if m.at.Before(oldest) {
+				oldestKey, oldest = k, m.at
+			}
+		}
+		if len(c.liveMemo) >= liveSearchMemoMax && oldestKey != "" {
+			delete(c.liveMemo, oldestKey)
+		}
+	}
+	c.liveMemo[sfKey] = liveSearchMemo{items: items, at: now, ttl: ttl}
 }
 
 func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, items []core.KindItem) []core.Title {
@@ -2902,20 +3137,16 @@ func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations
 	return matched, true
 }
 
-func searchWords(s string) []string {
-	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-}
+func searchWords(s string) []string { return core.FoldSearchWords(s) }
 
 func normalizeArticleSort(s string) string {
 	return core.TitleSortKey(s)
 }
 
 func scorePluginSearchHit(t core.Title, raw core.KindItem, query string) float64 {
-	qNorm := strings.ToLower(strings.TrimSpace(query))
+	qNorm := core.FoldSearchText(query)
 	qSort := normalizeArticleSort(query)
-	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
+	tNorm := core.FoldSearchText(t.Title)
 	tSort := core.EffectiveSortTitle(t.Title, t.SortTitle)
 
 	var base float64
@@ -3313,6 +3544,8 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Direction: sh.EffectiveDirection(),
 				Filters:   sh.EffectiveFilters(),
 				TabFilter: sh.EffectiveTabFilter(),
+				Purpose:   frontend.RowPurpose(sh.Purpose),
+				Layout:    sh.Layout,
 			})
 		}
 		return out
@@ -3333,12 +3566,17 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	var rootLevel string
 	var levelMedia map[string]core.MediaClass
 	var levelParents map[string]string
+	var levelRoles map[string]string
 	if len(decl.Levels) > 0 {
 		rootLevel = decl.Levels[0].Key
 		levelMedia = make(map[string]core.MediaClass, len(decl.Levels))
 		levelParents = make(map[string]string, len(decl.Levels))
+		levelRoles = make(map[string]string, len(decl.Levels))
 		for _, lv := range decl.Levels {
 			levelMedia[lv.Key] = decl.EffectiveLevelMedia(lv.Key, kindMedia)
+			if lv.Role != "" {
+				levelRoles[lv.Key] = lv.Role
+			}
 			if p := decl.LevelParent(lv.Key); p != "" {
 				levelParents[lv.Key] = p
 			}
@@ -3349,6 +3587,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		Media:        kindMedia,
 		Card:         lib.EffectiveCardShape(decl.Library.EffectiveCard()),
 		DateDisplay:  decl.Library.EffectiveDateDisplay(),
+		Experience:   decl.Library.Experience,
 		Tabs:         tabs,
 		Sorts:        sorts,
 		Facets:       facets,
@@ -3357,6 +3596,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		RootLevel:    rootLevel,
 		LevelMedia:   levelMedia,
 		LevelParents: levelParents,
+		LevelRoles:   levelRoles,
 	}, true
 }
 

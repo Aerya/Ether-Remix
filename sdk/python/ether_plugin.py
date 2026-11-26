@@ -38,6 +38,7 @@ TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
 MAX_KIND_VISIBLE_IDS = 500
 HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
+HEADER_ORIGIN = "X-Ether-Origin"
 HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key"
 
 ALLOWED_SETTING_KINDS = frozenset(
@@ -809,6 +810,7 @@ class _ViewersClient:
         return list(res) if isinstance(res, list) else []
 
     def set_watch_state(self, viewer_id: int, title_id: str, watched: bool) -> None:
+        """Mark a catalogue movie/episode or an owned playable item ref."""
         self._call(
             "POST",
             "/ether/plugin-host/viewers/watch-state",
@@ -824,6 +826,53 @@ class _CollectionsClient:
 
     def upsert(self, collection: Dict[str, Any]) -> None:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
+
+
+class _ScreensClient:
+    """Pushes to open screens and surfaces (screens capability)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def invalidate(self) -> Dict[str, int]:
+        """Open screens of this plugin read their sources again now."""
+        return self._call("POST", "/ether/plugin-host/screens/invalidate", {}) or {"streams": 0}
+
+    def put_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
+        """New values for records open screens show: ``[{type, id, value}]``, at most 100."""
+        return self._call("POST", "/ether/plugin-host/screens/records", {"records": records}) or {"streams": 0}
+
+    putRecords = put_records
+
+
+def image(url: str) -> Dict[str, str]:
+    """A picture on one of your permissions.network hosts, served through Ether's image proxy."""
+    return {"$image": url}
+
+
+def asset(path: str) -> Dict[str, str]:
+    """A file in your plugin package."""
+    return {"$image": "asset:" + path.lstrip("/")}
+
+
+def link(url: str) -> Dict[str, str]:
+    """An https page viewers may open on phones and the web."""
+    return {"$link": url}
+
+
+def record(type_: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """A reference to one of your records; send its value in ``records``."""
+    return {"$record": {"type": type_, "id": id_}}
+
+
+def event(feed: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's events."""
+    return {"$event": {"feed": feed, "id": id_}}
+
+
+def entity(feed: str, kind: str, id_: str) -> Dict[str, Dict[str, str]]:
+    """One of your live feed's entities (a team, a driver)."""
+    return {"$entity": {"feed": feed, "kind": kind, "id": id_}}
 
 
 class EventEnumOption(TypedDict, total=False):
@@ -877,6 +926,27 @@ class FlowActionMeta(TypedDict, total=False):
     timeout: str
     params: List[FlowActionParamMeta]
     outputs: List[EventFieldMeta]
+
+
+class ViewerWatchEventPayload(TypedDict, total=False):
+    """Payload of the viewer.watch.* event subscriptions."""
+
+    viewerId: int
+    username: str
+    titleKey: str
+    titleName: str
+    mediaType: str
+    watched: bool
+    state: Literal["watched", "unwatched", "progress"]
+    source: Literal["playback", "manual", "plugin", "import"]
+    surface: str
+    itemRef: str
+    tmdbId: int
+    tvdbId: int
+    imdbId: str
+    season: int
+    episode: int
+    positionMs: int
 
 
 class EventCorrelation(TypedDict, total=False):
@@ -1066,8 +1136,13 @@ def _check_stream_source(source: Optional[str]) -> Optional[str]:
 
 
 class _FrontendClient:
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
 
     def stream_url(
         self,
@@ -1075,19 +1150,38 @@ class _FrontendClient:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
+        viewer_token: Optional[str] = None,
     ) -> str:
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
         if checked is not None:
             payload["partIndex"] = checked
         if checked_source is not None:
             payload["source"] = checked_source
-        result = self._call(
-            "POST",
-            "/ether/plugin-host/frontend/stream-url",
-            payload,
-        )
+        if absolute:
+            payload["absolute"] = True
+        tok = (
+            viewer_token
+            if viewer_token is not None
+            else (self._default_viewer_token() if self._default_viewer_token else "")
+        ).strip()
+        if tok:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+                extra_headers={HEADER_VIEWER_TOKEN: tok},
+            )
+        else:
+            result = self._call(
+                "POST",
+                "/ether/plugin-host/frontend/stream-url",
+                payload,
+            )
         return str((result or {}).get("url") or "")
 
 
@@ -1113,6 +1207,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.screens = _ScreensClient(self._call_json)
         self.events = _EventsClient(self._call_json)
         self.ai = _AIClient(self._call_json, lambda: self.viewer_token)
         self.media = _MediaClient(self._call_json, lambda: self.viewer_token)
@@ -1121,7 +1216,7 @@ class RemoteHostClient:
         self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
-        self.frontend = _FrontendClient(self._call_json)
+        self.frontend = _FrontendClient(self._call_json, lambda: self.viewer_token)
 
     class _Cache:
         def __init__(self, parent: "RemoteHostClient") -> None:
@@ -1286,16 +1381,20 @@ class PluginContext:
         item_ref: str,
         part_index: Optional[int] = None,
         source: Optional[str] = None,
+        absolute: bool = False,
     ) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5), optionally scoped to a zero-based part (#576) and/or
-        a resolver PlayableSource.id (#661). The viewer is the one Ether
-        authenticated on this request (X-Ether-Viewer); bytes are served by
-        Ether, not the plugin."""
+        items (spec §6.5), optionally scoped to a zero-based part (#576), a
+        resolver PlayableSource.id (#661), and/or resolved to an absolute URL
+        using the active request origin or the adapter's first published
+        address (#772). The viewer is the one Ether authenticated on this
+        request (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
         checked = _check_part_index(part_index)
         checked_source = _check_stream_source(source)
+        if not isinstance(absolute, bool):
+            raise ValueError("stream url: absolute must be a bool")
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -1303,9 +1402,14 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
+        kwargs: Dict[str, Any] = {}
         if checked_source is not None:
+            kwargs["source"] = checked_source
+        if absolute:
+            kwargs["absolute"] = True
+        if kwargs:
             return self.ether.frontend.stream_url(
-                viewer_id, str(item_ref), checked, source=checked_source
+                viewer_id, str(item_ref), checked, **kwargs
             )
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
@@ -1329,7 +1433,7 @@ class PluginContext:
     def kinds_browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Browse or search `kind` with the library's Rules and viewer access
         policy applied for the requesting frontend-adapter viewer (#615). Only
@@ -1416,6 +1520,23 @@ def _error_response(status: int, code: str, message: str) -> Dict[str, Any]:
         "headers": {"Content-Type": "application/json"},
         "body": {"error": {"code": code, "message": message}},
     }
+
+
+def _source_search_request(query: Dict[str, str]) -> Dict[str, Any]:
+    """Decode GET /ether/search: query, category (comma-separated Newznab ids),
+    purpose, lookup and lookup.<field> (stream_source category searches)."""
+    cats = []
+    for raw in (query.get("category") or "").split(","):
+        raw = raw.strip()
+        if raw.isdigit():
+            cats.append(int(raw))
+    req: Dict[str, Any] = {"query": query.get("query", ""), "categories": cats}
+    if query.get("purpose"):
+        req["purpose"] = query["purpose"]
+    if query.get("lookup"):
+        fields = {k[len("lookup.") :]: v for k, v in query.items() if k.startswith("lookup.") and len(k) > len("lookup.")}
+        req["lookup"] = {"type": query["lookup"], "fields": fields}
+    return req
 
 
 def _match_stremio_route(path: str, query: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -1679,6 +1800,36 @@ class PluginInstance:
                 return _error_response(404, "not_found", "Stream open handler is not registered.")
             body_obj = _parse_json_body(req.get("body"))
             return _ok_response(fn({"streamId": str(body_obj.get("streamId") or "")}, ctx))
+
+        if method == "GET" and path.startswith("/ether/open/"):
+            fn = self.routes.get("open_stream") or self.routes.get("openStream")
+            if not fn:
+                return _error_response(404, "not_found", "Stream open handler is not registered.")
+            open_req: Dict[str, Any] = {"streamId": urllib.parse.unquote(path[len("/ether/open/") :])}
+            if query.get("file"):
+                open_req["file"] = query["file"]
+            raw_index = query.get("fileIndex", "")
+            if raw_index.isdigit():
+                open_req["fileIndex"] = int(raw_index)
+            return _ok_response(fn(open_req, ctx))
+
+        if method == "GET" and path == "/ether/search":
+            fn = self.routes.get("source_search") or self.routes.get("sourceSearch")
+            if not fn:
+                return _error_response(404, "not_found", "Source search handler is not registered.")
+            res = fn(_source_search_request(query), ctx) or {}
+            if isinstance(res, dict) and res.get("streams") is None:
+                res = {**res, "streams": []}
+            return _ok_response(res)
+
+        if method == "GET" and path.startswith("/ether/files/"):
+            fn = self.routes.get("release_files") or self.routes.get("releaseFiles")
+            if not fn:
+                return _error_response(404, "not_found", "Release files handler is not registered.")
+            res = fn({"id": urllib.parse.unquote(path[len("/ether/files/") :])}, ctx) or {}
+            if isinstance(res, dict) and res.get("files") is None:
+                res = {**res, "files": []}
+            return _ok_response(res)
 
         if method == "GET" and path.startswith("/ether/markers/") and path.endswith(".json"):
             fn = self.routes.get("markers")
@@ -1996,12 +2147,40 @@ class PluginInstance:
     def on_setup_test(self, tester: Any) -> None:
         self._setup_tester = tester
 
+    def on_screen_source(self, screen: str, route: str, handler: Callable[..., Any]) -> None:
+        """Answer a document's ``plugin`` source; ``screen`` may be ``"*"``.
+
+        ``handler(ctx, req)`` gets ``{screen, route, page, args, locale, tz}``
+        and returns ``{value, records?, maxAgeSec?, nextRefreshSec?}``. Wrap
+        images, links, records, events and entities with :func:`image`,
+        :func:`asset`, :func:`link`, :func:`record`, :func:`event` and
+        :func:`entity`; Ether drops bare URL strings.
+        """
+        self._screen_sources()[f"{screen}/{route}"] = handler
+
+    def on_screen_action(self, screen: str, action: str, handler: Callable[..., Any]) -> None:
+        """Run a manifest-declared screen action.
+
+        ``handler(ctx, req)`` gets ``{screen, action, page, args, params,
+        locale, tz}`` and returns ``{records?, sources?, refresh?, toast?,
+        navigate?}``.
+        """
+        self._screen_actions()[f"{screen}/{action}"] = handler
+
+    def _screen_sources(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_source_handlers", {})
+
+    def _screen_actions(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_screen_action_handlers", {})
+
     onCatalog = on_catalog
     onResolve = on_resolve
     onMatch = on_match
     onLive = on_live
     onFrontend = on_frontend
     onSetupTest = on_setup_test
+    onScreenSource = on_screen_source
+    onScreenAction = on_screen_action
 
     def _kind_catalog(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_catalog_providers", {})
@@ -2068,6 +2247,18 @@ class PluginInstance:
         except Exception:
             return _error_response(400, "invalid_json", "Request body must be valid JSON.")
 
+        if len(parts) == 4 and parts[0] in ("screens", "surfaces") and parts[2] in ("sources", "actions"):
+            if method != "POST":
+                return _error_response(405, "method_not_allowed", "Screen routes use POST.")
+            screen, name = parts[1], parts[3]
+            table = self._screen_sources() if parts[2] == "sources" else self._screen_actions()
+            handler = table.get(f"{screen}/{name}") or table.get(f"*/{name}")
+            if handler is None:
+                return _error_response(404, "not_found", f'No screen {parts[2][:-1]} "{name}" is registered for "{screen}".')
+            body["screen"] = screen
+            body["route" if parts[2] == "sources" else "action"] = name
+            return _ok_response(handler(ctx, body) or {})
+
         if len(parts) == 3 and parts[0] == "setup" and parts[2] == "test":
             tester = getattr(self, "_setup_tester", None)
             if tester is None:
@@ -2111,6 +2302,23 @@ class PluginInstance:
             if not result.get("job"):
                 result.setdefault("items", [])
             return _ok_response(result)
+        if tail == ["related"]:
+            provider = self._kind_catalog().get(kind)
+            related = getattr(provider, "related", None) if provider else None
+            if not callable(related):
+                return _error_response(501, "not_implemented", "This provider has no related items.")
+            result = dict(related(ctx, body) or {})
+            result.setdefault("items", [])
+            return _ok_response(result)
+        if tail == ["lyrics"]:
+            provider = self._kind_catalog().get(kind)
+            lyrics = getattr(provider, "lyrics", None) if provider else None
+            if not callable(lyrics):
+                return _error_response(501, "not_implemented", "This provider has no lyrics.")
+            result = lyrics(ctx, body)
+            if not result:
+                return _error_response(404, "not_found", "No lyrics for this item.")
+            return _ok_response(dict(result))
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:
@@ -2761,6 +2969,8 @@ class MockHostClient:
         self.last_stream_url: Optional[Tuple[int, str]] = None
         self.last_stream_url_part: Optional[int] = None
         self.last_stream_url_source: Optional[str] = None
+        self.last_stream_url_absolute: bool = False
+        self.stream_origin: str = "http://ether.test"
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -2821,14 +3031,22 @@ class MockHostClient:
             item_ref: str,
             part_index: Optional[int] = None,
             source: Optional[str] = None,
+            absolute: bool = False,
         ) -> str:
             checked = _check_part_index(part_index)
             checked_source = _check_stream_source(source)
+            if not isinstance(absolute, bool):
+                raise ValueError("stream url: absolute must be a bool")
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
             self._p.last_stream_url_part = checked
             self._p.last_stream_url_source = checked_source
+            self._p.last_stream_url_absolute = absolute
             base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
-            return base if checked is None else f"{base}?part={checked}"
+            rel = base if checked is None else f"{base}?part={checked}"
+            if absolute:
+                origin = (self._p.stream_origin or "http://ether.test").rstrip("/")
+                return f"{origin}{rel}"
+            return rel
 
     class _Kinds:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -2907,9 +3125,12 @@ class MockHostClient:
             parent_id = str(q.get("parentId") or "")
             level = str(q.get("level") or "")
             needle = str(q.get("query") or "").strip().lower()
+            exclude_needle = str(q.get("excludeQuery") or "").strip().lower()
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
             all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
             exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
+            any_groups = q.get("anyGroups") if isinstance(q.get("anyGroups"), list) else []
+            empty_fields = q.get("empty") if isinstance(q.get("empty"), dict) else {}
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -2922,7 +3143,11 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets or all_facets or exclude_facets:
+                if exclude_needle:
+                    hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+                    if exclude_needle in hay:
+                        continue
+                if facets or all_facets or exclude_facets or any_groups or empty_fields:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
 
                     def _have(fk: str) -> List[str]:
@@ -2946,6 +3171,62 @@ class MockHostClient:
                     if ok:
                         for fk, want in exclude_facets.items():
                             if want and any(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
+                    if ok:
+                        for grp in any_groups:
+                            if not isinstance(grp, dict):
+                                continue
+                            alts: List[Tuple[str, List[str]]] = []
+                            fk = str(grp.get("field") or "").strip()
+                            raw_vals = grp.get("values") if isinstance(grp.get("values"), list) else []
+                            want = [str(w).strip() for w in raw_vals if str(w).strip()]
+                            if fk and want:
+                                alts.append((fk, want))
+                            raw_any = grp.get("any") if isinstance(grp.get("any"), list) else []
+                            for alt in raw_any:
+                                if not isinstance(alt, dict):
+                                    continue
+                                afk = str(alt.get("field") or "").strip()
+                                avals = alt.get("values") if isinstance(alt.get("values"), list) else []
+                                awant = [str(w).strip() for w in avals if str(w).strip()]
+                                if afk and awant:
+                                    alts.append((afk, awant))
+                            if alts and not any(
+                                any(w.lower() in _have(afk) for w in awant)
+                                for afk, awant in alts
+                            ):
+                                ok = False
+                                break
+                    if ok and empty_fields:
+                        for fk, want_empty in empty_fields.items():
+                            has_val = False
+                            if fk in item_fields and item_fields[fk] is not None:
+                                raw = item_fields[fk]
+                                if isinstance(raw, list):
+                                    has_val = any(v is not None and v != "" for v in raw)
+                                elif isinstance(raw, str):
+                                    has_val = raw != ""
+                                else:
+                                    has_val = True
+                            elif fk == "released":
+                                has_val = bool(it.get("released"))
+                            elif fk in ("year", "decade"):
+                                has_val = int(it.get("year") or 0) > 0
+                            elif fk == "rating":
+                                has_val = float(it.get("rating") or 0) > 0
+                            elif fk == "summary":
+                                has_val = bool(it.get("summary"))
+                            elif fk == "recording":
+                                has_val = bool(it.get("recording"))
+                            elif fk == "parentId":
+                                has_val = bool(it.get("parentId"))
+                            elif fk == "index":
+                                has_val = int(it.get("index") or 0) > 0
+                            if want_empty and has_val:
+                                ok = False
+                                break
+                            if not want_empty and not has_val:
                                 ok = False
                                 break
                     if not ok:
@@ -3650,6 +3931,7 @@ class KindLevel(TypedDict, total=False):
     role: str
     playable: bool
     container: bool
+    members: bool
 
 
 class KindLibraryShelf(TypedDict, total=False):
@@ -3668,6 +3950,8 @@ class KindLibraryShelf(TypedDict, total=False):
     value: str
     values: List[str]
     filters: Any
+    purpose: Literal["recentContexts", "liked"]
+    layout: Literal["standard", "hero", "wide", "tiles", "tracks"]
 
 
 class KindLibraryTab(TypedDict, total=False):
@@ -3708,6 +3992,50 @@ class KindBrowseDecl(TypedDict, total=False):
     expand: KindBrowseExpand
 
 
+class KindBrowseFacetAlt(TypedDict):
+    """One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807)."""
+
+    field: str
+    values: List[str]
+
+
+class KindBrowseFacetGroup(TypedDict, total=False):
+    """One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+
+    Supply either ``field`` + ``values`` for one field or ``any`` with a list
+    of ``{field, values}`` alternatives ORed across fields.
+    """
+
+    field: str
+    values: List[str]
+    any: List[KindBrowseFacetAlt]
+
+
+class KindBrowseQuery(TypedDict, total=False):
+    """Query passed to kinds.browse from a frontend adapter (#615, #767, #807)."""
+
+    parentId: str
+    level: str
+    cursor: str
+    limit: int
+    sort: str
+    desc: bool
+    facets: Dict[str, List[str]]
+    allFacets: Dict[str, List[str]]
+    excludeFacets: Dict[str, List[str]]
+    anyGroups: List[KindBrowseFacetGroup]
+    empty: Dict[str, bool]
+    query: str
+    excludeQuery: str
+    total: Literal["cheap", "none", "exact"]
+
+
+class KindBrowseRequest(KindBrowseQuery, total=False):
+    """Request body for POST /ether/v1/kinds/{kind}/browse or /search."""
+
+    kind: str
+
+
 class KindExpandRequest(TypedDict, total=False):
     """Request body for POST /ether/v1/kinds/{kind}/expand.
 
@@ -3741,6 +4069,7 @@ class KindLibraryDecl(TypedDict, total=False):
     icon: str
     card: Literal["poster", "landscape", "square"]
     dateDisplay: Literal["year", "date"]
+    experience: str  # watch | listen | read | gallery | live, or another id
     tabs: List[KindLibraryTab]
     shelves: List[KindLibraryShelf]
 
@@ -3821,16 +4150,17 @@ class DebridServiceRef(TypedDict):
 class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
-    Same-origin ``nzbUrl`` and ``torrentUrl`` links returned by ``indexer_search``
-    have indexer API keys and secrets stripped; Ether re-attaches credentials at
-    fetch time on the originating indexer's origin when handed back with
-    ``indexerId``.
+    Search returns opaque ``nzbRef`` and ``torrentRef`` values. The deprecated
+    ``nzbUrl`` and ``torrentUrl`` fields mirror them with an ``ether-nzb:``
+    or ``ether-torrent:`` prefix.
     """
 
     infoHash: str
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     fileIndex: int
     title: str
     size: int
@@ -3881,6 +4211,11 @@ class SourceResolveResult(TypedDict, total=False):
     done: bool
 
 
+class NZBIdentity(TypedDict):
+    indexerId: str
+    guid: str
+
+
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
@@ -3893,6 +4228,7 @@ class SourceQuery(TypedDict, total=False):
         "debrid_acquire",
         "release_files",
         "usenet_check",
+        "nzb_request",
     ]
     query: str
     category: str
@@ -3911,6 +4247,9 @@ class SourceQuery(TypedDict, total=False):
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
+    nzbIdentity: NZBIdentity
     candidate: SourceCandidate
     fileCount: int
 
@@ -3948,6 +4287,8 @@ class ReleaseHint(TypedDict, total=False):
 
     fileIndex: int
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     magnet: str
     infoHash: str
     torrentUrl: str
@@ -4033,6 +4374,23 @@ class KindLiveProvider:
         raise NotImplementedError
 
 
+class FrontendAdapterMeta(TypedDict, total=False):
+    """One ``contributes.frontendAdapters[]`` manifest entry."""
+
+    key: str
+    label: str
+    protocolHint: Literal["opds", "subsonic", "custom"]
+    pathPrefix: str
+    defaultPort: int
+    clients: List[str]
+    auth: Literal["ether_token", "basic", "none_lan", "query_credentials"]
+    libraries: List[str]
+    searchPaths: List[str]
+    # Path to an SVG or PNG inside the package, shown as the adapter's mark
+    # on the Apps page. Without one the plugin's icon stands in.
+    icon: str
+
+
 class FrontendAdapter:
     """A plugin-provided protocol surface. Ether authenticates first;
     `handle` receives X-Ether-Viewer headers and never a credential."""
@@ -4072,12 +4430,13 @@ def stream_url(
     item_ref: str,
     part_index: Optional[int] = None,
     source: Optional[str] = None,
+    absolute: bool = False,
 ) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5), optionally pinned to a zero-based part (#576) and/or a
-    resolver PlayableSource.id (#661). Kept as a thin wrapper over
-    PluginContext.stream_url."""
-    return ctx.stream_url(item_ref, part_index=part_index, source=source)
+    (spec §6.5), optionally pinned to a zero-based part (#576), a resolver
+    PlayableSource.id (#661), and/or resolved to an absolute URL (#772). Kept
+    as a thin wrapper over PluginContext.stream_url."""
+    return ctx.stream_url(item_ref, part_index=part_index, source=source, absolute=absolute)
 
 
 def kinds_visible(
@@ -4148,7 +4507,7 @@ class _KindsClient:
     def browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
         viewer_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         tok = self._resolve_viewer_token(viewer_token)
@@ -4172,9 +4531,9 @@ class _KindsClient:
           name for video release scoring; default uses owner default). Video
           candidates include ``score``, ``resolution``, ``source`` and ``codec``
           alongside ``indexer``/``indexerId``; non-video candidates omit those
-          video fields. Same-origin ``nzbUrl`` and ``torrentUrl`` links are
-          key-less so candidates can be cached in KV without storing indexer API
-          keys (Ether re-attaches credentials at fetch time using ``indexerId``).
+          video fields. Use the result's opaque ``nzbRef`` or ``torrentRef``.
+        - ``nzb_request``: return a file list and a vault reference using
+          ``nzbRef`` or ``nzbIdentity``.
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
         - ``usenet_check``: sampled NNTP article check for a Usenet
@@ -4191,6 +4550,18 @@ class _KindsClient:
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
+
+    def request_nzb(self, release: Union[str, NZBIdentity]) -> SourceCandidate:
+        """Return a file list and permanent vault reference for an indexer NZB."""
+        query: SourceQuery = {"kind": "nzb_request"}
+        if isinstance(release, str):
+            query["nzbRef"] = release
+        else:
+            query["nzbIdentity"] = release
+        result = self.resolve_sources(query)
+        if not result or not result[0].get("nzbRef"):
+            raise ValueError("nzb_request returned no vault reference")
+        return result[0]
 
     def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
         """Run ``sources.resolve`` and return the full envelope (``candidates``, ``indexers``, ``pending``, ``searchId``, ``done``) (#733)."""

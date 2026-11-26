@@ -9,6 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/schedule"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
 // One durable global chart per window and media type, shared by every viewer.
@@ -73,13 +74,16 @@ func (c *Catalog) refreshTrend(ctx context.Context, name string, typ core.MediaT
 		if !c.trendDue(old) {
 			return old, nil
 		}
-		if c.tmdb() == nil {
-			return old, errors.New("TMDB is not configured")
+		if !c.TMDBConfigured() {
+			return trendSnapshot{}, nil
 		}
 		parent := ctx
 		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 		items, err := c.fetchList(ctx, name, typ, trendPoolSize)
+		if errors.Is(err, tmdb.ErrNoKey) {
+			return trendSnapshot{}, nil
+		}
 		if err == nil && len(items) == 0 {
 			err = errors.New("empty trending response")
 		}
@@ -127,8 +131,13 @@ func (c *Catalog) trendingList(ctx context.Context, name string, typ core.MediaT
 	}
 	s := c.loadTrend(ctx, name, typ)
 	var err error
-	if s.fetched.IsZero() {
+	if s.fetched.IsZero() || c.now().Sub(s.fetched) > trendMaxAge {
 		s, err = c.refreshTrend(ctx, name, typ)
+	} else if c.trendDue(s) {
+		_ = c.hydrate(ctx, "chart:"+name+":"+string(typ), 0, func(ctx context.Context) error {
+			_, err := c.refreshTrend(ctx, name, typ)
+			return err
+		})
 	}
 	if s.fetched.IsZero() || c.now().Sub(s.fetched) > trendMaxAge {
 		return nil, err
@@ -155,25 +164,6 @@ func (c *Catalog) trendingList(ctx context.Context, name string, typ core.MediaT
 	return limitTitles(c.releasedTitles(ctx, ordered), limit), nil
 }
 
-// RunTrends has an independent schedule: a slow catalogue crawl cannot delay
-// charts. App lifetime owns and joins it, and only the cluster leader polls.
-func (c *Catalog) RunTrends(ctx context.Context) {
-	for ctx.Err() == nil {
-		for _, typ := range []core.MediaType{core.TypeMovie, core.TypeShow} {
-			for _, name := range []string{"trending_day", "trending_week"} {
-				if ctx.Err() != nil {
-					return
-				}
-				if _, err := c.refreshTrend(ctx, name, typ); err != nil && ctx.Err() == nil {
-					c.log.Warn("catalog: trending refresh unavailable; retaining previous chart", "media", typ, "window", name)
-				}
-			}
-		}
-		if !schedule.Wait(ctx, c.now, time.Minute) {
-			return
-		}
-	}
-}
 func (c *Catalog) TrendStatus(ctx context.Context) []TrendStatus {
 	out := []TrendStatus{}
 	for _, typ := range []core.MediaType{core.TypeMovie, core.TypeShow} {
@@ -193,7 +183,7 @@ func (c *Catalog) TrendStatus(ctx context.Context) []TrendStatus {
 			if !s.attempted.IsZero() {
 				st.AttemptedAt = &s.attempted
 			}
-			if c.tmdb() == nil {
+			if !c.TMDBConfigured() {
 				st.State = "unconfigured"
 			}
 			out = append(out, st)

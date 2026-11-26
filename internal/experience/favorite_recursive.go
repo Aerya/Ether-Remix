@@ -41,13 +41,17 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 				tree = append(tree, k)
 			}
 		case core.KindEpisode:
-			if want(core.TypeEpisode) && (showKey == 0 || k.TMDB() == showKey.TMDB()) {
+			if want(core.TypeEpisode) && (showKey == 0 || k.Allocated() || k.Parent().Parent() == showKey) {
 				tree = append(tree, k)
 			}
 		}
 	}
 	permitted := []core.Title{}
 	if len(tree) > 0 {
+		titles, err := s.d.CachedGetMany(ctx, tree)
+		if err != nil {
+			return core.Page{}, false, err
+		}
 		var admittedShows map[core.RatingKey]bool
 		if showKey == 0 && filterHasLibraryScope(q.Filter) {
 			if s.d.Browse == nil {
@@ -56,11 +60,8 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 			var uniqueShows []core.RatingKey
 			seenShow := map[core.RatingKey]bool{}
 			for _, k := range tree {
-				sk := k
-				if k.Kind() != core.KindShow {
-					sk = core.ShowKey(k.TMDB())
-				}
-				if !seenShow[sk] {
+				sk := seriesOfTitle(titles[k])
+				if sk != 0 && !seenShow[sk] {
 					seenShow[sk] = true
 					uniqueShows = append(uniqueShows, sk)
 				}
@@ -81,10 +82,6 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 				}
 			}
 		}
-		titles, err := s.d.CachedGetMany(ctx, tree)
-		if err != nil {
-			return core.Page{}, false, err
-		}
 		query := q
 		query.Favorite = nil
 		if query.Filter.Type == library.Type {
@@ -92,17 +89,12 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 		}
 		virtualVis := withoutSectionCheck(s.d.Visibility)
 		for _, k := range tree {
-			if admittedShows != nil {
-				sk := k
-				if k.Kind() != core.KindShow {
-					sk = core.ShowKey(k.TMDB())
-				}
-				if !admittedShows[sk] {
-					continue
-				}
-			}
 			title, found := titles[k]
 			if !found {
+				continue
+			}
+			sk := seriesOfTitle(title)
+			if (showKey != 0 && sk != showKey) || (admittedShows != nil && !admittedShows[sk]) {
 				continue
 			}
 			if library.Virtual {

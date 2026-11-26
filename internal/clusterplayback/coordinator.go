@@ -616,9 +616,10 @@ func (r *Runtime) Tick(ctx context.Context) error {
 			r.stopLocal(x.route.Fence.Session)
 			x.stopping = true
 		}
-		// Remux has no recovery probe. Without status reconciliation an encoder
-		// closed by its idle reaper leaves a durable claim charged forever.
-		if !x.stopping && x.session != nil && x.output == nil {
+		// Remux (and a session that gave up buffering) has no recovery probe.
+		// Without status reconciliation an encoder closed by its idle reaper
+		// leaves a durable claim charged forever.
+		if !x.stopping && x.session != nil && (x.output == nil || x.output.isUnbuffered()) {
 			c, cancel := context.WithTimeout(ctx, r.o.EncoderRPCDeadline)
 			err := x.session.Reconcile(c)
 			cancel()
@@ -660,7 +661,7 @@ func (r *Runtime) Tick(ctx context.Context) error {
 			result = ErrPending
 			continue
 		}
-		if x.output != nil && x.initial != nil && encoderRecoverySupported(x.initial.request, x.route.Encoder) {
+		if x.output != nil && !x.output.isUnbuffered() && x.initial != nil && encoderRecoverySupported(x.initial.request, x.route.Encoder) {
 			probeStarted := time.Now()
 			detector, probeErr := r.probeEncoder(ctx, x)
 			probeElapsed := time.Since(probeStarted)

@@ -75,7 +75,10 @@ func applyAiredCounts(ctx context.Context, db *sql.DB, now time.Time, items []*c
 		case core.TypeShow:
 			show = t.Key
 		case core.TypeSeason:
-			show = core.ShowKey(t.Key.TMDB())
+			show = t.ShowKey
+			if show == 0 && !t.Key.Allocated() {
+				show = core.ShowKey(t.Key.TMDB())
+			}
 		default:
 			continue
 		}
@@ -248,7 +251,11 @@ func applyAiredResult(items []*core.Title, seasons map[airedSeasonID]seasonAired
 				t.ChildCount, t.LeafCount = sh.seasons, sh.episodes
 			}
 		case core.TypeSeason:
-			if s, ok := seasons[airedSeasonID{core.ShowKey(t.Key.TMDB()), t.Key.Season()}]; ok {
+			show, season := t.ShowKey, t.Season
+			if show == 0 && !t.Key.Allocated() {
+				show, season = core.ShowKey(t.Key.TMDB()), t.Key.Season()
+			}
+			if s, ok := seasons[airedSeasonID{show, season}]; ok {
 				t.ChildCount = s.count()
 				if t.Released.IsZero() && s.date != 0 {
 					t.Released = time.Unix(s.date, 0).UTC()

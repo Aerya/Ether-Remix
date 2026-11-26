@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -12,7 +13,16 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/tmdb"
 )
+
+type viewerRulesListTMDB struct{ universeTMDB }
+
+func (*viewerRulesListTMDB) MovieList(context.Context, string, int) (*tmdb.Paged[tmdb.Movie], error) {
+	return &tmdb.Paged[tmdb.Movie]{TotalPages: 1, Results: []tmdb.Movie{
+		{ID: 1, Title: "French movie", OriginalLanguage: "fr", ReleaseDate: "2020-01-01"},
+	}}, nil
+}
 
 // One invariant across SQL pagination, compiled discovery/search policy, restart,
 // global edits and viewer cache revisions: a viewer override never changes peers.
@@ -24,7 +34,7 @@ func TestViewerRulesIsolationAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	title := core.Title{Key: core.MovieKey(1), Type: core.TypeMovie, Title: "French movie", Language: "fr", Released: time.Now().Add(-24 * time.Hour)}
+	title := core.Title{Key: core.MovieKey(1), Type: core.TypeMovie, IDs: core.IDs{TMDB: 1}, Title: "French movie", Language: "fr", Released: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
 	if err := c.upsert(t.Context(), title, upsertOpts{browsable: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +57,10 @@ func TestViewerRulesIsolationAndScopes(t *testing.T) {
 		}
 	}
 	check(0, 0)
+	if items, err := c.List(core.WithCatalogCandidates(t.Context()), "popular", core.TypeMovie, 10); err != nil || len(items) != 0 {
+		t.Fatalf("provider chart with no source: %v %v", items, err)
+	}
+	c.SetTMDB(&viewerRulesListTMDB{})
 	candidates, err := c.List(core.WithCatalogCandidates(t.Context()), "popular", core.TypeMovie, 10)
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("shared candidates lost globally hidden titles: %v %v", candidates, err)

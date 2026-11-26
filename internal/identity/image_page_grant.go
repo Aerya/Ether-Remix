@@ -97,7 +97,7 @@ func validateImageClaims(c imageClaims) bool {
 	if c.Viewer <= 0 || c.Item < 0 {
 		return false
 	}
-	if strings.HasPrefix(c.Path, frontend.LibraryLiveThumbPrefix) {
+	if strings.HasPrefix(c.Path, frontend.LibraryLiveThumbPrefix) || strings.HasPrefix(c.Path, frontend.PluginImagePrefix) {
 		if c.Item != 0 || c.Channel != "" || c.Subject == "" || c.Kind == frontend.ImagePerson {
 			return false
 		}
@@ -254,7 +254,7 @@ func (s *ImageGrantService) SignPage(ctx context.Context, req frontend.ImagePage
 	if err != nil {
 		return nil, core.ErrNotAvailable
 	}
-	ctx = frontend.WithArtworkRows(ctx)
+	ctx = frontend.WithPrimaryArtworkOnly(frontend.WithArtworkRows(ctx))
 	experience := s.experience()
 	if page, ok := experience.(frontend.ItemArtworkPage); ok {
 		keys := make([]core.RatingKey, 0, len(req.Titles))

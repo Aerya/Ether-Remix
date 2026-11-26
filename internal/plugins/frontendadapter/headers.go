@@ -2,22 +2,30 @@ package frontendadapter
 
 import (
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
-// Viewer-identity headers the proxy injects (spec §6.5). The plugin never
-// sees an Ether credential; these are the only Ether-issued identity values
-// it receives.
+// Viewer-identity and origin headers the proxy injects (spec §6.5). The plugin
+// never sees an Ether credential; these are the only Ether-issued values it
+// receives.
 const (
 	HeaderViewer     = "X-Ether-Viewer"
 	HeaderViewerName = "X-Ether-Viewer-Name"
 	HeaderLibraries  = "X-Ether-Libraries"
+	HeaderOrigin     = "X-Ether-Origin"
 )
+
+// dockerBridge is the range Docker uses for bridge networks (172.16.0.0/12),
+// matching admin.requestOriginInfo so a container-internal Host never leaks
+// into X-Ether-Origin.
+var dockerBridge = netip.MustParsePrefix("172.16.0.0/12")
 
 // forwardedRequestHeaders is the allowlist of client headers the proxy
 // relays to a plugin. Anything not listed is dropped, so an adapter cannot
@@ -66,10 +74,10 @@ func isCredentialHeader(name string) bool {
 }
 
 // outboundHeaders builds the header set the plugin receives: the allowlist
-// plus the injected viewer identity. Inbound X-Ether-* and credential
-// headers are never copied.
-func outboundHeaders(r *http.Request, auth authenticated) map[string]string {
-	headers := make(map[string]string, len(forwardedRequestHeaders)+4)
+// plus the injected viewer identity and trusted client-visible origin. Inbound
+// X-Ether-* (including X-Ether-Origin) and credential headers are never copied.
+func outboundHeaders(r *http.Request, auth authenticated, origin string) map[string]string {
+	headers := make(map[string]string, len(forwardedRequestHeaders)+5)
 	for _, name := range forwardedRequestHeaders {
 		if v := r.Header.Get(name); v != "" {
 			headers[name] = v
@@ -81,7 +89,30 @@ func outboundHeaders(r *http.Request, auth authenticated) map[string]string {
 	headers[HeaderViewer] = strconv.FormatInt(auth.viewer.ID, 10)
 	headers[HeaderViewerName] = viewerName(auth.viewer)
 	headers[HeaderLibraries] = libraryCSV(auth.libraries)
+	if origin != "" {
+		headers[HeaderOrigin] = origin
+	}
 	return headers
+}
+
+// requestOrigin derives the client-visible origin ("scheme://host[:port][/prefix]")
+// for r using the host's trusted-proxy policy, matching admin.requestOriginInfo.
+// Untrusted forwarding headers are ignored and container bridge addresses are
+// rejected so an internal Docker Host never leaks.
+func requestOrigin(r *http.Request, host frontend.Host) string {
+	origin, ok := host.Origin(r)
+	if !ok || containerHost(origin.Hostname()) {
+		return ""
+	}
+	return origin.BaseURL("")
+}
+
+func containerHost(host string) bool {
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	return dockerBridge.Contains(ip.Unmap())
 }
 
 // viewerName is the display name a plugin may show. Ether owns it; a plugin

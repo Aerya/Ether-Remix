@@ -350,7 +350,7 @@ func (s *Service) personalProgrammesLimit(ctx context.Context, c Channel, u *cor
 	var day string
 	err := s.o.DB.QueryRowContext(ctx, `SELECT day,cursor_ms FROM livetv_personal WHERE viewer_id=? AND channel_id=? ORDER BY built_at DESC LIMIT 1`, u.ID, c.ID).Scan(&day, &cursorMS)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, core.ErrNotAvailable
+		return nil, errVirtualGuidePreparing
 	}
 	if err != nil {
 		return nil, err

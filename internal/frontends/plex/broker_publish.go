@@ -141,7 +141,7 @@ func (s *Server) publishBrokerPlayback(ctx context.Context, pr *Request, p *play
 	return s.openPlexPlan(ctx, pr, p, func(context.Context) (frontend.PlanAdmission, error) {
 		return frontend.PlanAdmission{
 			Source: ps, Media: ps.Info, Caps: p.caps, Options: p.opts, PreferRemux: p.mde, Protocol: p.protocol,
-			RemoteMaxBitrateKbps: s.cfg().Transcode.RemoteMaxBitrateKbps,
+			RemoteMaxBitrateKbps: 0,
 		}, nil
 	})
 }

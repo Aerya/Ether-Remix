@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -250,11 +252,13 @@ type instance struct {
 	rowMu           sync.Mutex
 	rowMeta         map[string]frontend.RowView
 
-	eventsHeartbeat    time.Duration
-	eventsWriteTimeout time.Duration
-	disconnectGrace    time.Duration
-	liveHeartbeatCh    <-chan time.Time
-	liveEventInterval  time.Duration
+	eventsHeartbeat          time.Duration
+	eventsWriteTimeout       time.Duration
+	disconnectGrace          time.Duration
+	liveHeartbeatCh          <-chan time.Time
+	liveEventInterval        time.Duration
+	trickplayPollInterval    time.Duration
+	trickplayPublishInterval time.Duration
 
 	host            frontend.Host
 	ctx             context.Context
@@ -267,6 +271,7 @@ type instance struct {
 	themes          map[string]themeGrant
 	sessions        map[string]*playSession
 	replayMu        sync.Mutex
+	replaySwept     atomic.Int64
 	replays         map[string]*replay
 	plexSelMu       sync.Mutex
 	plexSels        map[string]*plexSelection
@@ -278,6 +283,7 @@ type instance struct {
 	warmPending     map[string]bool
 	readMu          sync.Mutex
 	readTickets     map[string]*readTicket
+	downloads       downloadTickets
 }
 
 func (i *instance) cursorNonce(domain string, plain []byte) ([]byte, error) {
@@ -345,6 +351,7 @@ func (i *instance) Close(context.Context) error {
 	}
 	i.mu.Unlock()
 	i.closeReadTickets()
+	i.downloads.close()
 	return nil
 }
 func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -373,6 +380,22 @@ func (i *instance) failFor(w http.ResponseWriter, v *frontend.Viewer, err error,
 }
 
 func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error, requests ...*http.Request) {
+	if len(requests) > 0 && requests[0] != nil && frontend.SearchWasSuperseded(requests[0].Context()) {
+		// The device's next keystroke replaced this search: an empty,
+		// final answer, never an error a client might retry.
+		var b searchRequest
+		_ = body(requests[0], &b)
+		send(w, http.StatusOK, object{"query": b.Query, "generation": b.Generation, "items": []object{}, "continuation": frontend.ContinuationExhausted, "match": string(frontend.SearchMatchNone), "state": "complete", "retry": object{"allowed": false}})
+		return
+	}
+	var acceptLanguage string
+	if len(requests) > 0 && requests[0] != nil {
+		acceptLanguage = requestDevice(requests[0]).Language
+	}
+	if msg := frontend.IndexersPausedMessage(err, acceptLanguage); msg != "" {
+		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": frontend.IndexersPausedCode, "message": msg, "retry": object{"allowed": false}}})
+		return
+	}
 	var capErr *frontend.ProviderConnectionCapError
 	if errors.As(err, &capErr) {
 		sendProviderConnectionCap(w, capErr)
@@ -416,7 +439,7 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "archive_unstreamable", "message": frontend.ErrArchiveUnstreamable.Error(), "retry": object{"allowed": false}}})
 	case errors.Is(err, frontend.ErrInvalidMultiview):
 		problem(w, 400, "request", "invalid_multiview")
-	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit), errors.Is(err, frontend.ErrInvalidScreenDate), errors.Is(err, frontend.ErrInvalidEntityKey):
+	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
 		problem(w, 400, "request", "invalid_request")
 	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
 		problem(w, 429, "capacity", "resource_capacity")
@@ -482,6 +505,12 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 		if errors.As(err, &encoder) {
 			delay = encoder.RetryAfter
 		}
+		message := frontend.VideoEncoderCapacityMessage(err, acceptLanguage)
+		if message == "" {
+			message = "playback capacity"
+		} else if delay == 0 {
+			delay = 5 * time.Second
+		}
 		if delay > 0 && delay <= 5*time.Minute {
 			seconds := min(300, int(delay/time.Second))
 			if delay%time.Second != 0 && seconds < 300 {
@@ -489,7 +518,7 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 			}
 			seconds = max(seconds, 1)
 			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-			send(w, 503, object{"error": object{"class": "capacity", "code": "playback_capacity", "message": "playback capacity", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+			send(w, 503, object{"error": object{"class": "capacity", "code": "playback_capacity", "message": message, "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
 		} else {
 			problem(w, 503, "capacity", "playback_capacity")
 		}
@@ -633,7 +662,21 @@ func (i *instance) resolvedRedirectPrefix(r *http.Request) string {
 	}
 	return ""
 }
+
+type requestReceivedKey struct{}
+
+func (i *instance) serverNow() time.Time {
+	if i.host.Now != nil {
+		return i.host.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
+	received := i.serverNow()
+	if (strings.HasPrefix(r.URL.Path, "/vela/v0/") || strings.HasPrefix(r.URL.Path, "/sessions/media/")) && cors(w, r) {
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/sessions/media/") {
 		w.Header().Set("Cache-Control", "no-store")
 		// Media elements cannot attach the API bearer/device headers. The
@@ -658,14 +701,20 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			ctx = frontend.WithRequestMemo(ctx)
 		}
 	}
+	if token := strings.TrimSpace(r.Header.Get("X-Vela-Screen-Preview")); token != "" && len(token) <= 128 {
+		// A Studio preview: this request sees the draft documents.
+		ctx = frontend.WithScreenPreview(ctx, token)
+	}
 	r = r.WithContext(ctx)
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
 	// only its registered route template for those warnings too. Unknown routes
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	isLivePreferencesWrite := (r.Method == http.MethodPut || r.Method == http.MethodPatch) && r.URL.Path == "/vela/v0/live/preferences"
-	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (!isLivePreferencesWrite && r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") || (r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/vela/v0/favorites/entities/")) {
+	if r.Pattern == "POST /vela/v0/titles/{id}/watch" {
+		r = r.WithContext(context.WithValue(r.Context(), requestReceivedKey{}, received))
+	}
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") {
 		i.mux.ServeHTTP(w, r)
 		return
 	}
@@ -676,9 +725,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := dec.Decode(&raw); err != nil {
-		// POST /vela/v0/live/events/{id}/reveal and DELETE /vela/v0/multiview/{groupId}
-		// are naturally idempotent and may be called with an empty body.
-		if errors.Is(err, io.EOF) && ((r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal") || (r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/"))) {
+		// DELETE /vela/v0/multiview/{groupId} is naturally idempotent and may
+		// be called with an empty body.
+		if errors.Is(err, io.EOF) && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/vela/v0/multiview/") {
 			r.Body = http.NoBody
 			i.mux.ServeHTTP(w, r)
 			return
@@ -686,9 +735,13 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_json")
 		return
 	}
-	if r.Method == "POST" && r.URL.Path == "/vela/v0/live/guide/window" {
+	if r.Pattern == "POST /vela/v0/titles/{id}/download" ||
+		(r.Method == "POST" && (r.URL.Path == "/vela/v0/live/guide/window" || r.URL.Path == "/vela/v0/search")) {
 		// Bulk guide window is a pure read with optional idempotencyKey and
-		// ETag revalidation rather than a persisted mutation.
+		// ETag revalidation rather than a persisted mutation. So is a
+		// search, sent per keystroke: persisting a replay would make every
+		// keystroke queue for the database writer behind background writes.
+		// A download POST deduplicates quota usage, but issues a fresh ticket.
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")
@@ -707,20 +760,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		} `json:"client"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		if isLivePreferencesWrite {
-			problem(w, 400, "request", "invalid_request")
-			return
-		}
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
-	if (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "") && r.Method == "POST" && r.Pattern == "POST /vela/v0/live/events/{id}/reveal" {
-		r.Body = http.NoBody
-		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
-		return
-	}
 	optionalReplanIdem := r.Method == http.MethodPost && r.Pattern == "POST /vela/v0/sessions/{id}/commands" && envelope.Kind == "replan"
-	if ((optionalMultiviewIdem || optionalReplanIdem) && envelope.IdempotencyKey == nil) || (isLivePreferencesWrite && (envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "")) {
+	if (optionalMultiviewIdem || optionalReplanIdem) && envelope.IdempotencyKey == nil {
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")
@@ -729,6 +773,10 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.NoBody
 		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
+	}
+	if h := strings.TrimSpace(r.Header.Get("Idempotency-Key")); h != "" {
+		// The header wins over body.idempotencyKey when a client sends both.
+		envelope.IdempotencyKey = &h
 	}
 	if envelope.IdempotencyKey == nil || *envelope.IdempotencyKey == "" || len(*envelope.IdempotencyKey) > 256 {
 		problem(w, 400, "request", "idempotency_key_required")
@@ -796,12 +844,46 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	i.replays[key] = entry
 	i.replayMu.Unlock()
 	r.Body = http.NoBody
-	r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw))
-	persisted, conflict, claimErr := i.claim(r.Context(), key, digest)
+	ctx = context.WithValue(r.Context(), bodyKey{}, raw)
+	detached := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/")
+	if detached {
+		// Sign-in, refresh and pairing are short identity mutations. Finish
+		// them even if the caller gives up, so the retry with the same key
+		// replays the committed tokens rather than finding a half-done claim.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), authMutationBound)
+		defer cancel()
+	}
+	r = r.WithContext(ctx)
+	pctx, pcancel := persistContext(r)
+	defer pcancel()
 	out := httptest.NewRecorder()
+	claimed := false
+	defer func() {
+		// A panicking handler must not strand the key: release it and wake
+		// waiters before the panic propagates.
+		if p := recover(); p != nil {
+			if claimed {
+				// A fresh bound: the claim's context may have expired while
+				// the handler ran.
+				rctx, rcancel := persistContext(r)
+				if err := i.release(rctx, key); err != nil {
+					slog.Warn("vela replay claim not released", "route", r.Pattern, "err", err)
+				}
+				rcancel()
+			}
+			entry.status = http.StatusInternalServerError
+			close(entry.done)
+			i.replayMu.Lock()
+			delete(i.replays, key)
+			i.replayMu.Unlock()
+			panic(p)
+		}
+	}()
+	persisted, conflict, claimErr := i.claim(pctx, key, digest)
 	if claimErr != nil {
 		if errors.Is(claimErr, errPending) {
-			problem(out, 409, "conflict", "mutation_outcome_unknown")
+			pendingProblem(out, claimErr)
 		} else {
 			fail(out, claimErr, r)
 		}
@@ -816,19 +898,22 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = out.Write(persisted.Body)
 		}
 	} else {
+		claimed = true
 		i.mux.ServeHTTP(out, r)
-		var saveErr error
-		if (out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback") ||
-			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/read") && out.Header().Get("Retry-After") != "") ||
-			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") ||
-			(out.Code == http.StatusTooManyRequests && strings.HasSuffix(r.URL.Path, "/approve") && out.Header().Get("Retry-After") != "") {
-			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
-		} else {
-			saveErr = i.save(r.Context(), key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
-		}
-		if saveErr != nil {
-			out = httptest.NewRecorder()
-			problem(out, 503, "transient", "mutation_outcome_unknown")
+		// The claim's 5 s bound covers the claim only: a slow handler (a
+		// release still being prepared) outlives it, and releasing or saving
+		// with that expired context left the key pending for the whole lease,
+		// so the protocol retry got 409 mutation_outcome_unknown.
+		sctx, scancel := persistContext(r)
+		defer scancel()
+		if releasable(r, out, r.Context().Err() != nil) {
+			if err := i.release(sctx, key); err != nil {
+				slog.Warn("vela replay claim not released", "route", r.Pattern, "status", out.Code, "err", err)
+			}
+		} else if err := i.save(sctx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()}, time.Time{}); err != nil {
+			// The mutation's result is in hand: deliver it. The claim stays
+			// pending only until replayLease lapses, then the key runs again.
+			slog.Warn("vela replay not recorded", "route", r.Pattern, "status", out.Code, "err", err)
 		}
 	}
 
@@ -846,6 +931,34 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	if len(entry.body) > 0 {
 		_, _ = w.Write(entry.body)
 	}
+}
+
+// authMutationBound caps an auth mutation that runs on after its caller
+// disconnected. Well under replayLease.
+const authMutationBound = 15 * time.Second
+
+// releasable reports a response that is not an outcome worth replaying, so
+// the key is freed for the retry instead of pinned to it:
+//   - an accepted-but-unfinished playback admission;
+//   - any refusal carrying Retry-After: the server asked for that retry, so
+//     it must run again rather than replay the refusal (rate limits included);
+//   - any 5xx on an auth route: Vela derives a refresh's key from its
+//     token, so a stored server error would lock the device out for a day
+//     (elsewhere a 5xx without Retry-After stays the key's final answer);
+//   - a non-2xx answer from a handler whose context ended mid-flight: the
+//     cancellation, not the request, produced it.
+func releasable(r *http.Request, out *httptest.ResponseRecorder, cancelled bool) bool {
+	switch {
+	case out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback":
+		return true
+	case (out.Code < 200 || out.Code > 299) && out.Header().Get("Retry-After") != "":
+		return true
+	case out.Code >= 500 && strings.HasPrefix(r.URL.Path, "/vela/v0/auth/"):
+		return true
+	case cancelled && (out.Code < 200 || out.Code > 299):
+		return true
+	}
+	return false
 }
 
 type bodyKey struct{}
@@ -889,10 +1002,14 @@ func (i *instance) routes() {
 	i.route("GET", "/rows/{id}", i.rows)
 	i.route("GET", "/themes/{secret}/theme.m4a", i.theme)
 	i.route("HEAD", "/themes/{secret}/theme.m4a", i.theme)
+	i.route("GET", "/themes/{secret}/theme.mp3", i.theme)
+	i.route("HEAD", "/themes/{secret}/theme.mp3", i.theme)
 	i.route("GET", "/titles/{id}", i.detail)
 	i.route("GET", "/titles/{id}/children", i.children)
 	i.route("GET", "/titles/{id}/extras", i.detail)
 	i.route("GET", "/titles/{id}/versions", i.versions)
+	i.route("GET", "/titles/{id}/lyrics", i.titleLyrics)
+	i.route("GET", "/titles/{id}/continuation", i.titleContinuation)
 	i.route("DELETE", "/titles/{id}/versions/choice", i.clearVersionChoice)
 	i.route("POST", "/search", i.search)
 	i.route("POST", "/search/ai", i.startAISearch)
@@ -909,24 +1026,35 @@ func (i *instance) routes() {
 	i.route("DELETE", "/sessions/{id}/audio-fallback/{audioId}", i.audioFallback)
 	i.route("GET", "/sessions/{id}", i.snapshot)
 	i.route("GET", "/sessions/{id}/events", i.events)
+	i.route("GET", "/sessions/{id}/trickplay/{width}/{sheet}", i.trickplaySheet)
+	i.route("HEAD", "/sessions/{id}/trickplay/{width}/{sheet}", i.trickplaySheet)
 	i.route("POST", "/sessions/{id}/commands", i.command)
 	i.route("POST", "/sessions/{id}/observations", i.observe)
 	i.route("GET", "/live/channels", i.channels)
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
-	i.route("GET", "/live/events", i.liveEventsSnapshot)
-	i.route("GET", "/live/events/{id}", i.liveEventDetail)
-	i.route("POST", "/live/events/{id}/reveal", i.liveEventReveal)
 	i.route("GET", "/live/stream", i.liveEventsStream)
-	i.route("GET", "/live/preferences", i.liveEventsPreferencesGet)
-	i.route("PUT", "/live/preferences", i.liveEventsPreferencesSet)
-	i.route("PATCH", "/live/preferences", i.liveEventsPreferencesSet)
-	i.route("GET", "/live/entities", i.liveEntities)
-	i.route("GET", "/live/ticker", i.liveTicker)
-	i.route("GET", "/screens/{id}", i.screen)
-	i.route("PUT", "/favorites/entities/{key}", i.favoriteEntity)
-	i.route("DELETE", "/favorites/entities/{key}", i.favoriteEntity)
+	i.route("GET", "/screens/{id}/pages/{page}/document", i.screenDocument)
+	i.route("GET", "/screens/{id}/pages/{page}/data", i.screenData)
+	i.route("POST", "/screens/{id}/actions/{action}", i.screenAction)
+	i.route("GET", "/surfaces/{id}/document", i.surfaceDocument)
+	i.route("GET", "/surfaces/{id}/data", i.surfaceData)
+	i.route("POST", "/surfaces/{id}/actions/{action}", i.surfaceAction)
+	i.route("PUT", "/surfaces/{id}/setting", i.surfaceSetting)
+	i.route("GET", "/screen-assets/{plugin}/{version}/{path...}", i.screenAsset)
+	i.route("GET", "/favorites/titles", i.favoriteTitles)
+	i.route("GET", "/history/recap", i.historyRecap)
+	i.route("GET", "/libraries/{id}/duplicates", i.libraryDuplicates)
+	i.route("POST", "/libraries/{id}/duplicates/{recordingId}", i.preferRecording)
+	i.route("GET", "/titles/{id}/recording", i.titleRecording)
+	i.route("POST", "/playlists/import", i.startPlaylistImport)
+	i.route("GET", "/playlists/import/{id}", i.playlistImport)
+	i.route("POST", "/playlists/import/{id}/save", i.savePlaylistImport)
+	i.route("GET", "/recent", i.recentPlayContexts)
 	i.route("POST", "/titles/{id}/watch", i.watch)
+	i.route("POST", "/titles/{id}/download", i.grantDownload)
+	i.route("GET", "/download/{ticket}", i.downloadFile)
+	i.route("HEAD", "/download/{ticket}", i.downloadFile)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)
 	i.route("HEAD", "/read/{ticket}", i.readFile)
@@ -989,6 +1117,7 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Experience.(frontend.DescriptiveSearcher); ok {
 		descriptive = source.DescriptiveSearchAvailable() && i.aiSearchAvailable()
 	}
+	_, unified := i.host.Experience.(frontend.UnifiedSearcher)
 	_, live := i.host.LiveTV.(frontend.LiveGuidePager)
 	_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
 	auth := frontend.AuthenticationFeatures{}
@@ -999,7 +1128,7 @@ func (i *instance) capabilities() object {
 	passwordAvail := auth.Password && methods.Password
 	plexAvail := auth.PlexAccountSignIn && methods.Plex
 	quickAvail := auth.QuickConnect && methods.QuickConnect
-	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "liveEvents": f(i.liveEventsAvailable()), "multiview": object{"available": i.multiviewAvailable(), "maxTiles": frontend.MaxMultiviewTiles}, "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(i.extrasAvailable()), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}, "pluginLevels": object{"available": true, "tabRows": true, "childRoles": true, "expandOnOpen": true}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "unifiedSearch": f(unified), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "liveEvents": f(i.liveEventsAvailable()), "multiview": object{"available": i.multiviewAvailable(), "maxTiles": frontend.MaxMultiviewTiles}, "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(i.extrasAvailable()), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true), "favoritesList": f(i.favoritesListAvailable()), "lyrics": object{"available": i.lyricsAvailable(), "words": i.lyricsAvailable(), "romanization": i.lyricsAvailable(), "translation": false}, "playContexts": f(i.playContextsAvailable()), "queuedPlayback": object{"available": true, "handoverSeconds": int(frontend.QueuedHandover.Seconds())}, "continuation": f(i.continuationAvailable()), "libraryExperiences": object{"available": true, "experiences": frontend.LibraryExperiences}, "loudness": object{"available": i.host.Loudness != nil, "album": i.host.Loudness != nil, "fades": i.host.Loudness != nil}, "audioQuality": f(true), "historyRecap": object{"available": i.recapAvailable(), "periods": frontend.RecapPeriods}, "duplicates": f(i.duplicatesAvailable()), "playlistImport": i.playlistImportFeature(context.Background()), "mediaClasses": object{"available": true, "classes": []string{string(frontend.MediaClassVideo), string(frontend.MediaClassMusic), string(frontend.MediaClassAudiobook), string(frontend.MediaClassBook), string(frontend.MediaClassPodcast), string(frontend.MediaClassPhoto)}}, "audioPlayback": f(true), "reading": object{"available": i.readingAvailable(), "formats": readingFormats}, "pluginLevels": object{"available": true, "tabRows": true, "childRoles": true, "expandOnOpen": true}}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if plexAvail {
 		caps["plexAccountSignIn"] = true
 	}
@@ -1059,6 +1188,12 @@ func (i *instance) requestCapabilities(r *http.Request) object {
 // open, and a request without a viewer never learns plugin library names.
 func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) object {
 	c := i.capabilities()
+	c["features"].(object)["liveCatchUp"] = i.catchUpFeature(r, v)
+	downloads, ok := r.Context().Value(downloadCapabilityKey{}).(downloadCapability)
+	if !ok {
+		downloads = i.downloadsFeature(r.Context(), v)
+	}
+	c["features"].(object)["downloads"] = downloads
 	if v != nil {
 		c["searchKinds"], _ = i.searchKinds(r, v)
 		if features, ok := c["features"].(object); ok {
@@ -1096,8 +1231,13 @@ func (i *instance) serveMedia(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := scopes.GrantScopeCurrent(r.Context(), scope, frontend.Device{ID: deviceID}); err != nil {
+	viewer, err := scopes.GrantScopeCurrent(r.Context(), scope, frontend.Device{ID: deviceID})
+	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	if _, tail, _ := strings.Cut(rest, "/"); strings.HasPrefix(tail, "archive/") {
+		i.serveCatchUpMedia(w, r, viewer, s, strings.TrimPrefix(tail, "archive/"))
 		return
 	}
 	i.serveObservedMedia(w, r)

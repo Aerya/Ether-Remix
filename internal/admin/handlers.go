@@ -22,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/tmdb"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 // ---- Setup status ----
@@ -79,8 +80,7 @@ func SetupStatus(cfg config.Config) (steps []SetupStep, complete bool) {
 		{ID: "indexers", Title: "Indexers", Complete: enabledIndexers > 0, Required: true,
 			Detail: fmt.Sprintf("%d enabled", enabledIndexers)},
 		{ID: "cache", Title: "Cache folder and disk budget", Complete: cacheDone, Required: true, Detail: cfg.Cache.Dir},
-		// Without TMDB there is no catalogue; a build may bundle a key.
-		{ID: "catalog", Title: "TMDB API key", Complete: tmdb.ResolveKey(cfg.Catalog) != "", Required: true},
+		{ID: "catalog", Title: "Metadata sources", Complete: tmdb.ResolveKey(cfg.Catalog) != "" || strings.TrimSpace(cfg.Catalog.TVDBKey) != ""},
 		{ID: "optional", Title: "Optional integrations", Complete: true, Required: false,
 			Detail: "Trakt, OpenSubtitles, LLM, cam policy"},
 	}
@@ -123,8 +123,6 @@ func plainSetupGap(id string) string {
 		return "Add a debrid account, a Usenet provider, or a torrent addon before finishing, or finish now and add it later."
 	case "indexers":
 		return "Add an indexer before finishing, or finish now and add it later."
-	case "catalog":
-		return "Add a catalogue key before finishing, or finish now and add it later."
 	case "cache":
 		return "Choose a cache folder before finishing."
 	default:
@@ -560,6 +558,20 @@ func (h *Handler) handleTestSkipDB(w http.ResponseWriter, r *http.Request) {
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestSkipDB(ctx, key) })
 }
 
+func (h *Handler) handleTestTVDB(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if !decodeTestBody(w, r, &body) {
+		return
+	}
+	key := body.Key
+	if isRedacted(key) {
+		key = h.deps.Config.Get().Catalog.TVDBKey
+	}
+	h.runTest(w, r, func(ctx context.Context) error { return tvdb.Test(ctx, key) })
+}
+
 func (h *Handler) handleTestTMDB(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Key string `json:"key"`
@@ -570,8 +582,8 @@ func (h *Handler) handleTestTMDB(w http.ResponseWriter, r *http.Request) {
 	key := body.Key
 	// TMDB is a fixed destination: an empty or placeholder key tests the
 	// stored (or bundled) key.
-	if isRedacted(key) || key == "" {
-		key = h.deps.Config.Get().Catalog.TMDBKey
+	if isRedacted(key) || strings.TrimSpace(key) == "" {
+		key = tmdb.ResolveKey(h.deps.Config.Get().Catalog)
 	}
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestTMDB(ctx, key) })
 }

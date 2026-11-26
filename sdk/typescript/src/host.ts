@@ -83,6 +83,7 @@ export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
 export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
+export const HEADER_ORIGIN = "X-Ether-Origin";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export const DefaultAICompletePerMin = 20;
@@ -225,7 +226,7 @@ export function normalizeStreamUrlOptions(
     return { partIndex: partIndexOrOpts };
   }
   if (partIndexOrOpts === null || typeof partIndexOrOpts !== "object" || Array.isArray(partIndexOrOpts)) {
-    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source? }");
+    throw new Error("stream url: options must be a partIndex integer or { partIndex?, source?, absolute? }");
   }
   checkPartIndex(partIndexOrOpts.partIndex);
   if (partIndexOrOpts.source !== undefined) {
@@ -236,9 +237,13 @@ export function normalizeStreamUrlOptions(
       throw new Error("stream url: source must not be blank");
     }
   }
+  if (partIndexOrOpts.absolute !== undefined && typeof partIndexOrOpts.absolute !== "boolean") {
+    throw new Error("stream url: absolute must be a boolean");
+  }
   const out: import("./types.ts").StreamUrlOptions = {};
   if (partIndexOrOpts.partIndex !== undefined) out.partIndex = partIndexOrOpts.partIndex;
   if (partIndexOrOpts.source) out.source = partIndexOrOpts.source;
+  if (partIndexOrOpts.absolute) out.absolute = true;
   return out;
 }
 
@@ -524,6 +529,7 @@ export interface EtherHost {
       limit?: number,
       offset?: number,
     ): MaybePromise<ViewerWatchEntry[]>;
+    /** Accepts a catalogue movie/episode ID or an owned playable item ref. */
     setWatchState(
       viewerId: number,
       titleId: string,
@@ -532,6 +538,13 @@ export interface EtherHost {
   };
   collections: {
     upsert(collection: Record<string, unknown>): MaybePromise<void>;
+  };
+  /** Screens and surfaces (screens capability): tell open screens that your data changed. */
+  screens?: {
+    /** Open screens and surfaces of this plugin read their sources again now. */
+    invalidate(): MaybePromise<{ streams: number }>;
+    /** New values for your records, sent to open screens already showing them (at most 100). */
+    putRecords(records: Array<{ type: string; id: string; value: unknown }>): MaybePromise<{ streams: number }>;
   };
   folders: {
     list(root: string, path?: string): MaybePromise<FolderEntry[]>;
@@ -932,6 +945,14 @@ export function createHostedClient(): EtherHost {
         callHost("collections.upsert", [collection]);
       },
     },
+    screens: {
+      invalidate(): { streams: number } {
+        return callHost("screens.invalidate", []) as { streams: number };
+      },
+      putRecords(records: Array<{ type: string; id: string; value: unknown }>): { streams: number } {
+        return callHost("screens.putRecords", [records]) as { streams: number };
+      },
+    },
     folders: {
       list(root: string, path = ""): FolderEntry[] {
         if (g.ether?.folders) return g.ether.folders.list(root, path) ?? [];
@@ -1053,7 +1074,7 @@ export function createHostedClient(): EtherHost {
         void viewerId;
         const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         let args: unknown[];
-        if (opts.source !== undefined) {
+        if (opts.source !== undefined || opts.absolute) {
           args = [itemRef, opts];
         } else if (opts.partIndex !== undefined) {
           args = [itemRef, opts.partIndex];
@@ -1306,6 +1327,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         await callJson("POST", "/ether/plugin-host/collections/upsert", collection);
       },
     },
+    screens: {
+      async invalidate(): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/invalidate", {})) as { streams: number };
+      },
+      async putRecords(records: Array<{ type: string; id: string; value: unknown }>): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/records", { records })) as { streams: number };
+      },
+    },
     folders: {
       list(): Promise<FolderEntry[]> {
         return Promise.reject(
@@ -1428,13 +1457,21 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     frontend: {
       async streamUrl(viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions): Promise<string> {
-        const opts = normalizeStreamUrlOptions(partIndexOrOpts);
-        const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
-          viewerId,
-          itemRef,
-          ...(opts.partIndex === undefined ? {} : { partIndex: opts.partIndex }),
-          ...(opts.source === undefined ? {} : { source: opts.source }),
-        });
+        const streamOpts = normalizeStreamUrlOptions(partIndexOrOpts);
+        const tok = (opts.viewerToken ?? "").trim();
+        const r = await callJson<{ url: string }>(
+          "POST",
+          "/ether/plugin-host/frontend/stream-url",
+          {
+            viewerId,
+            itemRef,
+            ...(streamOpts.partIndex === undefined ? {} : { partIndex: streamOpts.partIndex }),
+            ...(streamOpts.source === undefined ? {} : { source: streamOpts.source }),
+            ...(streamOpts.absolute ? { absolute: true } : {}),
+          },
+          false,
+          tok ? { [HEADER_VIEWER_TOKEN]: tok } : undefined,
+        );
         return r?.url ?? "";
       },
     },

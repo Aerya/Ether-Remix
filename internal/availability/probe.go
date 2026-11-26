@@ -85,8 +85,7 @@ func (s *Service) probeDue(ctx context.Context) error {
 			continue
 		}
 		followed := t.Type == core.TypeEpisode && (watch[t.Key] || watch[t.ShowKey])
-		if !t.IsReleased(now) && followed && t.Season > 0 && t.Key.TMDB() > 0 {
-			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
+		if sk := releaseSeasonKey(t); !t.IsReleased(now) && followed && sk != 0 {
 			if s.isSeasonInProgress(ctx, sk, now, nil, inProgressMemo) {
 				s.RevealSeason(ctx, sk)
 				followed = false
@@ -147,6 +146,8 @@ func (s *Service) probeOneDue(ctx context.Context, t core.Title, anchorTS, windo
 	}
 	if t.Type == core.TypeEpisode {
 		req.IDs = t.ShowIDs
+		req.EpisodeSource = t.EpisodeOrder.Source
+		req.Released = cmp.Or(t.EpisodeAirDate, t.Released)
 		req.Title = cmp.Or(t.ShowTitle, t.Title)
 		req.OriginalTitle = t.ShowOriginalTitle
 		req.Year = cmp.Or(t.ShowYear, t.Year)

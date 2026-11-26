@@ -103,6 +103,11 @@ type DownloadLimitPolicy interface {
 	ReleaseDownloadReservation(ctx context.Context, u *User, key RatingKey)
 }
 
+// OfflineDownloadBinding identifies bytes already admitted for an offline grant.
+type OfflineDownloadBinding struct {
+	Release, VersionID, ETag string
+}
+
 // DownloadAccessPolicy exposes the optional AllowDownloads capability.
 type DownloadAccessPolicy interface{ AllowDownloads(*User) bool }
 

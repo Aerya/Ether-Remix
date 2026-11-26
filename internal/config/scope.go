@@ -312,6 +312,10 @@ func toDoc(c Config) map[string]any {
 }
 
 func syncDerived(c *Config) {
+	if c.LiveTV.TimeshiftMinutes != nil {
+		minutes := c.LiveTV.EffectiveTimeshiftMinutes()
+		c.LiveTV.TimeshiftMinutes = &minutes
+	}
 	c.Catalog.ReleaseMode = c.Availability.ModeFor("movie")
 	c.Catalog.HomeReleaseOffsetDays = c.Availability.HomeReleaseOffsetDays
 }

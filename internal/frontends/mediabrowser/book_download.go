@@ -7,11 +7,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
@@ -32,34 +29,13 @@ func (i *instance) bookReadable(detail frontend.ItemDetail) bool {
 	return true
 }
 
-// serveBookFile serves GET/HEAD /Items/{id}/Download and /Items/{id}/File for
-// readable plugin book items (EPUB, PDF, CBZ) via the shared KindStreams path.
-// Non-book items (movies, episodes, audio, folders) and unavailable books are
-// refused with 404.
-func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachment bool) {
-	viewer, _, err := i.viewer(r)
-	if err != nil || viewer == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if i.host.Experience == nil || i.host.KindStreams == nil {
+// serveBookFile serves readable plugin books (EPUB, PDF, CBZ) via KindStreams.
+func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, viewer *frontend.Viewer, detail frontend.ItemDetail, attachment bool) {
+	if i.host.KindStreams == nil {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	key, err := ids.ParseRatingKeyGUID(r.PathValue("id"))
-	if err != nil || !key.IsPluginKey() {
-		http.NotFound(w, r)
-		return
-	}
-	detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{
-		Viewer: viewer,
-		Device: device(r),
-		Key:    key,
-	})
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
+	key := detail.Title.Key
 	if !i.bookReadable(detail) {
 		http.NotFound(w, r)
 		return
@@ -74,10 +50,7 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 			dlPolicy = p
 			dec := p.AdmitDownload(r.Context(), viewer, key, 0)
 			if !dec.Allowed {
-				if wait := int(time.Until(dec.ResetAt).Seconds()); wait > 0 {
-					w.Header().Set("Retry-After", strconv.Itoa(wait))
-				}
-				http.Error(w, frontend.DownloadLimitMessage(dec), http.StatusTooManyRequests)
+				writeDownloadLimit(w, dec)
 				return
 			}
 			reserved = dec.Reserved
@@ -94,18 +67,18 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 			http.Error(w, "Unsupported book format", http.StatusUnprocessableEntity)
 			return
 		}
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if media == nil {
-		streamError(i.protocol, w, frontend.ErrNotAvailable)
+		streamError(i.protocol, w, frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		return
 	}
 	if media.Closer != nil {
 		defer media.Closer.Close()
 	}
 	if media.ReaderAt == nil || media.Size < 0 {
-		streamError(i.protocol, w, frontend.ErrNotAvailable)
+		streamError(i.protocol, w, frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		return
 	}
 	format, mimeType, ok := reading.DetectFormat(media, detail.Title)
@@ -115,10 +88,7 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, attachm
 	}
 	if dlPolicy != nil && media.Size > 0 {
 		if rec := dlPolicy.ReconcileDownloadBytes(r.Context(), viewer, key, media.Size); !rec.Allowed {
-			if wait := int(time.Until(rec.ResetAt).Seconds()); wait > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(wait))
-			}
-			http.Error(w, frontend.DownloadLimitMessage(rec), http.StatusTooManyRequests)
+			writeDownloadLimit(w, rec)
 			return
 		}
 	}

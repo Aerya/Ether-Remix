@@ -168,9 +168,9 @@ func pgDistinct(sqlite string) string {
 	return strings.ReplaceAll(sqlite, " IS NOT ", " IS DISTINCT FROM ")
 }
 
-// tallyFoldChunk bounds one fold transaction, so it never holds the write
-// lock for long after a bulk ingestion.
-const tallyFoldChunk = 20000
+// One fold transaction moves at most tallyHold's rows, sized by the hold
+// measured (write_hold.go), so it never holds the write lock for long after
+// a bulk ingestion: a fixed 20,000 held it for seconds on a small host (#804).
 
 // libraryTally is a trigger-kept count table folded by the background
 // loop: name holds the counts, name+"_delta" the pending signed deltas, and
@@ -200,12 +200,13 @@ func (c *Catalog) foldLibraryTallies(ctx context.Context) (int64, error) {
 			if pending == 0 {
 				break
 			}
-			n, err := c.foldTallyChunk(ctx, tally)
+			limit := c.holds.tally.size(tallyHold)
+			n, err := c.foldTallyChunk(ctx, tally, limit)
 			if err != nil {
 				return moved, err
 			}
 			moved += n
-			if n < tallyFoldChunk {
+			if n < int64(limit) {
 				break
 			}
 		}
@@ -213,15 +214,20 @@ func (c *Catalog) foldLibraryTallies(ctx context.Context) (int64, error) {
 	return moved, ctx.Err()
 }
 
-func (c *Catalog) foldTallyChunk(ctx context.Context, tally libraryTally) (int64, error) {
+func (c *Catalog) foldTallyChunk(ctx context.Context, tally libraryTally, limit int) (n int64, err error) {
 	d := store.DialectOf(c.db)
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	admitted := time.Now()
+	defer func() {
+		_ = tx.Rollback()
+		if err == nil {
+			c.holds.tally.observe(tallyHold, max(int(n), 1), time.Since(admitted))
+		}
+	}()
 	table, delta, dims := tally.name, tally.name+"_delta", tally.dims
-	var n int64
 	if d == store.Postgres {
 		// One statement deletes the deltas it adds, so a delta committed
 		// meanwhile is either moved whole or left for the next fold. The
@@ -232,12 +238,12 @@ func (c *Catalog) foldTallyChunk(ctx context.Context, tally libraryTally) (int64
 		if err := tx.QueryRowContext(ctx, `WITH moved AS (DELETE FROM `+delta+` WHERE id IN (SELECT id FROM `+delta+` ORDER BY id LIMIT ?) RETURNING `+dims+`,d),
 summed AS (INSERT INTO `+table+`(`+dims+`,n) SELECT `+dims+`,SUM(d) FROM moved GROUP BY `+dims+` ORDER BY `+dims+`
  ON CONFLICT(`+dims+`) DO UPDATE SET n=`+table+`.n+excluded.n)
-SELECT COUNT(*) FROM moved`, tallyFoldChunk).Scan(&n); err != nil {
+SELECT COUNT(*) FROM moved`, limit).Scan(&n); err != nil {
 			return 0, err
 		}
 	} else {
 		var hi int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM (SELECT id FROM `+delta+` ORDER BY id LIMIT ?) p`, tallyFoldChunk).Scan(&hi); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM (SELECT id FROM `+delta+` ORDER BY id LIMIT ?) p`, limit).Scan(&hi); err != nil {
 			return 0, err
 		}
 		if hi == 0 {

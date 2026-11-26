@@ -274,7 +274,7 @@ func (s *Session) collectDASH(r *run, exited bool) {
 	stopped := r.stopped
 	eof := !skip && exited && !stopped && r.proc.Err() == nil
 	publishCap := -1
-	if !exited && s.cur == r && s.m != nil && (s.m.opts.maxAhead > 0 || s.speculative) && s.info.Duration > 0 && s.segDur > 0 {
+	if !exited && !s.archiveInput && s.cur == r && s.m != nil && (s.m.opts.maxAhead > 0 || s.speculative) && s.info.Duration > 0 && s.segDur > 0 {
 		publishCap = s.lastReq + s.aheadLimit() + 1
 		if publishCap < r.startSeg {
 			publishCap = r.startSeg

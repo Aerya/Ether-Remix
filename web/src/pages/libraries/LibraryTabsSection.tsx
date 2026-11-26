@@ -10,14 +10,13 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { LayoutList, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ErrorPanel } from "../../components/feedback";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t, tn } from "../../i18n";
-import { api, errorMessage } from "../../lib/api";
-import type { HomeLayout, LibraryLayoutSection } from "../../lib/contract";
+import { errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { EMPTY_LAYOUT, collectionScheduleChanges, pageOf, prune } from "../../lib/layout";
+import { libraryRowsHref } from "../../lib/recommendations";
 import {
   librariesApi,
   type Library,
@@ -31,7 +30,6 @@ import {
   createSeedTab,
   facetOptionLabel,
   sortFieldLabel,
-  supportsLibraryRecommendedRows,
   tabKindIcon,
 } from "./TabEditDrawer";
 
@@ -68,14 +66,8 @@ function canonicalTab(tab: LibraryTab): LibraryTab {
   };
 }
 
-function summarizeTab(
-  tab: LibraryTab,
-  availableFacets: LibraryAvailableFacets,
-  recommendedCustomised: boolean,
-): string {
-  if (tab.kind === "recommended") {
-    return recommendedCustomised ? t("Personalized rows · Custom rows") : t("Personalized rows");
-  }
+function summarizeTab(tab: LibraryTab, availableFacets: LibraryAvailableFacets): string {
+  if (tab.kind === "recommended") return t("Rows arranged in Recommendations");
   const parts: string[] = [];
   if (tab.kind === "live") {
     parts.push(t("Live streams"));
@@ -95,7 +87,7 @@ function summarizeTab(
     }
   } else if (tab.kind === "collections") {
     if (!tab.facet) {
-      parts.push(t("Owner collections"));
+      parts.push(t("Your collections"));
     } else {
       const opt = availableFacets.collections.find((f) => f.id === tab.facet);
       const facetLabel = opt ? facetOptionLabel(opt) : tab.facet;
@@ -144,17 +136,8 @@ export function LibraryTabsSection({
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = useAsync((signal) => librariesApi.tabs(library.id, signal), [library.id]);
-  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
-  const libraryLayoutDoc = useAsync(
-    (signal) =>
-      supportsRecommendedRows ? api.libraryLayout(library.id, signal) : Promise.resolve(null),
-    [library.id, supportsRecommendedRows],
-  );
   const [saving, setSaving] = useState(false);
   const [localDrawer, setLocalDrawer] = useState<DrawerMode>({ type: "closed" });
-
-  const librarySection: LibraryLayoutSection = `library:${library.id}`;
-  const recommendedCustomised = Boolean(libraryLayoutDoc.data?.customized);
 
   const clearTabParams = () => {
     if (
@@ -227,7 +210,7 @@ export function LibraryTabsSection({
     }
   };
 
-  const handleSaveDrawer = async (savedTab: LibraryTab, nextLayout?: HomeLayout) => {
+  const handleSaveDrawer = async (savedTab: LibraryTab) => {
     const isNew = activeDrawer.type === "new";
     const tabChanged =
       isNew ||
@@ -240,24 +223,7 @@ export function LibraryTabsSection({
     const previousTabs = state.data;
     setSaving(true);
     try {
-      if (nextLayout) {
-        const savedLayout = libraryLayoutDoc.data
-          ? prune(libraryLayoutDoc.data.layout)
-          : EMPTY_LAYOUT;
-        const schedules = collectionScheduleChanges(nextLayout, savedLayout);
-        const nextPage = pageOf(nextLayout, "global", librarySection);
-        const updatedLayout =
-          !nextPage && Object.keys(schedules).length === 0
-            ? await api.deleteLibraryLayout(library.id)
-            : await api.putLibraryLayout(library.id, {
-                page: nextPage ?? { section: librarySection, rows: [] },
-                ...(nextPage ? {} : { viewerPages: [] }),
-                ...(Object.keys(schedules).length ? { collectionSchedules: schedules } : {}),
-              });
-        libraryLayoutDoc.setData(updatedLayout);
-      }
-
-      if (tabChanged || !nextLayout) {
+      if (tabChanged) {
         if (previousTabs) {
           state.setData({
             ...previousTabs,
@@ -278,7 +244,7 @@ export function LibraryTabsSection({
       );
       closeDrawers();
     } catch (e) {
-      if (previousTabs && (tabChanged || !nextLayout)) {
+      if (previousTabs && tabChanged) {
         state.setData(previousTabs);
       }
       toast.error(errorMessage(e));
@@ -325,7 +291,9 @@ export function LibraryTabsSection({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-sm text-fg-muted">
-              {t("Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.")}
+              {t(
+                "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page.",
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -449,10 +417,20 @@ export function LibraryTabsSection({
                         {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
                       </button>
                       <p className="truncate text-xs text-fg-muted">
-                        {summarizeTab(tab, availableFacets, recommendedCustomised)}
+                        {summarizeTab(tab, availableFacets)}
                       </p>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                      {tab.kind === "recommended" ? (
+                        <Button asChild size="sm" variant="outline" className="h-8">
+                          <Link
+                            to={libraryRowsHref(library.id, tab.key)}
+                            aria-label={t("Edit rows on {label}", { label: tab.label })}
+                          >
+                            <LayoutList size={14} /> {t("Edit rows")}
+                          </Link>
+                        </Button>
+                      ) : null}
                       <Switch
                         aria-label={t("Display {label} tab", { label: tab.label })}
                         checked={!tab.hidden}
@@ -542,8 +520,6 @@ export function LibraryTabsSection({
           tabs.length > 1 &&
           !editingIsOnlyVisible
         }
-        libraryLayoutDoc={libraryLayoutDoc.data ?? null}
-        layoutLoading={libraryLayoutDoc.loading}
         saving={saving}
         onClose={closeDrawers}
         onDelete={
@@ -559,8 +535,8 @@ export function LibraryTabsSection({
               }
             : undefined
         }
-        onSave={(savedTab, nextLayout) => {
-          void handleSaveDrawer(savedTab, nextLayout);
+        onSave={(savedTab) => {
+          void handleSaveDrawer(savedTab);
         }}
       />
     </SettingsSection>

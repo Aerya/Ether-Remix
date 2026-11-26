@@ -113,7 +113,7 @@ func TestDeclaredLastViewedShelfRequiresViewerHistoryAndHidesWhenEmpty(t *testin
 	}
 
 	// Empty history: shelf must inject viewer history filter AND hide cleanly (0 rows).
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "88")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "88", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows err=%v", err)
 	}
@@ -129,7 +129,7 @@ func TestDeclaredLastViewedShelfRequiresViewerHistoryAndHidesWhenEmpty(t *testin
 
 	// Once viewer has history, the shelf appears with the rolled-up album.
 	plug.emptyWhen = nil
-	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{}, "88")
+	rows, err = svc.PluginLibraryRows(ctx, owner, core.Device{}, "88", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows with history err=%v", err)
 	}

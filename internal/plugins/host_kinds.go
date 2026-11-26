@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +19,8 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -29,6 +34,18 @@ type KindUpsertResult struct {
 	Unchanged int
 }
 
+// KindUpsertUndo is the upsert result plus the exact change set committed for
+// the undo journal (#766): AddedIDs were newly inserted, UpdatedIDs had a
+// different content hash from the stored row, and Previous carries pre-write
+// copies of UpdatedIDs only when requested (omitted for unchanged items and for
+// kinds declaring sync.undo: "ids").
+type KindUpsertUndo struct {
+	Result     KindUpsertResult
+	AddedIDs   []string
+	UpdatedIDs []string
+	Previous   []core.KindItem
+}
+
 // KindBackends are the Ether services the kind host calls end in: the
 // plugin-item store, the source resolver and the blob cache. Any field
 // may be nil, in which case the matching host call returns
@@ -40,18 +57,31 @@ type KindBackends struct {
 	// KindUpsertStats, when set, is preferred over KindUpsert and its
 	// counts ride the host reply.
 	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
-	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
+	// KindUpsertUndo, when set, is preferred over KindUpsertStats and
+	// KindUpsert: it reports the committed added/updated IDs from the store's
+	// content-hash check and reads previous copies only for modified items when
+	// snapshotPrevious is true (#766).
+	KindUpsertUndo func(ctx context.Context, pluginID, kindKey string, items []core.KindItem, snapshotPrevious bool) (KindUpsertUndo, error)
+	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
-	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
-	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	KindVisible func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse  func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	// KindExpand and KindLiveSearch open a container and search for a
+	// frontend-adapter viewer the way an Ether app does (kinds.expand /
+	// kinds.search): Ether fetches from the plugin and stores the items.
+	KindExpand     func(ctx context.Context, pluginID string, viewerID int64, kindKey, parentID string) (pending bool, err error)
+	KindLiveSearch func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+
+	NormalizeStoredReleaseLinks func(context.Context, []byte) ([]byte, error)
+
 	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
 	// before admitting a background check against the plugin's daily allowance.
 	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
@@ -78,14 +108,18 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.mu.Lock()
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindUpsertStats = b.KindUpsertStats
+	m.deps.Backends.KindUpsertUndo = b.KindUpsertUndo
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
 	m.deps.Backends.KindItemsByID = b.KindItemsByID
 	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.KindVisible = b.KindVisible
 	m.deps.Backends.KindBrowse = b.KindBrowse
+	m.deps.Backends.KindExpand = b.KindExpand
+	m.deps.Backends.KindLiveSearch = b.KindLiveSearch
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
+	m.deps.Backends.NormalizeStoredReleaseLinks = b.NormalizeStoredReleaseLinks
 	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
 	m.deps.Backends.AdmitBackgroundUsenetCheck = b.AdmitBackgroundUsenetCheck
 	m.deps.Backends.CachePut = b.CachePut
@@ -103,14 +137,19 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
+		NormalizeStoredReleaseLinks: m.deps.Backends.NormalizeStoredReleaseLinks,
+
 		KindUpsert:                 m.deps.Backends.KindUpsert,
 		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
+		KindUpsertUndo:             m.deps.Backends.KindUpsertUndo,
 		KindDelete:                 m.deps.Backends.KindDelete,
 		KindItems:                  m.deps.Backends.KindItems,
 		KindItemsByID:              m.deps.Backends.KindItemsByID,
 		KindItemCount:              m.deps.Backends.KindItemCount,
 		KindVisible:                m.deps.Backends.KindVisible,
 		KindBrowse:                 m.deps.Backends.KindBrowse,
+		KindExpand:                 m.deps.Backends.KindExpand,
+		KindLiveSearch:             m.deps.Backends.KindLiveSearch,
 		ResolveSources:             m.deps.Backends.ResolveSources,
 		ResolveSourcesResult:       m.deps.Backends.ResolveSourcesResult,
 		PeekUsenetCheck:            m.deps.Backends.PeekUsenetCheck,
@@ -128,15 +167,21 @@ func (m *Manager) kindBackends() KindBackends {
 
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
-	MaxKindUpsertItems      = 1000
-	MaxKindVisibleIDs       = 500
-	MaxKindHintsBytes       = 16 << 10
-	MaxKindArtRoles         = 16
-	MaxSourceIndexerFilters = 256
+	MaxKindUpsertItems       = 1000
+	MaxKindVisibleIDs        = 500
+	MaxKindHintsBytes        = 16 << 10
+	MaxKindArtRoles          = 16
+	MaxSourceIndexerFilters  = 256
+	MaxKindBrowseFacetValues = 256
+	MaxKindBrowseAnyGroups   = 32
 	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
 	// frontend adapter calls so remote plugins can prove the authenticated
 	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
 	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
+	// HeaderAdapterOrigin carries the client-visible origin
+	// ("scheme://host[:port][/prefix]") derived by Ether on an authenticated
+	// frontend adapter request (#772).
+	HeaderAdapterOrigin = "X-Ether-Origin"
 )
 
 var externalIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
@@ -151,6 +196,12 @@ func ValidExternalID(id string) bool { return externalIDRe.MatchString(id) }
 // check (spec §3.3); this one is shared by the host and the kit so a
 // plugin is told the same thing everywhere. It returns a plain
 // reason, or "" when the item passes.
+// MaxKindItemMembers bounds one list item's members.
+const MaxKindItemMembers = 500
+
+// MaxKindItemRecording bounds an item's recording identity.
+const MaxKindItemRecording = 200
+
 func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	switch {
 	case !ValidExternalID(it.ID):
@@ -175,8 +226,25 @@ func CheckKindItem(decl MediaKindMeta, it core.KindItem) string {
 	if at == 0 && it.ParentID != "" {
 		return "a root-level item cannot name a parent"
 	}
-	if at > 0 && it.ParentID == "" {
+	if lv.Members && it.ParentID != "" {
+		return "a list item (" + it.Level + ") cannot name a parent"
+	}
+	if at > 0 && it.ParentID == "" && !lv.Members {
 		return "a " + it.Level + " item needs a parentId"
+	}
+	if len(it.Members) > 0 && !lv.Members {
+		return "only a list level (members: true) carries members"
+	}
+	if len(it.Members) > MaxKindItemMembers {
+		return "a list carries at most 500 members"
+	}
+	for _, m := range it.Members {
+		if !ValidExternalID(m) || m == it.ID {
+			return "members must be valid external ids of other items"
+		}
+	}
+	if len(it.Recording) > MaxKindItemRecording || strings.ContainsAny(it.Recording, "\x00\n\r") {
+		return "recording must be at most 200 characters on one line"
 	}
 	if it.Playable && !lv.Playable {
 		return "level " + it.Level + " is not declared playable"
@@ -232,24 +300,33 @@ func (h *host) kindCheck(ctx context.Context, kindKey string, caps ...Capability
 type kindInverse struct {
 	Op       string          `json:"op"`
 	Kind     string          `json:"kind"`
-	Items    []string        `json:"items,omitempty"`    // external ids touched (or created on upsert)
+	Items    []string        `json:"items,omitempty"`    // external ids created on upsert (or targeted on delete/shadow)
+	Touched  []string        `json:"touched,omitempty"`  // existing external ids modified under sync.undo: "ids"
 	Previous []core.KindItem `json:"previous,omitempty"` // previous items before upsert or delete
+}
+
+func uniqueIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	return unique
 }
 
 // snapshotKindItems looks up any existing items for kindKey whose IDs
 // are in ids so a live KindUpsert or KindDelete can record a real
 // inverse in the journal.
 func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []string) (existing []core.KindItem, missing []string) {
-	if len(ids) == 0 {
+	unique := uniqueIDs(ids)
+	if len(unique) == 0 {
 		return nil, nil
-	}
-	unique := make([]string, 0, len(ids))
-	seenID := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		if !seenID[id] {
-			seenID[id] = true
-			unique = append(unique, id)
-		}
 	}
 	readFn := h.m.kindBackends().KindItemsByID
 	if readFn == nil {
@@ -307,10 +384,40 @@ func (h *host) KindUpsertWithResult(ctx context.Context, kindKey string, items [
 		return KindUpsertResult{Accepted: len(items)}, h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
 	}
 	backends := h.m.kindBackends()
-	if backends.KindUpsert == nil && backends.KindUpsertStats == nil {
+	if backends.KindUpsert == nil && backends.KindUpsertStats == nil && backends.KindUpsertUndo == nil {
 		return KindUpsertResult{}, ErrUnavailable
 	}
-	prev, created := h.snapshotKindItems(ctx, kindKey, ids)
+	idsOnly := decl.Sync.Undo == KindSyncUndoIDs
+	if backends.KindUpsertUndo != nil {
+		u, err := backends.KindUpsertUndo(ctx, h.plugin, kindKey, items, !idsOnly)
+		if err != nil {
+			return KindUpsertResult{}, err
+		}
+		inv := kindInverse{
+			Op:    "kinds.upsert",
+			Kind:  kindKey,
+			Items: u.AddedIDs,
+		}
+		if idsOnly {
+			inv.Touched = u.UpdatedIDs
+		} else {
+			inv.Previous = u.Previous
+		}
+		if len(inv.Items) == 0 && len(inv.Touched) == 0 && len(inv.Previous) == 0 {
+			return u.Result, nil
+		}
+		if err := h.journal(ctx, r, "kinds.upsert", kindKey, inv); err != nil {
+			return KindUpsertResult{}, err
+		}
+		return u.Result, nil
+	}
+	var prev []core.KindItem
+	var created []string
+	if idsOnly {
+		created = uniqueIDs(ids)
+	} else {
+		prev, created = h.snapshotKindItems(ctx, kindKey, ids)
+	}
 	var result KindUpsertResult
 	if backends.KindUpsertStats != nil {
 		result, err = backends.KindUpsertStats(ctx, h.plugin, kindKey, items)
@@ -359,7 +466,10 @@ func (h *host) KindDelete(ctx context.Context, kindKey string, externalIDs []str
 	if backend == nil {
 		return ErrUnavailable
 	}
-	prev, _ := h.snapshotKindItems(ctx, kindKey, externalIDs)
+	var prev []core.KindItem
+	if decl.Sync.Undo != KindSyncUndoIDs {
+		prev, _ = h.snapshotKindItems(ctx, kindKey, externalIDs)
+	}
 	if err := backend(ctx, h.plugin, kindKey, externalIDs); err != nil {
 		return err
 	}
@@ -375,7 +485,8 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	if _, _, err := h.kindCheck(ctx, kindKey, CapCatalogProvider); err != nil {
 		return core.KindPage{}, err
 	}
-	backend := h.m.kindBackends().KindItems
+	backends := h.m.kindBackends()
+	backend := backends.KindItems
 	if backend == nil {
 		return core.KindPage{}, ErrUnavailable
 	}
@@ -385,7 +496,11 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	if limit > MaxKindUpsertItems {
 		limit = MaxKindUpsertItems
 	}
-	return backend(ctx, h.plugin, kindKey, cursor, limit)
+	page, err := backend(ctx, h.plugin, kindKey, cursor, limit)
+	if err == nil {
+		err = normalizeKindPageHints(ctx, &page, backends.NormalizeStoredReleaseLinks)
+	}
+	return page, err
 }
 
 // KindVisible evaluates the library's Rules and viewer access policy for a
@@ -423,13 +538,42 @@ func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([
 	return visible, nil
 }
 
+// ValidKindEmptyField reports whether field may appear as a key in
+// KindBrowseRequest.Empty for decl (#807): any declared field on decl, any
+// optional item envelope column (released, year, rating, summary, recording,
+// parentId, index, or the virtual decade alias), or a <dateField>-decade facet
+// whose base is a declared date field.
+func ValidKindEmptyField(decl MediaKindMeta, field string) bool {
+	if strings.TrimSpace(field) == "" || field != strings.TrimSpace(field) {
+		return false
+	}
+	for _, f := range decl.Fields {
+		if f.Key == field {
+			return true
+		}
+	}
+	switch field {
+	case "released", "year", "rating", "summary", "recording", "parentId", "index", "decade":
+		return true
+	}
+	if base, ok := libraryfilter.SplitDateDecadeFacet(field); ok {
+		for _, f := range decl.Fields {
+			if f.Key == base && f.Type == "date" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // KindBrowse browses or searches kindKey using the same LibraryPolicy path
 // as Ether's console and protocol projectors for the requesting
 // frontend-adapter viewer (#615). Only frontend adapter requests carrying an
 // authenticated viewer may call it; the viewer comes solely from the host
 // context, never from guest input.
 func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
-	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+	_, decl, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter)
+	if err != nil {
 		return core.KindPage{}, err
 	}
 	viewerID, ok := ViewerFromContext(ctx)
@@ -450,13 +594,69 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			Message: `total must be "cheap", "none", or "exact"`,
 		}}}
 	}
+	if len(q.AnyGroups) > MaxKindBrowseAnyGroups {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "anyGroups",
+			Message: fmt.Sprintf("anyGroups accepts at most %d groups per query", MaxKindBrowseAnyGroups),
+		}}}
+	}
+	facetValues := 0
+	for _, m := range []map[string][]string{q.Facets, q.AllFacets, q.ExcludeFacets} {
+		for _, vals := range m {
+			facetValues += len(vals)
+		}
+	}
+	anyAlts := 0
+	for _, g := range q.AnyGroups {
+		facetValues += len(g.Values)
+		anyAlts += len(g.Any)
+		for _, alt := range g.Any {
+			facetValues += len(alt.Values)
+		}
+	}
+	if anyAlts > MaxKindBrowseFacetValues {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "anyGroups",
+			Message: fmt.Sprintf("anyGroups alternatives exceed %d per query", MaxKindBrowseFacetValues),
+		}}}
+	}
+	if facetValues > MaxKindBrowseFacetValues {
+		field := "facets"
+		if len(q.AnyGroups) > 0 && len(q.Facets) == 0 && len(q.AllFacets) == 0 && len(q.ExcludeFacets) == 0 {
+			field = "anyGroups"
+		}
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   field,
+			Message: fmt.Sprintf("facet values exceed %d per query", MaxKindBrowseFacetValues),
+		}}}
+	}
+	if len(q.Empty) > 0 {
+		keys := make([]string, 0, len(q.Empty))
+		for k := range q.Empty {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !ValidKindEmptyField(decl, k) {
+				f := "empty"
+				if k != "" {
+					f = "empty." + k
+				}
+				return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+					Field:   f,
+					Message: fmt.Sprintf("unknown field %q", k),
+				}}}
+			}
+		}
+	}
 	if q.Limit <= 0 {
 		q.Limit = 200
 	}
 	if q.Limit > MaxKindUpsertItems {
 		q.Limit = MaxKindUpsertItems
 	}
-	backend := h.m.kindBackends().KindBrowse
+	backends := h.m.kindBackends()
+	backend := backends.KindBrowse
 	if backend == nil {
 		return core.KindPage{}, ErrUnavailable
 	}
@@ -467,7 +667,36 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 	if page.Items == nil {
 		page.Items = []core.KindItem{}
 	}
-	return page, nil
+	err = normalizeKindPageHints(ctx, &page, backends.NormalizeStoredReleaseLinks)
+	return page, err
+}
+
+func normalizeKindPageHints(ctx context.Context, page *core.KindPage, normalize func(context.Context, []byte) ([]byte, error)) error {
+	if normalize == nil || len(page.Items) == 0 {
+		return nil
+	}
+	hints := make([]json.RawMessage, len(page.Items))
+	for i, item := range page.Items {
+		hints[i] = item.Hints
+	}
+	raw, err := json.Marshal(hints)
+	if err != nil {
+		return err
+	}
+	normalized, err := normalize(ctx, raw)
+	if err != nil || bytes.Equal(raw, normalized) {
+		return err
+	}
+	if err := json.Unmarshal(normalized, &hints); err != nil {
+		return err
+	}
+	page.Items = slices.Clone(page.Items)
+	for i := range page.Items {
+		if len(page.Items[i].Hints) != 0 {
+			page.Items[i].Hints = hints[i]
+		}
+	}
+	return nil
 }
 
 // DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
@@ -475,6 +704,40 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 const DefaultUsenetCheckPerMin = 20
 
 type backgroundCallKey struct{}
+
+// Bounds of an indexer_search typed lookup.
+const (
+	MaxSourceLookupFields     = 8
+	MaxSourceLookupFieldBytes = 256
+)
+
+var lookupFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,31}$`)
+
+// ValidateSourceLookup checks an indexer_search lookup: it rides on a
+// category search, names a simple type, and carries a few short fields.
+func ValidateSourceLookup(q core.SourceQuery) *FieldError {
+	l := q.Lookup
+	if l == nil {
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(q.Category) == "":
+		return &FieldError{Field: "lookup", Message: "lookup needs a category: plugin sources answer typed lookups on category searches"}
+	case !keyRe.MatchString(l.Type):
+		return &FieldError{Field: "lookup.type", Message: "lookup.type must be a simple key such as album or book"}
+	case len(l.Fields) > MaxSourceLookupFields:
+		return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("at most %d lookup fields allowed", MaxSourceLookupFields)}
+	}
+	for k, v := range l.Fields {
+		if !lookupFieldRe.MatchString(k) {
+			return &FieldError{Field: "lookup.fields", Message: fmt.Sprintf("lookup field %q must be a simple camelCase name", k)}
+		}
+		if len(v) > MaxSourceLookupFieldBytes {
+			return &FieldError{Field: "lookup.fields." + k, Message: fmt.Sprintf("must be at most %d bytes", MaxSourceLookupFieldBytes)}
+		}
+	}
+	return nil
+}
 
 // SourcesPermissionAllowsSearch reports whether the declared permissions.sources
 // level permits indexer search, release inspection, debrid cache checks, and
@@ -586,6 +849,9 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				Message: fmt.Sprintf("at most %d onlyIndexers entries allowed", MaxSourceIndexerFilters),
 			}}}
 		}
+		if fe := ValidateSourceLookup(q); fe != nil {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{*fe}}
+		}
 	case "indexer_search_results":
 		if strings.TrimSpace(q.SearchID) == "" {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
@@ -616,10 +882,17 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.NZBURL == "" && q.NZBRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+				Message: "release_files needs a release reference, info hash, magnet or candidate",
+			}}}
+		}
+	case "nzb_request":
+		if strings.TrimSpace(q.NZBRef) == "" && (q.NZBIdentity == nil ||
+			strings.TrimSpace(q.NZBIdentity.IndexerID) == "" || strings.TrimSpace(q.NZBIdentity.GUID) == "") {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field: "nzbRef", Message: "nzb_request needs an nzbRef or indexer release identity",
 			}}}
 		}
 	case "usenet_check":
@@ -627,15 +900,15 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
 		}
-		if nzbURL == "" {
+		if nzbURL == "" && q.NZBRef == "" && (q.Candidate == nil || q.Candidate.NZBRef == "") {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "nzbUrl",
-				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+				Message: "usenet_check needs an nzbRef, candidate or legacy nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
@@ -653,7 +926,8 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}); err != nil {
 		return core.SourceResolveResult{}, err
 	}
-	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	nzbQuery := q.Kind == "usenet_check" || q.Kind == "nzb_request"
+	bgUsenetCheck := nzbQuery && isBackgroundCall(ctx)
 	if bgUsenetCheck {
 		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
 			return core.SourceResolveResult{}, err
@@ -666,13 +940,13 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	callCtx := ctx
 	var refundCheck func()
 	var resetAt time.Time
-	if q.Kind == "usenet_check" {
+	if nzbQuery {
 		if bgUsenetCheck {
 			// Reuse a live verdict from the shared cache before spending the
 			// plugin's daily background allowance.
-			if backends.PeekUsenetCheck != nil {
+			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
-					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{pluginSourceCandidate(cand)}}, nil
 				}
 			}
 			if backends.AdmitBackgroundUsenetCheck == nil {
@@ -687,7 +961,7 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 						resetAt,
 					)
 				}
-				return core.SourceResolveResult{}, admitErr
+				return core.SourceResolveResult{}, pluginSourceError(admitErr)
 			}
 		} else {
 			// On-demand viewer calls never count against the daily background
@@ -730,9 +1004,52 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				)
 			}
 		}
-		return core.SourceResolveResult{}, rerr
+		return core.SourceResolveResult{}, pluginSourceError(rerr)
+	}
+	res.Candidates = slices.Clone(res.Candidates)
+	for i := range res.Candidates {
+		res.Candidates[i] = pluginSourceCandidate(res.Candidates[i])
 	}
 	return res, nil
+}
+
+// Keep indexer-owned locators on the host, including inside magnet parameters.
+// The same response boundary serves hosted, HTTP, and tunnel plugins.
+func pluginSourceCandidate(c core.SourceCandidate) core.SourceCandidate {
+	if !strings.HasPrefix(c.NZBURL, core.PluginNZBRefPrefix) {
+		c.NZBURL = ""
+	}
+	if !strings.HasPrefix(c.TorrentURL, core.PluginTorrentRefPrefix) {
+		c.TorrentURL = ""
+	}
+	if c.Magnet != "" {
+		hash := newznab.InfoHashFromMagnet(c.Magnet)
+		c.Magnet = newznab.BareMagnet(hash)
+	}
+	return c
+}
+
+// Backend errors can contain an upstream response or request URL. Return
+// fixed classifications and allow structured errors produced by the host.
+func pluginSourceError(err error) error {
+	var invalid *ValidationError
+	var limit *RateLimitError
+	if errors.As(err, &invalid) {
+		return invalid
+	}
+	if errors.As(err, &limit) {
+		return limit
+	}
+	for _, public := range []error{
+		context.DeadlineExceeded, context.Canceled, ErrNotFound, ErrPermissionDenied,
+		core.ErrBudgetExhausted, core.ErrReleaseRejected, core.ErrSourceUnavailable,
+		core.ErrNotCached, core.ErrNotAvailable,
+	} {
+		if errors.Is(err, public) {
+			return public
+		}
+	}
+	return ErrUnavailable
 }
 
 func (h *host) CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (string, error) {
@@ -768,13 +1085,50 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
+type adapterOriginContextKey struct{}
+
+// WithAdapterOrigin attaches the host-derived client-visible origin
+// ("scheme://host[:port][/prefix]") for an active frontend adapter request (#772).
+func WithAdapterOrigin(ctx context.Context, origin string) context.Context {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, adapterOriginContextKey{}, origin)
+}
+
+// AdapterOriginFromContext returns the origin attached by WithAdapterOrigin, if any.
+func AdapterOriginFromContext(ctx context.Context) (string, bool) {
+	origin, ok := ctx.Value(adapterOriginContextKey{}).(string)
+	return origin, ok && origin != ""
+}
+
+// AdapterKeyFromPath extracts the adapter key from a plugin-side frontend
+// adapter route ("/ether/v1/frontend/<key>/...").
+func AdapterKeyFromPath(path string) string {
+	rest, ok := strings.CutPrefix(path, "/ether/v1/frontend/")
+	if !ok || rest == "" {
+		return ""
+	}
+	key, _, _ := strings.Cut(rest, "/")
+	return key
+}
+
+// AdapterKeyFromContext returns the adapter key of the active frontend adapter
+// call path attached to ctx, if any.
+func AdapterKeyFromContext(ctx context.Context) (string, bool) {
+	key := AdapterKeyFromPath(callPathFromContext(ctx))
+	return key, key != ""
+}
+
 // AdapterCallInfo identifies the active /ether/v1/frontend/* call that minted
-// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer and
-// route policies as hosted plugins.
+// an X-Ether-Viewer-Token so remote host callbacks enforce the same viewer,
+// origin, and route policies as hosted plugins.
 type AdapterCallInfo struct {
 	ViewerID    int64
 	Path        string
 	SearchQuery string
+	Origin      string
 }
 
 type adapterViewerGrant struct {
@@ -782,11 +1136,24 @@ type adapterViewerGrant struct {
 	viewerID    int64
 	path        string
 	searchQuery string
+	origin      string
 	expires     time.Time
 }
 
 func isFrontendAdapterPath(path string) bool {
+	return isFrontendAdapterRoute(path) || isViewerScreenPath(path)
+}
+
+// isFrontendAdapterRoute is strictly a frontend adapter's own traffic.
+func isFrontendAdapterRoute(path string) bool {
 	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+
+// isViewerScreenPath is a screen's viewer-scoped source or action call: like
+// an adapter call, it carries the authenticated viewer so the plugin can use
+// the viewer-bound host services (kinds.visible, kinds.state, its KV).
+func isViewerScreenPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/screens/") && len(path) > len("/ether/v1/screens/")
 }
 
 // bindAdapterViewer attaches the authenticated viewer from X-Ether-Viewer to
@@ -814,6 +1181,10 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		return ctx, func() {}
 	}
 	ctx = WithViewer(ctx, id)
+	origin := strings.TrimRight(strings.TrimSpace(req.Headers[HeaderAdapterOrigin]), "/")
+	if origin != "" {
+		ctx = WithAdapterOrigin(ctx, origin)
+	}
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return ctx, func() {}
@@ -841,6 +1212,7 @@ func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *R
 		viewerID:    id,
 		path:        req.Path,
 		searchQuery: extractCallSearchQuery(*req),
+		origin:      origin,
 		expires:     now.Add(ttl),
 	}
 	m.adapterViewerMu.Unlock()
@@ -886,6 +1258,7 @@ func (m *Manager) ResolveAdapterCallToken(pluginID, token string) (AdapterCallIn
 		ViewerID:    grant.viewerID,
 		Path:        grant.path,
 		SearchQuery: grant.searchQuery,
+		Origin:      grant.origin,
 	}, true
 }
 
@@ -960,7 +1333,7 @@ func (h *host) StreamURLWithOptions(ctx context.Context, itemRef string, opts St
 	if backends.StreamURLOptions != nil {
 		return backends.StreamURLOptions(ctx, h.plugin, viewerID, itemRef, opts)
 	}
-	if opts.Source != "" {
+	if opts.Source != "" || opts.Absolute {
 		return "", ErrUnavailable
 	}
 	if backends.StreamPartURL != nil {

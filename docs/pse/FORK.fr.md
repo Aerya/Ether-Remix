@@ -228,3 +228,10 @@ La sélection explicite d’un créneau de version peut retenter une autre relea
 ## Connecteurs aMule / slskd
 
 `internal/pse/peerclient` porte les API et transferts persistants ; `internal/app/pse_peer.go` les raccorde aux indexeurs, à la préparation de lecture et à la console. `internal/pse/music/peer.go` fournit le repli musical. Les points de raccordement suivent les sources XDCC / FTP ; guide : [PEER.fr.md](PEER.fr.md).
+
+### Synchronisation du 26 novembre 2026
+
+- Cible Ether : `7555b4bf5faf81ad8bd30c17ce38f5582b8558d0`.
+- Conserver les migrations Remix déjà publiées : `plugins/11` est la cadence des plugins ; le compteur KV amont utilise `plugins/12`. `collections/10` normalise les types ; les références explicites amont utilisent `collections/13` et `collections/14`.
+- Les audiences historiques des collections sont conservées dans `users`, indépendamment du placement des rangées. Les modèles de disposition utilisent `personalize_pages` et convertissent les anciens documents.
+- `pse_rows.go` raccorde les imports Xperience/Jukebox aux pages de recommandations sans rétablir les rangées retirées par le propriétaire.

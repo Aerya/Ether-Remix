@@ -58,7 +58,6 @@ type Options struct {
 	AlertHub            *AlertHub
 	WatchEnricher       WatchEnricher
 	DetailWatchEnricher DetailWatchEnricher
-	ScreenFeedResolver  ScreenFeedResolver
 }
 
 // DetailWatchEnricher attaches viewer-scoped watch targets (including plugin
@@ -264,7 +263,6 @@ type Hub struct {
 	pollHooks           map[int64]FeedPollHandler
 	watchEnricher       WatchEnricher
 	detailWatchEnricher DetailWatchEnricher
-	screenResolver      ScreenFeedResolver
 }
 
 // NewHub builds a live events hub. In standalone mode (opts.Cluster == nil),
@@ -341,7 +339,6 @@ func NewHub(opts Options) *Hub {
 		pollHooks:           make(map[int64]FeedPollHandler),
 		watchEnricher:       opts.WatchEnricher,
 		detailWatchEnricher: opts.DetailWatchEnricher,
-		screenResolver:      opts.ScreenFeedResolver,
 	}
 	h.spoilers = NewSpoilerStore(opts.DB, clk, func(viewerID int64) {
 		h.publishClusterSpoiler(viewerID)
@@ -473,17 +470,6 @@ func (d hubAlertDeliverer) PublishAlert(viewerID int64, alert core.LiveEventAler
 		return 0
 	}
 	return d.hub.publishAlert(d.hub.runCtx, viewerID, alert)
-}
-
-// SetScreenFeedResolver installs or replaces the optional screen-to-feed
-// resolver used by SubscribeRequest.Screens (A3/W256).
-func (h *Hub) SetScreenFeedResolver(fn ScreenFeedResolver) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.screenResolver = fn
-	h.mu.Unlock()
 }
 
 // OnEventChange registers a callback invoked with raw (unmasked) event
@@ -1088,33 +1074,6 @@ func (h *Hub) Subscribe(ctx context.Context, req SubscribeRequest) (*Subscriptio
 
 	for _, ref := range h.resolveFeedSpecs(ctx, req.Feeds) {
 		feeds[ref.String()] = struct{}{}
-	}
-	if len(req.Screens) > 0 {
-		h.mu.Lock()
-		resolver := h.screenResolver
-		h.mu.Unlock()
-		if resolver != nil {
-			for _, screenID := range req.Screens {
-				screenID = strings.TrimSpace(screenID)
-				if screenID == "" {
-					continue
-				}
-				refs, err := resolver(ctx, req.Viewer, screenID)
-				if err != nil {
-					continue
-				}
-				for _, ref := range refs {
-					if key := ref.String(); key != "" {
-						feeds[key] = struct{}{}
-					}
-				}
-			}
-		} else {
-			// Graceful fallback before screens are wired: match active feeds by ID.
-			for _, ref := range h.resolveFeedSpecs(ctx, req.Screens) {
-				feeds[ref.String()] = struct{}{}
-			}
-		}
 	}
 	for _, rawID := range req.EventIDs {
 		id := strings.TrimSpace(rawID)

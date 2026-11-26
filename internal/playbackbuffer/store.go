@@ -123,6 +123,16 @@ func fits(a, b, cap Budget) bool {
 	return b.Bytes <= cap.Bytes-a.Bytes && b.Segments <= cap.Segments-a.Segments && b.Inits <= cap.Inits-a.Inits
 }
 
+// ErrCapacity reports a Retain that the session or global budget cannot fit.
+var ErrCapacity = errors.New("playback buffer capacity exceeded")
+
+// reservation is what Retain charges while staging n bytes for k.
+func reservation(k Key, n int64) Budget {
+	d := delta(k, n)
+	d.Bytes = 5 * n
+	return d
+}
+
 // Retain reserves five times the declared size (bytes plus bounded parsing
 // workspace) before reading, reduced to exact retained bytes on success. It and requires EOF immediately
 // after it. Reader must honor ctx itself if its Read can block; no hidden reader
@@ -134,16 +144,19 @@ func (s *Store) Retain(ctx context.Context, k Key, f Format, n int64, r io.Reade
 	}
 	s.mu.Lock()
 	ss := s.sessions[k.Session]
-	d := delta(k, n)
 	// Charge a conservative parser/read workspace allowance while staging.
 	if n > (int64(^uint64(0)>>1))/5 {
 		s.mu.Unlock()
 		return errors.New("size overflow")
 	}
-	d.Bytes = 5 * n
-	if ss == nil || !ss.accepts(k) || ss.entries[k] != nil || ss.pending[k] || !fits(s.used, d, s.limits.Global) || !fits(ss.used, d, s.limits.PerSession) {
+	d := reservation(k, n)
+	if ss == nil || !ss.accepts(k) || ss.entries[k] != nil || ss.pending[k] {
 		s.mu.Unlock()
-		return errors.New("stale, duplicate, or capacity exceeded")
+		return errors.New("stale or duplicate retain")
+	}
+	if !fits(s.used, d, s.limits.Global) || !fits(ss.used, d, s.limits.PerSession) {
+		s.mu.Unlock()
+		return ErrCapacity
 	}
 	s.used = add(s.used, d)
 	ss.used = add(ss.used, d)
@@ -403,8 +416,68 @@ func (l *Lease) Close() error {
 	return nil
 }
 
+// MakeRoom releases the session's oldest published segments that lie below
+// its published floor and have no reader, until a Retain of n bytes for k fits
+// both budgets. Those segments are behind the restart watermark: recovery
+// resumes at floor+1 and never needs them, and the floor segment itself stays
+// as the transition boundary. It releases nothing and reports false when even
+// releasing every such segment would not make the reservation fit.
+func (s *Store) MakeRoom(k Key, n int64) bool {
+	if n <= 0 || n > (int64(^uint64(0)>>1))/5 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss := s.sessions[k.Session]
+	if ss == nil {
+		return false
+	}
+	d := reservation(k, n)
+	var old []*entry
+	for _, e := range ss.entries {
+		if e.meta.Published && e.meta.Key.Kind == Segment && e.meta.Key.Sequence < ss.state.PublishedFloor && e.readers == 0 {
+			old = append(old, e)
+		}
+	}
+	sort.Slice(old, func(i, j int) bool { return old[i].meta.Key.Sequence < old[j].meta.Key.Sequence })
+	global, local, release := s.used, ss.used, 0
+	for release < len(old) && (!fits(global, d, s.limits.Global) || !fits(local, d, s.limits.PerSession)) {
+		freed := delta(old[release].meta.Key, old[release].meta.Size)
+		global, local = sub(global, freed), sub(local, freed)
+		release++
+	}
+	if !fits(global, d, s.limits.Global) || !fits(local, d, s.limits.PerSession) {
+		return false
+	}
+	for _, e := range old[:release] {
+		delete(ss.entries, e.meta.Key)
+	}
+	s.used, ss.used = global, local
+	return true
+}
+
+// Has reports whether k still holds staged or published bytes.
+func (s *Store) Has(k Key) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss := s.sessions[k.Session]
+	return ss != nil && ss.entries[k] != nil
+}
+
+// Floor returns the session's published floor (-1 before any publication).
+func (s *Store) Floor(id string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss := s.sessions[id]
+	if ss == nil {
+		return 0, errors.New("unknown session")
+	}
+	return ss.state.PublishedFloor, nil
+}
+
 // Delete only releases staged bytes. Published output is promised until the
-// controller explicitly closes the session; there is no automatic eviction.
+// controller explicitly closes the session; only MakeRoom releases published
+// segments, and only those behind the restart watermark.
 func (s *Store) Delete(k Key) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -30,13 +30,13 @@ import { FavoriteEpisodeAlerts } from "../me/FavoriteEpisodeAlerts";
 import { NotInterested, type NotInterestedEntry } from "../me/NotInterested";
 import { getToken } from "../../lib/api";
 import { api, apiFetch, errorMessage } from "../../lib/api";
-import type { Viewer, ViewerDetail } from "../../lib/contract";
+import type { Device, Viewer, ViewerDetail } from "../../lib/contract";
+import { Segmented } from "../../components/fields";
 import { formatDateTime, formatPercent, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { titlePosterURL } from "../../lib/titles";
-import { EMPTY_LAYOUT } from "../../lib/layout";
-import { ContextBar, type ViewContext } from "../designer/ContextBar";
-import { HomeCanvas } from "../designer/HomeCanvas";
+import { PAGE_HOME, deviceLabel } from "../../lib/pages";
+import { RowBody } from "../recommendations/RowVisuals";
 import { ViewerWatchlist } from "./sections/ViewerWatchlist";
 import { TasteView } from "./TasteView";
 import { ViewerDashboard } from "./ViewerDashboard";
@@ -153,6 +153,8 @@ export default function ViewerProfile() {
           : null;
   usePageTitle(activeViewer ? [t("Viewers"), viewerName(activeViewer), tabTitle, subTitle] : null);
   const setTab = (next: string) => navigate(`/viewers/${id}/${next}`);
+  // Hooks run before the loading and error returns below.
+  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
 
   const refresh = async () => {
     setRefreshing(true);
@@ -181,7 +183,6 @@ export default function ViewerProfile() {
     );
   const name = viewerName(v);
   const life = viewerLifecycle(v);
-  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
   // Watchlist, alerts and connected apps need server access; a viewer kept
   // for imported history (or paused / unshared) has none of them.
   const serverAccess =
@@ -465,39 +466,52 @@ function Activity({ viewer }: { viewer: ViewerDetail }) {
 }
 
 function TheirHome({ viewer }: { viewer: Viewer }) {
-  const now = new Date();
-  const [ctx, setCtx] = useState<ViewContext>({
-    device: "tv",
-    day: now.getDay(),
-    hour: now.getHours(),
-  });
+  const [device, setDevice] = useState<Device>("tv");
+  const home = useAsync(
+    (signal) =>
+      api.previewPage(
+        PAGE_HOME,
+        { viewer: viewer.id, device, at: new Date().toISOString() },
+        signal,
+      ),
+    [viewer.id, device],
+  );
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="w-full max-w-md">
-          <ContextBar ctx={ctx} onChange={setCtx} />
-        </div>
-        <Link to="/home" className="text-sm font-medium text-primary hover:underline">
-          {t("Shape it in Home →")}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Segmented
+          ariaLabel={t("Device")}
+          size="sm"
+          value={device}
+          onChange={setDevice}
+          options={(["tv", "mobile", "desktop", "web"] as const).map((d) => ({
+            value: d,
+            label: deviceLabel(d),
+          }))}
+        />
+        <Link
+          to={`/recommendations?page=home&as=${viewer.id}`}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {t("Shape it in Recommendations →")}
         </Link>
       </div>
-      <div>
-        <HomeCanvas
-          readOnly
-          draft={EMPTY_LAYOUT}
-          saved={EMPTY_LAYOUT}
-          dirty={false}
-          layer={viewer.id}
-          layerName={viewerName(viewer)}
-          ctx={ctx}
-          viewers={[viewer]}
-          viewerId={viewer.id}
-          onSpotCheck={() => undefined}
-          refreshNonce={0}
-          onChange={() => undefined}
-          onEditRow={() => undefined}
-        />
-      </div>
+      {home.error ? (
+        <ErrorPanel error={home.error} onRetry={() => void home.reload()} />
+      ) : !home.data ? (
+        <Spinner size={20} label={t("Building their Home")} />
+      ) : (
+        <div className="space-y-5">
+          {(home.data.rows ?? [])
+            .filter((r) => !r.ghost)
+            .map((r) => (
+              <section key={r.hubId} aria-label={r.title} className="space-y-2">
+                <h3 className="text-sm font-semibold text-fg">{r.title}</h3>
+                <RowBody row={r} showRating={Boolean(home.data?.access)} />
+              </section>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

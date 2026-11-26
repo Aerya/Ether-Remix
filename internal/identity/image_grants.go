@@ -44,6 +44,8 @@ type ImageGrantOptions struct {
 	Token             func(*http.Request) string
 	PublicContentTags bool
 	LibraryLiveThumbs frontend.LibraryLiveThumbAuthorizer
+	// PluginImages authorizes plugin-named image URLs (frontend.PluginImagePrefix).
+	PluginImages frontend.PluginImageAuthorizer
 }
 
 type ImageGrantService struct {
@@ -131,6 +133,15 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		}
 		return nil
 	}
+	if strings.HasPrefix(image.Path, frontend.PluginImagePrefix) {
+		if item != 0 || channel != "" || s.requestOptions.PluginImages == nil {
+			return core.ErrNotAvailable
+		}
+		if _, err := s.requestOptions.PluginImages.AuthorizePluginImage(core.WithLiveApp(ctx, string(s.surface)), viewer, image.Subject, image.Path); err != nil {
+			return err
+		}
+		return nil
+	}
 	if strings.HasPrefix(image.Path, frontend.LibraryCollagePrefix) {
 		experience := s.experience()
 		if experience == nil {
@@ -153,7 +164,7 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		if s.artwork == nil {
 			return core.ErrNotAvailable
 		}
-		images, complete, err := s.artwork.List(core.WithLiveApp(ctx, string(s.surface)), channelImageRequest(viewer, device, channel, image))
+		images, complete, err := s.artwork.List(frontend.WithoutArtworkMetadata(core.WithLiveApp(ctx, string(s.surface))), channelImageRequest(viewer, device, channel, image))
 		if err != nil {
 			return err
 		}
@@ -179,14 +190,21 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		return people.AuthorizePersonImage(ctx, viewer, device, item, image, nil)
 	}
 
+	authCtx := frontend.WithoutArtworkMetadata(ctx)
+	if image.Subject == frontend.CollectionCardArtworkSubject {
+		authCtx = frontend.WithCollectionCardArtwork(authCtx)
+	}
+	if image.Kind != "" {
+		authCtx = frontend.WithArtworkKinds(authCtx, map[string]bool{image.Kind: true})
+	}
 	var images []frontend.Image
 	var complete bool
 	var err error
 	if scoped, ok := experience.(frontend.ItemArtwork); ok {
-		images, complete, err = scoped.ItemArtwork(ctx, viewer, device, item)
+		images, complete, err = scoped.ItemArtwork(authCtx, viewer, device, item)
 	} else {
 		var detail frontend.ItemDetail
-		detail, err = experience.Item(ctx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: item})
+		detail, err = experience.Item(authCtx, frontend.ItemRequest{Viewer: viewer, Device: device, Key: item})
 		images, complete = detail.Images, detail.ImagesAuthoritative
 	}
 	if err != nil {
@@ -210,7 +228,8 @@ func (s *ImageGrantService) resolveCredential(ctx context.Context, credential st
 	}
 	memoKey := "image-grant:" + string(s.surface) + ":" + source + ":" + strconv.FormatUint(s.grants.Generation(), 10)
 	viewer, err := reqmemo.Do(ctx, memoKey, func() (*core.Viewer, error) {
-		return s.grants.Resolve(ctx, string(s.surface), credential)
+		// Artwork is on read paths, including portrait signing on people detail.
+		return s.grants.resolve(ctx, string(s.surface), credential, true)
 	})
 	if err != nil || viewer == nil {
 		if err == nil {
@@ -257,6 +276,38 @@ func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRe
 	return s.sealClaims(claims)
 }
 
+// IssueChannelLogo seals the channel's own artwork descriptor for the
+// credential's viewer. The descriptor comes from the current, policy-filtered
+// channel listing, so a channel the viewer may not see yields no grant.
+func (s *ImageGrantService) IssueChannelLogo(ctx context.Context, credential string, device core.Device, channelID string) (string, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" || s.artwork == nil {
+		return "", core.ErrNotAvailable
+	}
+	viewer, _, err := s.resolveCredential(ctx, credential)
+	if err != nil {
+		return "", err
+	}
+	images, complete, err := s.artwork.List(frontend.WithoutArtworkMetadata(core.WithLiveApp(ctx, string(s.surface))), frontend.ArtworkRequest{Viewer: viewer, Device: device, Channel: channelID})
+	if err != nil {
+		return "", err
+	}
+	if !complete {
+		return "", core.ErrNotAvailable
+	}
+	for _, img := range images {
+		if img.Kind != frontend.ImageChannel {
+			continue
+		}
+		claims := imageClaims{Viewer: viewer.ID, Channel: channelID, Kind: img.Kind, Path: img.Path, Tag: img.Tag, Subject: img.Subject, Language: device.Language}
+		if !validateImageClaims(claims) {
+			return "", core.ErrUnauthorized
+		}
+		return s.sealClaims(claims)
+	}
+	return "", core.ErrNotFound
+}
+
 // Revoke is a documented no-op: stateless image grants store no per-grant
 // rows and re-authorize active viewer membership and current item or channel
 // visibility on every Serve.
@@ -288,14 +339,18 @@ func (s *ImageGrantService) ServePublic(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	r = artworkRowsRequest(r, img)
-	images, reader, visible, err := public.PublicArtwork(r.Context(), device, item)
-	if err != nil || !visible || reader == nil {
+	base, _, _, rankErr := frontend.UnrankArtwork(img)
+	if rankErr != nil {
 		http.NotFound(w, r)
 		return
 	}
-	base, _, _, rankErr := frontend.UnrankArtwork(img)
-	if rankErr != nil {
+	r = artworkRowsRequest(r, img)
+	pubCtx := frontend.WithoutArtworkMetadata(r.Context())
+	if base.Kind != "" {
+		pubCtx = frontend.WithArtworkKinds(pubCtx, map[string]bool{base.Kind: true})
+	}
+	images, reader, visible, err := public.PublicArtwork(pubCtx, device, item)
+	if err != nil || !visible || reader == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -460,6 +515,9 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 		w.Header().Set("ETag", etag)
 		if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
 			w.Header().Set("Cache-Control", "private, max-age=60")
+		} else if strings.HasPrefix(img.Path, frontend.PluginImagePrefix) {
+			// The plugin may replace the image behind the same URL.
+			w.Header().Set("Cache-Control", "private, max-age=86400")
 		} else {
 			w.Header().Set("Cache-Control", immutableImageCacheControl)
 		}
@@ -531,6 +589,7 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 
 var _ frontend.ImageGrants = (*ImageGrantService)(nil)
 var _ frontend.PublicImageServer = (*ImageGrantService)(nil)
+var _ frontend.ChannelLogoIssuer = (*ImageGrantService)(nil)
 
 func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	width, _ := strconv.Atoi(r.URL.Query().Get("w"))

@@ -16,6 +16,9 @@ import (
 
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
+	ArchiveInput   bool
+	ArchiveTrim    time.Duration
+	ArchiveRetuned bool
 	waitDecode     bool // only argv construction may spend the bounded admission budget
 	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
@@ -28,13 +31,16 @@ type runSpec struct {
 	SilenceAudio     bool
 	// Only a retry of an initial run whose muxer wrote a wrapped tfdt.
 	NormalizeNegativeDTS bool
-	TextSubtitlePaths    map[int]string
-	SoftSubtitlePath     string
-	SoftSubtitleIndex    int
-	LoopInput            bool
-	LiveInput            bool
-	LiveFromBacklog      bool // live HLS input: start at its first listed segment
-	CopyTimestamps       bool
+	// KeepSourceRecord drops the in-band parameter set rebuild after the
+	// filter failed to start on this session's source record.
+	KeepSourceRecord  bool
+	TextSubtitlePaths map[int]string
+	SoftSubtitlePath  string
+	SoftSubtitleIndex int
+	LoopInput         bool
+	LiveInput         bool
+	LiveFromBacklog   bool // live HLS input: start at its first listed segment
+	CopyTimestamps    bool
 	// RTXTimeline preserves the native session's clock and rendition-local
 	// initialization paths when ordinary FFmpeg takes over.
 	RTXTimeline       bool
@@ -92,6 +98,9 @@ type runSpec struct {
 	Target      *videoContract
 	PictureCrop *pictureCrop
 	AudioGainDB float64
+	// AudioConfigName is the side file, in Dir, an fMP4 run copying ADTS
+	// AAC writes its first audio frame to (adtsConfigOutput).
+	AudioConfigName string
 }
 
 // segmentExt is the segment file extension for a decision's container.
@@ -266,7 +275,55 @@ func buildArgs(s runSpec) []string {
 			}
 		}
 	}
-	return appendSoftSubtitleOutput(append(args, hlsMuxArgs(s)...), s)
+	args = append(args, hlsMuxArgs(s)...)
+	if path, ok := s.adtsConfigOutput(); ok {
+		// The first copied ADTS frame, flushed as soon as it is muxed: the
+		// session builds the init's AudioSpecificConfig from it when the
+		// HLS muxer wrote the init before any audio arrived
+		// (fmp4_codec_config.go).
+		a := findStream(s.Info, s.Decision.AudioStream, "audio")
+		args = append(args, "-map", inputStream(s, a), "-c:a", "copy", "-frames:a", "1", "-flush_packets", "1", "-f", "adts", path)
+	}
+	return appendSoftSubtitleOutput(args, s)
+}
+
+// inputStream is the stream specifier mapping st from input 0. A live HLS
+// input is numbered by what FFmpeg's demuxer meets: subtitle renditions,
+// PIDs a provider's encoder declares but never fills, programs that change
+// at an ad break or encoder switch. The probe's absolute index can then name
+// a different stream, or none, in the next run ("[0:3] matches no streams"
+// looped a relay's re-encode for minutes), so such an input is mapped by
+// its position among the streams of its type.
+func inputStream(s runSpec, st *core.StreamInfo) string {
+	if !s.LiveInput || s.Info.Container != "hls" || (st.Type != "video" && st.Type != "audio") {
+		return fmt.Sprintf("0:%d", st.Index)
+	}
+	n := 0
+	for _, o := range s.Info.Streams {
+		if o.Type == st.Type && o.Index < st.Index {
+			n++
+		}
+	}
+	return fmt.Sprintf("0:%s:%d", st.Type[:1], n)
+}
+
+// adtsAAC reports AAC whose packets carry ADTS headers and no out-of-band
+// AudioSpecificConfig (MPEG-TS, HLS, raw AAC).
+func adtsAAC(info core.MediaInfo, a *core.StreamInfo) bool {
+	return a != nil && a.Codec == "aac" && (info.Container == "mpegts" || info.Container == "aac" || info.Container == "hls")
+}
+
+// adtsConfigOutput is the side file a plain HLS fMP4 run copying ADTS AAC
+// writes its first audio frame to (see fmp4_codec_config.go).
+func (s runSpec) adtsConfigOutput() (string, bool) {
+	if s.AudioConfigName == "" || s.Protocol != core.ProtocolHLS || s.Decision.Container != ContainerFMP4 || !s.Decision.AudioCopy || s.ChunkDir != "" {
+		return "", false
+	}
+	a := findStream(s.Info, s.Decision.AudioStream, "audio")
+	if s.SilenceAudio || !adtsAAC(s.Info, a) {
+		return "", false
+	}
+	return filepath.Join(s.Dir, s.AudioConfigName), true
 }
 
 func appendSoftSubtitleOutput(args []string, s runSpec) []string {
@@ -303,6 +360,35 @@ func matroskaCopyParameterSets(d core.Decision, v *core.StreamInfo) string {
 		return "h264_mp4toannexb"
 	}
 	return ""
+}
+
+// mp4CopyParameterSets returns the bitstream filter that rebuilds the
+// decoder configuration record of a copied stream whose source record lacks
+// its parameter sets (they travel only in-band). The MP4 muxers write the
+// avc1/hvc1 sample entry, which promises a complete record; with an empty one
+// AVPlayer fetches the init and first segment, cannot configure its decoder,
+// and stops. The *_metadata filters parse the stream and publish the in-band
+// parameter sets as new extradata before the muxer writes its header.
+func mp4CopyParameterSets(v *core.StreamInfo) string {
+	if v == nil || !v.InBandParameterSets {
+		return ""
+	}
+	switch v.Codec {
+	case "h264":
+		return "h264_metadata"
+	case "hevc":
+		return "hevc_metadata"
+	}
+	return ""
+}
+
+// rebuildParameterSets is the filter an fMP4 video-copy run uses to rebuild
+// its source's in-band-only decoder configuration record, or "".
+func (s runSpec) rebuildParameterSets() string {
+	if s.Decision.Container != ContainerFMP4 || s.KeepSourceRecord || !s.Decision.VideoCopy {
+		return ""
+	}
+	return mp4CopyParameterSets(s.Info.Video())
 }
 
 // buildCodecArgs is the input, stream mapping and codec part of a run's
@@ -369,7 +455,7 @@ func buildCodecArgs(s runSpec) []string {
 		}
 		args = append(args, "-format_whitelist", "concat,mpegts", "-protocol_whitelist", protocols)
 	} else {
-		args = append(args, inputSafetyArgs(s.Input, s.LiveInput)...)
+		args = append(args, inputSafetyArgs(s.Input, s.LiveInput || s.ArchiveInput)...)
 	}
 	var httpArgs []string
 	if !pceBounded {
@@ -401,6 +487,15 @@ func buildCodecArgs(s runSpec) []string {
 	}
 	if s.BigProbe || (bitmap && (sub.Width <= 0 || sub.Height <= 0)) {
 		args = append(args, "-probesize", "50000000", "-analyzeduration", "10000000")
+	} else if s.LiveInput && s.Info.Container == "hls" {
+		// FFmpeg's HLS demuxer reads a separate audio rendition a whole
+		// segment at a time, so 2 s of analysis can end inside the first
+		// audio segment before any video packet: "Could not find codec
+		// parameters ... unspecified size", the muxer refuses its header and
+		// every restart fails alike (Pluto's demuxed 5 s renditions, 3 of 3).
+		// The bounds only cap the analysis; it stops once every stream is
+		// known.
+		args = append(args, "-probesize", "20000000", "-analyzeduration", "12000000")
 	} else {
 		// Persisted probe metadata is not passed to the demuxer. Even a known
 		// video size/format does not prove ffmpeg can recover every mapped
@@ -420,7 +515,7 @@ func buildCodecArgs(s runSpec) []string {
 	if s.LoopInput {
 		args = append(args, "-stream_loop", "-1")
 	}
-	if s.Start > 0 && !pceOutputSeek {
+	if s.Start > 0 && !pceOutputSeek && !s.ArchiveInput {
 		seek := secs(s.Start)
 		noAccurateSeek := false
 		if s.CopyOrigin && d.VideoCopy {
@@ -524,19 +619,32 @@ func buildCodecArgs(s runSpec) []string {
 		args = append(args, "-ss", secs(seek), "-output_ts_offset", secs(s.Start))
 	}
 
+	if s.ArchiveInput {
+		trim := s.ArchiveTrim
+		if !s.ArchiveRetuned {
+			trim += s.Start
+		}
+		if trim > 0 {
+			args = append(args, "-ss", secs(trim))
+		}
+		if remain := s.Info.Duration - s.Start; remain > 0 {
+			args = append(args, "-t", secs(remain))
+		}
+	}
+
 	// ---- mapping
 	if v != nil {
 		if transcodeVideo && vp.graph != "" {
 			args = append(args, "-filter_complex", vp.graph, "-map", "[vout]")
 		} else {
-			args = append(args, "-map", fmt.Sprintf("0:%d", v.Index))
+			args = append(args, "-map", inputStream(s, v))
 		}
 	}
 	if a != nil {
 		if s.SilenceAudio {
 			args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
 		} else {
-			args = append(args, "-map", fmt.Sprintf("0:%d", a.Index))
+			args = append(args, "-map", inputStream(s, a))
 		}
 	} else if androidGap {
 		args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
@@ -583,8 +691,13 @@ func buildCodecArgs(s runSpec) []string {
 				if ps := matroskaCopyParameterSets(d, v); ps != "" {
 					filter += "," + ps
 				}
+				if ps := s.rebuildParameterSets(); ps != "" {
+					filter += "," + ps
+				}
 				args = append(args, "-bsf:v", filter)
 			} else if ps := matroskaCopyParameterSets(d, v); ps != "" {
+				args = append(args, "-bsf:v", ps)
+			} else if ps := s.rebuildParameterSets(); ps != "" {
 				args = append(args, "-bsf:v", ps)
 			}
 			if container == ContainerFMP4 && v.Codec != "hevc" {
@@ -652,8 +765,11 @@ func buildCodecArgs(s runSpec) []string {
 			}
 			// The HLS muxer's nested MP4 writer does not auto-insert the
 			// ADTS-to-ASC filter. Preserve compressed audio while moving its
-			// configuration into the initialization segment.
-			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && a.Codec == "aac" && (s.Info.Container == "mpegts" || s.Info.Container == "aac") {
+			// configuration into the initialization segment. A live HLS input
+			// is usually MPEG-TS (ADTS) underneath; without the filter its
+			// init carries no AudioSpecificConfig and MSE players refuse it.
+			// The filter passes audio that already has a config through.
+			if (s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) && container == ContainerFMP4 && adtsAAC(s.Info, a) {
 				audioFilters = append(audioFilters, "aac_adtstoasc")
 			}
 			if len(audioFilters) > 0 {
@@ -747,6 +863,11 @@ func buildCodecArgs(s runSpec) []string {
 		args = appendVideoClockBSF(args, "setts=pts=PTS:dts=DTS-"+strconv.FormatFloat(fastLead.Seconds(), 'f', 9, 64)+"/TB")
 	}
 	lead = max(lead, hlsEncodedClockLead(s))
+	if s.ArchiveRetuned {
+		// Each fetched range starts a fresh input clock. Publish it at the
+		// original segment position on the VOD timeline.
+		lead += s.Start
+	}
 	if lead > 0 {
 		args = append(args, "-output_ts_offset", strconv.FormatFloat(lead.Seconds(), 'f', 9, 64))
 	}
@@ -1855,7 +1976,7 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	}
 	finish := func(c []string) []string { return format(size(c)) }
 
-	in := fmt.Sprintf("[0:%d]", v.Index)
+	in := "[" + inputStream(s, v) + "]"
 	chainInput, chain, hwFrames := planFilterChain(s, v, pic, accel, burn, size, format)
 	p.hwFrames = hwFrames
 	bitmapHW := false

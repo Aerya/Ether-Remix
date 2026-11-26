@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,7 +18,8 @@ func TestOpenDoesNotLeakDefaultSliceElements(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.Update(func(c *Config) error {
-		c.Quality.Rules = []QualityRule{{Platform: "iOS", Profile: "720p"}}
+		c.Quality.MigratedRules = 1
+		c.Quality.Rules = []QualityRule{{ID: "r_ios12345", Devices: []DeviceMatch{{Contains: "iOS"}}, Profile: "720p"}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -27,7 +29,8 @@ func TestOpenDoesNotLeakDefaultSliceElements(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := s2.Get().Quality.Rules
-	if len(rules) != 1 || rules[0] != (QualityRule{Platform: "iOS", Profile: "720p"}) {
+	want := QualityRule{ID: "r_ios12345", Devices: []DeviceMatch{{Contains: "iOS"}}, Profile: "720p"}
+	if len(rules) != 1 || !reflect.DeepEqual(rules[0], want) {
 		t.Fatalf("reloaded rules = %+v, want only the iOS rule", rules)
 	}
 }

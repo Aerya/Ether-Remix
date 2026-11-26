@@ -20,6 +20,7 @@ import {
   Puzzle,
   Save,
   Search,
+  Settings,
   Sparkles,
   Tv,
   Undo2,
@@ -49,6 +50,7 @@ import { ChannelsWorkspace, type ChannelFilter, type ChannelSort } from "./Chann
 import type { ReorderPlan } from "./reorder";
 import { GuidePage } from "./GuidePage";
 import { LivePreview } from "./LivePreview";
+import { LiveTVSettings } from "./LiveTVSettings";
 import { ProgrammeInspector, type InspectedProgramme } from "./ProgrammeInspector";
 import type { Selection } from "./Lineup";
 import { SourceDrawer, type SourceKind } from "./SourceEditor";
@@ -162,6 +164,7 @@ export default function LiveTV() {
   const [baseline, setBaseline] = useState("");
   const [saving, setSaving] = useState(false);
   const [guideFooter, setGuideFooter] = useState<React.ReactNode>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useInterval(() => setNow(Date.now()), 30_000);
   const search = useDebouncedValue(q, 200);
@@ -738,6 +741,11 @@ export default function LiveTV() {
   });
 
   const libraryQuery = params.get("q");
+  const settingsButton = (
+    <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+      <Settings size={14} aria-hidden /> {t("Settings")}
+    </Button>
+  );
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
@@ -805,6 +813,7 @@ export default function LiveTV() {
         onSource={(k) => openNewSource(k)}
         onAddon={() => openNewSource("addon")}
       />
+      {settingsButton}
     </div>
   );
 
@@ -906,9 +915,12 @@ export default function LiveTV() {
           {t("Add IPTV")}
         </Button>
       </div>
-      <Button className="mt-5" variant="ghost" onClick={() => void go({ kind: "new" })}>
-        {t("New virtual channel")}
-      </Button>
+      <div className="mt-5 flex flex-wrap justify-center gap-2">
+        <Button variant="ghost" onClick={() => void go({ kind: "new" })}>
+          {t("New virtual channel")}
+        </Button>
+        {settingsButton}
+      </div>
       <p className="mt-8 text-sm text-fg-muted">
         {t("A familiar channel guide for your library and IPTV, ready to watch in your apps.")}
       </p>
@@ -1014,6 +1026,7 @@ export default function LiveTV() {
             ) : undefined)}
         </Workspace>
       )}
+      {settingsOpen ? <LiveTVSettings onClose={() => setSettingsOpen(false)} /> : null}
       <Drawer
         open={guideOpen}
         onClose={() => void go({ kind: "guide" })}

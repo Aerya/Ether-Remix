@@ -191,3 +191,9 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 | **Musique** _(Remix)_                                 | Plex et Plexamp, clients Jellyfin (Finamp…), applications Subsonic : Symfonium, Feishin, Supersonic, DSub…                                                                                      |
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
+
+### Recommandations et collections (26 novembre 2026)
+
+La page **Recommandations** remplace l’ancien éditeur de disposition : choisissez l’accueil ou une bibliothèque, puis placez les rangées et leurs variantes par spectateur. Une collection définit les titres ; « Parcourir dans les applications » règle sa présence dans l’onglet Collections. Les anciens placements sont convertis au démarrage.
+
+Les modèles de disposition capturent désormais les pages de recommandations. Les modèles précédents restent applicables et les droits d’accès aux collections restent ceux de la configuration actuelle. Xperience et Jukebox proposent leurs rangées une seule fois : une suppression ultérieure par le propriétaire est conservée. La synchronisation des catalogues reste exécutée en arrière-plan et indique le nombre de titres reçus et la limite appliquée.

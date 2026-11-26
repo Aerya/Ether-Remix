@@ -2,14 +2,17 @@ package silo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/conform/openapi/spectest"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -691,5 +694,48 @@ func TestSiloImageSizing(t *testing.T) {
 		if got := siloImageURL(r, "/image", tc.kind); got != "/image"+tc.want {
 			t.Errorf("%s %s: %s", tc.query, tc.kind, got)
 		}
+	}
+}
+
+func TestHomeSectionsFollowTheRowLook(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 5}
+	var many []frontend.Title
+	for n := 1; n <= 14; n++ {
+		many = append(many, frontend.Title{Key: frontend.RatingKey(1000000000000000 + n), Type: "movie", Title: "Movie " + strconv.Itoa(n)})
+	}
+	exp := frontendtest.Experience{
+		RowsFunc: func(context.Context, frontend.RowRequest) ([]frontend.Row, error) {
+			return []frontend.Row{
+				{ID: "hero", Title: "Big", Purpose: frontend.RowRecommendation, Items: many[:2], Layout: frontend.RowLayout{Present: core.RowPresentation{Layout: "hero"}}},
+				{ID: "top", Title: "Top", Purpose: frontend.RowRecommendation, Items: many, RankedTop10: true, More: true, Promoted: true, Layout: frontend.RowLayout{Present: core.RowPresentation{Layout: "wide"}}},
+				{ID: "tonight", Title: "Tonight", Layout: frontend.RowLayout{Present: core.RowPresentation{Surface: &core.RowSurface{Plugin: "sports", Surface: "sports.tonight"}}}},
+			}, nil
+		},
+		UserDataFunc: func(context.Context, *frontend.Viewer, []frontend.RatingKey) (map[frontend.RatingKey]frontend.WatchStatus, error) {
+			return map[frontend.RatingKey]frontend.WatchStatus{}, nil
+		},
+	}
+	inst, err := (Frontend{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}, Experience: exp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/api/v2/home/sections", nil)
+	r.Header.Set("Authorization", "Bearer grant")
+	w := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, r)
+	var body struct {
+		Sections []struct {
+			ID         string `json:"id"`
+			Featured   bool   `json:"featured"`
+			Items      []any  `json:"items"`
+			TotalCount *int   `json:"total_count"`
+		} `json:"sections"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Sections) != 2 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	hero, top := body.Sections[0], body.Sections[1]
+	if hero.ID != "hero" || !hero.Featured || top.ID != "top" || top.Featured || len(top.Items) != 10 || top.TotalCount == nil || *top.TotalCount != 10 {
+		t.Fatalf("%s", w.Body.String())
 	}
 }

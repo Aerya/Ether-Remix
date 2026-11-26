@@ -119,6 +119,7 @@ type Engine struct {
 	files        map[string]*remoteFile
 	mediaPauseMu sync.Mutex
 	mediaPauses  map[string]mediaPause
+	speedChecks  sync.Map // per-file connection channel -> context.CancelFunc
 
 	stats engineCounters
 
@@ -354,8 +355,12 @@ func (e *Engine) Open(ctx context.Context, releaseID string, payload []byte) (co
 		return nil, err
 	}
 	s := &httpSource{f: f, last: -2, priority: func() bool { return callerUrgent(ctx) }}
+	p, _ := f.payload()
+	if !p.IsDirect() && !p.IsPluginProvider() {
+		s.speedAccount = e.svc.entryByID(p.Provider)
+	}
 	s.raCtx, s.raCancel = newSeekEpoch(f.ctx)
-	if p, _ := f.payload(); p.isCompressedZip() {
+	if p.isCompressedZip() {
 		return &zipDeflateSource{
 			httpSource: s,
 			name:       p.Name(),
@@ -1565,7 +1570,7 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			if ctx.Err() != nil || reqCtx.Err() != nil {
 				err = errRunCancelled
 			} else {
-				err = fmt.Errorf("debrid: read %s: %w: %v", f.name(), core.ErrSourceUnavailable, sanitize(err))
+				err = fmt.Errorf("debrid: read %s: %w: %w", f.name(), core.ErrSourceUnavailable, sanitize(err))
 				f.e.log.Warn("debrid range failed", "release", f.id, "offset", idx*f.e.block, "runOffset", first*f.e.block, "origin", core.SourceReadOrigin(ctx).Component, "reason", core.SourceReadOrigin(ctx).Reason, "mode", mode.String(), "err", err)
 			}
 			fail(err)
@@ -1777,8 +1782,9 @@ type timing struct{ connect, ttfb time.Duration }
 
 // rangeGet requests bytes [start, end] and returns the body positioned at
 // start, retrying transient failures and refreshing the link on 401, 403,
-// 404, 410 or expiry. Errors wrap core.ErrSourceUnavailable (transient),
-// core.ErrArticleMissing (the link keeps failing) or core.ErrArticleCorrupt
+// 404, 410 or expiry. Native provider CDN failures are transient;
+// provider refresh can confirm core.ErrOriginalLost. Error responses can also
+// report core.ErrArticleMissing (a missing file) or core.ErrArticleCorrupt
 // (the file is not what the payload describes).
 func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool) (result io.ReadCloser, measured timing, served servedBy, resultErr error) {
 	if _, ok := ctx.Value(fetchModeKey{}).(fetchMode); !ok {
@@ -1878,7 +1884,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			rctx = egress.WithStreamSource(rctx, payload.Provider, "")
 		}
 		wireStart, wireEnd, wireSize := payload.wireRange(start, end)
-		resp, tm, err := f.e.get(rctx, u, wireStart, wireEnd, urgent, f.conns)
+		resp, tm, err := f.e.get(rctx, u, wireStart, wireEnd, wireSize, urgent, f.conns)
 		if err != nil && isAnalysisRead(ctx) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 			f.analysis.errors.Add(1)
 			if f.e.svc != nil {
@@ -1913,7 +1919,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		}
 		switch {
 		case resp.StatusCode == http.StatusPartialContent:
-			if err := checkContentRange(resp.Header.Get("Content-Range"), wireStart, wireSize); err != nil {
+			if err := checkPartialResponse(resp, wireStart, wireEnd, wireSize); err != nil {
 				resp.Body.Close()
 				return nil, tm, servedBy{}, directMediaError(payload, err)
 			}
@@ -1952,7 +1958,11 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			fails := f.linkFails
 			f.mu.Unlock()
 			if fails > maxLinkFailures {
-				return nil, tm, servedBy{}, directMediaError(payload, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing))
+				failure := core.ErrSourceUnavailable
+				if payload.IsDirect() || payload.IsPluginProvider() {
+					failure = core.ErrArticleMissing
+				}
+				return nil, tm, servedBy{}, directMediaError(payload, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, failure))
 			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err
@@ -1978,8 +1988,6 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 							f.e.svc.analysisTotals.errors.Add(1)
 						}
 					}
-					// The host counts our connections: open fewer for a while.
-					f.e.reduceHostCap(resp.Request.URL.String())
 					if attempt == 0 && urgent && ra > 0 && ra <= 3*time.Second {
 						jitter := time.Duration(uint64(start)%250) * time.Millisecond
 						if err := sleep(ctx, ra+jitter); err != nil {
@@ -2025,7 +2033,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			fails := f.linkFails
 			f.mu.Unlock()
 			if fails > maxLinkFailures {
-				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing)
+				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrSourceUnavailable)
 			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err
@@ -2050,29 +2058,48 @@ func drain(resp *http.Response) {
 	resp.Body.Close()
 }
 
-func checkContentRange(v string, start, size int64) error {
-	// "bytes 0-1023/4096"
-	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "bytes"))
-	rng, total, ok := strings.Cut(v, "/")
-	if !ok {
-		return nil // tolerate a missing header; the body length is checked on read
+func checkPartialResponse(resp *http.Response, start, end, size int64) error {
+	if err := checkContentRange(resp.Header.Get("Content-Range"), start, end, size); err != nil {
+		return err
 	}
-	from, _, _ := strings.Cut(strings.TrimSpace(rng), "-")
-	if n, err := strconv.ParseInt(strings.TrimSpace(from), 10, 64); err == nil && n != start {
-		return fmt.Errorf("debrid: range starts at %d, asked %d: %w", n, start, core.ErrSourceUnavailable)
+	if want := min(end, size-1) - start + 1; resp.ContentLength > 0 && resp.ContentLength != want {
+		return fmt.Errorf("debrid: partial response is %d bytes, expected %d: %w", resp.ContentLength, want, core.ErrSourceUnavailable)
 	}
-	if t := strings.TrimSpace(total); t != "*" {
-		if n, err := strconv.ParseInt(t, 10, 64); err == nil && n != size {
+	return nil
+}
+
+func checkContentRange(v string, start, end, size int64) error {
+	if v == "" {
+		return nil // the reader checks the body length when the header is absent
+	}
+	unit, value, _ := strings.Cut(strings.TrimSpace(v), " ")
+	rng, total, _ := strings.Cut(strings.TrimSpace(value), "/")
+	from, to, _ := strings.Cut(rng, "-")
+	first, firstErr := strconv.ParseUint(from, 10, 63)
+	last, lastErr := strconv.ParseUint(to, 10, 63)
+	if !strings.EqualFold(unit, "bytes") || firstErr != nil || lastErr != nil || last < first {
+		return fmt.Errorf("debrid: invalid media range: %w", core.ErrSourceUnavailable)
+	}
+	if total != "*" {
+		n, err := strconv.ParseUint(total, 10, 63)
+		if err != nil {
+			return fmt.Errorf("debrid: invalid media range size: %w", core.ErrSourceUnavailable)
+		}
+		if int64(n) != size {
 			return fmt.Errorf("debrid: file is %d bytes, expected %d: %w", n, size, core.ErrArticleCorrupt)
 		}
+	}
+	if int64(first) != start || int64(last) != min(end, size-1) {
+		return fmt.Errorf("debrid: range %d-%d, asked %d-%d: %w", first, last, start, end, core.ErrSourceUnavailable)
 	}
 	return nil
 }
 
 // get issues one range request. Urgent requests are hedged: when the first
 // byte has not arrived within the hedge delay, a duplicate request goes out
-// on a separate connection pool and the first to deliver a byte wins.
-func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent bool, slots chan struct{}) (*http.Response, timing, error) {
+// on a separate connection pool and the first usable answer wins: a 206 of
+// this range or a 200 of exactly this file (size bytes), with a first byte.
+func (e *Engine) get(ctx context.Context, u string, start, end, size int64, urgent bool, slots chan struct{}) (*http.Response, timing, error) {
 	// Preempt drains before waiting on either per-file or host admission.
 	// Holding this registration through header/first-byte acquisition also
 	// prevents a newly abandoned background range from starting a drain.
@@ -2115,12 +2142,24 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 			stop()
 			release()
 		} else {
+			if resp.StatusCode == http.StatusTooManyRequests {
+				// The host counts our connections: open fewer for a while,
+				// also when this answer loses a hedge race.
+				e.reduceHostCap(resp.Request.URL.String())
+			}
 			resp.Body = newStallBody(resp.Body, e.stall, stop, release)
 		}
 		return resp, tm, err
 	}
-	if !acquire(true) {
-		return nil, timing{}, ctx.Err()
+	if !acquire(false) {
+		if priority() {
+			if stop, ok := e.speedChecks.Load(slots); ok {
+				stop.(context.CancelFunc)()
+			}
+		}
+		if !acquire(true) {
+			return nil, timing{}, ctx.Err()
+		}
 	}
 	preempt, _ := ctx.Value(fetchPreemptKey{}).(context.CancelFunc)
 	host, err := e.gate.acquire(ctx, addr, priority, preempt)
@@ -2137,6 +2176,7 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		err    error
 		cancel context.CancelFunc
 		hedge  bool
+		usable bool
 	}
 	results := make(chan result, 2)
 	var cancels []context.CancelFunc
@@ -2148,16 +2188,29 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		cancels = append(cancels, cancel)
 		go func() {
 			resp, tm, err := send(rctx, hc, w, host)
-			if err == nil && resp.StatusCode/100 == 2 {
+			usable := false
+			if err == nil {
+				switch resp.StatusCode {
+				case http.StatusPartialContent:
+					usable = checkPartialResponse(resp, start, end, size) == nil
+				case http.StatusOK:
+					usable = start == 0 && resp.ContentLength == size
+				}
+			}
+			if usable {
 				br := newPeekBody(resp.Body)
-				if _, perr := br.peek(); perr != nil && perr != io.EOF {
+				if head, perr := br.peek(); perr != nil && perr != io.EOF {
 					resp.Body.Close()
-					err = perr
+					err, usable = perr, false
+				} else if len(head) == 0 {
+					// An empty answer is a cut connection, not this range.
+					resp.Body.Close()
+					err, usable = io.ErrUnexpectedEOF, false
 				} else {
 					resp.Body = br
 				}
 			}
-			results <- result{resp: resp, tm: tm, err: err, cancel: cancel, hedge: hedge}
+			results <- result{resp: resp, tm: tm, err: err, cancel: cancel, hedge: hedge, usable: usable}
 		}()
 	}
 	// The hedge covers a slow first byte on a live connection. While the
@@ -2171,6 +2224,38 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 	pending, hedged := 1, false
 	var connected <-chan struct{} // set while a hedge waits on the primary's connection
 	var firstErr *result
+	// An HTTP error that lost the race keeps only its headers, so the caller
+	// still sees its status and Retry-After when no leg delivers.
+	var held *result
+	hold := func(r result) {
+		r.cancel()
+		r.resp.Body.Close()
+		r.resp.Body = http.NoBody
+		held = &r
+	}
+	// A cancelled read returns the cancellation, not the kept answer.
+	giveHeld := func() (*http.Response, timing, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, timing{}, err
+		}
+		return held.resp, held.tm, nil
+	}
+	// rank orders HTTP errors for the caller: a throttle answer first, then
+	// the dead-link answers that drive a link refresh (a replayed edge's
+	// redirect among them).
+	rank := func(resp *http.Response) int {
+		switch s := resp.StatusCode; {
+		case s == http.StatusTooManyRequests || s >= 500 && retryAfter(resp.Header.Get("Retry-After")) > 0:
+			return 2
+		case s == http.StatusPartialContent || s == http.StatusRequestedRangeNotSatisfiable:
+			// Prefer a retryable status over an unusable range.
+			return -1
+		case s == http.StatusUnauthorized || s == http.StatusForbidden || s == http.StatusNotFound || s == http.StatusGone || s == http.StatusOK,
+			s/100 == 3 && onReplayEdge(ctx):
+			return 1
+		}
+		return 0
+	}
 	tryHedge := func() {
 		hedged = true
 		if ctx.Err() == nil && e.limit.hedgeAllowed(dialAddr(u)) && acquire(false) {
@@ -2199,6 +2284,30 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		select {
 		case r := <-results:
 			pending--
+			if err := ctx.Err(); err != nil {
+				for _, cancel := range cancels {
+					cancel()
+				}
+				if r.err == nil {
+					r.resp.Body.Close()
+				}
+				if pending > 0 {
+					cleanup(pending)
+				}
+				return nil, timing{}, err
+			}
+			if r.err == nil && !r.usable && hedged {
+				if pending > 0 {
+					// The other leg may still deliver: wait for it.
+					hold(r)
+					continue
+				}
+				if held != nil && rank(held.resp) > rank(r.resp) {
+					r.cancel()
+					r.resp.Body.Close()
+					return giveHeld()
+				}
+			}
 			if r.err == nil {
 				// Cancel the loser now, not after its stalled body returns.
 				for i, cancel := range cancels {
@@ -2209,7 +2318,7 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 				if pending > 0 {
 					cleanup(pending)
 				}
-				if r.hedge {
+				if r.hedge && r.usable {
 					e.stats.hedgeWins.Add(1)
 				}
 				r.resp.Body = cancelOnClose{ReadCloser: r.resp.Body, cancel: r.cancel}
@@ -2243,6 +2352,9 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 			cleanup(pending)
 			return nil, timing{}, ctx.Err()
 		}
+	}
+	if held != nil {
+		return giveHeld()
 	}
 	return nil, firstErr.tm, firstErr.err
 }
@@ -2443,6 +2555,9 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 	} else {
 		resp, err = hc.Do(req)
 	}
+	if errors.Is(err, errSpeedDialBusy) {
+		return nil, timing{}, errSpeedDialBusy
+	}
 	switch {
 	case err == nil:
 		noteCapReadStarted(ctx) // transports without httptrace still bound the initial read
@@ -2478,7 +2593,9 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 // core.MediaSource plus the context-aware read variants the playback layer
 // type-asserts (ReadAtContext, ReadAtPrefetchContext, ReadMetadataAtContext).
 type httpSource struct {
-	f *remoteFile
+	f            *remoteFile
+	speedAccount *entry
+	speedSample  sync.Once
 
 	mu       sync.Mutex
 	last     int64       // last block a live read touched
@@ -2650,7 +2767,15 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 	n := 0
 	if live && callerUrgent(ctx) {
 		s.beginConsumption(f.e.now())
-		defer func() { s.recordConsumption(n, off, meterEpoch) }()
+		defer func() {
+			s.recordConsumption(n, off, meterEpoch)
+			if n > 0 && s.speedAccount != nil && !core.IsSpeculative(ctx) {
+				s.speedSample.Do(func() {
+					payload, _ := f.payload()
+					s.speedAccount.rememberSpeedSample(f.e.now(), f.id, payload)
+				})
+			}
+		}()
 	}
 	if live {
 		s.mu.Lock()

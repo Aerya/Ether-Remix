@@ -640,7 +640,7 @@ func (s *Service) resolveRef(ctx context.Context, source string, r extRef, allow
 			return remember(t.Key), false
 		}
 	}
-	if r.Title != "" && s.api != nil && s.api.c != nil {
+	if r.Title != "" && s.api.configured() {
 		if !needRemote() {
 			return 0, true
 		}

@@ -35,6 +35,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // saveConfig validates and persists next (secrets already unredacted),
 // preserving identity fields the UI must never rotate accidentally.
 func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage, rollPosters bool) ([]FieldError, error) {
+	config.AssignRuleIDs(&next.Quality)
 	errs := ValidateConfig(next)
 	if h.deps.ValidateExtra != nil {
 		errs = append(errs, h.deps.ValidateExtra(next)...)
@@ -73,11 +74,16 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// config document loaded before setup finished must not clear it.
 		keepSetup := c.SetupComplete
 		keepExtrasMigrated := c.Extras.DefaultOnMigrated
+		keepMigratedRules := c.Quality.MigratedRules
 		keepPosterGen := c.Posters.Generation
+		preserveQualityMigration(&next.Quality, c.Quality)
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
 		c.Extras.DefaultOnMigrated = keepExtrasMigrated || c.Extras.DefaultOnMigrated
+		if keepMigratedRules > c.Quality.MigratedRules {
+			c.Quality.MigratedRules = keepMigratedRules
+		}
 		if rollPosters {
 			c.Posters.Generation = keepPosterGen + 1
 		} else {
@@ -96,6 +102,30 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 	}
 	h.log.Info("admin: config updated")
 	return nil, nil
+}
+
+// Provenance and the notice timestamp belong to the migration. Only the
+// dismissal can be changed by a config write.
+func preserveQualityMigration(next *config.Quality, current config.Quality) {
+	origins := make(map[string]*config.QualityRuleOrigin)
+	for _, rule := range current.Rules {
+		if rule.From != nil {
+			origins[rule.ID] = rule.From
+		}
+	}
+	for i := range next.Rules {
+		next.Rules[i].From = origins[next.Rules[i].ID]
+	}
+	requested := next.MigrationNote
+	next.MigrationNote = nil
+	if current.MigrationNote != nil {
+		note := *current.MigrationNote
+		if requested != nil && requested.At.Equal(note.At) && requested.Dismissed {
+			note.Dismissed = true
+		}
+		next.MigrationNote = &note
+		next.RulesMigrationNote = !note.Dismissed
+	}
 }
 
 func postersEqual(a, b config.Posters) bool {
@@ -284,6 +314,16 @@ func (h *Handler) handlePutSection(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(mergedAll, &next); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "section value does not match the config schema: "+err.Error())
 		return
+	}
+	if field == "catalog" {
+		var edit struct {
+			Key      string `json:"tmdbKey"`
+			Disabled *bool  `json:"tmdbDisabled"`
+		}
+		// A newly submitted key enables TMDB unless the same edit turns it off.
+		if json.Unmarshal(body, &edit) == nil && edit.Disabled == nil && strings.TrimSpace(edit.Key) != "" && !isRedacted(edit.Key) {
+			next.Catalog.TMDBDisabled = false
+		}
 	}
 	next, perrs := UnredactConfig(next, prev)
 	if len(perrs) > 0 {

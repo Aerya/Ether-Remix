@@ -25,7 +25,7 @@ func (c *Catalog) localDetail(ctx context.Context, key core.RatingKey) (*core.Ti
 	if err != nil && !errors.Is(err, core.ErrNotFound) {
 		return nil, err
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		return c.StoredTitle(ctx, key)
 	}
 	if err == nil && (stored.detail || key.Kind() == core.KindEpisode) {

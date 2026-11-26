@@ -31,6 +31,7 @@ type LiveTVGroups interface {
 
 // LiveChannel contains public metadata, never provider URLs or credentials.
 type LiveChannel struct {
+	ArchiveDays                          int `json:"archiveDays,omitempty"`
 	Groups                               []LiveGroup
 	ID, Number, Name, Kind, Logo, Rating string
 	Group                                string
@@ -38,6 +39,7 @@ type LiveChannel struct {
 	Images                               []Image
 }
 type LiveProgramme struct {
+	ArchiveDays                     int
 	Genres                          []string
 	MediaType                       string
 	ID, ChannelID                   string
@@ -90,9 +92,10 @@ type LiveGuideWindowQuery struct {
 }
 
 type LiveGuideWindowChannel struct {
-	ChannelID  string
-	State      LiveGuideWindowState
-	Programmes []LiveProgramme
+	ArchiveDays int
+	ChannelID   string
+	State       LiveGuideWindowState
+	Programmes  []LiveProgramme
 }
 
 type LiveGuideWindow struct {

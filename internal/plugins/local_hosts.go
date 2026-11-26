@@ -234,6 +234,9 @@ func isNonPublicBlockError(err error) bool {
 }
 
 func (h *host) allowNetworkURL(ctx context.Context, u *url.URL) error {
+	if err := h.m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return err
+	}
 	r, g, err := h.record(ctx)
 	if err != nil {
 		return err

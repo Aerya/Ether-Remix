@@ -99,6 +99,9 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		channel := object{"id": c.ID, "number": c.Number, "name": c.Name, "kind": c.Kind, "artwork": art, "favorite": c.Favorite, "rating": c.Rating}
+		if c.ArchiveDays > 0 {
+			channel["archiveDays"] = c.ArchiveDays
+		}
 		if c.Groups != nil {
 			// The Vela protocol names an owner's channel groups "guides"
 			// (Channel.guides, LiveGuide); Vela builds its guide tabs from it.
@@ -174,6 +177,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		fail(w, frontend.ErrLiveGuideStale)
 		return
 	}
+	now := i.catchUpNow()
 	tag := i.liveETag(r, []any{
 		"guide",
 		from.UTC().Format(time.RFC3339),
@@ -182,6 +186,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		programmes.Snapshot,
 		programmes.More,
 		programmes.Items,
+		archiveFlagFingerprint(programmes.Items, 0, now),
 	})
 	if liveNotModified(w, r, tag) {
 		return
@@ -195,6 +200,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
+		addArchiveFlags(programme, p.ArchiveDays, p.Start, p.End, now)
 		out = append(out, programme)
 	}
 	page := object{"items": out, "from": from.UTC().Format(time.RFC3339), "until": until.UTC().Format(time.RFC3339), "continuation": "exhausted"}
@@ -416,6 +422,11 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := i.catchUpNow()
+	flags := make([][]byte, len(window.Channels))
+	for index, ch := range window.Channels {
+		flags[index] = archiveFlagFingerprint(ch.Programmes, ch.ArchiveDays, now)
+	}
 	tag := i.liveETag(r, []any{
 		"guide-window",
 		req.ChannelIDs,
@@ -424,6 +435,7 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 		window.Revision,
 		window.ValidUntil.UTC().Format(time.RFC3339),
 		window.Channels,
+		flags,
 	})
 	if liveNotModified(w, r, tag) {
 		return
@@ -451,12 +463,16 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 				fail(w, err, r)
 				return
 			}
+			addArchiveFlags(programme, ch.ArchiveDays, p.Start, p.End, now)
 			programmes[j] = programme
 		}
 		channels[idx] = object{
 			"channelId":  ch.ChannelID,
 			"state":      string(ch.State),
 			"programmes": programmes,
+		}
+		if ch.ArchiveDays > 0 {
+			channels[idx]["archiveDays"] = ch.ArchiveDays
 		}
 	}
 	out := object{

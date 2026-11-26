@@ -104,11 +104,11 @@ func TestPluginCollectionsWriteAndUndoIsolation(t *testing.T) {
 	if err := mgr.HostFor("one").CollectionsUpsert(ctx, json.RawMessage(`{"id":"bad","name":"Bad","items":["tmdb:99999999"]}`)); err == nil {
 		t.Fatal("unresolved title accepted")
 	}
-	// Explicit audiences survive the compact SDK form.
-	write("one", json.RawMessage(`{"id":"picks","name":"Restricted","items":["tmdb:101"],"targets":{"collectionsTab":true,"users":[7]}}`))
-	restricted, err := cols.GetSpec(ctx, lookup("one"))
-	if err != nil || restricted.Targets.Users.All {
-		t.Fatalf("audience widened: %+v %v", restricted, err)
+	// An explicit Browse in apps choice survives the compact SDK form.
+	write("one", json.RawMessage(`{"id":"picks","name":"Hidden","items":["tmdb:101"],"browseInApps":false}`))
+	hidden, err := cols.GetSpec(ctx, lookup("one"))
+	if err != nil || hidden.BrowseInApps {
+		t.Fatalf("browseInApps ignored: %+v %v", hidden, err)
 	}
 	// A manual deletion leaves a stale link; the next write safely recreates it.
 	deletedID := lookup("one")

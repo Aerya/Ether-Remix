@@ -18,6 +18,7 @@ func (a *App) saveValidated(mutate func(*config.Config) error) error {
 	if err := mutate(&next); err != nil {
 		return err
 	}
+	config.AssignRuleIDs(&next.Quality)
 	if errs := append(admin.ValidateConfig(next), a.validateExtra(next)...); len(errs) > 0 {
 		msgs := make([]string, 0, len(errs))
 		for _, e := range errs {
@@ -25,5 +26,11 @@ func (a *App) saveValidated(mutate func(*config.Config) error) error {
 		}
 		return fmt.Errorf("%w: %s", resolver.ErrImportRejected, strings.Join(msgs, "; "))
 	}
-	return a.cfg.Update(mutate)
+	return a.cfg.Update(func(c *config.Config) error {
+		if err := mutate(c); err != nil {
+			return err
+		}
+		config.AssignRuleIDs(&c.Quality)
+		return nil
+	})
 }

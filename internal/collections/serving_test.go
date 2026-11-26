@@ -82,7 +82,6 @@ func listed(t *testing.T, e *env, user *core.User, typ core.MediaType, name stri
 func TestPublishingToPlexRespectsTargetsAndRatings(t *testing.T) {
 	e := newEnv(t)
 	sp := spec("Big Hits", "movie", catalogSource(), rl("votes", "gte", 9000))
-	sp.Targets.Users = core.UserTargets{IDs: []int64{1, 2}}
 	created, err := e.svc.CreateSpec(e.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
@@ -97,11 +96,10 @@ func TestPublishingToPlexRespectsTargetsAndRatings(t *testing.T) {
 	if listed(t, e, owner, core.TypeShow, "Big Hits") != nil {
 		t.Fatal("movie collection in the TV section")
 	}
-	if listed(t, e, guest, core.TypeMovie, "Big Hits") != nil {
-		t.Fatal("untargeted user sees the collection")
-	}
-	if _, err := e.svc.Get(e.ctx, guest, c.Key); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("guest Get: %v", err)
+	// Collections are content: every viewer may browse them (age limits
+	// still apply). Who sees a row is the row's audience on a page.
+	if listed(t, e, guest, core.TypeMovie, "Big Hits") == nil {
+		t.Fatal("guest can't browse the collection")
 	}
 	// The kid only sees G/PG titles.
 	kc := listed(t, e, kid, core.TypeMovie, "Big Hits")
@@ -206,62 +204,6 @@ func TestPersonalRulesPersonalSortAndRotation(t *testing.T) {
 	}
 }
 
-func TestHomeRowsForTargetsAndSchedule(t *testing.T) {
-	e := newEnv(t)
-	evening := spec("Evening Thrills", "movie", catalogSource(), rl("genre", "is", "Thriller"))
-	evening.Targets.HomeRow = true
-	from, to := 18, 23
-	evening.Targets.Schedule = &core.CollectionSchedule{Days: []int{5, 6}, FromHour: &from, ToHour: &to, Devices: []string{"tv"}}
-	if _, err := e.svc.CreateSpec(e.ctx, evening); err != nil {
-		t.Fatal(err)
-	}
-	section := spec("Comedy Shelf", "show", catalogSource(), rl("genre", "is", "Comedy"))
-	section.Targets.SectionRow = true
-	section.Targets.Users = core.UserTargets{IDs: []int64{1}}
-	if _, err := e.svc.CreateSpec(e.ctx, section); err != nil {
-		t.Fatal(err)
-	}
-	friday9pm := time.Date(2026, 10, 16, 21, 0, 0, 0, time.Local)
-	rows := func(u *core.User, device string, at time.Time) map[string]core.CollectionRow {
-		hc := core.HubContext{Device: device, Now: at}
-		got, err := e.svc.HomeRowsFor(e.ctx, u, hc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out := map[string]core.CollectionRow{}
-		for _, r := range got {
-			out[r.Hub.Title] = r
-		}
-		return out
-	}
-	r := rows(owner, "tv", friday9pm)
-	ev, ok := r["Evening Thrills"]
-	if !ok || !ev.HomeRow || ev.SectionRow || !ev.Hub.Promoted || len(ev.Hub.Items) == 0 || ev.Hub.Key.Kind() != core.KindSmart {
-		t.Fatalf("evening row: %+v", ev)
-	}
-	if ev.Hub.ID != "collection."+ev.CollectionID || ev.Hub.Type != core.TypeMovie {
-		t.Fatalf("hub identity: %+v", ev.Hub)
-	}
-	cs, ok := r["Comedy Shelf"]
-	if !ok || cs.HomeRow || !cs.SectionRow || cs.Hub.Type != core.TypeShow {
-		t.Fatalf("section row: %+v", cs)
-	}
-	// The row carries its schedule; the personalization engine applies it
-	// (a viewer's Home override may replace it), so it is served outside it.
-	if sc := ev.Schedule; sc == nil || len(sc.Days) != 2 || sc.FromHour == nil || *sc.FromHour != 18 || len(sc.Devices) != 1 {
-		t.Fatalf("schedule not carried: %+v", ev.Schedule)
-	}
-	if late, ok := rows(owner, "mobile", friday9pm.AddDate(0, 0, 3))["Evening Thrills"]; !ok || late.Schedule == nil || late.Schedule.Allows("mobile", friday9pm.AddDate(0, 0, 3)) {
-		t.Fatalf("row outside its schedule: %+v %v", late, ok)
-	}
-	if cs.Schedule != nil {
-		t.Fatalf("unscheduled row carries a schedule: %+v", cs.Schedule)
-	}
-	if _, ok := rows(guest, "tv", friday9pm)["Comedy Shelf"]; ok {
-		t.Fatal("user targeting ignored")
-	}
-}
-
 func TestSchedulerRebuildsWhenDue(t *testing.T) {
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
@@ -284,26 +226,21 @@ func TestSchedulerRebuildsWhenDue(t *testing.T) {
 	if _, err := e.svc.CreateSpec(e.ctx, live); err != nil {
 		t.Fatal(err)
 	}
-	// Built-ins have never been built; everything else was built on save.
-	first := e.svc.RunDue(e.ctx)
-	if first == 0 {
-		t.Fatal("never-built built-ins should be due")
-	}
+	// Everything was built on save.
 	if n := e.svc.RunDue(e.ctx); n != 0 {
-		t.Fatalf("nothing should be due right after a run, built %d", n)
+		t.Fatalf("nothing should be due right after saving, built %d", n)
 	}
 	hkey := core.SmartKey(mustInt(t, h.ID))
 	advance(61 * time.Minute)
-	n := e.svc.RunDue(e.ctx) // hourly owner + hourly built-ins
+	n := e.svc.RunDue(e.ctx) // hourly owner
 	got, _ := e.svc.GetSpec(e.ctx, h.ID)
 	if n == 0 || !got.LastBuiltAt.Equal(now.Truncate(time.Second)) {
 		t.Fatalf("hourly not rebuilt: n=%d %+v", n, got.LastBuiltAt)
 	}
-	// The built-ins joined a popular title, so this rebuild changed the
-	// members; the next one does not, and Plex keeps its cached artwork.
+	// An unchanged rebuild keeps the stamp, so Plex keeps its cached artwork.
 	before, err := e.svc.Get(e.ctx, owner, hkey)
-	if err != nil || !before.UpdatedAt.Equal(now.Truncate(time.Second)) {
-		t.Fatalf("stamp after a changed rebuild: %+v %v", before, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	advance(61 * time.Minute)
 	if n := e.svc.RunDue(e.ctx); n == 0 {
@@ -383,29 +320,18 @@ func TestGeneratedArtworkForStudioAndPlex(t *testing.T) {
 func TestLayoutRowAddsUnpromotedCollectionAndPreservesRestrictions(t *testing.T) {
 	e := newEnv(t)
 	sp := spec("Designer only", "movie", catalogSource())
-	sp.Targets.HomeRow = false
-	sp.Targets.Users = core.UserTargets{IDs: []int64{1}}
 	saved, err := e.svc.CreateSpec(e.ctx, sp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hc := core.HubContext{Device: core.DeviceTV, Now: time.Now()}
-	before, err := e.svc.HomeRowsFor(e.ctx, guest, hc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range before {
-		if row.CollectionID == saved.ID {
-			t.Fatal("unpromoted collection appeared without an explicit layout selection")
-		}
-	}
 	limited := *guest
 	limited.MaxContentRating = "G"
 	row, err := e.svc.LayoutRow(e.ctx, &limited, hc, saved.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row == nil || !row.HomeRow || !row.SectionRow {
+	if row == nil || row.CollectionID != saved.ID {
 		t.Fatalf("selected row = %+v", row)
 	}
 	for _, title := range row.Hub.Items {
@@ -434,6 +360,17 @@ func TestLayoutRowAddsUnpromotedCollectionAndPreservesRestrictions(t *testing.T)
 		t.Fatalf("private collection leaked: %v", err)
 	}
 
+	restricted := *saved
+	restricted.Users = &core.UserTargets{IDs: []int64{owner.ID}}
+	if _, err := e.svc.UpdateSpec(e.ctx, saved.ID, restricted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.LayoutRow(e.ctx, guest, hc, saved.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("collection audience escaped: %v", err)
+	}
+	if row, err := e.svc.LayoutRow(e.ctx, owner, hc, saved.ID); err != nil || row == nil {
+		t.Fatalf("owner lost row: %v", err)
+	}
 	disabled := *saved
 	disabled.Enabled = false
 	if _, err := e.svc.UpdateSpec(e.ctx, saved.ID, disabled); err != nil {

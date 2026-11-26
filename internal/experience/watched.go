@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // titlesWatched reports which titles v has fully watched. Movies, episodes,
@@ -43,33 +44,43 @@ func (s *Service) titlesWatched(ctx context.Context, v *core.User, titles []core
 		return out, nil
 	}
 	var pendingKeys []core.RatingKey
-	var dirtyShows map[core.RatingKey]bool
+	dirtyShows := map[core.RatingKey]bool{}
 	if pending, ok := s.d.State.(pendingWatchKeys); ok {
 		pendingKeys = pending.PendingKeys(v.ID)
+		var allocated []core.RatingKey
 		for _, pk := range pendingKeys {
-			var showKey core.RatingKey
 			switch pk.Kind() {
 			case core.KindShow:
-				showKey = pk
+				dirtyShows[pk] = true
 			case core.KindSeason, core.KindEpisode:
-				showKey = core.ShowKey(pk.TMDB())
-			default:
-				continue
+				if pk.Allocated() {
+					allocated = append(allocated, pk)
+					continue
+				}
+				show := pk.Parent()
+				if pk.Kind() == core.KindEpisode {
+					show = show.Parent()
+				}
+				dirtyShows[show] = true
 			}
-			if dirtyShows == nil {
-				dirtyShows = map[core.RatingKey]bool{}
+		}
+		if len(allocated) > 0 && s.d.CachedGetMany != nil {
+			parents, err := s.d.CachedGetMany(ctx, allocated)
+			if err != nil {
+				return nil, err
 			}
-			dirtyShows[showKey] = true
+			for _, title := range parents {
+				dirtyShows[seriesOfTitle(title)] = true
+			}
 		}
 	}
 	var cleanKeys []core.RatingKey
 	var dirty []core.Title
 	for _, t := range containers {
-		showKey := t.Key
-		if t.Key.Kind() == core.KindSeason {
-			showKey = core.ShowKey(t.Key.TMDB())
-		}
-		if s.d.WatchedTitles != nil && !dirtyShows[showKey] {
+		showKey := seriesOfTitle(t)
+		alternate := t.Key.Allocated() || (t.EpisodeOrder.Source != "" &&
+			(t.EpisodeOrder.Source != core.MetadataTMDB || t.EpisodeOrder.Kind != core.OrderAired))
+		if s.d.WatchedTitles != nil && !alternate && !dirtyShows[showKey] {
 			cleanKeys = append(cleanKeys, t.Key)
 		} else {
 			dirty = append(dirty, t)
@@ -121,10 +132,7 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 	showSeen := make(map[core.RatingKey]bool, len(containers))
 	shows := make([]core.RatingKey, 0, len(containers))
 	for _, t := range containers {
-		sk := t.Key
-		if t.Key.Kind() == core.KindSeason {
-			sk = core.ShowKey(t.Key.TMDB())
-		}
+		sk := seriesOfTitle(t)
 		if !showSeen[sk] {
 			showSeen[sk] = true
 			shows = append(shows, sk)
@@ -145,6 +153,19 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 			return err
 		}
 	}
+	var projected map[core.RatingKey]core.Title
+	if len(judgeKeys) > 0 && s.d.CachedGetMany != nil {
+		projected, err = s.d.CachedGetMany(ctx, judgeKeys)
+		if err != nil {
+			return err
+		}
+	}
+	seasonOf := func(key core.RatingKey) int {
+		if title, ok := projected[key]; ok {
+			return title.Season
+		}
+		return key.Season()
+	}
 	var fallbackKeys []core.RatingKey
 	for _, t := range containers {
 		switch t.Key.Kind() {
@@ -158,7 +179,7 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 				}
 			}
 			for _, ek := range tally.Judge {
-				if ek.Season() > 0 {
+				if seasonOf(ek) > 0 {
 					aired++
 					if judgeState[ek].ViewCount > 0 {
 						played++
@@ -171,12 +192,11 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 				out[t.Key] = true
 			}
 		case core.KindSeason:
-			sk := core.ShowKey(t.Key.TMDB())
-			tally := tallies[sk]
-			c := tally.Seasons[t.Key.Season()]
+			tally := tallies[seriesOfTitle(t)]
+			c := tally.Seasons[t.Season]
 			aired, played := c.Aired, c.Played
 			for _, ek := range tally.Judge {
-				if ek.Season() == t.Key.Season() {
+				if seasonOf(ek) == t.Season {
 					aired++
 					if judgeState[ek].ViewCount > 0 {
 						played++
@@ -202,4 +222,57 @@ func (s *Service) containersWatchedWithPending(ctx context.Context, v *core.User
 		}
 	}
 	return nil
+}
+
+// TitlesWatched reports which titles v has fully watched, with one batched
+// lookup per kind (see titlesWatched).
+func (s *Service) TitlesWatched(ctx context.Context, v *core.User, titles []core.Title) (map[core.RatingKey]bool, error) {
+	return s.titlesWatched(ctx, v, titles)
+}
+
+// DropWatched removes the viewer's fully watched titles from rows whose owner
+// policy hides them (RowLayout.HideWatched). One lookup covers every such
+// row on the page, so the cost follows the page, never the library. A row
+// left with no entries is dropped. A failed lookup keeps the rows as they
+// were: showing a watched title is better than an empty page.
+func DropWatched(ctx context.Context, v *core.User, rows []frontend.Row, watched func(context.Context, *core.User, []core.Title) (map[core.RatingKey]bool, error)) []frontend.Row {
+	if v == nil || watched == nil {
+		return rows
+	}
+	var titles []core.Title
+	for _, row := range rows {
+		if !row.Layout.HideWatched {
+			continue
+		}
+		for _, entry := range row.Entries {
+			if entry.Kind == frontend.RowEntryTitle && entry.Title != nil {
+				titles = append(titles, *entry.Title)
+			}
+		}
+	}
+	if len(titles) == 0 {
+		return rows
+	}
+	seen, err := watched(ctx, v, titles)
+	if err != nil || len(seen) == 0 {
+		return rows
+	}
+	out := make([]frontend.Row, 0, len(rows))
+	for _, row := range rows {
+		if row.Layout.HideWatched {
+			kept := make([]frontend.RowEntry, 0, len(row.Entries))
+			for _, entry := range row.Entries {
+				if entry.Kind == frontend.RowEntryTitle && entry.Title != nil && seen[entry.Title.Key] {
+					continue
+				}
+				kept = append(kept, entry)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			row.Entries = kept
+		}
+		out = append(out, row)
+	}
+	return out
 }

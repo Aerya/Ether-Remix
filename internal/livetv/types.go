@@ -133,6 +133,13 @@ type PinnedSlot struct {
 	Breaks     *ChannelLook    `json:"breaks,omitempty"`
 }
 
+// ChannelArchive describes the catch-up window reported by a channel's provider.
+type ChannelArchive struct {
+	Days   int    `json:"days"`
+	Mode   string `json:"mode"`
+	Source string `json:"source,omitempty"`
+}
+
 type Channel struct {
 	Pins                 []PinnedSlot `json:"pins,omitempty"`
 	programmingFill      bool
@@ -178,7 +185,8 @@ type Channel struct {
 	Rating                string             `json:"rating,omitempty"`
 	SourceID              string             `json:"sourceId,omitempty"`
 	GuideID               string             `json:"guideId,omitempty"`
-	TvgName               string             `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
+	TvgName               string             `json:"tvgName,omitempty"` // provider's label; a guide-matching hint
+	Archive               *ChannelArchive    `json:"archive,omitempty"`
 	StreamURL             string             `json:"streamUrl,omitempty"`     // owner API only
 	StreamSources         []StreamSource     `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
 	SuppressedAutoBackups []string           `json:"suppressedAutoBackups,omitempty"`
@@ -228,10 +236,14 @@ type Channel struct {
 	// makes them differ and sticks.
 	ProviderGuideID string `json:"providerGuideId,omitempty"`
 
+	archiveTimezone string // provider timezone for archive URL construction
+
 	// adult is the provider's own adult flag (Xtream is_adult); import only.
 	adult bool
 }
 type Source struct {
+	ArchiveTimezone string `json:"archiveTimezone,omitempty"`
+
 	UnratedRating string          `json:"unratedRating,omitempty"`
 	LoginPool     bool            `json:"loginPool,omitempty"`
 	Logins        []ProviderLogin `json:"logins,omitempty"`
@@ -432,22 +444,25 @@ type Options struct {
 	Graphics        core.ChannelGraphics
 	GuideProvider   guideprovider.Provider
 
-	ConfirmAdmission   func(context.Context, *core.User, bool, time.Time) (*core.User, error)
-	CanPlay            func(*core.User, bool, time.Time) bool
-	StreamLimit        func(*core.User) int
-	RemoteUploadCap    func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
-	DB                 *sql.DB
-	Catalog            core.Catalog
-	Collections        core.Collections
-	Playback           core.Playback
-	Transcoder         core.Transcoder
-	HTTPClient         *http.Client
-	LogoHTTP           *http.Client // optional test transport for the logo index; nil uses the guarded client
-	LogoIndexURL       func() string
-	HealthSweepMinutes func() int    // 0 defaults to 15; negative disables
-	LatencyProfile     func() string // owner preference; nil means Automatic
-	Stability          func() string // server-wide stability preset; nil or "" is balanced (reserve_policy.go)
-	Now                func() time.Time
+	ConfirmAdmission     func(context.Context, *core.User, bool, time.Time) (*core.User, error)
+	CanPlay              func(*core.User, bool, time.Time) bool
+	StreamLimit          func(*core.User) int
+	RemoteUploadCap      func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
+	DB                   *sql.DB
+	Catalog              core.Catalog
+	Collections          core.Collections
+	Playback             core.Playback
+	Transcoder           core.Transcoder
+	HTTPClient           *http.Client
+	LogoHTTP             *http.Client // optional test transport for the logo index; nil uses the guarded client
+	LogoIndexURL         func() string
+	HealthSweepMinutes   func() int // 0 defaults to 15; negative disables
+	TimeshiftMinutes     func() int
+	TimeshiftBudgetBytes func() int64
+	TimeshiftDir         string
+	LatencyProfile       func() string // owner preference; nil means Automatic
+	Stability            func() string // server-wide stability preset; nil or "" is balanced (reserve_policy.go)
+	Now                  func() time.Time
 	// Logger receives credential-safe import, playback and delivery diagnostics.
 	Logger *slog.Logger
 	// Events receives Live TV domain events when non-nil.

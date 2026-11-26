@@ -75,6 +75,7 @@ type Payload struct {
 	// stream link, Headers the request headers it requires and Origin the
 	// owner-configured addon origin. Link and Headers can carry the
 	// addon's credentials.
+	PluginStream   bool              `json:"pluginStream,omitempty"`
 	StreamProvider string            `json:"streamProvider,omitempty"`
 	Headers        map[string]string `json:"headers,omitempty"`
 	Origin         string            `json:"origin,omitempty"`

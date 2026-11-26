@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,6 +64,7 @@ type generation struct {
 	// articleMissing records that a read hit core.ErrArticleMissing.
 	articleMissing     atomic.Bool
 	backgroundFailover atomic.Bool // at most one recovery worker for this source
+	originalRejected   bool        // guarded by the failover semaphore
 	readFailure        error       // protected by mu; distinguishes transient failover from bad data
 	retryEpoch         uint64
 	retryPending       bool
@@ -195,6 +198,7 @@ func (g *generation) releaseID() string {
 
 // session is the internal, mutable form of a core.PlaySession.
 type session struct {
+	offlineOriginal func(core.MediaInfo) bool
 	// alias is the identity a promoted preparation also answers for in
 	// byIdent (guarded by Manager.mu); ident itself never changes.
 	alias                 identity
@@ -264,12 +268,16 @@ type session struct {
 	// after its flight completed (see abandonFlightLocked).
 	claimed bool
 
-	mu                 sync.Mutex
-	preparedOnly       bool
-	backgroundHold     *backgroundSourceHold
-	analysisSource     bool
-	stoppedBySurface   bool
-	sourcePins         int
+	mu               sync.Mutex
+	preparedOnly     bool
+	backgroundHold   *backgroundSourceHold
+	analysisSource   bool
+	stoppedBySurface bool
+	sourcePins       int
+
+	originalRecoveryTried bool
+	originalRevision      string
+
 	cur                *generation
 	virtualGen         *generation // generation whose layout virtual mirrors
 	gens               int
@@ -297,8 +305,9 @@ type session struct {
 	// (retry_window.go).
 	failoverFailure  recentFailoverFailure
 	requiresRemux    bool
-	prefer           string // release ID the viewer picked (PrepareVariant); read-only after creation
-	exact            bool   // exact selection must never switch releases
+	prefer           string             // release ID the viewer picked (PrepareVariant); read-only after creation
+	exact            bool               // exact selection must never switch releases
+	binding          core.SourceBinding // why an exact session holds its release: which failures may still replace it
 	lastActive       time.Time
 	lastRead         time.Time
 	lastMediaAt      time.Time // last client-facing media bytes / segment / direct redirect served (zero until media delivered)
@@ -557,6 +566,7 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 	caps.NoVideoTranscode = s.noVideoTranscodeActive()
 	ps := &core.PlaySession{
 		PreparedOnly:      s.preparedOnly,
+		OriginalRevision:  s.originalRevision,
 		ID:                s.id,
 		UserID:            s.ident.userID,
 		ClientID:          s.ident.clientID,
@@ -616,6 +626,33 @@ func displayTitle(t *core.Title) string {
 	if t == nil {
 		return ""
 	}
+	switch {
+	case t.MediaRole == core.MediaRoleTrack || t.MBItemType == "Audio" && t.MediaClass == core.MediaClassMusic:
+		artist := playbackCredit(t, "artist")
+		if artist == "" {
+			for _, parent := range t.MediaParents {
+				if parent.Role == core.MediaRoleArtist && parent.Title != "" {
+					artist = parent.Title
+					break
+				}
+			}
+		}
+		if artist == "" && !t.SelfChild {
+			artist = t.ShowTitle
+		}
+		if artist != "" && artist != t.Title {
+			return artist + " – " + t.Title
+		}
+		return t.Title
+	case t.MediaClass == core.MediaClassBook || t.MediaClass == core.MediaClassAudiobook || t.MBItemType == "Book" || t.MBItemType == "AudioBook":
+		if t.MediaRole == core.MediaRolePart && t.ParentTitle != "" && t.ParentTitle != t.Title {
+			return t.ParentTitle + " – " + t.Title
+		}
+		if author := playbackCredit(t, "author"); author != "" {
+			return author + " – " + t.Title
+		}
+		return t.Title
+	}
 	if t.Type == core.TypeEpisode {
 		show := t.ShowTitle
 		if show == "" {
@@ -627,6 +664,16 @@ func displayTitle(t *core.Title) string {
 		return fmt.Sprintf("%s (%d)", t.Title, t.Year)
 	}
 	return t.Title
+}
+
+func playbackCredit(t *core.Title, role string) string {
+	var names []string
+	for _, credit := range t.MediaCredits {
+		if credit.Role == role && credit.Name != "" {
+			names = append(names, credit.Name)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // lock acquires a channel semaphore, honouring ctx.
@@ -687,7 +734,7 @@ func (r *rateMeter) rate(now time.Time) int64 {
 func (g *generation) noteReadFailure(err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.readFailure == nil {
+	if g.readFailure == nil || errors.Is(err, core.ErrOriginalLost) {
 		g.readFailure = err
 	}
 }

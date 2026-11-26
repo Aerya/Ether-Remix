@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/events"
 )
 
@@ -85,7 +86,7 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 	if c, ok := LegacyToCanonicalEvent[ev.Name]; ok {
 		canonicalType = c
 	}
-	m.fanOutEvent(ctx, canonicalType, names, ev)
+	m.fanOutEvent(ctx, canonicalType, names, ev, "")
 }
 
 // StartEventBridge subscribes the plugin host to Ether's events.Bus so plugins
@@ -151,7 +152,7 @@ func (m *Manager) HandleBusEvent(ctx context.Context, env events.Envelope) {
 		At:       at,
 		ViewerID: viewerID,
 		Payload:  payload,
-	})
+	}, env.Source)
 }
 
 type eventDeliveryTarget struct {
@@ -159,7 +160,7 @@ type eventDeliveryTarget struct {
 	name string
 }
 
-func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event) {
+func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event, source string) {
 	m.mu.Lock()
 	var targets []eventDeliveryTarget
 	for _, name := range names {
@@ -179,10 +180,24 @@ func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names [
 		schema, hasSchema = reg.Get(canonicalType)
 	}
 
+	var producer, itemOwner string
+	switch canonicalType {
+	case events.EventViewerWatchScrobbled, events.EventViewerWatchWatched, events.EventViewerWatchUnwatched, events.EventViewerWatchProgress:
+		if id, ok := strings.CutPrefix(source, events.PluginPrefix); ok {
+			producer = id
+		}
+		var item struct {
+			Ref core.ItemRef `json:"itemRef"`
+		}
+		if json.Unmarshal(base.Payload, &item) == nil {
+			itemOwner = item.Ref.Plugin()
+		}
+	}
+
 	logged := false
 	for _, target := range targets {
 		r := target.rec
-		if !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
+		if r.ID == producer || !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
 			continue
 		}
 		sub := false
@@ -212,6 +227,12 @@ func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names [
 			out.ViewerID = 0
 		}
 		out.Payload = sanitizePluginEventPayload(out.Payload, schema, hasSchema, allowViewer)
+		if itemOwner != "" && itemOwner != r.ID {
+			if fields, err := (events.Envelope{Payload: out.Payload}).PayloadMap(); err == nil {
+				delete(fields, "itemRef")
+				out.Payload, _ = json.Marshal(fields)
+			}
+		}
 		dropped, err := m.store.enqueue(ctx, r.ID, out)
 		if err == nil && dropped > 0 {
 			m.healthMu.Lock()
@@ -482,11 +503,15 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	var jobErr string
 	switch {
 	case err != nil && ctx.Err() == nil:
-		jobErr = err.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, err.Error())
 	case startErr != nil:
-		jobErr = startErr.Error()
+		jobErr = m.store.redactKnown(context.Background(), pluginID, startErr.Error())
 	case err == nil && resp.Status >= 400:
-		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+		redact := func(s string) string {
+			return m.store.redactKnown(context.Background(), pluginID, s)
+		}
+		jobErr = formatJobHTTPError(resp.Status, resp.Body, redact).Error()
+		m.log.Warn("plugin schedule: job failed", "plugin", pluginID, "call", callPath, "err", jobErr)
 	}
 	if jobErr != "" {
 		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))

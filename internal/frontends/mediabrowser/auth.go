@@ -476,7 +476,7 @@ func (i *instance) baseUserDTO(v *frontend.Viewer) (user, policy, configuration 
 		"EnableMediaPlayback": i.host.Sessions != nil, "EnablePlaybackRemuxing": i.host.Sessions != nil,
 		// The host's configured playback policy overrides these defaults in userDTO.
 		"EnableAudioPlaybackTranscoding": i.host.Sessions != nil, "EnableVideoPlaybackTranscoding": i.host.Sessions != nil,
-		"ForceRemoteSourceTranscoding": false, "EnableContentDeletion": false, "EnableContentDownloading": false,
+		"ForceRemoteSourceTranscoding": false, "EnableContentDeletion": false, "EnableContentDownloading": i.allowDownloads(v),
 		"EnableSyncTranscoding": false, "EnableMediaConversion": false, "EnableAllDevices": true, "EnableAllChannels": true,
 		"EnabledDevices": []string{}, "EnabledChannels": []string{}, "EnableContentDeletionFromFolders": []string{}, "AllowedTags": []string{}, "BlockedTags": []string{},
 		"EnableAllFolders": len(v.AllowedLibraries) == 0, "InvalidLoginAttemptCount": 0, "LoginAttemptsBeforeLockout": -1,

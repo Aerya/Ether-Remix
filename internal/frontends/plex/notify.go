@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -535,15 +536,36 @@ func (s *Server) WatchStateChanged(userID int64, key frontend.RatingKey) {
 // is a processing hint, not the completed invalidation native detail pages need.
 func (s *Server) notifyTimeline(key frontend.RatingKey, t frontend.MediaType, title string, userID int64) {
 	sec, _ := s.sectionFor(t)
+	switch key.Kind() {
+	case frontend.KindMovie, frontend.KindShow, frontend.KindSeason, frontend.KindEpisode:
+		// The section that lists the title, so a client refreshes the
+		// library it shows the title in (#788).
+		if listed, ok := s.sectionForKey(context.Background(), key); ok && !key.IsPluginKey() {
+			sec = listed
+		}
+	}
 	typeNum := map[frontend.MediaType]int{frontend.TypeMovie: 1, frontend.TypeShow: 2, frontend.TypeSeason: 3, frontend.TypeEpisode: 4}[t]
 	// PMS names an episode's season and show, and a season's show, so a
 	// client can refresh the show's rows (Continue Watching, On Deck).
 	var parent, root string
 	switch key.Kind() {
-	case frontend.KindEpisode:
-		parent, root = key.Parent().String(), frontend.ShowKey(key.TMDB()).String()
-	case frontend.KindSeason:
-		parent = key.Parent().String()
+	case frontend.KindEpisode, frontend.KindSeason:
+		ctx := context.Background()
+		var row *frontend.Title
+		if cached, ok := s.catalog().(frontend.CachedTitleReader); ok {
+			row, _ = cached.CachedGet(ctx, key)
+		}
+		if row == nil {
+			row = &frontend.Title{Key: key, Type: t}
+		}
+		if p := titleParent(row); p != 0 {
+			parent = p.String()
+		}
+		if key.Kind() == frontend.KindEpisode {
+			if show := titleShow(row); show != 0 {
+				root = show.String()
+			}
+		}
 	case frontend.KindMovie:
 		// An open movie detail is the item itself. Episodes refresh because
 		// the season and show ids are on the entry; a movie with only itemID

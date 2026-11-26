@@ -134,7 +134,14 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"` // validated against the kind declaration
 	Hints       json.RawMessage            `json:"hints,omitempty"`  // opaque; stored and echoed to the resolver verbatim
-	ETag        string                     `json:"etag,omitempty"`
+	// Recording identifies the work an item is a copy of, shared by every
+	// release that carries it (for music, "isrc:<ISRC>"). Apps group the same
+	// recording across albums and compilations by it; empty when unknown.
+	Recording string `json:"recording,omitempty"`
+	// Members: a list item's ordered members (external ids of other items of
+	// the kind), its children. Only on a level declared members: true.
+	Members []string `json:"members,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 
 // KindItemPart describes one declared or resolved file/part of a multi-file
@@ -357,6 +364,46 @@ type KindPage struct {
 	Total      *int       `json:"total,omitempty"`      // provider claim; Ether never trusts it for its own totals
 }
 
+// KindBrowseFacetAlt is one {field, values} alternative inside a cross-field
+// KindBrowseFacetGroup (#807).
+type KindBrowseFacetAlt struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
+// KindBrowseFacetGroup is one OR-group for KindBrowseRequest.AnyGroups (#767, #807).
+// A group either names a single {field, values} OR-list or carries a list of
+// {field, values} alternatives in Any that are ORed together across fields
+// (and ANDed with the rest). Multiple groups — including repeated groups on
+// the same field — combine with AND alongside Facets, AllFacets,
+// ExcludeFacets, Empty, and ExcludeQuery.
+type KindBrowseFacetGroup struct {
+	Field  string               `json:"field,omitempty"`
+	Values []string             `json:"values,omitempty"`
+	Any    []KindBrowseFacetAlt `json:"any,omitempty"`
+}
+
+// Alternatives returns the {field, values} alternatives carried by g. A
+// single-field {field, values} group returns a slice of one; when Any is
+// present, its alternatives are returned (after the top-level field/values if
+// both were supplied).
+func (g KindBrowseFacetGroup) Alternatives() []KindBrowseFacetAlt {
+	hasSingle := strings.TrimSpace(g.Field) != "" && len(g.Values) > 0
+	if len(g.Any) == 0 {
+		if !hasSingle {
+			return nil
+		}
+		return []KindBrowseFacetAlt{{Field: g.Field, Values: g.Values}}
+	}
+	if !hasSingle {
+		return g.Any
+	}
+	out := make([]KindBrowseFacetAlt, 0, len(g.Any)+1)
+	out = append(out, KindBrowseFacetAlt{Field: g.Field, Values: g.Values})
+	out = append(out, g.Any...)
+	return out
+}
+
 // KindBrowseRequest is the request body sent to a catalog_provider
 // browse or search route (spec §3.1, §3.2) and passed to the
 // viewer-scoped kinds.browse host service (#615).
@@ -369,13 +416,24 @@ type KindBrowseRequest struct {
 	Desc     bool   `json:"desc,omitempty"`
 	// Facets requires any of the listed values per field (OR within a
 	// field, AND across fields). AllFacets requires every listed value
-	// per field and ExcludeFacets drops items having any listed value;
-	// all three maps combine with AND and accept the same per-type
-	// values (including lo..hi ranges and people names).
-	Facets        map[string][]string `json:"facets,omitempty"`
-	AllFacets     map[string][]string `json:"allFacets,omitempty"`
-	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
-	Query         string              `json:"query,omitempty"`
+	// per field, ExcludeFacets drops items having any listed value, and
+	// AnyGroups adds one OR-group per entry — either a single {field,
+	// values} list or {any: [{field, values}, ...]} ORed across fields
+	// (#767, #807). All four combine with AND and accept the same
+	// per-type values (including lo..hi ranges and people names).
+	Facets        map[string][]string    `json:"facets,omitempty"`
+	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
+	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
+	// Empty tests field presence or absence per field key (#807): true
+	// keeps items with no value in the field, false keeps items with at
+	// least one. Counts toward neither facet value bound; unknown fields
+	// are rejected.
+	Empty map[string]bool `json:"empty,omitempty"`
+	Query string          `json:"query,omitempty"`
+	// ExcludeQuery drops items whose indexed text matches, using the same
+	// text matching as Query (#807).
+	ExcludeQuery string `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total (#682):
 	//   - "" or "cheap" (default): populate Total only when O(1) (item or
 	//     field tallies, a cached exact count, or a single-page result) and
@@ -447,11 +505,15 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
 	Category string `json:"category,omitempty"`
+	// Lookup, on an indexer_search with a Category, adds a typed lookup
+	// (e.g. {type: "album", fields: {artist, title}}) for plugin sources that
+	// declared it. Every other indexer searches Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile    string   `json:"profile,omitempty"`
@@ -461,9 +523,12 @@ type SourceQuery struct {
 	// TorrentURL carries a torrent download or details page link for torrent
 	// indexers that do not emit an info hash or magnet in search results.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
 	// not pass a full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
+	NZBURL      string       `json:"nzbUrl,omitempty"`
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
 	// back for release_files or usenet_check, so an NZB or torrent link is
 	// resolved through its originating indexer.
@@ -545,13 +610,14 @@ type IndexerRef struct {
 // (Status, Results, MS, Reason, Error) or one enabled indexer's summary on an
 // indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
-	IndexerID string `json:"indexerId"`
-	Indexer   string `json:"indexer"`
-	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
-	Results   int    `json:"results,omitempty"`
-	MS        int64  `json:"ms"`
-	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
-	Error     string `json:"error,omitempty"`
+	ConfiguredName string `json:"-"` // owner-entered display name for playback diagnostics
+	IndexerID      string `json:"indexerId"`
+	Indexer        string `json:"indexer"`
+	Status         string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
+	Results        int    `json:"results,omitempty"`
+	MS             int64  `json:"ms"`
+	Reason         string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
+	Error          string `json:"error,omitempty"`
 	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
 	// responses (never carrying API keys, URLs with secrets, or cookies).
 	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
@@ -722,7 +788,9 @@ type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -749,7 +817,7 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query: the files inside
+	// Files is populated by release_files and nzb_request: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
@@ -760,6 +828,39 @@ type SourceCandidate struct {
 	// article availability verdict and any recorded playback failure for
 	// this NZB release.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a stream_source plugin answered for a
+	// category search it declared (ether.contributes.source.search). It has
+	// no info hash, magnet or NZB: release_files asks that plugin for the
+	// files and a release source opens it through the plugin's open route.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
+}
+
+// Deprecated link fields use these non-HTTP schemes for Ether references.
+const (
+	PluginNZBRefPrefix     = "ether-nzb:"
+	PluginTorrentRefPrefix = "ether-torrent:"
+)
+
+// NZBIdentity identifies a native indexer release when no search reference is available.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
+}
+
+// PluginReleaseRef identifies one release of a stream_source plugin: the
+// plugin's id and the lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
+}
+
+// SourceLookup is a typed lookup on a category search, such as an album by
+// artist and title. Type is a key the answering plugin source declared in
+// ether.contributes.source.search.lookups; Fields are its named values.
+// Indexers that do not declare the lookup search the free-text query only.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns
@@ -879,9 +980,11 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`

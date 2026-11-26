@@ -100,10 +100,10 @@ func TestHomeRowsBoundedAcrossRowGrowth(t *testing.T) {
 		}
 	}
 	seedCollections([]core.CollectionSpec{
-		{Name: "Home Movies 1", Enabled: true, MediaType: "movie", Sources: []core.CollectionSource{{Kind: "titles", Keys: movieKeys}}, Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()}},
-		{Name: "Home Shows 1", Enabled: true, MediaType: "show", Sources: []core.CollectionSource{{Kind: "titles", Keys: showKeys}}, Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()}},
-		{Name: "Home Mixed 1", Enabled: true, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "titles", Keys: mixedKeys}}, Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()}},
-		{Name: "Home Movies 2", Enabled: true, MediaType: "movie", Sources: []core.CollectionSource{{Kind: "titles", Keys: movieKeys[20:]}}, Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()}},
+		{Name: "Home Movies 1", Enabled: true, MediaType: "movie", Sources: []core.CollectionSource{{Kind: "titles", Keys: movieKeys}}, BrowseInApps: true},
+		{Name: "Home Shows 1", Enabled: true, MediaType: "show", Sources: []core.CollectionSource{{Kind: "titles", Keys: showKeys}}, BrowseInApps: true},
+		{Name: "Home Mixed 1", Enabled: true, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "titles", Keys: mixedKeys}}, BrowseInApps: true},
+		{Name: "Home Movies 2", Enabled: true, MediaType: "movie", Sources: []core.CollectionSource{{Kind: "titles", Keys: movieKeys[20:]}}, BrowseInApps: true},
 	})
 	for i := range users {
 		if err := a.personalize.Rebuild(ctx, &users[i]); err != nil {
@@ -187,8 +187,8 @@ func TestHomeRowsBoundedAcrossRowGrowth(t *testing.T) {
 		extraSpecs = append(extraSpecs, core.CollectionSpec{
 			Name:    fmt.Sprintf("Home Extra %d", i+1),
 			Enabled: true, MediaType: mt,
-			Sources: []core.CollectionSource{{Kind: "titles", Keys: keys}},
-			Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()},
+			Sources:      []core.CollectionSource{{Kind: "titles", Keys: keys}},
+			BrowseInApps: true,
 		})
 	}
 	seedCollections(extraSpecs)

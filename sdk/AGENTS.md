@@ -118,7 +118,7 @@ be overwritten or deleted by a plugin.
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
-| stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
+| stream_source / debrid_provider | Stremio stream; lazy open (`GET /ether/open/{id}`) / debrid routes; opt-in category search (`source.search` → `GET /ether/search`, `GET /ether/files/{id}`) | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
 | flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
@@ -127,8 +127,17 @@ be overwritten or deleted by a plugin.
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes; optional `frontendAdapters[].icon` (package SVG/PNG) as its Apps page mark | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
+
+For watch sync, grant `viewers.write_watch_state: "granted_viewers"` and call
+`ether.viewers.setWatchState({viewerId, titleId, watched})` with an owned playable
+`pk:<pluginId>:<kind>:<externalId>` ref or a catalogue movie or episode ID.
+Subscribe to `viewer.watch.scrobbled` or the separate `viewer.watch.watched`
+and `viewer.watch.unwatched` events. Payloads have `state`, `source`, your
+plugin's `itemRef` where available, or catalogue provider IDs and season and
+episode numbers. A plugin's own write does not trigger its subscription.
+See [Viewers & watch state](/plugins/reference/host-viewers).
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
 ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
@@ -324,6 +333,7 @@ than billed as guest wall time):
 | Route group | Effective deadline | Effective unit budget |
 |---|---|---|
 | `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/ether/search`, `/ether/files/*` (source category search) | 10 s | 100,000 units |
 | `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
 | `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
 | `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
@@ -381,6 +391,12 @@ list of `{id:"tt0133093",type:"movie",name:"The Matrix"}`. Keep the listSources
 catalog ID (`featured`) aligned with `/catalog/movie/featured.json`. Full typed
 catalogue/meta handlers: `sdk/examples/hello/typescript/plugin.ts`.
 
+A list source's `maxItems` (at most 2000, default 500) is how many titles one
+sync of the list reads, paging with `skip`. The owner sees it in the install
+review ("Syncs up to 2,000 titles per list") and can lower or raise it under
+**Titles per list** in your plugin's limits; an update that asks for more
+shows in the update review. Declare what the list really holds.
+
 ### 2. A content kind library
 
 ```sh
@@ -405,6 +421,14 @@ Fill `/stream/{type}/{id}.json` with `{streams:[{url:"https://YOUR_HOST/video.mp
 using an owner-configured source, not hard-coded credentials. Declare YOUR_HOST
 in network permissions if the plugin fetches it. Return lazy stream descriptors
 for work that should happen only on a viewer pick. See `sdk/examples/easydebrid`.
+
+To serve Music or Books searches too, declare
+`contributes.source.search: {categories: [3000, 7000]}` and add the
+`sourceSearch` / `SourceSearch` / `source_search` handler (lazy streams with
+`ether.id` and `ether.releaseName`), `releaseFiles` (the release's
+`{files: [{path, size}]}`) and `openStream` with `file` / `fileIndex`. Declare
+the host the opened URL lives on in `permissions.network`. See
+"Source plugins that answer category searches" in docs/plugin-kinds.md.
 
 ### 4. Notification channel
 
@@ -567,6 +591,25 @@ timeout, permission, redirect, size, or transport failure. Canceling the parent
 request or exceeding its deadline aborts all in-flight batch fetches promptly
 without consuming extra WASM pool lanes.
 
+Indexer search results give you `nzbRef` for Usenet and `torrentRef` when a
+torrent needs a descriptor lookup. The deprecated link fields mirror these
+references with an `ether-nzb:` or `ether-torrent:` prefix. Call
+`ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
+permanent vault reference. Use that reference in a release source's
+`release.nzbRef`, and use `release_files` for files inside archives.
+Use this service for indexer search and NZB access from hosted, HTTP and
+tunnel plugins. Ether blocks its own plugin HTTP requests to configured indexer
+hosts. The indexer API URL and credentials stay in Ether's indexer settings.
+Plugin settings and secrets hold only that plugin's configuration. Do not ask
+owners to copy their indexer URLs or API keys into plugin settings. Source
+results carry opaque download references and trackerless magnets.
+
+An HTTP or tunnel sidecar runs under its own OS or container permissions.
+Ether controls what it sends to that process and requests Ether makes on its
+behalf. To enforce the same egress restriction on a sidecar's own traffic,
+restrict its outbound connections through its container network policy or
+host firewall.
+
 Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck
 live network permissions on every hop and keep credentials/caller headers only
@@ -612,9 +655,14 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
+Authenticated frontend adapter requests carry `X-Ether-Origin`
+(`scheme://host[:port][/prefix]`, derived from trusted proxies only with any
+inbound client `X-Ether-Origin` stripped) alongside `X-Ether-Viewer`.
+
 Hosted adapters can return a redirect to a host-minted item stream URL, a
-specific zero-based part when an item declares `hints.parts`, and/or a specific
-resolver `PlayableSource.id`:
+specific zero-based part when an item declares `hints.parts`, a specific
+resolver `PlayableSource.id`, or an absolute URL (`{ absolute: true }`) for
+native clients (such as Kodi or Subsonic apps) that play URLs verbatim:
 
 ```js
 // Whole item (concatenated sequence for multi-part items):
@@ -623,13 +671,19 @@ return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
 // Specific resolver source (and optional partIndex) with no failover:
 return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, {partIndex, source: "epub"}).url}};
+// Absolute URL for protocol documents (falls back to the adapter's first published address):
+const playUrl = ether.frontend.streamURL(itemRef, {absolute: true}).url;
 ```
 
 In the SDKs, call `streamUrl(ctx, itemRef, partIndexOrOpts?)` (TypeScript),
-`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` or
+`ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` or
 `ctx.StreamPartURL(itemRef, partIndex)` (Go), or
-`ctx.stream_url(item_ref, part_index=..., source=...)` (Python); an unpinned
-item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Multi-file
+`ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python); an unpinned
+item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`. Default stream
+URLs remain root-relative; `{ absolute: true }` prepends the request's
+`X-Ether-Origin` (falling back to the adapter's first published address in
+`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving any path
+prefix, when the request has none). Multi-file
 items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]` (or a
 declared `parts` field) so Ether resolves and caches each part with its
 zero-based `KindResolveRequest.partIndex`; playable items with no declared parts
@@ -684,7 +738,8 @@ Ether exposes two viewer-scoped host calls that run the exact same
 built-in protocol projectors:
 
 - `kinds.browse(kind, query)` — browse or search a kind page with policy already
-  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, query?, total?}`).
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, anyGroups?, empty?, query?, excludeQuery?, total?}`).
+  `anyGroups` entries accept `{field, values}` or cross-field `{any: [{field, values}, ...]}` (values across every alternative count toward the 256-value bound); `empty` maps field names (declared fields or item columns like `released`, `year`, `rating`, `summary`, `recording`) to `true` (missing) or `false` (present) without counting toward value bounds (unknown fields are rejected); `excludeQuery` drops items matching the same text search as `query`.
   `total` defaults to `"cheap"` (returns `total` only when O(1) from tallies/cache/single page, omitting it otherwise); pass `"none"` to skip totals or `"exact"` when a caller needs an exact filtered count.
   Prefer this when your adapter lists or searches pages directly from Ether's library.
 - `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
@@ -692,9 +747,27 @@ built-in protocol projectors:
   and dropping unknown or hidden IDs. Use this when your adapter builds a custom
   list or keeps its own index and needs to prune hidden items before returning them.
 
+- `kinds.get(kind, ids)` — the stored items (up to **500**) the viewer may see, in
+  request order (hosted JS).
+- Viewer state for your own items, stored in Ether's shared favourites, watch
+  state and playlists (a like here is a like in every Ether app), hosted JS:
+  `kinds.state`, `kinds.favorite`, `kinds.played`, `kinds.rate`,
+  `kinds.favorites`, `kinds.playlists`, `kinds.playlist`, `kinds.playlistCreate`,
+  `kinds.playlistUpdate`, `kinds.playlistDelete`. See docs/plugin-kinds.md › Host services.
+- `kinds.expand(kind, id)` and `kinds.search(kind, query, {limit?})` (hosted JS) ask
+  Ether to open a container or search the way an Ether app does, so a pull-synced
+  kind gets its children or live-search finds stored without the adapter pushing
+  anything; then read them with `kinds.browse`. `expand` answers `{pending}`,
+  `search` answers `{found}`.
+- Adapter auth `query_credentials` (Subsonic `u` + `p`/`t`+`s`) authenticates
+  Ether-issued per-viewer app logins; failed requests are relayed to
+  `/ether/v1/frontend/{key}/.unauthenticated/…` without a viewer so you can answer
+  your protocol's own error. Answer `{media: {itemRef}}` or `{art: {itemRef, role}}`
+  to have Ether serve an item's bytes (with ranges) or artwork at the adapter URL.
+
 **Security guard:** Only viewer-authenticated frontend adapter requests
 (`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
-`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+`kinds.visible`, `kinds.browse`, `kinds.expand`, `kinds.search` or the viewer-state calls above. Any other route (catalogue browse, jobs,
 views, actions, unauthenticated requests) receives a permission error. The
 viewer identity always comes from Ether's authenticated request context (and the
 host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin

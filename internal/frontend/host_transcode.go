@@ -106,3 +106,7 @@ func HLSVariantAttributes(info MediaInfo, d Decision) string {
 func TranscodeOutputSize(v *StreamInfo, d Decision) (int, int) {
 	return transcode.DecisionOutputSize(v, d)
 }
+
+type SourceDecision = core.SourceDecision
+
+var WithSourceDecision = core.WithSourceDecision

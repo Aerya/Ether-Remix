@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -100,7 +101,7 @@ func (s *Session) encoderSegLocked(r *run) (int, bool) {
 // suspended (Windows) it stops ffmpeg instead and restarts it at the next
 // missing segment in time.
 func (s *Session) throttleLocked() {
-	if (s.m.opts.maxAhead <= 0 && !s.speculative) || s.info.Duration <= 0 {
+	if s.archiveInput || (s.m.opts.maxAhead <= 0 && !s.speculative) || s.info.Duration <= 0 {
 		return
 	}
 	limit := s.aheadLimit()
@@ -195,7 +196,7 @@ func (s *Session) stopForLeadLocked(r *run, ahead int) {
 
 // leadOverLocked reports that this run has published past the throttle window.
 func (s *Session) leadOverLocked(r *run) bool {
-	if s.m == nil || s.m.opts.maxAhead <= 0 || s.segDur <= 0 || r == nil || r.produced == 0 {
+	if s.archiveInput || s.m == nil || s.m.opts.maxAhead <= 0 || s.segDur <= 0 || r == nil || r.produced == 0 {
 		return false
 	}
 	return r.maxDone-s.lastReq > s.aheadLimit()
@@ -234,7 +235,7 @@ func (s *Session) aheadLimit() int {
 // the encoder's newest segment does not move it, so the segment the client
 // is still waiting on is not evicted to make room for the encoder head.
 func (s *Session) pruneLocked() {
-	if s.m.opts.keepBehind <= 0 {
+	if s.archiveInput || s.m.opts.keepBehind <= 0 {
 		return
 	}
 	behind := int(s.m.opts.keepBehind / s.segDur)
@@ -407,6 +408,9 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	s.seekRampSeg = -1
 	rampClock := len(s.rungs) <= 1 && s.plan != nil && s.plan.rampSegs > 0
 	spec := runSpec{
+		ArchiveInput:         s.archiveInput,
+		ArchiveTrim:          s.archiveTrim,
+		ArchiveRetuned:       s.openArchiveRange != nil,
 		SoftwareDecode:       s.softwareDecode,
 		HealTimestamps:       s.healTimestamps,
 		CopyOrigin:           s.copyOrigin,
@@ -414,6 +418,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		RampClock:            rampClock,
 		SilenceAudio:         s.silenceAudio,
 		NormalizeNegativeDTS: s.normalizeNegativeDTS,
+		KeepSourceRecord:     s.keepSourceRecord,
 		RTXTimeline:          s.rtxTimeline,
 		AudioGainDB:          s.audioMatch.gain,
 		LiveInput:            s.liveInput,
@@ -429,6 +434,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		Dir:                  s.runDirLocked(),
 		Playlist:             fmt.Sprintf("run-%d.m3u8", s.runSeq),
 		InitName:             fmt.Sprintf("init-%d.mp4", s.runSeq),
+		AudioConfigName:      fmt.Sprintf("adts-%d.aac", s.runSeq),
 		Accel:                accel,
 		Features:             s.featuresLocked(),
 		BigProbe:             bigProbe,
@@ -648,18 +654,41 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if s.encoder != nil {
 		stopping = s.encoder.cancel
 	}
+	openArchiveRange := s.openArchiveRange
 	hint := s.m.opts.onRunStart
 	hintEnd := spec.Start + 2*s.segDur
 	s.mu.Unlock()
 	var proc Process
-	spec.InputScopeHeaders, err = encoderScopeHeaders(inputLease, spec.Input)
+	if openArchiveRange != nil {
+		ctx, cancel := stopContext(stopping)
+		input, openErr := openArchiveRange(ctx, spec.Start)
+		cancel()
+		err = openErr
+		if err == nil {
+			spec.Input, spec.ArchiveTrim = input.URL, input.Trim
+			if input.Release != nil {
+				r.releaseArchiveInput = sync.OnceFunc(input.Release)
+			}
+			if !validArchiveInput(spec.Input) {
+				err = core.ErrEncoderInputUnverified
+			}
+		} else if errors.Is(openErr, core.ErrStreamLimit) {
+			err = core.ErrStreamLimit
+		} else {
+			// Preserve status without forwarding upstream error details.
+			err = errInputExhausted
+		}
+	}
+	if err == nil {
+		spec.InputScopeHeaders, err = encoderScopeHeaders(inputLease, spec.Input)
+	}
 	if err == nil {
 		// Scoped headers are available only after the lease is opened. They
 		// may make a previously valid bounded AAC seek unsuitable.
 		err = graphFailure(spec)
 	}
 	if err == nil {
-		if needsCopyKeyframe(spec) {
+		if !spec.ArchiveInput && needsCopyKeyframe(spec) {
 			probeCtx, cancelProbe := stopContext(stopping)
 			spec.SeekFrom, spec.HasSeekFrom = s.m.copyKeyframeBefore(probeCtx, spec)
 			cancelProbe()
@@ -697,6 +726,9 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	}
 	if err == nil && proc == nil {
 		proc, err = s.m.runner.Start(Command{Path: s.m.ffmpeg, Args: args, Dir: runDir, Stdout: stdout, Stderr: stderr, Background: !s.liveInput && !spec.Decision.EncodesVideo(s.info)})
+	}
+	if proc == nil && r.releaseArchiveInput != nil {
+		r.releaseArchiveInput()
 	}
 	s.encoder.fenceProcess(proc, work[2])
 	err = redactScopedCommandError(err, spec)
@@ -840,6 +872,9 @@ func (s *Session) stopCurrentRunLocked() {
 			if stopWork != nil {
 				<-proc.Done()
 			}
+			if r.releaseArchiveInput != nil {
+				r.releaseArchiveInput()
+			}
 			if previous != nil {
 				<-previous
 			}
@@ -865,6 +900,9 @@ func (s *Session) reapUnpublishedLocked(r *run, proc Process) {
 		defer close(reaped)
 		proc.Stop()
 		<-proc.Done()
+		if r.releaseArchiveInput != nil {
+			r.releaseArchiveInput()
+		}
 		if previous != nil {
 			<-previous
 		}

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -160,22 +161,33 @@ func rebuildFacetIDs(ctx context.Context, db queryExecer) error {
 func (c *Catalog) nameQueuedFacets(ctx context.Context) (int, error) {
 	named := 0
 	for ctx.Err() == nil {
-		n, err := c.nameQueueBatch(ctx)
+		limit := c.holds.facetNames.size(facetNameHold)
+		n, err := c.nameQueueBatch(ctx, limit)
 		named += n
-		if err != nil || n < facetIDBatch {
+		if err != nil || n < limit {
 			return named, err
 		}
 	}
 	return named, ctx.Err()
 }
 
-func (c *Catalog) nameQueueBatch(ctx context.Context) (int, error) {
+// nameQueueBatch names up to limit queued values in one transaction, sized
+// by the hold measured (write_hold.go): their identifiers land on random
+// index pages, and a fixed 500 held the writer for seconds on a small host
+// (#804).
+func (c *Catalog) nameQueueBatch(ctx context.Context, limit int) (named int, err error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT seq, kind, value FROM catalog_facet_id_queue ORDER BY seq LIMIT ?`, facetIDBatch)
+	admitted := time.Now()
+	defer func() {
+		_ = tx.Rollback()
+		if err == nil && named > 0 {
+			c.holds.facetNames.observe(facetNameHold, named, time.Since(admitted))
+		}
+	}()
+	rows, err := tx.QueryContext(ctx, `SELECT seq, kind, value FROM catalog_facet_id_queue ORDER BY seq LIMIT ?`, limit)
 	if err != nil {
 		return 0, err
 	}

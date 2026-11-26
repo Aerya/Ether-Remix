@@ -15,3 +15,10 @@ type MarkerRange struct {
 type MarkerRanges interface {
 	Markers(context.Context, RatingKey, MediaInfo) ([]MarkerRange, error)
 }
+
+// CachedMarkerRanges reads skip ranges already held locally for a probed
+// source: embedded chapters, the marker cache and plugin results. It never
+// fetches, aligns or detects, so request paths can call it without waiting.
+type CachedMarkerRanges interface {
+	CachedMarkers(context.Context, RatingKey, MediaInfo) ([]MarkerRange, error)
+}

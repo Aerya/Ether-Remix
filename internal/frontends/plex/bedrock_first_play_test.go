@@ -62,7 +62,7 @@ func TestBedrockIOSFirstPlayDualAudioSelectsPreferredTrack(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults(dir)
 	cfg.Quality.Default = "lab1080"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 
@@ -270,7 +270,7 @@ func TestBedrockPlayQueueProbesVersionsConcurrentlyWithAuto(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults(dir)
 	cfg.Quality.Default = "lab1080"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 	cfg.Resolver.SameQualityAlternatives = 0
@@ -495,7 +495,7 @@ func TestDirectPlayDesktopFirstPlayExposesEmbeddedSubtitlesAndSelectsAlwaysOn(t 
 			dir := t.TempDir()
 			cfg := config.Defaults(dir)
 			cfg.Quality.Default = "lab2160"
-			cfg.Quality.Remote = ""
+			cfg.Quality.DefaultAway = ""
 			cfg.Quality.Rules = nil
 			cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab2160", MaxHeight: 2160}}
 
@@ -686,7 +686,7 @@ func TestMetadataReadDuringActivePrepareJoinsProbedSubtitles(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults(dir)
 	cfg.Quality.Default = "lab2160"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab2160", MaxHeight: 2160}}
 

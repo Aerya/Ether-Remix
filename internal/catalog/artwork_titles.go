@@ -157,6 +157,52 @@ func (c *Catalog) PersistsArtwork(ctx context.Context, key core.RatingKey) bool 
 	return err == nil
 }
 
+// PersistsArtworkMany checks PersistsArtwork for a batch of keys in chunked
+// queries rather than one SELECT per title.
+func (c *Catalog) PersistsArtworkMany(ctx context.Context, keys []core.RatingKey) map[core.RatingKey]bool {
+	out := make(map[core.RatingKey]bool, len(keys))
+	seen := make(map[core.RatingKey]bool, len(keys))
+	var check []core.RatingKey
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		switch key.Kind() {
+		case core.KindMovie, core.KindShow, core.KindSeason, core.KindEpisode:
+			check = append(check, key)
+		default:
+			out[key] = true
+		}
+	}
+	for part := range store.Chunks(check, 200) {
+		args := make([]any, len(part))
+		for i, k := range part {
+			args[i] = int64(k)
+		}
+		rows, err := c.db.QueryContext(ctx, `SELECT key FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
+		if err != nil {
+			continue
+		}
+		found := make(map[core.RatingKey]bool, len(part))
+		for rows.Next() {
+			var raw int64
+			if err := rows.Scan(&raw); err == nil {
+				found[core.RatingKey(raw)] = true
+			}
+		}
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			continue
+		}
+		for _, k := range part {
+			out[k] = found[k]
+		}
+	}
+	return out
+}
+
 // ArtworkRows is ArtworkTitles for an artwork request that lists no credited
 // people's portraits (frontend.WithArtworkRows): stored movies and shows come
 // as their rows with the facts the catalogue's policy for ctx's viewer reads

@@ -79,6 +79,8 @@ func (c *trajStubConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, er
 
 func (c *trajStubConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	switch {
+	case strings.Contains(query, "FROM catalog_episode_order"):
+		return &trajStubRows{cols: []string{"has_layouts"}, data: [][]driver.Value{{false}}}, nil
 	case strings.Contains(query, "FROM catalog_viewer_rules"):
 		return &trajStubRows{cols: []string{"viewer_id", "document", "revision"}}, nil
 	case strings.Contains(query, "FROM catalog_owner_includes"):

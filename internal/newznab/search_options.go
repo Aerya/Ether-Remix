@@ -49,15 +49,16 @@ type searchFlight struct {
 }
 
 type searchSlot struct {
-	client   *Client
-	id       string
-	name     string
-	skipped  bool
-	started  time.Time
-	finished bool
-	duration time.Duration
-	results  []core.Release
-	err      error
+	client         *Client
+	id             string
+	name           string
+	configuredName string
+	skipped        bool
+	started        time.Time
+	finished       bool
+	duration       time.Duration
+	results        []core.Release
+	err            error
 }
 
 // EnabledIndexerStatuses returns one status entry per currently enabled indexer
@@ -184,11 +185,12 @@ func (m *Manager) recordIndexerTimingLocked(id string, ms int64, errCode string)
 	h.lastError = errCode
 }
 
-func buildIndexerStatus(ctx context.Context, id, name string, res []core.Release, err error, dur time.Duration) core.IndexerSearchStatus {
+func buildIndexerStatus(ctx context.Context, id, name, configuredName string, res []core.Release, err error, dur time.Duration) core.IndexerSearchStatus {
 	st := core.IndexerSearchStatus{
-		IndexerID: id,
-		Indexer:   name,
-		MS:        max(int64(0), dur.Milliseconds()),
+		IndexerID:      id,
+		Indexer:        name,
+		ConfiguredName: configuredName,
+		MS:             max(int64(0), dur.Milliseconds()),
 	}
 	if err != nil {
 		switch {
@@ -265,10 +267,11 @@ func (m *Manager) SearchWithOptions(ctx context.Context, req core.SearchRequest,
 			active++
 		}
 		slots = append(slots, searchSlot{
-			client:  cl,
-			id:      id,
-			name:    name,
-			skipped: skipped,
+			client:         cl,
+			id:             id,
+			name:           name,
+			configuredName: cfg.Name,
+			skipped:        skipped,
 		})
 	}
 
@@ -588,7 +591,7 @@ func (m *Manager) searchClientCoalescedWith(ctx context.Context, cl *Client, req
 	if cl.ttl() <= 0 {
 		return cl.SearchWith(ctx, req, arrived)
 	}
-	speculative := core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
+	speculative := backgroundSearch(ctx)
 	key := cl.indexerID() + "|" + cacheKey(cl, req)
 	if speculative {
 		key += "|bg"
@@ -599,7 +602,7 @@ func (m *Manager) searchClientCoalescedWith(ctx context.Context, cl *Client, req
 		m.flightMu.Lock()
 		if f, ok := m.flights[key]; ok {
 			m.flightMu.Unlock()
-			if err := cl.searchPaused(); err != nil {
+			if err := cl.searchPaused(ctx); err != nil {
 				return nil, err
 			}
 			select {
@@ -650,8 +653,9 @@ func snapshotSearchSlots(slots []searchSlot, searchStart time.Time, unfinishedSt
 
 	for i, s := range slots {
 		st := core.IndexerSearchStatus{
-			IndexerID: s.id,
-			Indexer:   s.name,
+			IndexerID:      s.id,
+			Indexer:        s.name,
+			ConfiguredName: s.configuredName,
 		}
 		switch {
 		case s.skipped:

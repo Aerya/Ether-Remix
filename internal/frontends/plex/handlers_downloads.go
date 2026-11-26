@@ -666,7 +666,7 @@ func (s *Server) handleDownloadItemDecision(w http.ResponseWriter, r *http.Reque
 	m := itemModel(it)
 	status, size, dur, vCodec, aCodec := it.Status, it.Size, it.Duration, it.VideoCodec, it.AudioCodec
 	s.downloads.Unlock()
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	md := s.metadata(ctx, pr, t, renderOpts{detail: true, media: true, session: true})
 	decisionItem(&md)
 	if len(md.Media) > 0 {
@@ -953,6 +953,8 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			var reqLang *frontend.RequiredAudioLanguageError
 			if errors.As(err, &reqLang) {
 				fail(reqLang.Error())
+			} else if msg := frontend.IndexersPausedMessage(err); msg != "" {
+				fail(msg)
 			} else if noRelease(err) {
 				fail("No release available for download at this quality.")
 			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {

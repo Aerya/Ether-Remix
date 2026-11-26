@@ -27,9 +27,10 @@ const (
 )
 
 type GuideWindowChannel struct {
-	ChannelID  string
-	State      GuideWindowState
-	Programmes []Programme
+	ArchiveDays int
+	ChannelID   string
+	State       GuideWindowState
+	Programmes  []Programme
 }
 
 type GuideWindow struct {
@@ -336,6 +337,9 @@ func (s *Service) GuideWindowForChannels(ctx context.Context, u *core.User, from
 			virtualPositions = keptP
 		}
 	}
+	for n, c := range iptvChannels {
+		out.Channels[iptvPositions[n]].ArchiveDays = c.ArchiveDays()
+	}
 
 	var earliestNext time.Time
 	noteNext := func(candidate time.Time) {
@@ -547,9 +551,10 @@ func (s *Service) GuideWindowForChannels(ctx context.Context, u *core.User, from
 					ps := normalizeWindowProgrammes(perChannel[slot.reqIdx])
 					totalProgrammes += len(ps)
 					out.Channels[slot.reqIdx] = GuideWindowChannel{
-						ChannelID:  slot.ch.ID,
-						State:      GuideWindowReady,
-						Programmes: ps,
+						ChannelID:   slot.ch.ID,
+						ArchiveDays: slot.ch.ArchiveDays(),
+						State:       GuideWindowReady,
+						Programmes:  ps,
 					}
 				}
 			}

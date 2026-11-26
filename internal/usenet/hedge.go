@@ -301,7 +301,8 @@ func (f *Fetcher) startHedge(ctx context.Context, id string, groups []string, pr
 	if !h.admit(id, f.hedgeLimit()) {
 		return nil, nil
 	}
-	target := f.hedgeTarget(id, primary)
+	hint := core.ProviderMissHintFrom(ctx)
+	target := f.hedgeTarget(id, primary, hint)
 	if target == nil {
 		h.release(id)
 		return nil, nil
@@ -317,7 +318,13 @@ func (f *Fetcher) startHedge(ctx context.Context, id string, groups []string, pr
 		defer stop()
 		defer h.release(id)
 		part, wire, err := target.hedgeBody(hctx, id, groups)
+		if err == nil {
+			err = validateArticleSlot(hctx, part)
+		}
 		if err == nil && race.claim() {
+			if hint != nil {
+				hint.Hit(target.key)
+			}
 			target.hedgeWins.Add(1)
 			out <- hedgeResult{part: part}
 			return
@@ -326,6 +333,9 @@ func (f *Fetcher) startHedge(ctx context.Context, id string, groups []string, pr
 		target.hedgeWaste.Add(wire)
 		if errors.Is(err, ErrNoSuchArticle) {
 			f.misses.add(id, target.key)
+			if hint != nil {
+				hint.Miss(target.key)
+			}
 		}
 		if err != nil {
 			out <- hedgeResult{err: err}
@@ -351,10 +361,11 @@ func (f *Fetcher) hedgeLimit() int {
 // hedgeTarget reserves a spare live slot for a hedge: another provider in the
 // usual order first, then the primary's own pool. Block accounts qualify only
 // when the primary path has already fallen back to one.
-func (f *Fetcher) hedgeTarget(id string, primary *pool) *pool {
+func (f *Fetcher) hedgeTarget(id string, primary *pool, hint *core.ProviderMissHint) *pool {
 	known := f.misses.get(id)
 	backfill := primary != nil && primary.cfg.Backfill
-	for _, p := range f.order() {
+	pools, balanced := f.orderSnapshot()
+	for _, p := range demoteMissed(hint, pools, balanced) {
 		if p == primary || (p.cfg.Backfill && !backfill) || slices.Contains(known, p.key) {
 			continue
 		}

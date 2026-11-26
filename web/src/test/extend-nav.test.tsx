@@ -31,15 +31,22 @@ describe("registry navigation", () => {
     resetRegistryCache();
   });
 
-  it("builds the sidebar in the same order as before", () => {
+  it("builds the sidebar groups in order", () => {
     const groups = buildNavigation(descriptors);
-    expect(groups.map((g) => g.label)).toEqual(["", "Library", "Streaming", "Server"]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "",
+      "Library",
+      "Streaming",
+      "Connect",
+      "Automate",
+      "System",
+    ]);
     expect(groups[0]!.items.map((i) => i.href)).toEqual(["/", "/activity", "/viewers"]);
     expect(groups[0]!.items.map((i) => i.label)).toEqual(["Overview", "Activity", "Viewers"]);
     expect(groups[1]!.items.map((i) => i.href)).toEqual([
       "/libraries",
       "/collections",
-      "/home",
+      "/recommendations",
       "/livetv",
       "/calendar",
       "/metadata",
@@ -47,19 +54,18 @@ describe("registry navigation", () => {
     expect(groups[2]!.items.map((i) => i.href)).toEqual([
       "/sources",
       "/playback",
-      "/quality",
+      "/releases",
       "/cache",
     ]);
-    expect(groups[3]!.items.map((i) => i.href)).toEqual([
-      "/server",
-      "/apps",
-      "/services",
-      "/plugins",
-      "/notifications",
-      "/flows",
-      "/cluster",
-      "/maintenance",
+    expect(groups[2]!.items.map((i) => i.label)).toEqual([
+      "Sources",
+      "Playback",
+      "Releases",
+      "Cache",
     ]);
+    expect(groups[3]!.items.map((i) => i.href)).toEqual(["/apps", "/services", "/plugins"]);
+    expect(groups[4]!.items.map((i) => i.href)).toEqual(["/notifications", "/flows"]);
+    expect(groups[5]!.items.map((i) => i.href)).toEqual(["/server", "/cluster", "/maintenance"]);
     // Mobile tab bar membership is unchanged.
     const mobile = groups.flatMap((g) => g.items).filter((i) => i.mobile);
     expect(mobile.map((i) => i.href)).toEqual(["/", "/activity", "/viewers", "/collections"]);

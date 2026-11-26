@@ -40,8 +40,8 @@ func (f *themeExperience) Item(context.Context, frontend.ItemRequest) (frontend.
 
 type themeCacheFake struct{ reads int }
 
-func (*themeCacheFake) ThemeEnabled() bool              { return true }
-func (*themeCacheFake) Theme(frontend.Title, bool) bool { return true }
+func (*themeCacheFake) ThemeEnabled() bool                { return true }
+func (*themeCacheFake) Theme(frontend.Title, bool) string { return "mp3" }
 func (f *themeCacheFake) ServeTheme(w http.ResponseWriter, r *http.Request, _ frontend.Title) {
 	f.reads++
 	w.WriteHeader(206)

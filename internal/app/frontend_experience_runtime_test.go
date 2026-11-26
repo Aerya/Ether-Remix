@@ -27,7 +27,10 @@ import (
 func TestAppHomeDesignerLayoutUsesRealEngineAndStableSidecars(t *testing.T) {
 	a := setupTestApp(t, true)
 	ctx := context.Background()
-	_, err := a.personalize.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: "home.continue", Status: "always", Slot: 1}, {Row: "movie.trending", Status: "always"}}}}})
+	_, err := a.personalize.SavePage(ctx, core.RowPage{Key: core.PageHome, Mode: core.PagePersonalized, Picks: true, Rows: []core.Row{
+		{Source: core.RowSource{Kind: "continue-watching"}, Placement: core.RowPlacement{Mode: core.PlacementPinned, Position: 1, Audience: core.Audience{Mode: core.AudienceEveryone}}},
+		{Source: core.RowSource{Kind: "trending"}, Placement: core.RowPlacement{Mode: core.PlacementShow, Audience: core.Audience{Mode: core.AudienceEveryone}}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

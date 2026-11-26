@@ -73,7 +73,7 @@ func TestAutomaticReleaseNumbering(t *testing.T) {
 		return scene.Lookup(ctx, req, canonicalLayout)
 	}})
 	defer svc.Close()
-	title := &core.Title{Key: core.EpisodeKey(10, 1, 28), Type: core.TypeEpisode, ShowKey: core.ShowKey(10), ShowTitle: "Show", Season: 1, Episode: 28, ShowIDs: core.IDs{TVDB: 777}}
+	title := &core.Title{Key: core.EpisodeKey(10, 1, 28), Type: core.TypeEpisode, ShowKey: core.ShowKey(10), ShowTitle: "Show", Season: 1, Episode: 28, ShowIDs: core.IDs{TMDB: 10, TVDB: 777}}
 	// Display preferences never select release numbering.
 	if _, err := db.ExecContext(ctx, `INSERT INTO episodeorder_preferences(user_id,show_key,group_id) VALUES(0,?,'display-only')`, int64(title.ShowKey)); err != nil {
 		t.Fatal(err)

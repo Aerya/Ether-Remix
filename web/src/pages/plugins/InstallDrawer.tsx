@@ -350,6 +350,7 @@ export function InstallDrawer({
             <RuntimeLimitsCard
               limits={preview.runtimeLimits}
               requested={preview.manifest.ether?.runtime?.limits}
+              listItems={preview.listItems}
             />
             <PermissionSheet
               permissions={preview.permissions}
@@ -365,6 +366,7 @@ export function InstallDrawer({
               pendingOperatorHosts={preview.pendingOperatorHosts}
               onChangeOperatorHosts={setOperatorHosts}
               addedPermissions={preview.addedPermissions}
+              listItems={preview.listItems}
             />
 
             <div className="rounded-xl border border-border bg-surface px-4 py-2">

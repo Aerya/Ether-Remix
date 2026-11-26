@@ -36,6 +36,7 @@ type prioSem struct {
 	reserveLive bool                     // connection pools reserve one slot against all speculative work
 	waiters     [numPriorities]list.List // of *semWaiter
 	closed      bool
+	speedTests  map[*context.CancelFunc]struct{}
 	onSaturated func(active, maxConns, waiting int)
 }
 
@@ -182,6 +183,28 @@ func (s *prioSem) tryAcquireSpare() bool {
 	return true
 }
 
+// trySpeedTest borrows only unclaimed capacity. If a live read queues, the
+// measurement yields its sockets instead of holding the viewer for ten seconds.
+func (s *prioSem) trySpeedTest(cancel *context.CancelFunc, reserve int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.mustQueueLocked(core.PriorityPrefetch) || s.inUse >= s.size-reserve {
+		return false
+	}
+	if s.speedTests == nil {
+		s.speedTests = make(map[*context.CancelFunc]struct{})
+	}
+	s.speedTests[cancel] = struct{}{}
+	s.takeLocked(core.PriorityLive)
+	return true
+}
+
+func (s *prioSem) doneSpeedTest(cancel *context.CancelFunc) {
+	s.mu.Lock()
+	delete(s.speedTests, cancel)
+	s.mu.Unlock()
+}
+
 // Acquire waits for a slot. It returns ctx.Err() if ctx ends first (no slot
 // is held in that case) and ErrPoolClosed if the semaphore is closed.
 func (s *prioSem) Acquire(ctx context.Context, prio core.Priority) error {
@@ -202,6 +225,13 @@ func (s *prioSem) Acquire(ctx context.Context, prio core.Priority) error {
 	}
 	w := &semWaiter{prio: prio, burstUntil: burstUntil(ctx), ready: make(chan struct{})}
 	elem := s.waiters[prio].PushBack(w)
+	if prio == core.PriorityLive {
+		for stop := range s.speedTests {
+			delete(s.speedTests, stop)
+			(*stop)()
+			break
+		}
+	}
 	var onSat func(active, maxConns, waiting int)
 	var active, maxConns, waiting int
 	if s.onSaturated != nil && s.inUse >= s.size {
@@ -288,6 +318,9 @@ func (s *prioSem) Close() {
 		return
 	}
 	s.closed = true
+	for stop := range s.speedTests {
+		(*stop)()
+	}
 	for p := range s.waiters {
 		q := &s.waiters[p]
 		for q.Len() > 0 {

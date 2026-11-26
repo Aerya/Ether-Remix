@@ -30,6 +30,9 @@ export function MetadataWorkspace({
       title={t("Metadata")}
       actions={
         <>
+          {/* Page actions sit left of the subtabs so the subtabs keep the
+              same place on every Metadata subtab. */}
+          {actions}
           <SubtabNav
             ariaLabel={t("Metadata sections")}
             active={active}
@@ -37,7 +40,6 @@ export function MetadataWorkspace({
             tabs={sections}
             className="[&_button]:py-1.5"
           />
-          {actions}
           <Button
             size="sm"
             variant="ghost"

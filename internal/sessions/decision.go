@@ -61,6 +61,11 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	healthSafety := onDemand && !ps.Resolution.HealthVerified
 	preferRemux := (r.PreferRemux || healthSafety) && onDemand && ps.Resolution.Release.Protocol != core.ProtocolTorrent &&
 		ps.Resolution.Release.Protocol != core.ProtocolHTTP
+	if ps.Info.AudioOnly() && r.Protocol == core.ProtocolHTTP {
+		// Progressive music plays the original file. The optional segmented
+		// remux path can otherwise select a video-oriented HLS container.
+		preferRemux = false
+	}
 	// Keep native Dolby Vision file playback on Android when the decision
 	// accepted the container, tracks and DV profile. Optional source-change
 	// remuxing must not send it through a different player/demuxer. A required

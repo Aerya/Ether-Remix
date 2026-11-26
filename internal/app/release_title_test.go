@@ -69,6 +69,20 @@ func TestReleaseTitleIDs(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("generic title skips TMDB search", func(t *testing.T) {
+		searches := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			searches++
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		a := &App{tmdb: tmdb.New("test-key", quietLog(), tmdb.WithBaseURL(srv.URL), tmdb.WithMaxRetries(0))}
+		got, err := a.releaseTitleIDs(t.Context(), core.TypeShow, "The")
+		if err != nil || got != (core.IDs{}) || searches != 0 {
+			t.Fatalf("got=%+v err=%v searches=%d, want zero", got, err, searches)
+		}
+	})
 }
 
 func TestVerifyTitleIDs(t *testing.T) {

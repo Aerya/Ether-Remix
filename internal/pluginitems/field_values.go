@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 const (
@@ -80,18 +81,31 @@ func (s *Service) FieldValues(ctx context.Context, q FieldValuesQuery) (FieldVal
 	trimmedQ := strings.TrimSpace(q.Query)
 	terms := foldQueryTerms(trimmedQ)
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	table := "plugin_item_field_tally"
 	valCol, lowerCol, foldCol := "v_text", "v_lower", "v_fold"
 	orderBy := `cnt DESC, v_lower ASC, v_text ASC`
+	if isPG {
+		orderBy = `cnt DESC, left(v_lower, 256) ASC, v_lower ASC, v_text ASC`
+	}
 	if orderByName {
 		orderBy = `v_lower ASC, v_text ASC`
+		if isPG {
+			orderBy = `left(v_lower, 256) ASC, v_lower ASC, v_text ASC`
+		}
 	}
 	if isPeople {
 		table = "plugin_item_person_tally"
 		valCol, lowerCol, foldCol = "label", "label_lower", "label_fold"
 		orderBy = `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+		if isPG {
+			orderBy = `cnt DESC, left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+		}
 		if orderByName {
 			orderBy = `label_lower ASC, label ASC, v_int ASC`
+			if isPG {
+				orderBy = `left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
 		}
 	}
 
@@ -187,20 +201,26 @@ func (s *Service) unpopulatedDeclaredValues(ctx context.Context, libraryID core.
 		return nil, nil
 	}
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	present := make(map[string]bool, len(candidates))
 	const chunkSize = 200
 	for start := 0; start < len(candidates); start += chunkSize {
 		batch := candidates[start:min(start+chunkSize, len(candidates))]
-		placeholders := make([]string, len(batch))
-		args := make([]any, 0, len(batch)+3)
+		var qSQL strings.Builder
+		args := make([]any, 0, 2*len(batch)+3)
+		qSQL.WriteString(`SELECT v_text FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? AND cnt > 0`)
 		args = append(args, int64(libraryID), level, fieldKey)
-		for i, v := range batch {
-			placeholders[i] = "?"
-			args = append(args, v)
+		if isPG {
+			appendPGMD5In(&qSQL, &args, "v_text", batch)
+		} else {
+			placeholders := make([]string, len(batch))
+			for i, v := range batch {
+				placeholders[i] = "?"
+				args = append(args, v)
+			}
+			qSQL.WriteString(` AND v_text IN (` + strings.Join(placeholders, ",") + `)`)
 		}
-		rows, err := s.db.QueryContext(ctx,
-			`SELECT v_text FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? AND cnt > 0 AND v_text IN (`+strings.Join(placeholders, ",")+`)`,
-			args...)
+		rows, err := s.db.QueryContext(ctx, qSQL.String(), args...)
 		if err != nil {
 			return nil, err
 		}

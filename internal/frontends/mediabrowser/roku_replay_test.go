@@ -238,6 +238,86 @@ func TestRokuFilmDetailsReplay(t *testing.T) {
 	}
 }
 
+func TestRokuColdVideoDetailShape(t *testing.T) {
+	lib, _, inst := mountRoku(t)
+	// A cold title has no probed tracks. Its independent episode identity
+	// carries explicit series, season and position metadata.
+	lib.eps[0].Key = core.LocalKey(421)
+	lib.eps[0].ShowKey = lib.show.Key
+	lib.eps[0].Season = lib.season.Season
+	lib.eps[0].ParentKey = lib.season.Key
+	lib.ItemFunc = func(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+		detail, err := lib.item(ctx, req)
+		detail.TracksEstimated = true
+		return detail, err
+	}
+
+	userID, _ := ids.GUID(ids.User, 1)
+	showID := ids.RatingKeyGUID(lib.show.Key)
+	for _, title := range []frontend.Title{lib.movie, lib.eps[0]} {
+		t.Run(string(title.Type), func(t *testing.T) {
+			id := ids.RatingKeyGUID(title.Key)
+			path := "/Items/" + id
+			if title.Type == "episode" {
+				path = "/Users/" + userID + path
+			}
+			code, body := rokuGet(t, inst, path+"?UserId="+userID+"&Fields=Chapters,Trickplay")
+			if code != http.StatusOK {
+				t.Fatalf("detail status = %d", code)
+			}
+			item := rokuJSON(t, body)
+			for _, field := range []string{"MediaStreams", "People", "Chapters", "Studios", "Taglines", "BackdropImageTags"} {
+				if values, ok := item[field].([]any); !ok || (field == "MediaStreams" && len(values) != 0) {
+					t.Errorf("unexpected array shape for %s", field)
+				}
+			}
+			for _, field := range []string{"UserData", "ImageTags", "Trickplay"} {
+				if _, ok := item[field].(map[string]any); !ok {
+					t.Errorf("%s must be an object", field)
+				}
+			}
+			if _, ok := item["RunTimeTicks"].(float64); !ok {
+				t.Error("runtime must be numeric")
+			}
+			sources, _ := item["MediaSources"].([]any)
+			if len(sources) == 0 {
+				t.Fatal("detail is missing its default source")
+			}
+			source, _ := sources[0].(map[string]any)
+			if streams, ok := source["MediaStreams"].([]any); !ok || len(streams) != 0 || source["Id"] != id || source["VideoType"] != "VideoFile" {
+				t.Error("default video source must have an ID, video type, and empty stream array")
+			}
+			if title.Type == "episode" {
+				if item["SeriesId"] != showID || item["SeasonId"] != ids.RatingKeyGUID(lib.season.Key) || item["ParentIndexNumber"] != float64(1) {
+					t.Error("episode detail lost its series or season identity")
+				}
+			}
+		})
+	}
+	code, body := rokuGet(t, inst, "/Shows/"+showID+"/Episodes")
+	if code != http.StatusOK {
+		t.Fatalf("episode list status = %d", code)
+	}
+	if rows := itemsOf(t, body); len(rows) == 0 || rows[0]["SeriesId"] != showID {
+		t.Error("episode listing lost its series identity")
+	}
+
+	const encoding = "/jellyfin/system/configuration/encoding"
+	w := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, encoding, nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous encoding status = %d", w.Code)
+	}
+	code, body = rokuGet(t, inst, encoding)
+	if code != http.StatusOK {
+		t.Fatalf("authenticated encoding status = %d", code)
+	}
+	options := rokuJSON(t, body)
+	if options["EnableFallbackFont"] != false {
+		t.Error("encoding config must disable fallback font downloads")
+	}
+}
+
 // TestRokuSeriesToEpisodeReplay replays the Roku sequence series -> season ->
 // episode -> play and requires SeriesId and SeasonId on every season and
 // episode row, from every listing path the app uses (Seasons, Episodes,

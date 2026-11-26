@@ -67,6 +67,16 @@ Key ideas for answering questions:
   poor release", read playback_history to find the play, then
   resolve_trace for that title, then release_health and logs_tail if the
   trace points at a sick release or source.
+- **Quality rules** choose which profile and playback limits apply to a
+  play. Rules run top to bottom: the first matching rule with a profile
+  picks it, and every matching rule's limits accumulate (strictest wins).
+  If no rule picks a profile, the Away default applies away from home
+  (when set) and the At home default applies otherwise. Use
+  quality_rules_list (pass includeDevices=true for device ids) to inspect
+  rules, defaults, libraries and viewers, and quality_explain to check
+  what a viewer, device, location and library or title will get. Propose
+  changes with quality_rule_add, quality_rule_edit, quality_rule_move (by
+  stable ruleId) and quality_defaults_set.
 - **Ranking** uses quality groups first, then custom format scores, after
   language, connection and release-rule gates. Read quality_profiles to inspect
   the quality order, scores and language settings. quality_order_set proposes

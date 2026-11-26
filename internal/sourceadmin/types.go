@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/nodewire"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 )
 
 const Path = "/cluster/runtime/source-admin"
@@ -28,6 +29,8 @@ type Operation string
 const (
 	Snapshot       Operation = "snapshot"
 	TestProvider   Operation = "test-provider"
+	SpeedUsenet    Operation = "speed-usenet"
+	SpeedDebrid    Operation = "speed-debrid"
 	TestIndexer    Operation = "test-indexer"
 	TestDebrid     Operation = "test-debrid"
 	Traces         Operation = "traces"
@@ -138,17 +141,20 @@ type Release struct {
 	Automatic   bool   `json:"automatic"`
 }
 type Response struct {
-	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
-	Cache       *Cache       `json:"cache,omitempty"`
-	Traces      []Trace      `json:"traces,omitempty"`
-	Releases    []Release    `json:"releases,omitempty"`
-	Tested      bool         `json:"tested,omitempty"`
+	Speed       *speedtest.Result `json:"speed,omitempty"`
+	Diagnostics *Diagnostics      `json:"diagnostics,omitempty"`
+	Cache       *Cache            `json:"cache,omitempty"`
+	Traces      []Trace           `json:"traces,omitempty"`
+	Releases    []Release         `json:"releases,omitempty"`
+	Tested      bool              `json:"tested,omitempty"`
 }
 
 // Services are real, cancellation-aware operations. Test callbacks resolve the
 // ID against CURRENT shared config at invocation, never a cached config snapshot.
 // Nil means unsupported. Callbacks must not substitute successful dummy results.
 type Services struct {
+	SpeedUsenet    func(context.Context, string) speedtest.Result
+	SpeedDebrid    func(context.Context, string) speedtest.Result
 	Snapshot       func(context.Context, int) (Diagnostics, error)
 	TestProvider   func(context.Context, string) error
 	TestIndexer    func(context.Context, string) error

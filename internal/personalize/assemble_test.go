@@ -81,8 +81,8 @@ func TestFavoritesShelfRetainsOrderAndOverlapOnHome(t *testing.T) {
 	plex := testRow(KindContinue, "continue", items(cat, keys[1]))
 	plex.source, plex.keepOrder = core.RowSourcePlex, true
 	other := testRow(KindTrending, "trending", items(cat, append(keys, movieKey(1, 1), movieKey(1, 2), movieKey(1, 3), movieKey(1, 4))...))
-	layout := &core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindFavorites, Status: "always", Slot: 2}}}}}
-	rows := run(emptyModel(plex, other, favorites), func(a *assembly) { a.layout = layout })
+	plan := compilePage(rpage(core.PageHome, prow(KindFavorites, core.PlacementPinned, 2)), true, 0, nil)
+	rows := run(emptyModel(plex, other, favorites), func(a *assembly) { a.plan = plan })
 	row := rowByKind(rows, KindFavorites)
 	if row == nil || len(row.Items) != len(keys) {
 		t.Fatalf("favorites shelf missing or short: %#v", row)

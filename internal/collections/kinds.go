@@ -69,7 +69,14 @@ type Gather struct {
 	Want   int
 	Kinds  []string
 	Res    sourceResult
+	// Listed and Limit are how many items a paged list source read and
+	// the most it was allowed to read; Listed reaching Limit means the
+	// list may hold more than was synced.
+	Listed, Limit int
 }
+
+// Paged records how many items a paged list source read and its limit.
+func (g *Gather) Paged(listed, limit int) { g.Listed, g.Limit = listed, limit }
 
 // Fail ends a preview when a source cannot be evaluated.
 func (g *Gather) Fail(err error) { g.Res.err = err }
@@ -151,7 +158,7 @@ func (e *ValidationError) Add(field, msg string) { e.add(field, msg) }
 
 // NeedTMDB reports whether TMDB is available, recording a warning.
 func (g *Gather) NeedTMDB() bool {
-	if g.Svc.api == nil || g.Svc.api.c == nil {
+	if !g.Svc.api.configured() {
 		g.Warn("%s needs TMDB, which is not configured", sourceName(g.Src))
 		return false
 	}

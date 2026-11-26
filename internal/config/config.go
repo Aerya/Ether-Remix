@@ -280,7 +280,22 @@ type Usenet struct {
 	// (connections are dialled lazily and expire when idle). A provider's
 	// own MinIdle overrides this.
 	MinIdle int `json:"minIdle"`
+	// LoadMode says how the primary (non-backfill) providers share
+	// requests. "" or UsenetLoadInOrder: strict priority order, a lower
+	// provider only takes overflow (see usenet/spill.go). UsenetLoadBalanced:
+	// every primary is one tier, so each request goes to the least busy one
+	// and every account carries load. Backfill accounts are never balanced.
+	LoadMode string `json:"loadMode,omitempty"`
 }
+
+// Usenet.LoadMode values.
+const (
+	UsenetLoadInOrder  = "inOrder"
+	UsenetLoadBalanced = "balanced"
+)
+
+// Balanced reports whether the primaries share load (LoadMode "balanced").
+func (u Usenet) Balanced() bool { return u.LoadMode == UsenetLoadBalanced }
 
 // Repair bounds opportunistic PAR2 reconstruction. Disabled until the owner
 // opts in; the live benchmark enables it explicitly without editing config.
@@ -483,8 +498,10 @@ type Catalog struct {
 	// (hide rules, first match) identical to the previous OR of groups.
 	VisibilityDefault string                  `json:"visibilityDefault,omitempty"`
 	Exclusions        []core.LibraryExclusion `json:"exclusions,omitempty"`
-	TMDBKey           string                  `json:"tmdbKey"`  // owner override; empty uses the bundled key
-	Language          string                  `json:"language"` // TMDB language, e.g. "en-US"
+	TVDBKey           string                  `json:"tvdbKey"`
+	TMDBKey           string                  `json:"tmdbKey"`      // owner override
+	TMDBDisabled      bool                    `json:"tmdbDisabled"` // explicit opt-out, including the bundled key
+	Language          string                  `json:"language"`     // TMDB language, e.g. "en-US"
 	Region            string                  `json:"region"`
 	MinPopularity     float64                 `json:"minPopularity"`
 	MinVotes          int                     `json:"minVotes"`
@@ -547,11 +564,17 @@ type Resolver struct {
 	// AlternativesPerResolution distributes the alternative count across
 	// available resolutions while retaining Auto and the shared menu cap.
 	AlternativesPerResolution bool `json:"alternativesPerResolution,omitempty"`
-	// AlternativesPerSource reserves at least one Play Version slot per
-	// source class (Remux, Blu-ray encode, WEB, or other when nothing else)
-	// within each resolution tier that appears, so a lighter WEB-DL still
-	// shows beside a tier full of remuxes. Auto is unchanged.
+	// AlternativesPerSource offers a Remux, a Blu-ray encode and a WEB
+	// release at every resolution in Play Version (higher resolutions first
+	// when they do not all fit), so a lighter WEB-DL still shows beside a
+	// tier full of remuxes. It is SourceVersions with every cell "offer";
+	// an explicit SourceVersions replaces it. Auto is unchanged.
 	AlternativesPerSource bool `json:"alternativesPerSource,omitempty"`
+	// SourceVersions chooses, per resolution, whether Play Version offers,
+	// requires or leaves out a Remux, a Blu-ray encode and a WEB release.
+	// Nil falls back to AlternativesPerSource (SourceVersionPlan). Auto is
+	// unchanged either way.
+	SourceVersions *SourceVersions `json:"sourceVersions,omitempty"`
 	// OfferHigherVersions lets Play Version list releases taller than the
 	// profile ceiling (a 4K copy on a 1080p profile). Off, the default,
 	// keeps that ceiling: height, HDR policy and size limits.
@@ -600,19 +623,72 @@ type Resolver struct {
 }
 
 type Quality struct {
-	// Profiles by name. Rules pick a profile per client.
+	// Profiles say how to rank releases. A profile does nothing until a
+	// rule or a default uses it.
 	Profiles []core.QualityProfile `json:"profiles"`
-	Rules    []QualityRule         `json:"rules"`
-	// Default and Remote are the media-neutral fallbacks. A media-specific
-	// value, when set, wins for that media; legacy configs keep working.
-	Default      string      `json:"default"`
-	Remote       string      `json:"remote"` // profile for remote clients, "" = same as default
-	DefaultMovie string      `json:"defaultMovie,omitempty"`
-	DefaultTV    string      `json:"defaultTv,omitempty"`
-	RemoteMovie  string      `json:"remoteMovie,omitempty"`
-	RemoteTV     string      `json:"remoteTv,omitempty"`
-	Sync         QualitySync `json:"sync,omitempty"`
+	// Rules is the one ordered list that decides who gets which profile:
+	// the first matching rule that names a profile picks it, and every
+	// matching rule's limits apply (the strictest wins).
+	Rules []QualityRule `json:"rules"`
+	// Default is the profile when no rule names one; DefaultAway is the
+	// one for viewers away from home, "" = same as Default.
+	Default           string        `json:"default"`
+	DefaultAway       string        `json:"defaultAway,omitempty"`
+	DefaultLimits     QualityLimits `json:"defaultLimits,omitzero"`
+	DefaultAwayLimits QualityLimits `json:"defaultAwayLimits,omitzero"`
+	// Databases are the owner's custom Profilarr-format databases.
+	Databases []ProfileDatabase `json:"databases,omitempty"`
+	Sync      QualitySync       `json:"sync,omitempty"`
+	// MigratedRules marks the one-time move of the v0.3.20 mapping
+	// (per-media defaults, library profiles, remote and viewer caps) into
+	// rules as done, so cluster peers do not repeat it.
+	MigratedRules int `json:"migratedRules,omitempty"`
+	// RulesMigration is the v0.3.20 mapping config load could not finish
+	// alone (it needs the libraries and viewers); the app applies it once
+	// at startup and clears it. Delete with the migration.
+	RulesMigration *RulesMigration `json:"rulesMigration,omitempty"`
+	// MigrationNote records the one-time upgrade notice and its dismissal.
+	MigrationNote *QualityMigrationNote `json:"migrationNote,omitempty"`
+	// RulesMigrationNote supports consoles from earlier release candidates.
+	RulesMigrationNote bool `json:"rulesMigrationNote,omitempty"`
 }
+
+// QualityLimits can only lower playback capabilities. Zero values leave
+// the corresponding capability alone.
+type QualityLimits struct {
+	MaxHeight      int  `json:"maxHeight,omitempty"`
+	MaxBitrateKbps int  `json:"maxBitrateKbps,omitempty"`
+	StereoAudio    bool `json:"stereoAudio,omitempty"`
+}
+
+func (l QualityLimits) HasLimits() bool {
+	return l.MaxHeight > 0 || l.MaxBitrateKbps > 0 || l.StereoAudio
+}
+
+type QualityMigrationNote struct {
+	At        time.Time `json:"at"`
+	Dismissed bool      `json:"dismissed"`
+}
+
+type QualityRuleOrigin struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+	// Reason says why the upgrade had to shape the rule this way, when it
+	// is not plain from Kind: OriginAwayByKind, OriginAwayDefaultWins.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Reasons an upgraded rule carries in QualityRuleOrigin.Reason.
+const (
+	// OriginAwayByKind: movies and TV shows had different away profiles in
+	// 0.3.20, which the one "Everyone else, away" fallback cannot say, so
+	// the away profile stays a Where: Away rule per kind.
+	OriginAwayByKind = "awayByKind"
+	// OriginAwayDefaultWins: 0.3.20 ranked the away profile above library
+	// profiles, so the library rule applies at home and away plays take
+	// "Everyone else, away".
+	OriginAwayDefaultWins = "awayDefaultWins"
+)
 
 // QualitySync keeps imported profiles and their format definitions aligned
 // with their source guide on a cadence.
@@ -623,17 +699,81 @@ type QualitySync struct {
 	LastError string    `json:"lastError,omitempty"`
 }
 
-// QualityRule selects a profile when all non-empty matchers match.
+// Rule conditions.
+const (
+	WhereHome = "home"
+	WhereAway = "away"
+
+	KindMovie   = "movie"
+	KindEpisode = "episode"
+)
+
+// QualityRule is one row of the ordered rule list. Every condition is
+// optional: an empty list means any, and Except inverts its list.
 type QualityRule struct {
-	Protocol core.Protocol `json:"protocol,omitempty"`
-	Product  string        `json:"product,omitempty"`  // substring of X-Plex-Product
-	Platform string        `json:"platform,omitempty"` // substring of X-Plex-Platform
-	UserID   int64         `json:"userId,omitempty"`
-	// MediaType scopes the rule to movies or shows; empty matches both.
-	MediaType            string `json:"mediaType,omitempty"`
-	Profile              string `json:"profile"`
-	MaxHeight            int    `json:"maxHeight,omitempty"`            // optional max-height override (2160, 1080, 720, 480; 0 = profile ceiling)
-	ConvertSurroundAudio bool   `json:"convertSurroundAudio,omitempty"` // convert Dolby/DTS/TrueHD audio to AAC for players that do not decode surround formats
+	ID   string             `json:"id"`             // stable; assigned by the server
+	Name string             `json:"name,omitempty"` // optional; otherwise the console shows a summary
+	From *QualityRuleOrigin `json:"from,omitempty"`
+
+	Libraries       []int64       `json:"libraries,omitempty"`
+	ExceptLibraries bool          `json:"exceptLibraries,omitempty"`
+	Viewers         []int64       `json:"viewers,omitempty"`
+	ExceptViewers   bool          `json:"exceptViewers,omitempty"`
+	Devices         []DeviceMatch `json:"devices,omitempty"`
+	ExceptDevices   bool          `json:"exceptDevices,omitempty"`
+	Where           string        `json:"where,omitempty"` // "" | "home" | "away"
+	Kind            string        `json:"kind,omitempty"`  // "" | "movie" | "episode"
+
+	Profile        string `json:"profile,omitempty"`        // "" = no change (limits only)
+	MaxHeight      int    `json:"maxHeight,omitempty"`      // lowers only
+	MaxBitrateKbps int    `json:"maxBitrateKbps,omitempty"` // lowers only
+	StereoAudio    bool   `json:"stereoAudio,omitempty"`
+}
+
+// HasLimits reports whether the rule sets any limit.
+func (r QualityRule) HasLimits() bool {
+	return r.Limits().HasLimits()
+}
+
+func (r QualityRule) Limits() QualityLimits {
+	return QualityLimits{MaxHeight: r.MaxHeight, MaxBitrateKbps: r.MaxBitrateKbps, StereoAudio: r.StereoAudio}
+}
+
+// DeviceMatch is one device condition; exactly one of Group, Type, App,
+// Client and Contains is set. The values are the opaque ids GET
+// /api/quality/devices returns.
+type DeviceMatch struct {
+	Group    string `json:"group,omitempty"`    // "tv" | "mobile" | "computer"
+	Type     string `json:"type,omitempty"`     // registry device name: "Apple TV"
+	App      string `json:"app,omitempty"`      // "<protocol>:<registry app name>"
+	Client   string `json:"client,omitempty"`   // one exact device's client identifier
+	Contains string `json:"contains,omitempty"` // product or platform contains (migration, power users)
+	Label    string `json:"label,omitempty"`    // name shown to the owner, captured when picked
+}
+
+// Field returns the one set field and its value.
+func (d DeviceMatch) Field() (string, string) {
+	switch {
+	case d.Group != "":
+		return "group", d.Group
+	case d.Type != "":
+		return "type", d.Type
+	case d.App != "":
+		return "app", d.App
+	case d.Client != "":
+		return "client", d.Client
+	case d.Contains != "":
+		return "contains", d.Contains
+	}
+	return "", ""
+}
+
+// ProfileDatabase is a custom Profilarr-format Git database.
+type ProfileDatabase struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Repo   string `json:"repo"`             // https://github.com/<owner>/<repo>
+	Branch string `json:"branch,omitempty"` // default "v2"
 }
 
 // ClientCompatibility stores owner edits of the capability registry.
@@ -805,6 +945,7 @@ type LiveTVScreens struct {
 }
 
 type LiveTV struct {
+	TimeshiftMinutes *int `json:"timeshiftMinutes,omitempty"` // nil uses 60; zero keeps only the live window
 	// LatencyProfile is the owner preference for every Live TV client.
 	LatencyProfile string `json:"latencyProfile,omitempty"`
 
@@ -827,6 +968,19 @@ type LiveTV struct {
 	// viewer. "fastest", "balanced" or "rocksolid"; empty means balanced.
 	// A channel may override it.
 	Stability string `json:"stability,omitempty"`
+}
+
+const (
+	DefaultTimeshiftMinutes = 60
+	MaxTimeshiftMinutes     = 240
+)
+
+// EffectiveTimeshiftMinutes applies the default and the supported range.
+func (c LiveTV) EffectiveTimeshiftMinutes() int {
+	if c.TimeshiftMinutes == nil {
+		return DefaultTimeshiftMinutes
+	}
+	return min(max(*c.TimeshiftMinutes, 0), MaxTimeshiftMinutes)
 }
 
 // Live TV stability presets (LiveTV.Stability and the per-channel override).
@@ -1067,7 +1221,7 @@ func Open(dataDir string) (*Store, error) {
 		if s.cfg, dropped, err = decodeStartupConfig(s.cfg, plain); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", s.path, err)
 		}
-		upgraded := upgradeShippedQuality(&s.cfg)
+		upgraded := false
 		if notes := normalizeQuality(&s.cfg.Quality); len(notes) > 0 {
 			upgraded = true
 			slog.Info("config: settled quality profiles", "changes", notes)
@@ -1084,7 +1238,6 @@ func Open(dataDir string) (*Store, error) {
 			}
 		}
 	case os.IsNotExist(err):
-		freshInstallQuality(&s.cfg.Quality)
 		if err := s.save(); err != nil {
 			return nil, err
 		}
@@ -1225,6 +1378,10 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 	}
 	if resetPreStandardQuality(file) {
 		dropped = true
+	}
+	if notes := normalizeSharedDocument(file); len(notes) > 0 {
+		dropped = true
+		slog.Info("config: settled quality profiles", "changes", notes)
 	}
 	if upgradeClientIdentity(file) {
 		dropped = true

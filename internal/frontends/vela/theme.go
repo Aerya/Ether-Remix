@@ -14,6 +14,7 @@ type themeGrant struct {
 	scope, host string
 	device      frontend.Device
 	key         frontend.RatingKey
+	container   string // "mp3" or "m4a"; names the URL's extension
 	expires     time.Time
 }
 
@@ -25,7 +26,11 @@ func (i *instance) themeAvailable() bool {
 // active capability with comfortable lifetime remaining so detail ETags stay stable;
 // revocation and current item policy apply per read.
 func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) object {
-	if !i.themeAvailable() || !i.host.Themes.Theme(t, true) {
+	if !i.themeAvailable() {
+		return nil
+	}
+	container := i.host.Themes.Theme(t, true)
+	if container == "" {
 		return nil
 	}
 	dev := requestDevice(r)
@@ -45,8 +50,8 @@ func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) 
 			delete(i.themes, k)
 			continue
 		}
-		if g.scope == scope && g.host == origin && g.device == dev && g.key == t.Key && g.expires.Sub(now) >= 2*time.Minute {
-			return object{"url": "/vela/v0/themes/" + k + "/theme.m4a", "expiresAt": g.expires.UTC().Format(time.RFC3339)}
+		if g.scope == scope && g.host == origin && g.device == dev && g.key == t.Key && g.container == container && g.expires.Sub(now) >= 2*time.Minute {
+			return object{"url": "/vela/v0/themes/" + k + "/theme." + container, "expiresAt": g.expires.UTC().Format(time.RFC3339)}
 		}
 	}
 	if len(i.themes) >= 1024 {
@@ -58,8 +63,8 @@ func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) 
 	}
 	secret := hex.EncodeToString(nonce[:])
 	expiry := now.Add(10 * time.Minute)
-	i.themes[secret] = themeGrant{scope: scope, host: origin, device: dev, key: t.Key, expires: expiry}
-	return object{"url": "/vela/v0/themes/" + secret + "/theme.m4a", "expiresAt": expiry.UTC().Format(time.RFC3339)}
+	i.themes[secret] = themeGrant{scope: scope, host: origin, device: dev, key: t.Key, container: container, expires: expiry}
+	return object{"url": "/vela/v0/themes/" + secret + "/theme." + container, "expiresAt": expiry.UTC().Format(time.RFC3339)}
 }
 
 func (i *instance) theme(w http.ResponseWriter, r *http.Request) {

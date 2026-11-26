@@ -74,7 +74,7 @@ func TestPartRangeOutageEndsInRestart(t *testing.T) {
 	cfg.Quality.Default = "test"
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "test", MaxHeight: 1080}}
 	cfg.Quality.Rules = nil
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	releases := []core.Release{
 		{ID: "hd", GUID: "hd", Indexer: "offline", Name: "Fjord.Harbor.1999.1080p.WEB-DL.H264-GRP", Size: 8000 << 20, PubDate: time.Now().Add(-24 * time.Hour), NZBURL: "offline"},
 		{ID: "sd", GUID: "sd", Indexer: "offline", Name: "Fjord.Harbor.1999.720p.WEB-DL.H264-GRP", Size: 2000 << 20, PubDate: time.Now().Add(-24 * time.Hour), NZBURL: "offline"},

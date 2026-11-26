@@ -3,7 +3,6 @@ package catalog
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"math"
 	"math/bits"
 	"slices"
@@ -174,6 +173,14 @@ func (c *Catalog) searchIndex(ctx context.Context, wait bool) *titleIndex {
 	return st.ix.Load()
 }
 
+// searchIndexBuilding reports whether an index build is running.
+func (c *Catalog) searchIndexBuilding() bool {
+	st := &c.searchIx
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.building != nil
+}
+
 func (c *Catalog) rebuildSearchIndex(gen uint64, done chan struct{}) {
 	st := &c.searchIx
 	defer close(done)
@@ -323,6 +330,10 @@ type titleIndex struct {
 	joinBlob  string
 	// byKey is keys sorted, for holds (library index only; nil otherwise).
 	byKey []int64
+	// franchiseOf[i] is title i's franchise in franchises (folded words),
+	// -1 for none; nil when no title belongs to one (the tail index).
+	franchiseOf []int32
+	franchises  []string
 }
 
 // holds reports whether the index has a title with key (false for an index
@@ -347,24 +358,23 @@ func (ix *titleIndex) join(e int) string { return ix.joinBlob[ix.joinOff[e]:ix.j
 // titles by popularity in Go.
 func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 	type entry struct {
-		key   int64
-		kind  uint8
-		pop   float64
-		votes int
-		year  int
-		names []string
+		key        int64
+		kind       uint8
+		pop        float64
+		votes      int
+		year       int
+		names      []string
+		collection int64
+		franchise  string
 	}
 	var titles []*entry
 	at := map[int64]*entry{}
-	for lo, done := int64(-1<<63), false; !done; {
-		var hi int64
-		err := c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key>? ORDER BY key LIMIT 1 OFFSET ?`, lo, mirrorSnapshotChunk-1).Scan(&hi)
-		if errors.Is(err, sql.ErrNoRows) {
-			hi, done = 1<<63-1, true
-		} else if err != nil {
+	for lo := int64(core.MovieKey(0)) - 1; ; {
+		hi, done, err := titleChunkEnd(ctx, c.db, lo)
+		if err != nil {
 			return nil, err
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT key, type, title, original_title, popularity, vote_count, year FROM catalog_titles
+		rows, err := c.db.QueryContext(ctx, `SELECT key, type, title, original_title, popularity, vote_count, year, collection_id, collection_name FROM catalog_titles
 			WHERE type IN ('movie','show') AND adult=0 AND key>? AND key<=? ORDER BY key`, lo, hi)
 		if err != nil {
 			return nil, err
@@ -372,12 +382,16 @@ func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 		for rows.Next() {
 			e := &entry{}
 			var typ, title, original string
-			if err := rows.Scan(&e.key, &typ, &title, &original, &e.pop, &e.votes, &e.year); err != nil {
+			var collection sql.NullInt64
+			var collectionName sql.NullString
+			if err := rows.Scan(&e.key, &typ, &title, &original, &e.pop, &e.votes, &e.year, &collection, &collectionName); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			if typ == string(core.TypeShow) {
 				e.kind = titleKindShow
+			} else if collection.Int64 > 0 {
+				e.collection, e.franchise = collection.Int64, collectionName.String
 			}
 			e.names = []string{title}
 			if original != "" && original != title {
@@ -417,7 +431,51 @@ func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 		if err != nil {
 			return nil, err
 		}
+		if done {
+			break
+		}
 		lo = hi
+	}
+	// A franchise (a TMDB collection of two or more films) names each of
+	// its films: "james bond" is the Bond films, whose own titles never say
+	// so. A title whose row lacks the collection's name takes it from
+	// catalog_franchises.
+	members := map[int64]int{}
+	for _, e := range titles {
+		if e.collection > 0 {
+			members[e.collection]++
+		}
+	}
+	names := map[int64]string{}
+	if len(members) > 0 {
+		rows, err := c.db.QueryContext(ctx, `SELECT collection_id, name FROM catalog_franchises WHERE member_count>=2`)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			var name string
+			if err := rows.Scan(&id, &name); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			names[id] = name
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, e := range titles {
+		if e.collection == 0 || members[e.collection] < 2 {
+			e.franchise = ""
+			continue
+		}
+		if e.franchise == "" {
+			e.franchise = names[e.collection]
+		}
+		e.franchise = franchiseSearchName(e.franchise)
 	}
 	sort.Slice(titles, func(i, j int) bool {
 		if titles[i].pop != titles[j].pop {
@@ -436,6 +494,7 @@ func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 	b := newTitleIndexBuilder()
 	for _, e := range titles {
 		b.add(e.names)
+		b.addFranchise(e.franchise)
 	}
 	b.finish(ix)
 	ix.byKey = slices.Clone(ix.keys)
@@ -451,6 +510,10 @@ type titleIndexBuilder struct {
 	nameOff  []uint32
 	nameBlob strings.Builder
 	joins    []joinEntry
+	// franchiseOf is each title's franchise (-1: none) in franchises.
+	franchiseOf []int32
+	franchises  []string
+	franchiseAt map[string]int32
 }
 
 type joinEntry struct {
@@ -493,7 +556,57 @@ func (b *titleIndexBuilder) add(names []string) {
 	b.words = append(b.words, keys)
 }
 
+// addFranchise gives the title just added its franchise's name (folded
+// words, see franchiseSearchName): its words find the title, and the name
+// run together finds it by exact or whole-name prefix lookup.
+func (b *titleIndexBuilder) addFranchise(name string) {
+	title := len(b.words) - 1
+	for len(b.franchiseOf) < title {
+		b.franchiseOf = append(b.franchiseOf, -1)
+	}
+	if title < 0 || name == "" {
+		b.franchiseOf = append(b.franchiseOf, -1)
+		return
+	}
+	if b.franchiseAt == nil {
+		b.franchiseAt = map[string]int32{}
+	}
+	id, ok := b.franchiseAt[name]
+	if !ok {
+		id = int32(len(b.franchises))
+		b.franchiseAt[name] = id
+		b.franchises = append(b.franchises, name)
+	}
+	b.franchiseOf = append(b.franchiseOf, id)
+	b.lex.addNames(name)
+	for _, w := range lexiconWords(name) {
+		b.words[title] = append(b.words[title], w.key)
+	}
+	words := strings.Fields(name)
+	b.joins = append(b.joins, joinEntry{strings.Join(words, ""), uint32(title)})
+	if len(words) > 1 && isSearchArticle(words[0]) {
+		b.joins = append(b.joins, joinEntry{strings.Join(words[1:], ""), uint32(title)})
+	}
+}
+
+// franchiseSearchName is a TMDB collection's name as the index matches it:
+// folded words, without the "Collection" TMDB appends to every name
+// ("James Bond Collection" -> james bond).
+func franchiseSearchName(name string) string {
+	words := searchWords(name)
+	if n := len(words); n > 1 && words[n-1] == "collection" {
+		words = words[:n-1]
+	}
+	return strings.Join(words, " ")
+}
+
 func (b *titleIndexBuilder) finish(ix *titleIndex) {
+	if len(b.franchises) > 0 {
+		for len(b.franchiseOf) < len(b.words) {
+			b.franchiseOf = append(b.franchiseOf, -1)
+		}
+		ix.franchiseOf, ix.franchises = b.franchiseOf, b.franchises
+	}
 	ix.lx = b.lex.build()
 	ix.nameAt = append(b.nameAt, uint32(len(b.nameOff)))
 	ix.nameOff = append(b.nameOff, uint32(b.nameBlob.Len()))
@@ -694,6 +807,9 @@ func (ix *titleIndex) search(q searchQuery, wantMovie, wantShow bool, n int) []i
 			continue
 		}
 		s := ix.scoreTitle(q, t, &scratch)
+		if !q.relaxed {
+			s = max(s, ix.franchiseScore(q, t, &scratch))
+		}
 		if q.relaxed {
 			s = min(s, searchRelaxedMax)
 		}
@@ -960,6 +1076,34 @@ func (ix *titleIndex) scoreTitle(q searchQuery, t uint32, scratch *[]int) float6
 		best = max(best, s)
 	}
 	return best
+}
+
+// searchFranchiseScore is the relevance of a film whose franchise the
+// query names ("james bond" -> Dr. No ... No Time to Die): below the exact
+// title (1.00) and its article form (0.96), above the filmography of a
+// person of that name (core people matches top out at 0.956) and every
+// partial title match. The popularity prior then orders the films, so the
+// famous ones lead and an obscure film called exactly "James Bond" does not
+// outrank the franchise.
+const searchFranchiseScore = 0.958
+
+// franchiseScore is title t's relevance through its franchise's name: in
+// full for the name itself, give or take an article or one correction, and
+// discounted for a whole-name prefix while the viewer is still typing
+// ("james bo"). Loose word matches ("bond") do not count: a franchise is
+// many titles, and a single word would flood the results.
+func (ix *titleIndex) franchiseScore(q searchQuery, t uint32, scratch *[]int) float64 {
+	if int(t) >= len(ix.franchiseOf) || ix.franchiseOf[t] < 0 {
+		return 0
+	}
+	s := scoreName(q, strings.Fields(ix.franchises[ix.franchiseOf[t]]), scratch)
+	switch {
+	case s >= searchConfident:
+		return searchFranchiseScore - (1-min(s, 1))*0.1
+	case s >= 0.86:
+		return s * 0.97
+	}
+	return 0
 }
 
 // altNameScore discounts a match on a title's other name (an original or

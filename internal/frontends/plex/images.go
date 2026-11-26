@@ -146,6 +146,10 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
+	if r.URL.Query().Get("collectionCard") == "1" && key.Kind() == frontend.KindSmart {
+		s.serveCardArtwork(w, r, key, element, width)
+		return
+	}
 	if r.URL.Query().Has("ranked") {
 		s.serveRankedArtwork(w, r, key, width)
 		return
@@ -469,7 +473,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 		s.serveSignedLiveLogo(w, r, m[1], m[2])
 		return
 	}
-	if !u.IsAbs() || s.isSelfHost(r, u.Host) || androidLocal {
+	if !u.IsAbs() || s.isSelfHost(r, u.Scheme, u.Host) || androidLocal {
 		path := u.Path
 		if m := liveChannelLogoRe.FindStringSubmatch(path); m != nil {
 			s.serveLiveLogo(w, r, m[1], true)
@@ -510,10 +514,10 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 			// The inner URL carries the variant (collection scope, Top 10 rank
 			// and shape). Clients such as Plex for Apple TV fetch every poster
 			// through this transcoder, so the variant must survive the hop.
-			if inner.Has("collection") || inner.Has("ranked") {
+			if inner.Has("collection") || inner.Has("ranked") || inner.Has("collectionCard") {
 				r = r.Clone(r.Context())
 				q := r.URL.Query()
-				for _, name := range []string{"collection", "ranked", "rankshape", "rv"} {
+				for _, name := range []string{"collection", "ranked", "rankshape", "rv", "collectionCard"} {
 					if v := inner.Get(name); v != "" {
 						q.Set(name, v)
 					}
@@ -565,14 +569,15 @@ var liveChannelLogoRe = regexp.MustCompile(`^/livetv/channels/([^/]+)/logo\.(?:s
 var signedLogoRe = regexp.MustCompile(`^/livetv/logos/([^/]+)/([A-Za-z0-9_-]+)\.png$`)
 
 // isSelfHost reports whether host refers to this server.
-func (s *Server) isSelfHost(r *http.Request, host string) bool {
+func (s *Server) isSelfHost(r *http.Request, scheme, host string) bool {
+	host = withoutDefaultPort(scheme, host)
 	if origin := s.getHost().PublicOrigin; origin != nil {
-		if u, err := url.Parse(origin()); err == nil && u.Host != "" && strings.EqualFold(u.Host, host) {
+		if u, err := url.Parse(origin()); err == nil && u.Host != "" && strings.EqualFold(withoutDefaultPort(u.Scheme, u.Host), host) {
 			return true
 		}
 	}
 	h := strings.ToLower(host)
-	if h == "" || strings.EqualFold(h, r.Host) {
+	if h == "" || strings.EqualFold(h, withoutDefaultPort(scheme, r.Host)) {
 		return true
 	}
 	name := h
@@ -581,6 +586,18 @@ func (s *Server) isSelfHost(r *http.Request, host string) bool {
 	}
 	name = strings.Trim(name, "[]")
 	return name == "localhost" || name == "127.0.0.1" || name == "::1" || strings.HasSuffix(name, ".plex.direct")
+}
+
+// withoutDefaultPort drops the scheme's default port, so a nested URL that
+// names "https://host:443" matches the server reached as "host" (#801).
+func withoutDefaultPort(scheme, host string) string {
+	switch {
+	case strings.EqualFold(scheme, "https") && strings.HasSuffix(host, ":443"):
+		return strings.TrimSuffix(host, ":443")
+	case strings.EqualFold(scheme, "http") && strings.HasSuffix(host, ":80"):
+		return strings.TrimSuffix(host, ":80")
+	}
+	return host
 }
 
 // allowedImageHost limits the proxy to the artwork CDN, so it is not an

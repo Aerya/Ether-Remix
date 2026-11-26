@@ -215,10 +215,10 @@ function prefersReducedMotion(): boolean {
 
 interface SetupReadyProps {
   initialConfig?: EtherConfig | null;
-  tmdbAvailable?: boolean;
+  metadataAvailable?: boolean;
 }
 
-function SetupReadyInner({ initialConfig = null, tmdbAvailable }: SetupReadyProps) {
+function SetupReadyInner({ initialConfig = null, metadataAvailable }: SetupReadyProps) {
   const nav = useNavigate();
   const reducedMotion = useMemo(() => prefersReducedMotion(), []);
   const [cfg, setCfg] = useState<EtherConfig | null>(initialConfig);
@@ -617,11 +617,16 @@ function SetupReadyInner({ initialConfig = null, tmdbAvailable }: SetupReadyProp
     (p) => p.enabled && p.host.trim().length > 0,
   );
   const anyApp = enabledFrontends.length > 0;
-  const hasTmdb = Boolean(tmdbAvailable || cfg?.catalog?.tmdbKey?.trim());
+  const hasMetadata =
+    metadataAvailable ??
+    Boolean(
+      (!cfg?.catalog?.tmdbDisabled && cfg?.catalog?.tmdbKey?.trim()) ||
+      cfg?.catalog?.tvdbKey?.trim(),
+    );
 
   const pills: { label: string; to: string }[] = [];
-  if (!hasTmdb) {
-    pills.push({ label: t("Add a TMDB key"), to: "/services/tmdb" });
+  if (!hasMetadata) {
+    pills.push({ label: t("Add a metadata source"), to: "/services/overview" });
   }
   if (!debridOn && !usenetOn) {
     pills.push({ label: t("Add a debrid account"), to: "/sources" });
@@ -633,18 +638,10 @@ function SetupReadyInner({ initialConfig = null, tmdbAvailable }: SetupReadyProp
     pills.push({ label: t("Connect a device"), to: connectDevicePath(cfg?.frontends) });
   }
   pills.push({ label: t("Add viewers"), to: "/viewers" });
-  const neutral = cfg?.quality?.default?.trim() || "1080p";
-  const movieProfile = cfg?.quality?.defaultMovie?.trim() || neutral;
-  const showProfile = cfg?.quality?.defaultTv?.trim() || neutral;
+  const defaultProfile = cfg?.quality?.default?.trim() || "4K";
   pills.push({
-    label:
-      movieProfile === showProfile
-        ? t("Playback quality: {profile} at home · change", { profile: movieProfile })
-        : t("Playback quality: {movies} for movies, {shows} for shows at home · change", {
-            movies: movieProfile,
-            shows: showProfile,
-          }),
-    to: "/quality/profiles",
+    label: t("Playback quality: {profile} at home · change", { profile: defaultProfile }),
+    to: "/releases/rules",
   });
 
   const summaryLine =

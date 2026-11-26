@@ -58,7 +58,8 @@ func TestCachedTorrentRequiresCurrentEpisodeTarget(t *testing.T) {
 }
 
 func TestCachedAndFallbackReleasesRecheckReportedIDs(t *testing.T) {
-	title := &core.Title{Key: core.EpisodeKey(123, 2, 2), Type: core.TypeEpisode, ShowYear: 2005, Title: "Stone and Sky"}
+	title := &core.Title{Key: core.EpisodeKey(123, 2, 2), Type: core.TypeEpisode, ShowIDs: core.IDs{TMDB: 123},
+		Season: 2, Episode: 2, ShowYear: 2005, Title: "Stone and Sky"}
 	r := core.Release{Name: "Pilote.Spatial.S02E02.Pierre.et.Ciel.1080p.WEB", TitleIDs: core.IDs{TMDB: 123}}
 	if !releaseMatchesTitle(r, title) {
 		t.Fatal("canonical series ID did not support alternate episode name")
@@ -67,7 +68,7 @@ func TestCachedAndFallbackReleasesRecheckReportedIDs(t *testing.T) {
 	if releaseMatchesTitle(r, title) {
 		t.Fatal("matching ID bypassed wrong cached episode")
 	}
-	title.ShowIDs = core.IDs{TVDB: 789} // a partially hydrated series identity
+	title.ShowIDs.TVDB = 789
 	r.Name = "Space.Pilot.2005.S02E02.1080p.WEB"
 	r.TitleIDs.TMDB = 456
 	if releaseMatchesTitle(r, title) {
@@ -200,4 +201,27 @@ func TestOpenTimeIdentityAcceptsAliasNumberedFiles(t *testing.T) {
 	if payloadMatchesTitle(wrongAliasPayload, title) {
 		t.Fatal("wrong alias episode S18E05 matched S01E750")
 	}
+
+	t.Run("effective broadcast date", func(t *testing.T) {
+		airDate := time.Date(2026, 3, 9, 0, 0, 0, 0, time.UTC)
+		daily := &core.Title{
+			Key: core.EpisodeKey(5, 1, 7), Type: core.TypeEpisode, ShowKey: core.ShowKey(5),
+			ShowTitle: "Evening Ledger", Title: "The Harbor", ShowYear: 2020,
+			Season: 2026, Episode: 123, EpisodeOrder: core.EpisodeOrder{Source: core.MetadataTVDB, Kind: core.OrderAired},
+			EpisodeAirDate: airDate, Released: airDate.AddDate(0, 0, -1),
+		}
+		for _, item := range []struct {
+			name string
+			want bool
+		}{
+			{"Evening.Ledger.2026.03.09.1080p.WEB-DL", true},
+			{"Evening.Ledger.2026.03.08.1080p.WEB-DL", false},
+			{"Unrelated.Show.2026.03.09.1080p.WEB-DL", false},
+		} {
+			rel := core.Release{Name: item.name, Protocol: core.ProtocolHTTP}
+			if got := releaseMatchesTitle(rel, daily); got != item.want {
+				t.Fatalf("open-time match for %s = %v, want %v", item.name, got, item.want)
+			}
+		}
+	})
 }

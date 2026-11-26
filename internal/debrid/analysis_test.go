@@ -79,6 +79,11 @@ func TestAnalysis429AccountBackoffAndPacing(t *testing.T) {
 	if err = s.checkAnalysisAccount("account"); err == nil {
 		t.Fatal("429 did not stop account")
 	}
+	// A CDN 429 pauses analysis only: Plays and link refreshes on the
+	// account still reach the provider API (#790).
+	if err = s.entries[0].blocked(now); err != nil {
+		t.Fatal("CDN 429 paused the provider API", err)
+	}
 	s.analysisMu.Lock()
 	first := s.analysis["account"].until
 	s.analysisMu.Unlock()

@@ -33,7 +33,7 @@ func TestHomeDoesNotWaitForTheFirstIndexBuild(t *testing.T) {
 	genre, _ := json.Marshal("Thriller")
 	if _, err := s.CreateSpec(ctx, core.CollectionSpec{Name: "Live Thrills", MediaType: "movie", Sources: []core.CollectionSource{{Kind: "catalog"}}, Match: "all",
 		Rules: []core.CollectionRule{{Field: "genre", Op: "is", Value: genre}}, Sort: "popularity", SortDesc: true, Refresh: RefreshLive, Enabled: true, LocalOnly: true,
-		Targets: core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()}}); err != nil {
+		BrowseInApps: true}); err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
@@ -42,7 +42,7 @@ func TestHomeDoesNotWaitForTheFirstIndexBuild(t *testing.T) {
 	owner := &core.User{ID: 1, IsOwner: true}
 	titles := func() map[string]bool {
 		t.Helper()
-		rows, err := s.HomeRowsFor(ctx, owner, core.HubContext{})
+		rows, err := pageRows(ctx, s, owner)
 		if err != nil {
 			t.Fatal(err)
 		}

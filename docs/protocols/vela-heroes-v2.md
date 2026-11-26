@@ -32,6 +32,15 @@ values use the default. Hero exclusions can shorten the displayed shelf without
 changing its source page size or cursor offset. Metadata and artwork remain
 batched per row; no extra fill queries run to replace excluded heroes.
 
+A feed row's `id` names one visit's snapshot and is re-minted whenever the feed
+is rebuilt (watch progress, favourites, policy). `/vela/v0/rows/{id}` answers a
+superseded id with `409` `cursor_expired` for every row kind; the client
+re-reads bootstrap. Feed rows also carry an opaque `key` that stays the same
+for the same row across rebuilds (`"rq3k9v2ab"`, `"rq3k9v2ab@12"` for a
+one-row-per-library row, `"home.continue"` for Ether's own picks; extra rows
+from one page row add `#2`, `#3`). Clients compare `key`, never parse it.
+Surface rows (`kind: "surface"`) carry no `key`.
+
 When Home lacks six eligible cards, an internal Home-only request fills the
 open slots through the existing policy, owner layout and receipt pipeline.
 Persisted weekly charts supply trending candidates without refresh. Recent

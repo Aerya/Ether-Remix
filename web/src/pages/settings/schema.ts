@@ -300,7 +300,7 @@ export const AWAY: FieldGroup[] = localized(() => [
         kind: "list",
         placeholder: "192.168.1.5, 10.0.0.0/8",
         help: t(
-          "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
+          "IP addresses, CIDR ranges or host names of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. A Docker container name such as nginx-proxy-manager also works and keeps working when the container gets a new address. Proxies on this computer are already trusted.",
         ),
       },
     ],
@@ -369,7 +369,7 @@ export const CATALOG: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** How many same-quality copies apps list after Auto. Edited on Quality › Profiles. */
+/** How many same-quality copies apps list after Auto. Edited on Releases › Profiles. */
 export const PLAY_VERSIONS: FieldGroup[] = localized(() => [
   {
     id: "versions",
@@ -406,7 +406,7 @@ export const PLAY_VERSIONS: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** Engine search memory. Edited on Quality › Searching. */
+/** Engine search memory. Edited on Releases › Searching. */
 export const RELEASE_SEARCH: FieldGroup[] = localized(() => [
   {
     title: t("How Ether searches"),

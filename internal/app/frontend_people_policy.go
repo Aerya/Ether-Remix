@@ -7,6 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/viewerpolicy"
 )
 
@@ -29,8 +30,8 @@ func (p peoplePolicy) Allowed(viewer *core.User, title *core.Title) bool {
 
 // beginPeopleRead takes no joint locks and does not hold the policy lock while
 // reading metadata. The snapshot is a copy. The final epoch fence validates
-// epoch-covered membership and visibility inputs, and rechecks the shared
-// config version inside the transaction.
+// epoch-covered membership and visibility inputs alongside the shared config
+// version. On SQLite the final statement provides the read's snapshot.
 // Playback hours do not restrict metadata navigation: this uses Allowed's rule
 // body, not CanPlay. Release/home-release gates use one captured time and only
 // become more permissive as time advances; a backwards clock fails closed.
@@ -102,23 +103,7 @@ func (a *App) beginPeopleRead(ctx context.Context, viewer *core.User) (experienc
 			if !validPeopleReadTimes(started, time.Now()) || !evidence.Current() {
 				return viewerpolicy.ErrChanged
 			}
-			tx, err := a.db.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-			if err := viewerpolicy.Fence(ctx, a.db, tx, epoch); err != nil {
-				return err
-			}
-			if clustered {
-				if err := viewerpolicy.CheckSharedConfigVersion(ctx, tx, version); err != nil {
-					return err
-				}
-			}
-			if !evidence.Current() {
-				return viewerpolicy.ErrChanged
-			}
-			if err := tx.Commit(); err != nil {
+			if err := a.finishPeopleRead(ctx, epoch, version, clustered, evidence.Current); err != nil {
 				return err
 			}
 			if !validPeopleReadTimes(started, time.Now()) || !evidence.Current() {
@@ -132,4 +117,29 @@ func (a *App) beginPeopleRead(ctx context.Context, viewer *core.User) (experienc
 	}
 	failed = false
 	return access, nil
+}
+
+// finishPeopleRead uses a WAL snapshot on SQLite. A write transaction here
+// would acquire the single writer just to validate an epoch before a response.
+func (a *App) finishPeopleRead(ctx context.Context, epoch, version int64, clustered bool, current func() bool) error {
+	if store.DialectOf(a.db) != store.Postgres {
+		return viewerpolicy.CheckReadSnapshot(ctx, a.db, epoch, version, clustered)
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := viewerpolicy.Fence(ctx, a.db, tx, epoch); err != nil {
+		return err
+	}
+	if clustered {
+		if err := viewerpolicy.CheckSharedConfigVersion(ctx, tx, version); err != nil {
+			return err
+		}
+	}
+	if !current() {
+		return viewerpolicy.ErrChanged
+	}
+	return tx.Commit()
 }

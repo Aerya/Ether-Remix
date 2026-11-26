@@ -225,22 +225,25 @@ func (c *Catalog) HomeReleases(ctx context.Context, keys []core.RatingKey) (map[
 // Recently reached dates are rechecked daily; settled dates are revisited
 // after 90 days to pick up later corrections.
 func (c *Catalog) BackfillHomeReleases(ctx context.Context, limit int) (int, error) {
-	if c.tmdb() == nil || limit <= 0 {
+	if !c.TMDBConfigured() || limit <= 0 {
 		return 0, nil
 	}
 	now := c.now().Unix()
-	rows, err := c.db.QueryContext(ctx, `SELECT t.key FROM catalog_titles t LEFT JOIN catalog_home_release h ON h.key=t.key WHERE t.type='movie' AND t.adult=0 AND t.release_known=1 AND t.released_ts<=? AND (h.key IS NULL OR (h.attempted_at<=? AND (h.checked=0 OR h.earliest_ts=0 OR h.earliest_ts>? OR h.attempted_at<=?))) ORDER BY COALESCE(h.attempted_at,0), t.browsable DESC, t.popularity DESC,t.key LIMIT ?`, now, now-int64((24*time.Hour).Seconds()), now-int64((30*24*time.Hour).Seconds()), now-int64((90*24*time.Hour).Seconds()), limit)
+	rows, err := c.db.QueryContext(ctx, `SELECT t.key,t.tmdb_id FROM catalog_titles t LEFT JOIN catalog_home_release h ON h.key=t.key WHERE t.type='movie' AND t.tmdb_id>0 AND t.adult=0 AND t.release_known=1 AND t.released_ts<=? AND (h.key IS NULL OR (h.attempted_at<=? AND (h.checked=0 OR h.earliest_ts=0 OR h.earliest_ts>? OR h.attempted_at<=?))) ORDER BY COALESCE(h.attempted_at,0), t.browsable DESC, t.popularity DESC,t.key LIMIT ?`, now, now-int64((24*time.Hour).Seconds()), now-int64((30*24*time.Hour).Seconds()), now-int64((90*24*time.Hour).Seconds()), limit)
 	if err != nil {
 		return 0, err
 	}
-	var keys []core.RatingKey
+	type movie struct {
+		key, id int64
+	}
+	var movies []movie
 	for rows.Next() {
-		var k int64
-		if err = rows.Scan(&k); err != nil {
+		var m movie
+		if err = rows.Scan(&m.key, &m.id); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		keys = append(keys, core.RatingKey(k))
+		movies = append(movies, m)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -248,15 +251,15 @@ func (c *Catalog) BackfillHomeReleases(ctx context.Context, limit int) (int, err
 		return 0, err
 	}
 	count := 0
-	for _, key := range keys {
+	for _, m := range movies {
 		if err = ctx.Err(); err != nil {
 			return count, err
 		}
-		_, err = c.db.ExecContext(ctx, `INSERT INTO catalog_home_release(key,attempted_at) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET attempted_at=excluded.attempted_at`, int64(key), now)
+		_, err = c.db.ExecContext(ctx, `INSERT INTO catalog_home_release(key,attempted_at) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET attempted_at=excluded.attempted_at`, m.key, now)
 		if err != nil {
 			return count, err
 		}
-		d, fetchErr := c.tmdb().MovieDetails(ctx, key.TMDB())
+		d, fetchErr := c.tmdb().MovieDetails(ctx, m.id)
 		if fetchErr != nil || d == nil {
 			continue
 		}

@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/core"
 	"strconv"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 type LinkedIdentity struct {
@@ -31,15 +32,48 @@ func (l *Local) Links(ctx context.Context, viewerID int64) ([]LinkedIdentity, er
 	}
 	return result, rows.Err()
 }
+
+// UpsertPassword updates the named local link, or creates a first local link
+// for the viewer. Lock the viewer while checking for an existing link so
+// concurrent resets cannot create extra sign-in names on different nodes.
 func (l *Local) UpsertPassword(ctx context.Context, viewerID int64, username, password string) error {
-	var count int
-	if err := l.db.QueryRowContext(ctx, `SELECT count(*) FROM identity_links WHERE viewer_id=? AND provider='local' AND subject=?`, viewerID, username).Scan(&count); err != nil {
+	if viewerID <= 0 || !validUsername(username) {
+		return errors.New("identity: invalid local identity")
+	}
+	hash, err := hashPassword(password)
+	if err != nil {
 		return err
 	}
-	if count > 0 {
-		return l.SetPassword(ctx, viewerID, username, password)
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return l.Create(ctx, viewerID, username, password)
+	defer tx.Rollback()
+	// Take the viewer row's write lock before reading its local links. On
+	// PostgreSQL the next statement then sees the previous reset's commit.
+	if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET updated_at=updated_at WHERE id=? AND origin<>'dlna_guest'`, viewerID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO identity_links
+		(viewer_id, provider, subject, display, verified_at, password_hash)
+		SELECT id, 'local', ?, ?, ?, ? FROM auth_users
+		WHERE id=? AND origin<>'dlna_guest'
+			AND (NOT EXISTS(SELECT 1 FROM identity_links WHERE viewer_id=auth_users.id AND provider='local')
+				OR EXISTS(SELECT 1 FROM identity_links WHERE viewer_id=auth_users.id AND provider='local' AND subject=?))
+		ON CONFLICT(provider, subject) DO UPDATE SET password_hash=excluded.password_hash
+		WHERE identity_links.viewer_id=excluded.viewer_id`,
+		username, username, time.Now().Unix(), hash, viewerID, username)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return core.ErrUnauthorized
+	}
+	return tx.Commit()
 }
 
 // ClearPassword removes a viewer's local password hash without removing the

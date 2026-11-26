@@ -16,6 +16,15 @@ import (
 // ServePlaylist implements core.HLSSession: the full-length VOD playlist
 // (the MPD for DASH sessions).
 func (s *Session) ServePlaylist(w http.ResponseWriter, r *http.Request) {
+	s.servePlaylist(w, r, false)
+}
+
+// ServeArchiveEventPlaylist lists the available prefix of a start-over range.
+func (s *Session) ServeArchiveEventPlaylist(w http.ResponseWriter, r *http.Request) {
+	s.servePlaylist(w, r, true)
+}
+
+func (s *Session) servePlaylist(w http.ResponseWriter, r *http.Request, growing bool) {
 	if s.isDASH() {
 		s.ServeManifest(w, r)
 		return
@@ -30,7 +39,15 @@ func (s *Session) ServePlaylist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session closed", http.StatusGone)
 		return
 	}
-	body := s.renderPlaylistLocked(0)
+	var body []byte
+	if growing && s.archiveInput && s.plan != nil {
+		listed := s.listedLocked(0)
+		body = s.scopePlaylistInit(planPlaylist(s.plan, s.container, s.segName, func(n int) bool {
+			return s.discontBeforeLocked(0, n)
+		}, true, listed == s.total, listed, false))
+	} else {
+		body = s.renderPlaylistLocked(0)
+	}
 	s.notePlaylistLocked(0, body)
 	if s.androidMatroskaHLS && s.container == ContainerMatroska {
 		// Match PMS 1.42.2's Android segmented-Matroska playlist contract
@@ -64,7 +81,10 @@ func (s *Session) span() time.Duration {
 // playlist without EXT-X-ENDLIST causes RFC 8216 §6.3.3 players (notably
 // AVPlayer on Apple TV) to start three segments from the end as a live edge.
 func (s *Session) renderPlaylistLocked(t int) []byte {
-	body := s.renderMediaPlaylistLocked(t)
+	return s.scopePlaylistInit(s.renderMediaPlaylistLocked(t))
+}
+
+func (s *Session) scopePlaylistInit(body []byte) []byte {
 	if hasInitSegment(s.container) {
 		name := initSegmentName(s.container)
 		body = bytes.ReplaceAll(body, []byte(`URI="`+name+`"`), []byte(`URI="`+s.scopeMediaName(name)+`"`))

@@ -156,10 +156,14 @@ func (s *versionsSessionsFake) Open(_ context.Context, req frontend.OpenRequest)
 	return frontend.Session{ID: "sess-1", Item: frontend.MovieKey(603)}, nil
 }
 
-func (s *versionsSessionsFake) StartStream(_ context.Context, _ frontend.SessionAccess, id string, req frontend.StreamRequest) (string, error) {
+func (s *versionsSessionsFake) StartStream(ctx context.Context, a frontend.SessionAccess, id string, req frontend.StreamRequest) (string, error) {
 	s.mu.Lock()
 	s.startStreamCnt++
+	fn := s.StartStreamFunc
 	s.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, a, id, req)
+	}
 	if req.Format == frontend.StreamHLS {
 		return "/sessions/media/" + id + "/master.m3u8", nil
 	}
@@ -383,7 +387,7 @@ func TestVelaVersionsEndpointAndChoiceClearing(t *testing.T) {
 	if len(v0.Languages) != 2 || v0.Languages[0] != "en" || v0.Languages[1] != "fr" {
 		t.Fatalf("v0.Languages = %v, want [en fr]", v0.Languages)
 	}
-	if !strings.Contains(v0.Label, "4K Dolby Vision Remux") || !strings.Contains(v0.Label, "TrueHD Atmos 7.1") {
+	if !strings.HasPrefix(v0.Label, "Auto · 4K Dolby Vision Remux") || !strings.Contains(v0.Label, "TrueHD Atmos 7.1") {
 		t.Fatalf("v0.Label = %q", v0.Label)
 	}
 	v1 := listResp.Versions[1]
@@ -657,5 +661,125 @@ func TestPluginVersionsEndpointW152ShapeAndClearChoice(t *testing.T) {
 	handler.ServeHTTP(wClear, velaReq("DELETE", "/vela/v0/titles/"+titleID+"/versions/choice", `{"idempotencyKey":"clear-plugin-1"}`))
 	if wClear.Code != 200 || editions.clearCalls != 1 {
 		t.Fatalf("DELETE choice = %d clearCalls=%d body=%s", wClear.Code, editions.clearCalls, wClear.Body.String())
+	}
+}
+
+type playingReleaseSessionsFake struct {
+	*versionsSessionsFake
+	playing frontend.Release
+	media   frontend.MediaInfo
+}
+
+func (s *playingReleaseSessionsFake) PlayingRelease(context.Context, frontend.SessionAccess, string) (frontend.Release, frontend.MediaInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.playing, s.media, nil
+}
+
+// The top release is its own selectable row beside Auto, Auto never claims
+// its pick's quality, and a session that fell back (at open, then again
+// mid-stream) reports the release actually playing.
+func TestVelaVersionsReportPlayingReleaseAfterFallback(t *testing.T) {
+	movieKey := frontend.MovieKey(603)
+	movieGUID := ids.RatingKeyGUID(movieKey)
+	hAuto := "11111111-1111-4111-8111-111111111111"
+	h4K := "22222222-2222-4222-8222-222222222222"
+	h1080 := "33333333-3333-4333-8333-333333333333"
+	h720 := "44444444-4444-4444-8444-444444444444"
+	rel4K := frontend.Release{ID: "rel-4k", Info: frontend.ReleaseInfo{Height: 2160, Source: frontend.Source("remux"), VideoCodec: "hevc"}}
+	rel1080 := frontend.Release{ID: "rel-1080", Info: frontend.ReleaseInfo{Height: 1080, Source: frontend.Source("webdl"), VideoCodec: "hevc"}}
+	rel720 := frontend.Release{ID: "rel-720", Info: frontend.ReleaseInfo{Height: 720, Source: frontend.Source("webdl"), VideoCodec: "h264"}}
+	editions := &versionsEditionsFake{slots: []frontend.ReleaseVariant{
+		{ID: frontend.KindAutoVersionID, Label: "Auto · 4K Remux", Auto: true, Availability: frontend.VersionCached, Release: rel4K},
+		{ID: rel4K.ID, Availability: frontend.VersionCached, Release: rel4K},
+		{ID: rel1080.ID, Availability: frontend.VersionCached, Release: rel1080},
+		{ID: rel720.ID, Availability: frontend.VersionCached, Release: rel720},
+	}}
+	handles := &versionsHandlesFake{item: movieKey, toUUID: map[string]string{frontend.KindAutoVersionID: hAuto, rel4K.ID: h4K, rel1080.ID: h1080, rel720.ID: h720}}
+	base := &versionsSessionsFake{}
+	sess := &playingReleaseSessionsFake{versionsSessionsFake: base, playing: rel1080}
+	base.planFunc = func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+		// Auto: the 4K pick failed at open (missing articles), 1080p plays.
+		return frontend.PlayPlan{
+			ID:         "plan-1",
+			Media:      frontend.MediaInfo{Container: "mkv", Duration: 2 * time.Hour, Streams: []frontend.StreamInfo{{Index: 0, Type: "video", Codec: "hevc", Width: 1920, Height: 1080}, {Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Language: "eng", Default: true}}},
+			Decision:   frontend.Decision{Kind: frontend.DecisionDirectPlay, AudioStream: 1, SubtitleStream: -1, Reason: "direct_play"},
+			DirectPlay: true, DirectStream: true, HLS: true, ETag: "etag-1",
+			ReleaseID: rel1080.ID,
+		}, nil
+	}
+	db := openVelaTestReplayDB(t)
+	exp := frontendtest.Experience{
+		ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+			if req.Key == movieKey {
+				return frontend.ItemDetail{Title: frontend.Title{Key: movieKey, Type: frontend.TypeMovie, Title: "The Matrix", Year: 1999}}, nil
+			}
+			return frontend.ItemDetail{}, frontend.ErrNotFound
+		},
+		UserDataFunc: func(context.Context, *frontend.Viewer, []frontend.RatingKey) (map[frontend.RatingKey]frontend.WatchStatus, error) {
+			return map[frontend.RatingKey]frontend.WatchStatus{}, nil
+		},
+	}
+	inst, err := (Frontend{DB: db, ReplayKey: make([]byte, 32)}).Mount(context.Background(), frontend.Host{
+		Identity: identityFake{}, Experience: exp, Sessions: sess, Editions: editions, VersionHandles: handles, Capabilities: frontendtest.Capabilities{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inst.Close(context.Background()) })
+	handler := inst.Handler()
+
+	type versionsShape struct {
+		SessionID         string   `json:"sessionId"`
+		Revision          uint64   `json:"revision"`
+		SelectedVersionID string   `json:"selectedVersionId"`
+		PlayingVersionID  *string  `json:"playingVersionId"`
+		PlayingLabel      string   `json:"playingLabel"`
+		Versions          []object `json:"versions"`
+	}
+
+	// Outside a session: Auto plus an explicit, selectable 4K row.
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, velaReq("GET", "/vela/v0/titles/"+movieGUID+"/versions", ""))
+	var list versionsShape
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil {
+		t.Fatalf("GET versions %d: %s", w.Code, w.Body.String())
+	}
+	if len(list.Versions) != 4 || list.Versions[0]["id"] != hAuto || list.Versions[1]["id"] != h4K || list.Versions[1]["resolution"] != "4K" {
+		t.Fatalf("versions = %+v, want Auto then an explicit 4K row", list.Versions)
+	}
+	if list.Versions[0]["label"] != "Auto (best available)" || list.PlayingVersionID != nil || list.PlayingLabel != "" {
+		t.Fatalf("idle Auto label = %v playing=%v/%q", list.Versions[0]["label"], list.PlayingVersionID, list.PlayingLabel)
+	}
+
+	// Auto fell back at open: selected stays Auto, playing names 1080p.
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, velaReq("POST", "/vela/v0/playback", `{"idempotencyKey":"play-1","titleId":"`+movieGUID+`","client":{"device":{"id":"dev-1"},"hls":true}}`))
+	var plan versionsShape
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &plan) != nil {
+		t.Fatalf("POST playback %d: %s", w.Code, w.Body.String())
+	}
+	if plan.SelectedVersionID != hAuto || plan.PlayingVersionID == nil || *plan.PlayingVersionID != h1080 || !strings.HasPrefix(plan.PlayingLabel, "1080p") {
+		t.Fatalf("plan selected=%q playing=%v/%q", plan.SelectedVersionID, plan.PlayingVersionID, plan.PlayingLabel)
+	}
+	if label, _ := plan.Versions[0]["label"].(string); label != "Auto · now "+plan.PlayingLabel || plan.Versions[0]["resolution"] != "1080p" {
+		t.Fatalf("playing Auto row = %+v", plan.Versions[0])
+	}
+
+	// A mid-stream failover to 720p moves playing on the next snapshot.
+	sess.mu.Lock()
+	sess.playing = rel720
+	sess.mu.Unlock()
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, velaReq("GET", "/vela/v0/sessions/"+plan.SessionID, ""))
+	var snap struct {
+		Revision uint64        `json:"revision"`
+		Plan     versionsShape `json:"plan"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &snap) != nil {
+		t.Fatalf("snapshot %d: %s", w.Code, w.Body.String())
+	}
+	if snap.Plan.SelectedVersionID != hAuto || snap.Plan.PlayingVersionID == nil || *snap.Plan.PlayingVersionID != h720 || !strings.HasPrefix(snap.Plan.PlayingLabel, "720p") || snap.Plan.Revision <= plan.Revision {
+		t.Fatalf("after failover selected=%q playing=%v/%q revision %d->%d", snap.Plan.SelectedVersionID, snap.Plan.PlayingVersionID, snap.Plan.PlayingLabel, plan.Revision, snap.Plan.Revision)
 	}
 }

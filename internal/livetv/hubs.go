@@ -9,11 +9,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// HomeHub is the domain-level row used by the owner's final-layout preview.
-// The Plex adapter preserves its own channel/tune metadata for this row ID;
+// HomeHub is the Live source's row ("live", the id every app serves) for
+// the owner's preview. Apps draw their own channel/tune metadata for it;
 // these synthetic keys are never sent to catalogue playback.
 func (s *Service) HomeHub(ctx context.Context, u *core.User, limit int) (core.Hub, error) {
-	hub := core.Hub{ID: "livetv.onnow", Title: "On Now", Context: "hub.livetv.onnow", Style: "shelf", Promoted: true, Items: []core.Title{}}
+	hub := core.Hub{ID: "live", Title: "On Now", Context: "hub.livetv.onnow", Style: "shelf", Promoted: true, Items: []core.Title{}}
 	cs, err := s.AllowedChannels(ctx, u)
 	if err != nil {
 		return hub, err

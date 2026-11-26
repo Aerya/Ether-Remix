@@ -37,7 +37,7 @@ func (v *vibeCalls) DescribeSearch(ctx context.Context, _ *core.User, _ string, 
 func TestSearchDescriptiveAIFirstAndTitleFastPath(t *testing.T) {
 	ctx := context.Background()
 	v := &core.User{ID: 1}
-	weakHit := core.Title{Key: core.MovieKey(5), Type: core.TypeMovie, Title: "Cozy Rainstorm", SearchScore: 0.42}
+	weakHit := core.Title{Key: core.MovieKey(5), Type: core.TypeMovie, Title: "Rainy Afternoon", SearchScore: 0.42}
 	titleHit := core.Title{Key: core.MovieKey(6), Type: core.TypeMovie, Title: "Pacific Rim", SearchScore: TitleMatchScore}
 	calls := &vibeCalls{}
 	var catHits []core.Title

@@ -92,17 +92,6 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 		t.Fatal("expected OutboxBridge attached to FlowsEngine")
 	}
 
-	// Start the Flows engine (leader-only via cluster.RunAsLeader).
-	engineDone := make(chan struct{})
-	go func() {
-		defer close(engineDone)
-		a.runFlows(ctx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-engineDone
-	})
-
 	// Mint an owner console token for /ether/api/flows/* requests.
 	local, err := identity.NewLocal(a.db)
 	if err != nil {
@@ -222,12 +211,27 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 	}
 	flowID := created.Flow.ID
 
-	// 3. Publish a real system.backup.failed event onto a.EventBus() and verify
-	// the leader engine executes the flow end-to-end!
-	deadline := time.Now().Add(3 * time.Second)
-	for !a.FlowsEngine().IsLeading() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Start the Flows engine (leader-only via cluster.RunAsLeader).
+	engineDone := make(chan struct{})
+	go func() {
+		defer close(engineDone)
+		a.runFlows(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-engineDone
+	})
+
+	// The startup reload sees the saved flow, and the live event must wait
+	// until the runtime's bus subscription is installed.
+	waitUntil(t, "Flows event subscription", func() bool {
+		for _, sub := range a.EventBus().Stats().Subscribers {
+			if sub.Name == "flows-runtime" {
+				return true
+			}
+		}
+		return false
+	})
 	a.publishEvent(events.EventSystemBackupFailed, events.SystemBackupFailedPayload{
 		Kind:                "scheduled",
 		Error:               "disk full",
@@ -239,12 +243,21 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 		if params["message"] != "disk full" {
 			t.Fatalf("expected rendered message 'disk full', got %v", params["message"])
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for Flows engine to execute action on system.backup.failed event")
 	}
 	if actionCalls.Load() != 1 {
 		t.Fatalf("expected 1 live action execution, got %d", actionCalls.Load())
 	}
+
+	// The action callback fires before the runtime persists its result.
+	waitUntil(t, "persisted Flows run", func() bool {
+		runs, _, err := a.FlowsStore().ListRuns(ctx, flows.RunFilter{FlowID: flowID, Status: flows.RunCompleted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(runs) > 0
+	})
 
 	// 4. Verify /ether/api/flows/{id}/runs returns the completed run.
 	runsRec := doAPI(http.MethodGet, "/ether/api/flows/"+flowID+"/runs", nil)

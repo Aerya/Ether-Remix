@@ -30,6 +30,39 @@ export async function fetchLiveSessions(signal?: AbortSignal): Promise<NowPlayin
   return normalizeSessions(value);
 }
 
+/** Coalesce bursts of `sessions.changed` stream events (e.g. initial SSE replay). */
+export const SESSIONS_EVENT_COALESCE_MS = 75;
+
+/**
+ * Subscribe to `sessions.changed` on the console stream while coalescing
+ * rapid bursts (such as the initial replay frame right after login) into a
+ * single callback so callers don't churn overlapping requests.
+ */
+export function useSessionsChanged(
+  onChanged: () => unknown,
+  delayMs: number = SESSIONS_EVENT_COALESCE_MS,
+): void {
+  const ref = useRef(onChanged);
+  ref.current = onChanged;
+  const timer = useRef<number | null>(null);
+  useStreamEvent("sessions.changed", () => {
+    if (timer.current !== null) return;
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      void ref.current();
+    }, delayMs);
+  });
+  useEffect(
+    () => () => {
+      if (timer.current !== null) {
+        window.clearTimeout(timer.current);
+        timer.current = null;
+      }
+    },
+    [],
+  );
+}
+
 /**
  * Keep a live-streams view current with one rule on every page: reload when
  * the server says the set of streams changed, as soon as a hidden tab is
@@ -38,7 +71,7 @@ export async function fetchLiveSessions(signal?: AbortSignal): Promise<NowPlayin
 export function useLiveSessionsRefresh(reload: () => unknown, ms: number = LIVE_SESSIONS_MS): void {
   const ref = useRef(reload);
   ref.current = reload;
-  useStreamEvent("sessions.changed", () => void ref.current());
+  useSessionsChanged(() => void ref.current());
   useEffect(() => {
     const visible = () => document.visibilityState !== "hidden";
     const tick = () => {

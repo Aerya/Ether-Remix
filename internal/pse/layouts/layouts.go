@@ -24,10 +24,11 @@ func init() {
 }
 
 type Part struct {
-	Name    string
-	Capture func(context.Context, *sql.Tx) (json.RawMessage, error)
-	Restore func(context.Context, *sql.Tx, json.RawMessage) error
-	Changed func(context.Context)
+	PrepareRestore func(context.Context, *sql.Tx, json.RawMessage, map[string]json.RawMessage) (json.RawMessage, error)
+	Name           string
+	Capture        func(context.Context, *sql.Tx) (json.RawMessage, error)
+	Restore        func(context.Context, *sql.Tx, json.RawMessage) error
+	Changed        func(context.Context)
 }
 type Service struct {
 	db    *sql.DB
@@ -133,6 +134,12 @@ func (s *Service) Apply(ctx context.Context, id string) error {
 		raw, ok := d[p.Name]
 		if !ok {
 			return fmt.Errorf("partie absente : %s", p.Name)
+		}
+		if p.PrepareRestore != nil {
+			raw, e = p.PrepareRestore(ctx, tx, raw, d)
+			if e != nil {
+				return fmt.Errorf("%s : %w", p.Name, e)
+			}
 		}
 		if e = p.Restore(ctx, tx, raw); e != nil {
 			return fmt.Errorf("%s : %w", p.Name, e)

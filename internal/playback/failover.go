@@ -203,7 +203,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	}()
 	rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
 		info := g.infoSnapshot()
-		if m.videoOff(s.caps) {
+		if s.offlineOriginal == nil && m.videoOff(s.caps) {
 			if _, needs := m.probedNeedsVideoTranscode(info, s.caps); needs {
 				return false
 			}
@@ -228,12 +228,20 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	})
 	defer rt.close(m)
 	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
+		if s.offlineOriginal == nil {
+			if alt := m.copySourceAtCapacity(ctx, s, profile, g, tried); alt != nil {
+				m.dropGeneration(g)
+				g = alt
+			}
+		}
 		rt.commitPendingRejections(m.ctx, m, s)
 		s.mu.Lock()
 		s.tried = append(s.tried, tried...)
 		s.tried = append(s.tried, extraTried...)
 		s.mu.Unlock()
-		m.startGenerationFills(g)
+		if s.offlineOriginal == nil {
+			m.startGenerationFills(g)
+		}
 		return g, nil
 	}
 	adoptRuntimeFallback := func(extraTried ...string) (*generation, error) {
@@ -276,7 +284,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	const maxMoreCandidatePasses = 8
 	morePasses := 0
 	for attempt := 0; m.attemptAllowed(attempt) && ctx.Err() == nil; attempt++ {
-		if res == nil && attempt > 0 && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
+		if res == nil && attempt > 0 && s.offlineOriginal == nil && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
 			s.caps.BroadcastReadyRelease == "" && !s.isKind() && fallbackGen == nil && len(alternates) >= 2 {
 			maxBudget := 0
 			if m.failoverAttempts() > 0 {
@@ -447,7 +455,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			}
 		}
 		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
-		if err == nil && m.videoOff(s.caps) {
+		if err == nil && s.offlineOriginal == nil && m.videoOff(s.caps) {
 			if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
 				reason := core.ErrVideoTranscodingDisabled.Error()
 				if dec.Reason != "" {
@@ -566,6 +574,16 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			return nil, ctx.Err()
 		}
 		lastErr = err
+		if s.offlineOriginal != nil && errors.Is(err, frontend.ErrVersionUnavailable) {
+			if s.exact {
+				return nil, err
+			}
+			allUncached = false
+			tried = append(tried, res.Release.ID)
+			alternates = res.Alternates
+			res, cached, fromResume = nil, nil, false
+			continue
+		}
 		// Bound release-level skips separately from actual playback failures.
 		if errors.Is(err, core.ErrWrongContent) && wrongContentSkips < 8 {
 			wrongContentSkips++
@@ -901,7 +919,7 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 			return nil, budgetErr
 		}
 	}
-	if !errors.Is(err, errRuntimeMismatchDeferred) {
+	if !errors.Is(err, errRuntimeMismatchDeferred) && !errors.Is(err, frontend.ErrVersionUnavailable) {
 		m.rememberOpenFailure(s, res.Release, err)
 	}
 	if err != nil {
@@ -1015,6 +1033,10 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		m.dropGeneration(g)
 		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)
 	}
+	if s.offlineOriginal != nil && !s.offlineOriginal(mi) {
+		m.dropGeneration(g)
+		return nil, frontend.ErrVersionUnavailable
+	}
 	// Reused persisted probes pass through here too, including a remembered
 	// playback_resume release played from zero with no requested offset.
 	rt := runtimeTrackerFrom(ctx)
@@ -1078,7 +1100,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// rebuilt from the persisted probe had their per-viewer sidecars
 	// stripped before they reached disk, so they augment again.
 	augmentStarted := time.Now()
-	if (facts == nil || facts.needsAugment) && m.deps.AugmentMedia != nil {
+	if s.offlineOriginal == nil && (facts == nil || facts.needsAugment) && m.deps.AugmentMedia != nil {
 		m.deps.AugmentMedia(ctx, s.title, &s.user, res, src, &mi)
 	}
 	m.log.Debug("media preparation completed", "session", s.id, "release", res.Release.ID,
@@ -1395,6 +1417,17 @@ func (m *Manager) dropGeneration(g *generation) {
 	g.retire()
 }
 
+// forgetUnreadable marks a provably unreadable release bad, so neither the
+// resolver, a remembered resume nor another candidate pass of this title
+// picks it again.
+func (m *Manager) forgetUnreadable(s *session, g *generation, reason string) {
+	if g == nil || g.res == nil || g.releaseID() == "" || s.isKind() {
+		return
+	}
+	m.markBad(g.releaseID(), reason)
+	m.rememberOpenFailure(s, g.res.Release, g.sourceFailure())
+}
+
 func (m *Manager) markBad(releaseID, reason string) {
 	if m.deps.Resolver == nil {
 		return
@@ -1506,7 +1539,11 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	started := time.Now()
 
 	s.mu.Lock()
-	cur, closed, failovers, pinned := s.cur, s.closed, s.failovers, s.sourcePins > 0
+	cur, closed, failovers := s.cur, s.closed, s.failovers
+	// A release that is provably unreadable (corrupt or missing data) can
+	// never deliver this session, wherever its selection came from.
+	unreadable := !fo.encoder && cur == observed && cur != nil && permanentSourceFailure(cur.sourceFailure())
+	replaceable := s.replaceableLocked(unreadable)
 	direct := fo.strictDirect || (s.decision == core.DecisionDirectPlay && !spliceable(s.container, s.name))
 	s.mu.Unlock()
 	if closed {
@@ -1525,9 +1562,23 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			}
 		}()
 	}
-	if s.exact || pinned {
+	if !replaceable {
 		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
 			return cur, nil
+		}
+		if unreadable {
+			// The viewer's own pick (or a pinned source) stays put, but it
+			// cannot play: end with a reason the viewer can act on, and keep
+			// every later start off this release.
+			m.forgetUnreadable(s, cur, fo.reason)
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "error",
+				Level:   "error",
+				Failing: true,
+				Message: "This version can't be played: the file is incomplete on your provider",
+				Detail:  OwnerError(cur.sourceFailure()),
+			})
+			return nil, fmt.Errorf("release %s: %w", cur.releaseID(), core.ErrVersionUnreadable)
 		}
 		return nil, fmt.Errorf("%w: selected release cannot be replaced", core.ErrNotAvailable)
 	}
@@ -1559,8 +1610,8 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		Detail:  fo.reason,
 	})
 	// A provider outage is not evidence that the release itself is invalid.
-	if failure := cur.sourceFailure(); !fo.encoder && !s.isKind() && permanentSourceFailure(failure) {
-		m.markBad(cur.releaseID(), fo.reason)
+	if unreadable {
+		m.forgetUnreadable(s, cur, fo.reason)
 	}
 	if !fo.encoder && core.IsExplicitVersionSlotSelector(s.prefer) {
 		m.noteStaleRelease(s.ident.key, cur.releaseID(), s.title, "", fo.reason)
@@ -2653,7 +2704,7 @@ func rememberedInfoCodecCurrent(info core.MediaInfo, caps core.ClientCaps) bool 
 }
 
 func permanentSourceFailure(err error) bool {
-	return errors.Is(err, core.ErrArticleMissing) || errors.Is(err, core.ErrArticleCorrupt) || errors.Is(err, core.ErrReleaseRejected)
+	return errors.Is(err, core.ErrOriginalLost) || errors.Is(err, core.ErrArticleMissing) || errors.Is(err, core.ErrArticleCorrupt) || errors.Is(err, core.ErrReleaseRejected)
 }
 func recoverableSourceFailure(err error) bool {
 	if permanentSourceFailure(err) || errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrNoProgress) {

@@ -213,6 +213,9 @@ func downloadArgs(input string, video, audio *core.StreamInfo, out string) []str
 	}
 	args = append(args, "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
 		"-c", "copy")
+	if ps := mp4CopyParameterSets(video); ps != "" {
+		args = append(args, "-bsf:v", ps)
+	}
 	if audio != nil {
 		args = append(args, "-disposition:a:0", "default")
 		if lang := mp4Language(audio.Language); lang != "" {
@@ -375,10 +378,22 @@ func (d *DownloadRemuxer) RemuxDownload(ctx context.Context, req core.DownloadRe
 	qualityConversion := video != nil && ((req.Options.MaxHeight > 0 && video.Height > req.Options.MaxHeight) ||
 		(req.Options.MaxBitrateKbps > 0 && req.Info.BitrateKbps > req.Options.MaxBitrateKbps))
 	if ok && !downloadBurnsImage(req) && !qualityConversion {
-		return d.runDownload(ctx, req, progress, estimateBytes(req.Info), "remux",
-			func(part string) []string {
-				return downloadTextArgs(downloadArgs(req.InputURL, video, audio, part), req.Info, req.Options.SubtitleStream, part)
-			})
+		remux := func(video *core.StreamInfo) (string, int64, error) {
+			return d.runDownload(ctx, req, progress, estimateBytes(req.Info), "remux",
+				func(part string) []string {
+					return downloadTextArgs(downloadArgs(req.InputURL, video, audio, part), req.Info, req.Options.SubtitleStream, part)
+				})
+		}
+		path, size, err := remux(video)
+		if err != nil && ctx.Err() == nil && parameterSetFilterFailed(err.Error(), mp4CopyParameterSets(video)) {
+			// The rebuild filter could not read the source record: copy
+			// it as it is, as before #783.
+			d.m.log.Warn("download parameter set filter failed to start; copying the source record", "err", err)
+			kept := *video
+			kept.InBandParameterSets = false
+			return remux(&kept)
+		}
+		return path, size, err
 	}
 	path, size, err := d.convertDownload(ctx, req, progress)
 	if err != nil && ctx.Err() == nil && !errors.Is(err, core.ErrDownloadBudget) && !errors.Is(err, ErrVideoTranscodingDisabled) && ok && qualityConversion && !downloadBurnsImage(req) {

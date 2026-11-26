@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 )
 
@@ -33,22 +32,22 @@ func TestPreStandardProfilesResetToDefaults(t *testing.T) {
 	if old.Quality.Default == "Mine" {
 		t.Fatal("default still names the removed profile")
 	}
-	wantRules := []QualityRule{
+	wantRules := []LegacyQualityRule{
 		{Product: "Apple TV", Profile: "4K"},
-		{Product: "Roku", Profile: "4K", MaxHeight: 1080, ConvertSurroundAudio: true},
-		{Platform: "iOS", MediaType: "movie", Profile: "4K"},
-		{UserID: 9, MediaType: "tv", Profile: "4K"},
+		{Product: "Roku", Profile: "Mine", MaxHeight: 1080, ConvertSurroundAudio: true},
+		{Platform: "iOS", MediaType: "movie", Profile: "TRaSH UHD"},
+		{UserID: 9, MediaType: "tv", Profile: "TRaSH HD"},
 	}
-	if !slices.Equal(old.Quality.Rules, wantRules) {
-		t.Fatalf("rules %+v, want %+v", old.Quality.Rules, wantRules)
+	if old.Quality.RulesMigration == nil || !reflect.DeepEqual(old.Quality.RulesMigration.Rules, wantRules) {
+		t.Fatalf("migrated rules %+v, want %+v", old.Quality.RulesMigration, wantRules)
 	}
 
 	shared, _, err := mergeShared(Defaults(t.TempDir()), []byte(`{"quality":{"rules":[{"product":"Shield","profile":"Mine","maxHeight":2160}],"profiles":[{"name":"Mine","mediaType":"tv","preferredSources":["webdl"]}]}}`))
 	if err != nil || !reflect.DeepEqual(shared.Quality.Profiles, DefaultQuality().Profiles) {
 		t.Fatalf("shared profiles %+v (%v), want the defaults", shared.Quality.Profiles, err)
 	}
-	if len(shared.Quality.Rules) != 1 || shared.Quality.Rules[0].Profile != "4K" || shared.Quality.Rules[0].MaxHeight != 2160 {
-		t.Fatalf("shared rules %+v, want repointed 4K with maxHeight 2160", shared.Quality.Rules)
+	if shared.Quality.RulesMigration == nil || len(shared.Quality.RulesMigration.Rules) != 1 || shared.Quality.RulesMigration.Rules[0].MaxHeight != 2160 {
+		t.Fatalf("shared rulesMigration %+v, want Shield rule with maxHeight 2160", shared.Quality.RulesMigration)
 	}
 
 	b, _ := json.Marshal(DefaultQuality().Profiles[1])

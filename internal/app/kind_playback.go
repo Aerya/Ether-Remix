@@ -2,12 +2,59 @@ package app
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/newznab"
+	"github.com/braedonsaunders/ether/internal/plugins/adapters"
 )
+
+// surfaceKindStreams stamps the frontend's live-app surface onto every
+// KindResolver call so per-app library presentation is enforced consistently.
+type surfaceKindStreams struct {
+	inner   *adapters.KindResolver
+	surface string
+}
+
+var (
+	_ frontend.KindStreams     = surfaceKindStreams{}
+	_ frontend.KindPartStreams = surfaceKindStreams{}
+	_ frontend.KindRefKeys     = surfaceKindStreams{}
+)
+
+func (s surfaceKindStreams) withSurface(ctx context.Context) context.Context {
+	if s.surface == "" {
+		return ctx
+	}
+	return core.WithLiveApp(ctx, s.surface)
+}
+
+func (s surfaceKindStreams) OpenKind(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string) (*frontend.KindMedia, error) {
+	return s.inner.OpenKind(s.withSurface(ctx), viewer, key, accept)
+}
+
+func (s surfaceKindStreams) KindLeaves(ctx context.Context, viewer *core.Viewer, parent core.RatingKey) ([]frontend.KindLeaf, error) {
+	return s.inner.KindLeaves(s.withSurface(ctx), viewer, parent)
+}
+
+func (s surfaceKindStreams) OpenKindPart(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept []string) (*frontend.KindMedia, error) {
+	return s.inner.OpenKindPart(s.withSurface(ctx), viewer, key, partIndex, accept)
+}
+
+func (s surfaceKindStreams) KindParts(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]frontend.KindPart, error) {
+	return s.inner.KindParts(s.withSurface(ctx), viewer, key)
+}
+
+func (s surfaceKindStreams) KeyForRef(ctx context.Context, viewer *core.Viewer, ref core.ItemRef) (core.RatingKey, error) {
+	return s.inner.KeyForRef(s.withSurface(ctx), viewer, ref)
+}
+
+func (s surfaceKindStreams) RefsForKeys(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) (map[core.RatingKey]core.ItemRef, error) {
+	return s.inner.RefsForKeys(s.withSurface(ctx), viewer, keys)
+}
 
 // pluginKindVersions lists the playable version menu of a plugin kind item
 // (Auto slot + remaining /resolve sources). It is the broker's KindVersions
@@ -25,10 +72,10 @@ func (a *App) pluginKindVersions(ctx context.Context, viewer *core.Viewer, key c
 // kind source must be a real stream.
 var kindAccept = []string{"range", "download", "container", "release"}
 
-// kindSourceFunc is the broker's KindSource dep: it projects a plugin kind
-// item and hands back an opener for its bytes (spec §15.1). The opener
-// re-authorizes the viewer through KindResolver.OpenKindExcluding, so
-// authorization is enforced at open time, not on the projection alone.
+// kindSourceFunc is the broker's KindSource dep: it authorizes and projects a
+// plugin kind item and hands back an opener for its bytes (spec §15.1). Both
+// projection and open enforce the viewer's library access, per-app library
+// presentation, rating, and safety policy.
 func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKey) (*core.KindInput, error) {
 	if a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil || a.pluginsRT.kindResolver == nil {
 		return nil
@@ -39,21 +86,25 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 		if viewer == nil || !key.IsPluginKey() {
 			return nil, core.ErrNotFound
 		}
-		piv, err := catalog.Item(ctx, key)
-		if err != nil {
+		authorized, err := a.pluginPlayableTitle(ctx, catalog, viewer, key)
+		if err != nil || authorized == nil {
 			return nil, core.ErrNotFound
 		}
-		title := piv.Title
+		title := *authorized
 		if title.MediaClass == core.MediaClassBook || title.MBItemType == "Book" {
 			return nil, core.ErrNoUsableFile
 		}
+		liveApp := core.LiveApp(ctx)
 		in := &core.KindInput{
 			Title:         &title,
 			SourceID:      key.String(),
 			OpenCandidate: nil,
 		}
 		in.OpenCandidate = func(octx context.Context, exclude []string) (core.MediaSource, core.Release, error) {
-			if core.IndexerPurpose(octx) == "" {
+			if liveApp != "" && core.LiveApp(octx) == "" {
+				octx = core.WithLiveApp(octx, liveApp)
+			}
+			if core.IndexerPurpose(octx) == core.IndexerPurposeOther {
 				octx = core.WithIndexerPurpose(octx, core.IndexerPurposePlayback)
 			}
 			var media *frontend.KindMedia
@@ -66,6 +117,10 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 					media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
 				} else {
 					media, err = resolver.OpenKindSource(octx, viewer, key, in.PreferSourceID, kindAccept)
+					var refusal *newznab.GrabRefusal
+					if !in.Exact && errors.As(err, &refusal) {
+						media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, append(slices.Clone(exclude), in.PreferSourceID))
+					}
 				}
 			} else {
 				media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)

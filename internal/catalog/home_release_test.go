@@ -138,7 +138,7 @@ func TestHomeReleaseGateBackfillAndCorrections(t *testing.T) {
 		t.Fatalf("summary erased evidence: %v", err)
 	}
 	beforeCalls := client.calls
-	search, err := c.Search(ctx, "A", []core.MediaType{core.TypeMovie}, 20)
+	search, err := c.Search(ctx, "Any", []core.MediaType{core.TypeMovie}, 20)
 	if err != nil || len(search) != 1 || search[0].Key != core.MovieKey(1) {
 		t.Fatalf("search: %+v %v", search, err)
 	}

@@ -3,11 +3,14 @@ package admin
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 )
 
 func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +59,9 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 			origin := ""
 			if info.Descriptor.ID == "vela" {
 				if info.Enabled && info.Status.Mounted && info.Status.WebPlayerReady {
-					if u, e := h.resolveAppAddress(r.Context(), r, "vela", "/vela", false); e == nil {
+					if path, ok := h.sameOriginAppPath(r, "vela", "/vela"); ok {
+						origin = path + "/"
+					} else if u, e := h.resolveAppAddress(r.Context(), r, "vela", "/vela", false); e == nil {
 						origin = strings.TrimRight(u.String(), "/") + "/"
 					} else {
 						var cfg config.Config
@@ -103,7 +108,10 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 			// console with no published address, prefer the native listener
 			// port on the browser's current host.
 			hasPublished := h.deps.Config != nil && len(frontendPublishedURLs(h.deps.Config.Get(), "jellyfin")) > 0
-			if !hasPublished && valid && reqOrigin.Scheme == "http" && !viaProxy(r) {
+			if path, ok := h.sameOriginAppPath(r, "jellyfin", "/jellyfin"); ok {
+				origin = path
+			}
+			if origin == "" && !hasPublished && valid && reqOrigin.Scheme == "http" && !viaProxy(r) {
 				hostname := reqOrigin.Hostname()
 				for _, address := range info.Status.Addresses {
 					if _, port, e := net.SplitHostPort(address); e == nil {
@@ -172,4 +180,46 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"url": origins[target] + "#code=" + url.QueryEscape(code), "players": players(code)})
+}
+
+// sameOriginAppPath returns the root-relative path of an app Ether serves on
+// the port the console was loaded from, for the console to resolve against its
+// own origin. A browser that reached the console behind a reverse proxy or a
+// tunnel can always reach this same Ether there, while the host Ether sees
+// (a loopback tunnel end, a proxy's upstream name) may mean nothing to it.
+// It applies only when the owner published no address for the app (a
+// published address wins), the app serves its shared prefix on the main port,
+// and the request is proxied or arrived on a loopback host. A direct LAN
+// console keeps the resolved absolute address.
+func (h *Handler) sameOriginAppPath(r *http.Request, id, prefix string) (string, bool) {
+	if h.deps.Config == nil {
+		return "", false
+	}
+	cfg := h.deps.Config.Get()
+	if len(frontendPublishedURLs(cfg, id)) > 0 || !sharedPrefixActive(cfg, id, prefix) {
+		return "", false
+	}
+	if !viaProxy(r) && !loopbackHost(r.Host) {
+		return "", false
+	}
+	// The shared prefixes live on the main port, not a dedicated console port.
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && cfg.Server.ConsolePort > 0 && cfg.Server.ConsolePort != cfg.Server.Port {
+		if _, port, err := net.SplitHostPort(local.String()); err == nil && port == strconv.Itoa(cfg.Server.ConsolePort) {
+			return "", false
+		}
+	}
+	forwarded := ""
+	if origin, ok := requestOriginInfo(r, h.proxyPrefixes()); ok {
+		forwarded = origin.Prefix
+	}
+	return clientnet.JoinPrefix(forwarded, prefix), true
+}
+
+func loopbackHost(host string) bool {
+	h := strings.ToLower(hostOnly(host))
+	if h == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(h)
+	return err == nil && ip.Unmap().IsLoopback()
 }

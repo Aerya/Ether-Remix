@@ -17,12 +17,18 @@ import (
 // buildServerRole constructs the real browse/control graph and remote playback
 // broker. Provider transports, caches and local encoders are absent. This graph
 // remains guarded until protocol and deployment acceptance proves its routes.
-func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
+func (a *App) buildServerRole(ctx context.Context, _ config.Config) error {
 	var err error
 	a.safety, err = safety.New(ctx, a.db)
 	if err != nil {
 		return err
 	}
+	if err = a.migrateQualityRules(ctx); err != nil {
+		return err
+	}
+	// The quality migration may have rewritten the config: read it fresh.
+	cfg := a.cfg.Get()
+	a.libProfiles = newLibraryProfiles(a)
 	if err = a.buildCatalogue(ctx, cfg); err != nil {
 		return err
 	}
@@ -56,6 +62,7 @@ func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
 	}
 	a.buildDiscovery()
 	a.episodeorder = episodeorder.New(a.db, a.tmdb, a.catalog)
+	a.catalog.SetMetadataEpisodeGroup(a.episodeorder.MetadataGroup)
 	a.buildExtras()
 	a.frontendClients = newFrontendClients(a.db, a.log.With("component", "frontend-clients"), nil)
 	a.closers = append(a.closers, a.frontendClients.Close)

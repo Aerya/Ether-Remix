@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-26-playable-rebuild",
+    id: "2026-11-26-upstream-recommendations",
     version: "current",
+    date: "2026-11-26",
+    title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
+    items: [
+      [
+        "L’accueil et les rangées des bibliothèques se règlent dans Recommandations. Les anciens placements, modèles de disposition et droits d’accès sont conservés.",
+        "Home and library rows are edited in Recommendations. Existing placements, layout templates and access restrictions are retained.",
+      ],
+      [
+        "Les imports Xperience/Jukebox conservent leurs rangées ; les catalogues se synchronisent en arrière-plan avec leur compteur et leur limite.",
+        "Xperience/Jukebox imports retain their rows; catalogue sync runs in the background with item counts and limits.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-26-playable-rebuild",
+    version: "0.2.37-remix.144.1",
     date: "2026-11-26",
     title: ["Recalcul fiable des gros catalogues", "Reliable large catalogue rebuilds"],
     items: [

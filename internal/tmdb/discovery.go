@@ -74,13 +74,34 @@ func (c *Client) Localized(ctx context.Context, t *core.Title, language string) 
 func discoveryPath(t *core.Title) (string, error) {
 	switch t.Type {
 	case core.TypeMovie:
+		if t.IDs.TMDB <= 0 {
+			return "", core.ErrUnsupported
+		}
 		return fmt.Sprintf("/movie/%d", t.IDs.TMDB), nil
 	case core.TypeShow:
+		if t.IDs.TMDB <= 0 {
+			return "", core.ErrUnsupported
+		}
 		return fmt.Sprintf("/tv/%d", t.IDs.TMDB), nil
-	case core.TypeSeason:
-		return fmt.Sprintf("/tv/%d/season/%d", t.ShowKey.TMDB(), t.Season), nil
-	case core.TypeEpisode:
-		return fmt.Sprintf("/tv/%d/season/%d/episode/%d", t.ShowKey.TMDB(), t.Season, t.Episode), nil
+	case core.TypeSeason, core.TypeEpisode:
+		if t.Key.Allocated() {
+			return "", core.ErrUnsupported
+		}
+		show := t.ShowIDs.TMDB
+		if show == 0 && !t.ShowKey.Allocated() {
+			show = t.ShowKey.TMDB()
+		}
+		if show <= 0 {
+			return "", core.ErrNotFound
+		}
+		season, episode := t.Season, t.Episode
+		if t.Key.Kind() == core.KindSeason || t.Key.Kind() == core.KindEpisode {
+			season, episode = t.Key.Season(), t.Key.Episode()
+		}
+		if t.Type == core.TypeSeason {
+			return fmt.Sprintf("/tv/%d/season/%d", show, season), nil
+		}
+		return fmt.Sprintf("/tv/%d/season/%d/episode/%d", show, season, episode), nil
 	}
 	return "", fmt.Errorf("unsupported localization type")
 }

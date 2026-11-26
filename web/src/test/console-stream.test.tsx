@@ -34,14 +34,14 @@ function renderAppWithProbe() {
 describe("console live stream", () => {
   it("opens a shared stream with the session header", async () => {
     const { fake } = renderApp("/");
-    await screen.findByRole("button", { name: "Server health: All systems normal" });
+    await screen.findByRole("button", { name: "Server health: All healthy" });
     const streams = calls(fake, "GET", "/stream");
     expect(streams.length).toBeGreaterThanOrEqual(1);
   });
 
   it("applies a pushed dashboard without polling", async () => {
     const { fake } = renderApp("/");
-    await screen.findByRole("button", { name: "Server health: All systems normal" });
+    await screen.findByRole("button", { name: "Server health: All healthy" });
     const dashboardCalls = () => calls(fake, "GET", "/dashboard").length;
     const before = dashboardCalls();
     expect(before).toBeGreaterThanOrEqual(1);
@@ -60,7 +60,7 @@ describe("console live stream", () => {
 
   it("refetches the registry on extend.changed", async () => {
     const { fake } = renderAppWithProbe();
-    await screen.findByRole("button", { name: "Server health: All systems normal" });
+    await screen.findByRole("button", { name: "Server health: All healthy" });
     await screen.findByTestId("registry-probe");
     const registryCalls = () => calls(fake, "GET", "/extend/registry").length;
     const before = registryCalls();

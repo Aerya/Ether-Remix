@@ -78,52 +78,6 @@ func (s *Service) adoptLibraryDefaultTemplates(ctx context.Context) error {
 	return tx.Commit()
 }
 
-// One-time upgrade of shipped feed collections. Custom collections keep every
-// publication choice. Stable IDs remain valid for existing Home policies/links.
-func (s *Service) separateDiscoveryCollections(ctx context.Context) error {
-	if s.meta(ctx, "library-separation-v1") != "" {
-		return nil
-	}
-	rows, err := s.loadRows(ctx)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err = store.LockKey(ctx, store.DialectOf(s.db), tx, "collections:library-separation"); err != nil {
-		return err
-	}
-	var done string
-	err = tx.QueryRowContext(ctx, `SELECT v FROM collections_meta WHERE k='library-separation-v1'`).Scan(&done)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	for _, r := range rows {
-		if !r.builtin {
-			continue
-		}
-		sp := r.spec
-		sp.Targets.CollectionsTab = false
-		raw, err := json.Marshal(sp)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE collections_specs SET spec_json=?,updated_at=? WHERE id=?`, string(raw), s.now().Unix(), r.id); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO collections_meta(k,v) VALUES('library-separation-v1','1')`); err != nil {
-		return fmt.Errorf("collection upgrade: %w", err)
-	}
-	return tx.Commit()
-}
-
 // A local single-facet collection reads an inverted index instead of scanning
 // the whole catalogue once for every network. Owners can edit it freely: more
 // complex rules automatically use the ordinary collection evaluator.

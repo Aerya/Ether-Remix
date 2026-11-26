@@ -36,15 +36,12 @@ func rowHasItems(r core.HomeRow) bool {
 	return len(r.Items) > 0 || r.Hub.ItemCount > 0
 }
 
-func leadDefaults(rows []core.HomeRow, g, v *core.LayoutPage, maxRows int) (lead string, defaults map[string]*core.RowPolicy) {
-	defaults = map[string]*core.RowPolicy{}
-	covered := func(r core.HomeRow) bool { return matchingPolicy(g, r) != nil || matchingPolicy(v, r) != nil }
+func leadDefaults(rows []core.HomeRow, pl *pagePlan, maxRows int) (lead string, defaults map[string]*rule) {
+	defaults = map[string]*rule{}
+	covered := func(r core.HomeRow) bool { return pl.match(r) != nil }
 	reserved := map[int]bool{}
 	for _, r := range rows {
-		p := matchingPolicy(g, r)
-		if q := matchingPolicy(v, r); q != nil {
-			p = q
-		}
+		p := pl.match(r)
 		if p != nil && p.Status != "off" {
 			if p.Slot > 0 {
 				reserved[p.Slot] = true
@@ -64,7 +61,7 @@ func leadDefaults(rows []core.HomeRow, g, v *core.LayoutPage, maxRows int) (lead
 		if slot > maxRows {
 			return
 		}
-		defaults[r.HubID] = &core.RowPolicy{Row: r.HubID, Status: "always", Slot: slot}
+		defaults[r.HubID] = &rule{Row: r.HubID, Status: "always", Slot: slot}
 		reserved[slot] = true
 		slot++
 	}
@@ -92,7 +89,7 @@ func leadDefaults(rows []core.HomeRow, g, v *core.LayoutPage, maxRows int) (lead
 	}
 	for _, r := range rows {
 		if r.Kind == KindRecentlyAdded && !covered(r) {
-			defaults[r.HubID] = &core.RowPolicy{Row: r.HubID, Status: "eligible", MinSlot: max(1, min(recentlyAddedMinSlot, maxRows))}
+			defaults[r.HubID] = &rule{Row: r.HubID, Status: "eligible", MinSlot: max(1, min(recentlyAddedMinSlot, maxRows))}
 		}
 	}
 	return lead, defaults

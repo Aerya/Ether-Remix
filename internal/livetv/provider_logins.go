@@ -116,7 +116,7 @@ func (s *Service) refreshLogins(ctx context.Context, src *Source, primary []Chan
 			a := *src.Auth
 			a.Username = l.Username
 			a.Password = l.Password
-			acct, err := newXtreamAPI(s, &a).account(ctx, s.o.Now())
+			acct, _, err := newXtreamAPI(s, &a).account(ctx, s.o.Now())
 			l.Account = acct
 			if err != nil {
 				l.Error = "login unavailable"
@@ -471,6 +471,7 @@ func (s *Service) cachedPrimaryLineup(ctx context.Context, src *Source, cause er
 	if !same {
 		return Fetched{}, cause
 	}
+	src.ArchiveTimezone = old.ArchiveTimezone
 	rows, err := s.o.DB.QueryContext(ctx, `SELECT data FROM livetv_channels WHERE `+store.JSONText(store.DialectOf(s.o.DB), "data", "sourceId")+`=?`, src.ID)
 	if err != nil {
 		return Fetched{}, err

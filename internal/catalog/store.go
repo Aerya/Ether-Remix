@@ -230,6 +230,9 @@ func scanTitle(s scanner) (*storedTitle, error) {
 	}
 	if releasedTS != 0 {
 		t.Released = time.Unix(releasedTS, 0).UTC()
+		if t.Type == core.TypeEpisode {
+			t.EpisodeAirDate = t.Released
+		}
 	}
 	if lastAirTS != 0 {
 		t.LastAirDate = time.Unix(lastAirTS, 0).UTC()
@@ -438,6 +441,13 @@ func (c *Catalog) hydrateFactBatch(ctx context.Context, items []core.Title, idx 
 		}
 		parts = append(parts, `SELECT `+key+`, `+tag+`, `+a+`, `+b+`, `+c+`, `+d+`, `+e+`, `+f+`, `+g+`, `+extra+` FROM `+from)
 	}
+	for _, t := range items {
+		if t.Type == core.TypeEpisode {
+			part("t.key", "'episode_air'", "CAST(COALESCE(p.air_ts,CASE WHEN e.earliest_ts=t.released_ts THEN 0 ELSE t.released_ts END) AS TEXT)", "''", "''", "''", "''", "''", "''", "''",
+				`catalog_titles t LEFT JOIN catalog_episode_provider_air p ON p.key=t.key LEFT JOIN catalog_episode_release e ON e.key=t.key WHERE t.type='episode' AND t.key IN (`+ph+`)`)
+			break
+		}
+	}
 	if set&factTrailers != 0 {
 		part("key", "'trailer'", "name", "url", "''", "''", "''", "''", "''", "''", `catalog_remote_trailers WHERE key IN (`+ph+`)`)
 	}
@@ -500,6 +510,15 @@ func (c *Catalog) hydrateFactBatch(ctx context.Context, items []core.Title, idx 
 		k := core.RatingKey(key)
 		touched[k] = true
 		switch tag {
+		case "episode_air":
+			stamp, _ := strconv.ParseInt(a, 10, 64)
+			var date time.Time
+			if stamp != 0 {
+				date = time.Unix(stamp, 0).UTC()
+			}
+			for _, i := range idx[k] {
+				items[i].EpisodeAirDate = date
+			}
 		case "trailer":
 			for _, i := range idx[k] {
 				items[i].RemoteTrailerName, items[i].RemoteTrailerURL = a, b
@@ -830,8 +849,9 @@ type upsertOpts struct {
 	// only from TMDB's show and season payloads, so a date that is added,
 	// moved or withdrawn must replace the stored one, including on rows an
 	// earlier detail upsert marked (which otherwise keep their date).
-	airDates     bool
-	releaseDates *tmdb.ReleaseDates
+	airDates        bool
+	releaseDates    *tmdb.ReleaseDates
+	replaceMetadata bool
 	// ratingCuts, set by upsertMany, limits rating, vote and popularity
 	// wobbles to the writes rating_drift.go keeps.
 	ratingCuts *ratingCuts
@@ -901,7 +921,35 @@ func (c *Catalog) upsertMany(ctx context.Context, titles []core.Title, o upsertO
 	for i, t := range titles {
 		items[i] = upsertItem{t: t, o: o}
 	}
-	return c.upsertItems(ctx, items)
+	return c.upsertSummaryChunks(ctx, items, 0)
+}
+
+// upsertSummaryChunks stores items in transactions sized to hold the
+// writer about backgroundWriteHold (write_hold.go), each with budget (0 for
+// none), then runs after in the last one. Every upsert is idempotent: a
+// failure leaves the earlier chunks stored, and a retry rewrites nothing
+// they hold. Writers waiting on the write gate take their turn between
+// chunks.
+func (c *Catalog) upsertSummaryChunks(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) error {
+	if len(items) == 0 {
+		_, err := c.upsertTx(ctx, nil, budget, after...)
+		return err
+	}
+	for start := 0; start < len(items); {
+		n := min(c.holds.summary.size(summaryHold), len(items)-start)
+		chunk := items[start : start+n]
+		start += n
+		var then []func(context.Context, *sql.Tx) error
+		if start == len(items) {
+			then = after
+		}
+		held, err := c.upsertTx(ctx, chunk, budget, then...)
+		c.holds.summary.observe(summaryHold, len(chunk), held)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // upsertItem is one title and its write options.
@@ -919,14 +967,28 @@ func (c *Catalog) upsertItems(ctx context.Context, items []upsertItem, after ...
 // upsertItemsBudget starts the execution budget only after writer admission.
 // Waiting behind another transaction must not consume our execution allowance.
 func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) error {
+	_, err := c.upsertTx(ctx, items, budget, after...)
+	return err
+}
+
+// upsertTx is upsertItemsBudget, reporting how long the transaction held
+// the writer (from admission to commit or rollback).
+func (c *Catalog) upsertTx(ctx context.Context, items []upsertItem, budget time.Duration, after ...func(context.Context, *sql.Tx) error) (held time.Duration, err error) {
 	if len(items) == 0 && len(after) == 0 {
-		return nil
+		return 0, nil
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer tx.Rollback()
+	admitted := time.Now()
+	defer func() {
+		_ = tx.Rollback()
+		if held == 0 {
+			held = time.Since(admitted)
+		}
+	}()
+	parent := ctx
 	if budget > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, budget)
@@ -941,7 +1003,7 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 	}
 	stored, err := storedKeys(ctx, tx, titles)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Fold the new rows into the title search index (fts_fold.go).
 	var fresh []int64
@@ -964,7 +1026,7 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 	bulk := c.ftsFold && len(fresh) >= ftsFoldMin
 	if bulk {
 		if err := beginBulk(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	joins := &joinBatch{personFold: c.personFold && anyCredits, bulk: bulk}
@@ -972,38 +1034,42 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 		o := it.o
 		o.region, o.ratingCuts, o.stored, o.joins = region, &cuts, stored, joins
 		if err := upsertOne(ctx, tx, it.t, o, now); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := joins.flush(ctx, tx, now); err != nil {
-		return err
+		return 0, err
 	}
 	if bulk {
 		// With the marker set, the title trigger skipped every new row.
 		if err := foldTitleSearch(ctx, tx, fresh); err != nil {
-			return err
+			return 0, err
 		}
 		if err := endBulk(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	for _, f := range after {
 		if err := f(ctx, tx); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	// The budget bounds the statements; once they all ran, committing
+	// keeps the work the hold already paid for. A rollback here would
+	// only repeat the same hold on the retry.
+	if err := parent.Err(); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
+	held = time.Since(admitted)
 	c.writeGen.Add(1)
 	c.noteSearchWrites(titles)
 	if len(fresh) > 0 {
 		c.notifyStatus(true)
 	}
-	return nil
+	return held, nil
 }
 
 // materialTitleChangeSQL is true when an upsert changes a user-visible column on
@@ -1224,6 +1290,19 @@ func upsertOne(ctx context.Context, tx *sql.Tx, t core.Title, o upsertOpts, now 
 	if err != nil {
 		return fmt.Errorf("catalog: upsert %d: %w", t.Key, err)
 	}
+	if o.replaceMetadata {
+		// Ordinary summary writes preserve blank fields. An explicit provider
+		// refresh can also withdraw an overview or an image.
+		_, err = tx.ExecContext(ctx, `UPDATE catalog_titles SET tagline=?, summary=?, poster=?, backdrop=?, still=?, logo=?,
+		 child_count=?, leaf_count=?, collection_id=?, collection_name=?, fetched_at=?,
+		 detail_at=CASE WHEN ?=1 THEN ? ELSE detail_at END WHERE key=?`,
+			t.Tagline, t.Summary, t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath,
+			t.ChildCount, t.LeafCount, t.CollectionID, t.CollectionName, now, detailInt, now, int64(t.Key))
+		if err != nil {
+			return err
+		}
+	}
+
 	// TMDB's rating, votes and popularity move on nearly every sync. When
 	// nothing else changed, update only those three columns: the upsert
 	// above assigns every column, and SQLite rewrites the entry of every
@@ -1540,13 +1619,19 @@ func (c *Catalog) exportTitle(ctx context.Context, key core.RatingKey, gen uint6
 }
 
 func (c *Catalog) queryTitlesMode(ctx context.Context, sqlGated bool, q string, args ...any) ([]core.Title, error) {
-	return c.queryTitlesRows(ctx, sqlGated, false, q, args...)
+	items, err := c.queryTitlesRows(ctx, sqlGated, false, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-// queryTitlesRows is queryTitlesMode; with rowsOnly, movies and shows stay
-// the rows the query read, for the caller to filter and complete (a
-// candidate search, core.SearchCandidates), and only the other titles are
-// read in full. Rows and full titles keep the query's order.
+// queryTitlesRows hydrates titles before the caller projects episode orders.
+// With rowsOnly, movies and shows stay as rows for candidate search to
+// filter and complete. Results keep the query's order.
 func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, q string, args ...any) ([]core.Title, error) {
 	gen := c.writeGen.Load()
 	minute := c.minuteBucket()

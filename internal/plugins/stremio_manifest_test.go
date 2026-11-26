@@ -25,6 +25,33 @@ func TestPlainStremioCopyAndNativeValidation(t *testing.T) {
 			t.Fatalf("missing native contribution %s: %+v", kind, ds)
 		}
 	}
+	for _, d := range ds {
+		if d.Kind != extend.KindSubtitleProvider {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(d.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal subtitle meta: %v", err)
+		}
+		if meta["stremio"] != true {
+			t.Fatalf("stremio subtitle descriptor missing stremio=true: %+v", meta)
+		}
+	}
+	nativeSub := baseManifest()
+	nativeSub.Ether.Capabilities = []Capability{CapSubtitles}
+	nativeSub.Ether.Contributes.Subtitles = &SubtitlesMeta{Languages: json.RawMessage(`["en"]`), Formats: []string{"srt"}}
+	for _, d := range DescriptorsFor(nativeSub) {
+		if d.Kind != extend.KindSubtitleProvider {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(d.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal native subtitle meta: %v", err)
+		}
+		if _, has := meta["stremio"]; has {
+			t.Fatalf("native subtitle plugin should not set stremio meta: %+v", meta)
+		}
+	}
 	after, _ := json.Marshal(m)
 	if string(raw) != string(after) {
 		t.Fatal("descriptor derivation modified upstream manifest")

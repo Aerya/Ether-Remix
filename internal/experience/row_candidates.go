@@ -19,6 +19,7 @@ type RankedCandidate struct {
 	Style          string
 	Promoted       bool
 	Items          []core.Title
+	Collections    []core.Collection
 	More           bool
 	Key            core.RatingKey
 	ItemCount      int

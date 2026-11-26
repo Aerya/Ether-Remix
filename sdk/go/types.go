@@ -235,47 +235,70 @@ type Contributes struct {
 	LiveFeeds        []LiveFeedMeta        `json:"liveFeeds,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
 	Screens          []ScreenMeta          `json:"screens,omitempty"`
+	Surfaces         []SurfaceMeta         `json:"surfaces,omitempty"`
 }
 
 // ScreenMeta declares one generic top-level screen contributed by a plugin.
 type ScreenMeta struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Icon      string          `json:"icon,omitempty"`
-	Feed      string          `json:"feed,omitempty"`
-	Sections  []ScreenSection `json:"sections"`
-	Frontends []string        `json:"frontends,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Icon      string   `json:"icon,omitempty"`
+	Frontends []string `json:"frontends,omitempty"`
+	// Pages are the screen's documents by page id ("index" first); each is
+	// a package file or a list of renderer variants (docs/plugin-screens.md).
+	Pages         map[string]any          `json:"pages,omitempty"`
+	Placement     string                  `json:"placement,omitempty"` // navigation|hidden
+	ContentRating string                  `json:"contentRating,omitempty"`
+	Default       *bool                   `json:"default,omitempty"`
+	Actions       map[string]ScreenAction `json:"actions,omitempty"`
 }
 
-// ScreenSection declares one generic section inside a contributed screen.
-type ScreenSection struct {
-	ID         string            `json:"id,omitempty"`
-	Type       string            `json:"type"` // hero|events|table|schedule|leagues|entities
-	Title      string            `json:"title,omitempty"`
-	Feed       string            `json:"feed,omitempty"`
-	League     string            `json:"league,omitempty"`
-	EntityKind string            `json:"entityKind,omitempty"`
-	Limit      int               `json:"limit,omitempty"`
-	Query      *ScreenEventQuery `json:"query,omitempty"`
-	Leagues    []ScreenLeague    `json:"leagues,omitempty"`
+// ScreenAction declares a plugin-handled action documents call.
+type ScreenAction struct {
+	Args    map[string]ScreenActionArg `json:"args,omitempty"`
+	Confirm string                     `json:"confirm,omitempty"`
+	Rate    string                     `json:"rate,omitempty"` // normal|low
 }
 
-// ScreenEventQuery filters live events for an events, hero, or schedule section.
-type ScreenEventQuery struct {
-	Feed      string   `json:"feed,omitempty"`
-	State     []string `json:"state,omitempty"` // pre|in|post|delayed|postponed|canceled
-	League    string   `json:"league,omitempty"`
-	Favorites bool     `json:"favorites,omitempty"`
-	Window    string   `json:"window,omitempty"` // today|week|recent
-	Category  string   `json:"category,omitempty"`
+// ScreenActionArg is one typed action argument.
+type ScreenActionArg struct {
+	Type     string   `json:"type"` // string|int|bool|date|ref|strings
+	Max      int      `json:"max,omitempty"`
+	Min      int      `json:"min,omitempty"`
+	Enum     []string `json:"enum,omitempty"`
+	Required bool     `json:"required,omitempty"`
 }
 
-// ScreenLeague optionally declares one static league filter chip on a leagues section.
-type ScreenLeague struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Abbr string `json:"abbr,omitempty"`
-	Logo string `json:"logo,omitempty"`
+// SurfaceMeta declares a document drawn in a host slot.
+type SurfaceMeta struct {
+	ID            string          `json:"id"`
+	Presentation  string          `json:"presentation"` // playerOverlay|toast|homeRow|titlePanel
+	Title         string          `json:"title"`
+	Anchor        string          `json:"anchor,omitempty"`
+	Visibility    string          `json:"visibility,omitempty"`
+	Setting       *SurfaceSetting `json:"setting,omitempty"`
+	When          *SurfaceWhen    `json:"when,omitempty"`
+	TTL           int             `json:"ttl,omitempty"`
+	ContentRating string          `json:"contentRating,omitempty"`
+	Default       *bool           `json:"default,omitempty"`
+	Document      any             `json:"document"`
+	Frontends     []string        `json:"frontends,omitempty"`
+}
+
+// SurfaceSetting is a player overlay's player-menu switch.
+type SurfaceSetting struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+// SurfaceWhen limits where a surface applies.
+type SurfaceWhen struct {
+	Event *struct {
+		Feed string `json:"feed"`
+	} `json:"event,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TitleKind string `json:"titleKind,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the minimum polling interval a live feed may declare.
@@ -376,6 +399,16 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl    `json:"sync"`
 	Cache   *KindCacheDecl  `json:"cache,omitempty"`
 	Match   *KindMatchDecl  `json:"match,omitempty"`
+	// Lyrics: the provider implements LyricsProvider (POST /ether/v1/kinds/{kind}/lyrics).
+	Lyrics bool `json:"lyrics,omitempty"`
+	// Related: the provider implements RelatedProvider (POST /ether/v1/kinds/{kind}/related).
+	Related *KindRelatedDecl `json:"related,omitempty"`
+}
+
+// KindRelatedDecl names which relation purposes a kind answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
 }
 
 // MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
@@ -387,6 +420,7 @@ type KindLibraryDecl struct {
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
+	Experience  string             `json:"experience,omitempty"`  // watch|listen|read|gallery|live or another id; defaults by media class
 	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
@@ -445,6 +479,8 @@ type KindLibraryShelf struct {
 	Value     string   `json:"value,omitempty"`     // single value for facet
 	Values    []string `json:"values,omitempty"`    // OR values for facet
 	Filters   any      `json:"filters,omitempty"`   // map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule
+	Purpose   string   `json:"purpose,omitempty"`   // recentContexts (Jump back in) | liked (Liked songs)
+	Layout    string   `json:"layout,omitempty"`    // default look: standard|hero|wide|tiles|tracks
 }
 
 // KindLevel is one hierarchy level of a kind.
@@ -456,6 +492,9 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`   // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
+	// Members: a list level (a playlist): a root of its own whose items name
+	// other items of the kind as their ordered children (KindItem.Members).
+	Members bool `json:"members,omitempty"`
 }
 
 // KindField is one declared item field.
@@ -505,10 +544,17 @@ const (
 	KindSyncPush = "push"
 )
 
+// Kind sync undo modes for push-synced kinds.
+const (
+	KindSyncUndoSnapshots = "snapshots"
+	KindSyncUndoIDs       = "ids"
+)
+
 // KindSyncDecl is how a kind's items reach Ether's store.
 type KindSyncDecl struct {
 	Mode    string `json:"mode"` // pull|push
 	Refresh string `json:"refresh,omitempty"`
+	Undo    string `json:"undo,omitempty"` // snapshots|ids, push only
 }
 
 // KindCacheDecl is the per-library blob cache budget; 0 means server default.
@@ -530,12 +576,15 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	Libraries    []string `json:"libraries,omitempty"`
 	// SearchPaths optionally lists adapter subpaths (such as "/search",
 	// "/rest/search3", or "/graphql") allowed to call ai.complete when
 	// permissions.ai is "complete+search".
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind.
@@ -558,6 +607,19 @@ type SourceMeta struct {
 	Class     string         `json:"class"`
 	Abilities []string       `json:"abilities,omitempty"`
 	Limits    map[string]any `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches: Ether
+	// asks GET /ether/search (Routes.SourceSearch) for the declared Newznab
+	// categories, such as 3000 (audio) or 7000 (books).
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+
+// SourceSearchMeta declares the category searches a source plugin answers.
+// A top category (3000) covers its subcategories (3010, 3040). Lookups name
+// typed lookups (e.g. "album") whose fields Ether passes when a caller
+// sends one.
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
 }
 
 // ChannelsMeta describes a Live TV channel contribution.
@@ -868,9 +930,55 @@ type StreamResponse struct {
 	Streams []StreamItem `json:"streams"`
 }
 
-// OpenStreamRequest is passed to an OpenStream route handler.
+// OpenStreamRequest is passed to an OpenStream route handler
+// (GET /ether/open/{streamId}). For a release answered on a category search,
+// File or FileIndex name the file to open (from ReleaseFiles); both empty
+// lets the plugin choose.
 type OpenStreamRequest struct {
-	StreamID string `json:"streamId"`
+	StreamID  string `json:"streamId"`
+	File      string `json:"file,omitempty"`
+	FileIndex *int   `json:"fileIndex,omitempty"`
+}
+
+// SourceLookup is a typed lookup on a category search, such as
+// {Type: "album", Fields: {"artist": "...", "title": "..."}}.
+type SourceLookup struct {
+	Type   string            `json:"type"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// SourceSearchRequest is passed to a SourceSearch route handler
+// (GET /ether/search). Categories are the requested ones the plugin
+// declared; Lookup is set only for a lookup type the plugin declared.
+// Purpose says why Ether searches (playback, detail, warmup, ...) when known.
+type SourceSearchRequest struct {
+	Query      string        `json:"query"`
+	Categories []int         `json:"categories"`
+	Lookup     *SourceLookup `json:"lookup,omitempty"`
+	Purpose    string        `json:"purpose,omitempty"`
+}
+
+// SourceSearchResponse answers a category search in the stream route's
+// shape. Return releases as lazy streams (Ether.Lazy with Ether.ID and
+// Ether.ReleaseName) that ReleaseFiles lists and OpenStream opens, or as
+// torrents (InfoHash) Ether opens through debrid.
+type SourceSearchResponse = StreamResponse
+
+// ReleaseFilesRequest is passed to a ReleaseFiles route handler
+// (GET /ether/files/{id}) for a lazy release a search answered.
+type ReleaseFilesRequest struct {
+	ID string `json:"id"`
+}
+
+// PluginReleaseFile is one file inside a plugin release.
+type PluginReleaseFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size,omitempty"`
+}
+
+// ReleaseFilesResponse lists a release's files in the order FileIndex counts.
+type ReleaseFilesResponse struct {
+	Files []PluginReleaseFile `json:"files"`
 }
 
 // OpenStreamResponse is returned by an OpenStream route handler.

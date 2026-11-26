@@ -27,12 +27,7 @@
           "mode": "auto",
           "accent": "#d4a017"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "star-wars",
         "itemCount": 0
@@ -69,12 +64,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "middle-earth",
         "itemCount": 0
@@ -111,12 +101,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "wizarding-world",
         "itemCount": 0
@@ -155,12 +140,7 @@
           "mode": "auto",
           "accent": "#c8102e"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "marvel-cinematic-universe",
         "itemCount": 0
@@ -192,12 +172,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "james-bond",
         "itemCount": 0
@@ -229,12 +204,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "jurassic",
         "itemCount": 0
@@ -267,12 +237,7 @@
           "mode": "auto",
           "accent": "#ff5722"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "fast-and-furious",
         "itemCount": 0
@@ -305,12 +270,7 @@
           "mode": "auto",
           "accent": "#b71c1c"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mission-impossible",
         "itemCount": 0
@@ -343,12 +303,7 @@
           "mode": "auto",
           "accent": "#6d4c41"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "pirates-of-the-caribbean",
         "itemCount": 0
@@ -381,12 +336,7 @@
           "mode": "auto",
           "accent": "#00acc1"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "monsterverse",
         "itemCount": 0
@@ -419,12 +369,7 @@
           "mode": "auto",
           "accent": "#263238"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "john-wick",
         "itemCount": 0
@@ -457,12 +402,7 @@
           "mode": "auto",
           "accent": "#00c853"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "the-matrix",
         "itemCount": 0
@@ -495,12 +435,7 @@
           "mode": "auto",
           "accent": "#1b5e20"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "alien-saga",
         "itemCount": 0
@@ -533,12 +468,7 @@
           "mode": "auto",
           "accent": "#ff6f00"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "back-to-the-future",
         "itemCount": 0
@@ -571,12 +501,7 @@
           "mode": "auto",
           "accent": "#8d6e63"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "indiana-jones",
         "itemCount": 0
@@ -609,12 +534,7 @@
           "mode": "auto",
           "accent": "#d50000"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "spider-verse",
         "itemCount": 0
@@ -647,12 +567,7 @@
           "mode": "auto",
           "accent": "#c68400"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "dune-saga",
         "itemCount": 0
@@ -700,12 +615,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "pixar",
         "itemCount": 0
@@ -753,12 +663,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "studio-ghibli",
         "itemCount": 0
@@ -801,12 +706,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "a24",
         "itemCount": 0
@@ -845,12 +745,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-christopher-nolan",
         "itemCount": 0
@@ -889,12 +784,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-denis-villeneuve",
         "itemCount": 0
@@ -933,12 +823,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-quentin-tarantino",
         "itemCount": 0
@@ -977,12 +862,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-steven-spielberg",
         "itemCount": 0
@@ -1021,12 +901,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-martin-scorsese",
         "itemCount": 0
@@ -1065,12 +940,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-stanley-kubrick",
         "itemCount": 0
@@ -1114,12 +984,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-hayao-miyazaki",
         "itemCount": 0
@@ -1158,12 +1023,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-bong-joon-ho",
         "itemCount": 0
@@ -1202,12 +1062,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-wes-anderson",
         "itemCount": 0
@@ -1246,12 +1101,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "director-greta-gerwig",
         "itemCount": 0
@@ -1290,12 +1140,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "actor-tom-hanks",
         "itemCount": 0
@@ -1334,12 +1179,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "actor-meryl-streep",
         "itemCount": 0
@@ -1378,12 +1218,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "actor-denzel-washington",
         "itemCount": 0
@@ -1422,12 +1257,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "actor-keanu-reeves",
         "itemCount": 0
@@ -1466,12 +1296,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "actor-leonardo-dicaprio",
         "itemCount": 0
@@ -1517,12 +1342,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "decade-1970s",
         "itemCount": 0
@@ -1568,12 +1388,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "decade-1980s",
         "itemCount": 0
@@ -1619,12 +1434,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "decade-1990s",
         "itemCount": 0
@@ -1670,12 +1480,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "decade-2000s",
         "itemCount": 0
@@ -1721,12 +1526,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "decade-2010s",
         "itemCount": 0
@@ -1767,12 +1567,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "acclaimed-movies",
         "itemCount": 0
@@ -1819,12 +1614,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "acclaimed-series",
         "itemCount": 0
@@ -1871,12 +1661,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-100-series",
         "itemCount": 0
@@ -1917,12 +1702,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-250-movies",
         "itemCount": 0
@@ -1978,12 +1758,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "hidden-gems",
         "itemCount": 0
@@ -2029,12 +1804,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "modern-classics",
         "itemCount": 0
@@ -2066,12 +1836,7 @@
           "mode": "auto",
           "accent": "#d4af37"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "awards-oscar-winners",
         "itemCount": 0
@@ -2103,12 +1868,7 @@
           "mode": "auto",
           "accent": "#c5a028"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "awards-golden-globes-winners",
         "itemCount": 0
@@ -2140,12 +1900,7 @@
           "mode": "auto",
           "accent": "#fa320a"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "best-of-2023",
         "itemCount": 0
@@ -2177,12 +1932,7 @@
           "mode": "auto",
           "accent": "#fa320a"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "best-of-2024",
         "itemCount": 0
@@ -2214,12 +1964,7 @@
           "mode": "auto",
           "accent": "#fa320a"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "best-of-2025",
         "itemCount": 0
@@ -2251,12 +1996,7 @@
           "mode": "auto",
           "accent": "#1c1c1c"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "criterion-collection",
         "itemCount": 0
@@ -2288,12 +2028,7 @@
           "mode": "auto",
           "accent": "#1565c0"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "ifc-films",
         "itemCount": 0
@@ -2339,12 +2074,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-action",
         "itemCount": 0
@@ -2390,12 +2120,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-animation",
         "itemCount": 0
@@ -2441,12 +2166,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-comedy",
         "itemCount": 0
@@ -2492,12 +2212,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-crime",
         "itemCount": 0
@@ -2543,12 +2258,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-drama",
         "itemCount": 0
@@ -2594,12 +2304,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-horror",
         "itemCount": 0
@@ -2645,12 +2350,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-scifi",
         "itemCount": 0
@@ -2696,12 +2396,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-top-rated-thriller",
         "itemCount": 0
@@ -2763,12 +2458,7 @@
           "mode": "auto",
           "accent": "#b5651d"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-cosy",
         "itemCount": 0
@@ -2827,12 +2517,7 @@
           "mode": "auto",
           "accent": "#5b2a86"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-mind-bending",
         "itemCount": 0
@@ -2889,12 +2574,7 @@
           "mode": "auto",
           "accent": "#f2a900"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-feel-good",
         "itemCount": 0
@@ -2947,12 +2627,7 @@
           "mode": "auto",
           "accent": "#8b0000"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-edge-of-your-seat",
         "itemCount": 0
@@ -3004,12 +2679,7 @@
           "mode": "auto",
           "accent": "#4a6fa5"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-tearjerkers",
         "itemCount": 0
@@ -3060,12 +2730,7 @@
           "mode": "auto",
           "accent": "#c2185b"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-date-night",
         "itemCount": 0
@@ -3111,12 +2776,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-epic-weekend",
         "itemCount": 0
@@ -3158,12 +2818,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "mood-true-stories",
         "itemCount": 0
@@ -3213,12 +2868,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "short-under-90",
         "itemCount": 0
@@ -3263,12 +2913,7 @@
           "mode": "auto",
           "accent": "#e50914"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-netflix",
         "itemCount": 0
@@ -3313,12 +2958,7 @@
           "mode": "auto",
           "accent": "#113ccf"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-disney-plus",
         "itemCount": 0
@@ -3363,12 +3003,7 @@
           "mode": "auto",
           "accent": "#00a8e1"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-prime-video",
         "itemCount": 0
@@ -3413,12 +3048,7 @@
           "mode": "auto",
           "accent": "#002be7"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-max",
         "itemCount": 0
@@ -3463,12 +3093,7 @@
           "mode": "auto",
           "accent": "#333333"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-apple-tv",
         "itemCount": 0
@@ -3513,12 +3138,7 @@
           "mode": "auto",
           "accent": "#1ce783"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-hulu",
         "itemCount": 0
@@ -3568,12 +3188,7 @@
           "mode": "auto",
           "accent": "#0064ff"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-paramount-plus",
         "itemCount": 0
@@ -3605,12 +3220,7 @@
           "mode": "auto",
           "accent": "#333333"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-apple-tv-originals",
         "itemCount": 0
@@ -3642,12 +3252,7 @@
           "mode": "auto",
           "accent": "#113ccf"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-disney-plus-originals",
         "itemCount": 0
@@ -3679,12 +3284,7 @@
           "mode": "auto",
           "accent": "#002be7"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-max-originals",
         "itemCount": 0
@@ -3716,12 +3316,7 @@
           "mode": "auto",
           "accent": "#1ce783"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-hulu-originals",
         "itemCount": 0
@@ -3753,12 +3348,7 @@
           "mode": "auto",
           "accent": "#e50914"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-netflix-originals",
         "itemCount": 0
@@ -3790,12 +3380,7 @@
           "mode": "auto",
           "accent": "#ffb300"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-peacock-originals",
         "itemCount": 0
@@ -3827,12 +3412,7 @@
           "mode": "auto",
           "accent": "#00a8e1"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-prime-video-originals",
         "itemCount": 0
@@ -3864,12 +3444,7 @@
           "mode": "auto",
           "accent": "#b71c1c"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "streaming-shudder",
         "itemCount": 0
@@ -3907,12 +3482,7 @@
           "mode": "auto",
           "accent": "#ff6600"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-halloween",
         "itemCount": 0
@@ -3961,12 +3531,7 @@
           "mode": "auto",
           "accent": "#ff8c00"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-halloween-family",
         "itemCount": 0
@@ -4004,12 +3569,7 @@
           "mode": "auto",
           "accent": "#b3000c"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-christmas",
         "itemCount": 0
@@ -4047,12 +3607,7 @@
           "mode": "auto",
           "accent": "#e91e63"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-valentines",
         "itemCount": 0
@@ -4084,12 +3639,7 @@
           "mode": "auto",
           "accent": "#ab47bc"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-easter",
         "itemCount": 0
@@ -4121,12 +3671,7 @@
           "mode": "auto",
           "accent": "#d84315"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-thanksgiving",
         "itemCount": 0
@@ -4158,12 +3703,7 @@
           "mode": "auto",
           "accent": "#ffd54f"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-new-year",
         "itemCount": 0
@@ -4195,12 +3735,7 @@
           "mode": "auto",
           "accent": "#ec407a"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-aapi-heritage",
         "itemCount": 0
@@ -4232,12 +3767,7 @@
           "mode": "auto",
           "accent": "#ff7043"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-latinx-heritage",
         "itemCount": 0
@@ -4269,12 +3799,7 @@
           "mode": "auto",
           "accent": "#7e57c2"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "seasonal-pride-month",
         "itemCount": 0
@@ -4305,12 +3830,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-trending",
         "itemCount": 0
@@ -4341,12 +3861,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-trending-today",
         "itemCount": 0
@@ -4378,12 +3893,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-trending-movies",
         "itemCount": 0
@@ -4415,12 +3925,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-trending-shows",
         "itemCount": 0
@@ -4452,12 +3957,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-popular-movies",
         "itemCount": 0
@@ -4489,12 +3989,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-popular-shows",
         "itemCount": 0
@@ -4526,12 +4021,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-now-playing",
         "itemCount": 0
@@ -4563,12 +4053,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-airing-today",
         "itemCount": 0
@@ -4600,12 +4085,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "top-on-the-air",
         "itemCount": 0
@@ -4637,12 +4117,7 @@
           "mode": "auto",
           "accent": "#f5c518"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "imdb-top-250-movies",
         "itemCount": 0
@@ -4674,12 +4149,7 @@
           "mode": "auto",
           "accent": "#f5c518"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "imdb-top-250-shows",
         "itemCount": 0
@@ -4711,12 +4181,7 @@
           "mode": "auto",
           "accent": "#e6b800"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "imdb-moviemeter-top-100",
         "itemCount": 0
@@ -4757,12 +4222,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-action",
         "itemCount": 0
@@ -4803,12 +4263,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-adventure",
         "itemCount": 0
@@ -4849,12 +4304,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-animation",
         "itemCount": 0
@@ -4895,12 +4345,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-comedy",
         "itemCount": 0
@@ -4941,12 +4386,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-crime",
         "itemCount": 0
@@ -4987,12 +4427,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-drama",
         "itemCount": 0
@@ -5033,12 +4468,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-fantasy",
         "itemCount": 0
@@ -5079,12 +4509,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-horror",
         "itemCount": 0
@@ -5125,12 +4550,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-mystery",
         "itemCount": 0
@@ -5171,12 +4591,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-romance",
         "itemCount": 0
@@ -5217,12 +4632,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-scifi",
         "itemCount": 0
@@ -5263,12 +4673,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "genre-popular-thriller",
         "itemCount": 0
@@ -5314,12 +4719,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-korean",
         "itemCount": 0
@@ -5371,12 +4771,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-japanese",
         "itemCount": 0
@@ -5422,12 +4817,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-anime-films",
         "itemCount": 0
@@ -5473,12 +4863,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-french",
         "itemCount": 0
@@ -5524,12 +4909,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-spanish",
         "itemCount": 0
@@ -5575,12 +4955,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-bollywood",
         "itemCount": 0
@@ -5626,12 +5001,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-nordic-noir",
         "itemCount": 0
@@ -5677,12 +5047,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "world-k-drama",
         "itemCount": 0
@@ -5738,12 +5103,7 @@
           "mode": "auto",
           "accent": "#2e7d32"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "family-night",
         "itemCount": 0
@@ -5789,12 +5149,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "family-animated",
         "itemCount": 0
@@ -5840,12 +5195,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "tv-limited-series",
         "itemCount": 0
@@ -5897,12 +5247,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "tv-sitcoms",
         "itemCount": 0
@@ -5948,12 +5293,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "tv-prestige-drama",
         "itemCount": 0
@@ -5999,12 +5339,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "tv-docuseries",
         "itemCount": 0
@@ -6040,12 +5375,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "new-releases",
         "itemCount": 0
@@ -6081,12 +5411,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "new-series",
         "itemCount": 0
@@ -6122,12 +5447,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "recently-added",
         "itemCount": 0
@@ -6173,12 +5493,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": true,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "for-you-unseen-acclaimed",
         "itemCount": 0
@@ -6230,12 +5545,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "for-you-comfort-rewatches",
         "itemCount": 0
@@ -6285,12 +5595,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "for-you-any-acclaimed-genre",
         "itemCount": 0
@@ -6336,12 +5641,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "templateId": "any-sci-fi-or-fantasy",
         "itemCount": 0
@@ -6377,12 +5677,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-action",
@@ -6419,12 +5714,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-adventure",
@@ -6461,12 +5751,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-animation",
@@ -6503,12 +5788,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-comedy",
@@ -6545,12 +5825,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-crime",
@@ -6587,12 +5862,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-documentary",
@@ -6629,12 +5899,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-drama",
@@ -6671,12 +5936,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-family",
@@ -6713,12 +5973,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-fantasy",
@@ -6755,12 +6010,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-history",
@@ -6797,12 +6047,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-horror",
@@ -6839,12 +6084,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-music",
@@ -6881,12 +6121,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-mystery",
@@ -6923,12 +6158,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-romance",
@@ -6965,12 +6195,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-science-fiction",
@@ -7007,12 +6232,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-tv-movie",
@@ -7049,12 +6269,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-thriller",
@@ -7091,12 +6306,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-war",
@@ -7133,12 +6343,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "genre-movie-western",
@@ -7175,12 +6380,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-hbo",
@@ -7217,12 +6417,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-netflix",
@@ -7259,12 +6454,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-prime-video",
@@ -7301,12 +6491,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-disney-plus",
@@ -7343,12 +6528,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-apple-tv",
@@ -7385,12 +6565,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-hulu",
@@ -7427,12 +6602,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-hbo-max",
@@ -7469,12 +6639,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-paramount-plus",
@@ -7511,12 +6676,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-peacock",
@@ -7553,12 +6713,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-amc",
@@ -7595,12 +6750,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-fx",
@@ -7637,12 +6787,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-showtime",
@@ -7679,12 +6824,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-starz",
@@ -7721,12 +6861,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-nbc",
@@ -7763,12 +6898,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-cbs",
@@ -7805,12 +6935,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-abc",
@@ -7847,12 +6972,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-fox",
@@ -7889,12 +7009,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-the-cw",
@@ -7931,12 +7046,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-pbs",
@@ -7973,12 +7083,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-bbc-one",
@@ -8015,12 +7120,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-bbc-two",
@@ -8057,12 +7157,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-channel-4",
@@ -8099,12 +7194,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-itv",
@@ -8141,12 +7231,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-adult-swim",
@@ -8183,12 +7268,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-comedy-central",
@@ -8225,12 +7305,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-cartoon-network",
@@ -8267,12 +7342,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-nickelodeon",
@@ -8309,12 +7379,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-disney-channel",
@@ -8351,12 +7416,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-syfy",
@@ -8393,12 +7453,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-usa-network",
@@ -8435,12 +7490,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-tnt",
@@ -8477,12 +7527,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-crunchyroll",
@@ -8519,12 +7564,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-discovery",
@@ -8561,12 +7601,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "network-national-geographic",
@@ -8603,12 +7638,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-warner-bros",
@@ -8645,12 +7675,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-universal",
@@ -8687,12 +7712,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-paramount",
@@ -8729,12 +7749,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-columbia",
@@ -8771,12 +7786,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-disney",
@@ -8813,12 +7823,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-20th-century",
@@ -8855,12 +7860,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-marvel",
@@ -8897,12 +7897,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-lucasfilm",
@@ -8939,12 +7934,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-dreamworks-animation",
@@ -8981,12 +7971,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-illumination",
@@ -9023,12 +8008,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-legendary",
@@ -9065,12 +8045,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-new-line",
@@ -9107,12 +8082,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-mgm",
@@ -9149,12 +8119,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-lionsgate",
@@ -9191,12 +8156,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-blumhouse",
@@ -9233,12 +8193,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-focus-features",
@@ -9275,12 +8230,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-searchlight",
@@ -9317,12 +8267,7 @@
         "artwork": {
           "mode": "auto"
         },
-        "targets": {
-          "collectionsTab": true,
-          "homeRow": false,
-          "sectionRow": false,
-          "users": "all"
-        },
+        "browseInApps": true,
         "enabled": true,
         "localOnly": true,
         "templateId": "movie-studio-amblin",

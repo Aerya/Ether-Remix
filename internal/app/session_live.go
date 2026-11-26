@@ -269,5 +269,13 @@ func liveTVClientCaps(caps core.ClientCaps) core.ClientCaps {
 }
 
 func (l sessionLive) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
-	return l.service.LiveWindow(ctx, id)
+	window, err := l.service.LiveWindow(ctx, id)
+	if err == nil {
+		window.TimeshiftMinutes = l.service.LiveTimeshiftMinutes(ctx, id)
+	}
+	return window, err
+}
+
+func (l sessionLive) TouchLiveSession(ctx context.Context, viewer *core.Viewer, id string) error {
+	return l.service.TouchLiveSession(ctx, viewer, id)
 }

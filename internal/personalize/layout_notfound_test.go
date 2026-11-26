@@ -14,10 +14,6 @@ type layoutErrCollections struct {
 	errs map[string]error
 }
 
-func (l *layoutErrCollections) HomeRowsFor(context.Context, *core.User, core.HubContext) ([]core.CollectionRow, error) {
-	return nil, nil
-}
-
 func (l *layoutErrCollections) LayoutRow(_ context.Context, _ *core.User, _ core.HubContext, id string) (*core.CollectionRow, error) {
 	if err, ok := l.errs[id]; ok {
 		return nil, err
@@ -39,17 +35,9 @@ func TestDisabledLayoutCollectionDoesNotLogUnavailable(t *testing.T) {
 		o.Logger = logger
 	})
 	ctx := context.Background()
-	if _, err := h.e.SetHomeLayout(ctx, core.HomeLayout{
-		Global: []core.LayoutPage{{
-			Section: "home",
-			Rows: []core.RowPolicy{
-				{Row: "collection:289", Status: "always", Slot: 1},
-				{Row: "collection:288", Status: "always", Slot: 2},
-			},
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	mustSavePage(t, h.e, rpage(core.PageHome,
+		prow(KindCollectionPrefix+"289", core.PlacementPinned, 1),
+		prow(KindCollectionPrefix+"288", core.PlacementPinned, 2)))
 	u := core.User{ID: 1, IsOwner: true}
 	h.rebuild(u)
 	if _, err := h.e.HomeHubsFor(ctx, &u, hubContext(testNow, core.DeviceDesktop), 12); err != nil {

@@ -62,7 +62,7 @@ func (r *VariantIDs) touchLocked(id int64) {
 	if _, queued := r.pending[id]; !queued && len(r.pending) >= maxVariantTouches {
 		return
 	}
-	r.pending[id] = struct{}{}
+	r.pending[id] = e.ref
 	e.seen = now
 	r.byID[id] = e
 }
@@ -105,10 +105,8 @@ type variantRow struct {
 func (r *VariantIDs) Flush(ctx context.Context) error {
 	r.mu.Lock()
 	rows := make([]variantRow, 0, len(r.pending))
-	for id := range r.pending {
-		if e, ok := r.byID[id]; ok {
-			rows = append(rows, variantRow{id: id, ref: e.ref})
-		}
+	for id, ref := range r.pending {
+		rows = append(rows, variantRow{id: id, ref: ref})
 	}
 	clear(r.pending)
 	r.mu.Unlock()
@@ -121,7 +119,7 @@ func (r *VariantIDs) Flush(ctx context.Context) error {
 				if len(r.pending) >= maxVariantTouches {
 					break
 				}
-				r.pending[row.id] = struct{}{}
+				r.pending[row.id] = row.ref
 			}
 			r.mu.Unlock()
 			return err
@@ -163,26 +161,29 @@ func (r *VariantIDs) Prune(ctx context.Context, liveIDs []int64, liveRefs []Vari
 		return 0, nil
 	}
 	now := r.now()
-	r.mu.Lock()
-	force := func(id int64) {
-		if e, ok := r.byID[id]; ok {
-			e.seen = now.Unix()
-			r.byID[id] = e
-			r.pending[id] = struct{}{}
-		}
-	}
-	for _, id := range liveIDs {
-		force(id)
-	}
-	for _, ref := range liveRefs {
-		if id, ok := r.byPair[ref]; ok {
-			force(id)
-		}
-	}
-	r.mu.Unlock()
-	// A failed touch must not let the delete below take a live id.
+	// Flush pending touches before pruning. Live mappings may have been
+	// evicted, so protect them by their durable IDs or pairs.
 	if err := r.Flush(ctx); err != nil {
 		return 0, err
+	}
+	ids := append([]int64(nil), liveIDs...)
+	for refs := range store.Chunks(liveRefs, variantTouchChunk) {
+		if err := r.readPairs(ctx, refs, func(id int64, _ variantEntry) {
+			ids = append(ids, id)
+		}); err != nil {
+			return 0, err
+		}
+	}
+	for chunk := range store.Chunks(ids, variantTouchChunk) {
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)+2)
+		args = append(args, now.Unix(), now.Unix())
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if _, err := r.db.ExecContext(ctx, `UPDATE variants_ids SET last_seen=? WHERE last_seen<? AND media_id IN (`+marks+`)`, args...); err != nil {
+			return 0, err
+		}
 	}
 	// Rows written without last_seen (a node still on the previous release
 	// during a rolling upgrade) count as seen now.

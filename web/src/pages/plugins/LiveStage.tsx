@@ -3,6 +3,7 @@ import { Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
+import { ScreenPreview, usesScreens } from "./ScreenPreview";
 import { MomentView, type GuideChannel, type Moment, type StreamTile } from "./Stage";
 
 /** One SSE chunk of Ether's agent stream (AI SDK UI message stream). */
@@ -393,6 +394,9 @@ export function NativePreview({
       live = false;
     };
   }, [projectId, template, epoch]);
+  if (usesScreens(manifest)) {
+    return <ScreenPreview projectId={projectId} epoch={epoch} />;
+  }
   if (kindPreview) {
     const toggleLiveSearch = async (next: boolean) => {
       setLiveSearch(next);

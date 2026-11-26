@@ -131,12 +131,16 @@ type MockHost struct {
 	FetchHandler      func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
 	AIHandler         func(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
 	MediaProbeHandler func(ctx context.Context, src PlayableSource) (MediaProbeResult, error)
-	// LastStreamURLViewer/Item/Part/Source record the most recent StreamURL,
-	// StreamPartURL, or StreamURLWithOptions call.
-	LastStreamURLViewer int64
-	LastStreamURLItem   string
-	LastStreamURLPart   *int
-	LastStreamURLSource string
+	// LastStreamURLViewer/Item/Part/Source/Absolute record the most recent
+	// StreamURL, StreamPartURL, or StreamURLWithOptions call.
+	LastStreamURLViewer   int64
+	LastStreamURLItem     string
+	LastStreamURLPart     *int
+	LastStreamURLSource   string
+	LastStreamURLAbsolute bool
+	// StreamOrigin is prepended to mock stream URLs when Absolute is true
+	// (defaults to "http://ether.test").
+	StreamOrigin string
 }
 
 // NewMockHost creates an initialized MockHost.
@@ -644,6 +648,7 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 		limit = 200
 	}
 	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	excludeNeedle := strings.ToLower(strings.TrimSpace(query.ExcludeQuery))
 	var matched []KindItem
 	for _, it := range m.Kinds[kindKey] {
 		if !m.mockKindItemAllowed(kindKey, it) {
@@ -658,6 +663,9 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 		if needle != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Summary), needle) {
 			continue
 		}
+		if excludeNeedle != "" && strings.Contains(strings.ToLower(it.Title+" "+it.Summary), excludeNeedle) {
+			continue
+		}
 		if len(query.Facets) > 0 && !mockItemMatchesFacets(it, query.Facets) {
 			continue
 		}
@@ -665,6 +673,12 @@ func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBro
 			continue
 		}
 		if len(query.ExcludeFacets) > 0 && mockItemMatchesAnyFacet(it, query.ExcludeFacets) {
+			continue
+		}
+		if len(query.AnyGroups) > 0 && !mockItemMatchesAnyGroups(it, query.AnyGroups) {
+			continue
+		}
+		if len(query.Empty) > 0 && !mockItemMatchesEmpty(it, query.Empty) {
 			continue
 		}
 		matched = append(matched, it)
@@ -765,6 +779,98 @@ func mockItemMatchesAllFacets(item KindItem, facets map[string][]string) bool {
 	return true
 }
 
+func mockItemMatchesAnyGroups(item KindItem, groups []KindBrowseFacetGroup) bool {
+	for _, g := range groups {
+		var alts []KindBrowseFacetAlt
+		if fk := strings.TrimSpace(g.Field); fk != "" && len(g.Values) > 0 {
+			alts = append(alts, KindBrowseFacetAlt{Field: fk, Values: g.Values})
+		}
+		alts = append(alts, g.Any...)
+		var active []KindBrowseFacetAlt
+		for _, alt := range alts {
+			fk := strings.TrimSpace(alt.Field)
+			if fk == "" {
+				continue
+			}
+			var want []string
+			for _, v := range alt.Values {
+				if s := strings.TrimSpace(v); s != "" {
+					want = append(want, s)
+				}
+			}
+			if len(want) > 0 {
+				active = append(active, KindBrowseFacetAlt{Field: fk, Values: want})
+			}
+		}
+		if len(active) == 0 {
+			continue
+		}
+		groupHit := false
+		for _, alt := range active {
+			if mockItemMatchesFacets(item, map[string][]string{alt.Field: alt.Values}) {
+				groupHit = true
+				break
+			}
+		}
+		if !groupHit {
+			return false
+		}
+	}
+	return true
+}
+
+func mockItemMatchesEmpty(item KindItem, empty map[string]bool) bool {
+	for k, wantEmpty := range empty {
+		hasVal := false
+		if raw, ok := item.Fields[k]; ok && len(raw) > 0 {
+			var arr []any
+			var s string
+			switch {
+			case json.Unmarshal(raw, &arr) == nil:
+				for _, el := range arr {
+					if str, ok := el.(string); ok {
+						if str != "" {
+							hasVal = true
+							break
+						}
+					} else if el != nil {
+						hasVal = true
+						break
+					}
+				}
+			case json.Unmarshal(raw, &s) == nil:
+				hasVal = s != ""
+			default:
+				hasVal = string(raw) != "null"
+			}
+		} else {
+			switch k {
+			case "released":
+				hasVal = item.Released != 0
+			case "year", "decade":
+				hasVal = item.Year > 0
+			case "rating":
+				hasVal = item.Rating > 0
+			case "summary":
+				hasVal = item.Summary != ""
+			case "recording":
+				hasVal = item.Recording != ""
+			case "parentId":
+				hasVal = item.ParentID != ""
+			case "index":
+				hasVal = item.Index > 0
+			}
+		}
+		if wantEmpty && hasVal {
+			return false
+		}
+		if !wantEmpty && !hasVal {
+			return false
+		}
+	}
+	return true
+}
+
 // ResolveSources returns the canned Sources (or calls SourceHandler if set).
 func (m *MockHost) ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error) {
 	res, err := m.ResolveSourcesWithResult(ctx, q)
@@ -854,9 +960,17 @@ func (m *MockHost) StreamURLWithOptions(_ context.Context, viewerID int64, itemR
 		m.LastStreamURLPart = nil
 	}
 	m.LastStreamURLSource = opts.Source
+	m.LastStreamURLAbsolute = opts.Absolute
 	u := "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10)
 	if opts.PartIndex != nil {
 		u += "?part=" + strconv.Itoa(*opts.PartIndex)
+	}
+	if opts.Absolute {
+		origin := strings.TrimRight(strings.TrimSpace(m.StreamOrigin), "/")
+		if origin == "" {
+			origin = "http://ether.test"
+		}
+		return origin + u, nil
 	}
 	return u, nil
 }

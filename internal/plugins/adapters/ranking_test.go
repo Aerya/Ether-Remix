@@ -152,7 +152,7 @@ func BenchmarkResolve500PluginStep(b *testing.B) {
 	m.rt = rt.(plugins.HotRuntime)
 	cfg := config.Defaults(b.TempDir())
 	cfg.Quality.Default = "1080p"
-	cfg.Quality.Remote = "1080p"
+	cfg.Quality.DefaultAway = "1080p"
 	for i := range cfg.Quality.Profiles {
 		cfg.Quality.Profiles[i].PluginScores = map[string]json.RawMessage{"plugin:test.dub/dub": json.RawMessage(`{}`)}
 	}
@@ -181,7 +181,7 @@ func TestPluginRankingChangesActualResolve(t *testing.T) {
 	m := fixtureRanking(t)
 	cfg := config.Defaults(t.TempDir())
 	cfg.Quality.Default = "1080p"
-	cfg.Quality.Remote = "1080p"
+	cfg.Quality.DefaultAway = "1080p"
 	for i := range cfg.Quality.Profiles {
 		cfg.Quality.Profiles[i].PluginScores = map[string]json.RawMessage{"plugin:test.dub/dub": json.RawMessage(`{}`)}
 	}

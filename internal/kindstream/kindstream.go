@@ -24,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -157,19 +158,41 @@ type SourceRouter interface {
 func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	bs, err := openSource(ctx, src, deps)
 	if err != nil {
-		return nil, err
+		return nil, logredact.SourceError(err)
 	}
 	if err := verifySourceDuration(ctx, src, bs, deps); err != nil {
 		_ = bs.Close()
-		return nil, err
+		return nil, logredact.SourceError(err)
 	}
 	return bs, nil
+}
+
+// NormalizeNZBSource recognizes legacy NZB locators before network routing.
+func NormalizeNZBSource(src core.PlayableSource) core.PlayableSource {
+	locator, legacy := strings.CutPrefix(strings.TrimSpace(src.URL), "nzb:")
+	if !legacy && !strings.EqualFold(strings.TrimSpace(src.Pattern), "nzb") {
+		return src
+	}
+	if !legacy {
+		locator = strings.TrimSpace(src.URL)
+	}
+	if locator != "" {
+		hint := core.ReleaseHint{}
+		if src.Release != nil {
+			hint = *src.Release
+		}
+		hint.NZBURL = locator
+		src.Release = &hint
+	}
+	src.Pattern, src.URL = PatternRelease, ""
+	return src
 }
 
 func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	src = NormalizeNZBSource(src)
 	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
 	if pattern == "" {
 		if src.Container != nil {
@@ -236,6 +259,7 @@ func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSo
 }
 
 func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool {
+	cand = NormalizeNZBSource(cand)
 	if strings.TrimSpace(cand.BlobRef) != "" {
 		return false
 	}
@@ -262,7 +286,7 @@ func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool 
 	}
 
 	r := cand.Release
-	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
+	hasNZB := r.NZBURL != "" || r.NZBRef != "" || (r.Candidate != nil && (r.Candidate.NZBURL != "" || r.Candidate.NZBRef != ""))
 	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" || strings.TrimSpace(r.TorrentURL) != "" ||
 		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != "" || strings.TrimSpace(r.Candidate.TorrentURL) != ""))
 	return hasNZB && !hasTorrent
@@ -315,6 +339,8 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 		rel.MagnetURL = strings.TrimSpace(r.Candidate.Magnet)
 		torrentURL = strings.TrimSpace(r.Candidate.TorrentURL)
 		rel.NZBURL = strings.TrimSpace(r.Candidate.NZBURL)
+		rel.NZBRef = r.Candidate.NZBRef
+		rel.TorrentRef = r.Candidate.TorrentRef
 		if rel.Name == "" {
 			rel.Name = strings.TrimSpace(r.Candidate.Title)
 		}
@@ -334,6 +360,12 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 	if t := strings.TrimSpace(r.TorrentURL); t != "" {
 		torrentURL = t
 	}
+	if r.TorrentRef != "" {
+		rel.TorrentRef = r.TorrentRef
+	}
+	if r.NZBRef != "" {
+		rel.NZBRef = r.NZBRef
+	}
 	if u := strings.TrimSpace(r.NZBURL); u != "" {
 		rel.NZBURL = u
 	}
@@ -349,20 +381,20 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 		}
 	}
 	switch {
-	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "" || rel.TorrentRef != "":
 		rel.Protocol = core.ProtocolTorrent
 		if torrentURL != "" {
 			rel.NZBURL = torrentURL
 		} else {
 			rel.NZBURL = ""
 		}
-	case rel.NZBURL != "":
+	case rel.NZBURL != "" || rel.NZBRef != "":
 		rel.Protocol = core.ProtocolUsenet
 	default:
 		rel.Protocol = core.ProtocolHTTP
 	}
 	if rel.ID == "" {
-		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBRef, rel.TorrentRef, rel.MagnetURL)
 	}
 	return rel
 }
@@ -558,9 +590,14 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			}
 			return resolver.DefaultHealthHedgeDelay
 		},
-		BeforeLaunch: func(_, next, _ int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
+		BeforeLaunch: func(_, next, inflight int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
 			if nonVideoUsenet[next] && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
-				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
+				// A refused grab does not consume the cap. Wait for
+				// in-flight attempts to settle before skipping the next.
+				if inflight > 0 {
+					return resolver.LaunchHold, time.Time{}
+				}
+				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", logredact.Source(ordered[next].ID), logredact.Source(ordered[next].Pattern), maxUsenetGrabs)
 				return resolver.LaunchSkip, time.Time{}
 			}
 			return resolver.LaunchAllow, time.Time{}
@@ -571,6 +608,10 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			}
 		},
 		OnResult: func(i int, a sourceAttempt) {
+			var refusal *newznab.GrabRefusal
+			if nonVideoUsenet[i] && errors.As(a.err, &refusal) {
+				usenetNonVideoGrabs--
+			}
 			attempts[i] = &a
 		},
 		OnDrop: func(_ int, a sourceAttempt, _ bool) {
@@ -610,9 +651,12 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	allUnstreamable := true
 	allRejected := true
 	allWrongContent := true
+	var nextGrab *newznab.GrabRefusal
+	allGrabRefused := true
 	for i, cand := range ordered {
 		if skipErrs[i] != nil {
 			errs = append(errs, skipErrs[i])
+			allGrabRefused = false
 			allUnstreamable = false
 			allRejected = false
 			allWrongContent = false
@@ -634,7 +678,18 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if !errors.Is(a.err, core.ErrWrongContent) {
 			allWrongContent = false
 		}
-		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, a.err))
+		var refusal *newznab.GrabRefusal
+		if errors.As(a.err, &refusal) {
+			if nextGrab == nil || refusal.RetryAt.Before(nextGrab.RetryAt) {
+				nextGrab = refusal
+			}
+		} else {
+			allGrabRefused = false
+		}
+		errs = append(errs, fmt.Errorf("source %q (%s): %w", logredact.Source(cand.ID), logredact.Source(cand.Pattern), a.err))
+	}
+	if allGrabRefused && nextGrab != nil {
+		return nil, core.PlayableSource{}, nextGrab
 	}
 	if allUnstreamable && len(errs) > 0 {
 		return nil, core.PlayableSource{}, errors.Join(errs...)
@@ -659,7 +714,8 @@ func isConfirmedSourceFailure(err error) bool {
 	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
-	return isPermanentRejection(err) ||
+	var refusal *newznab.GrabRefusal
+	return errors.As(err, &refusal) || isPermanentRejection(err) ||
 		errors.Is(err, core.ErrWrongContent) ||
 		errors.Is(err, ErrPluginAnswer) ||
 		errors.Is(err, ErrDigestMismatch) ||

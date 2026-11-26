@@ -115,7 +115,8 @@ func rangeOK(v *core.StreamInfo, caps core.ClientCaps) string {
 			return ""
 		}
 		base, ok := dvBaseLayer(v)
-		if androidClient(caps) && !hasHDR10Base(v, caps) {
+		velaRequiresBase := caps.Protocol == "vela" && (caps.DolbyVisionBaseOnly || caps.DVProfilesExplicit || len(caps.DVProfileVariants) > 0)
+		if (androidClient(caps) || velaRequiresBase) && !hasHDR10Base(v, caps) {
 			return fmt.Sprintf("client lacks compatible Dolby Vision variant (profile %d): video conversion required", v.DolbyVisionProfile)
 		}
 		if !ok {
@@ -1143,19 +1144,34 @@ func hdr10BaseReason(v *core.StreamInfo, caps core.ClientCaps, opts core.DecideO
 	}
 	id := clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: caps.Device, Version: caps.Version}
 	switch {
-	case !supportsDVStream(caps, v) && androidClient(caps):
-		// Android players can pick a Dolby Vision decoder for a file whose
-		// profile the device lacks (#328); desktop players show the HDR10
-		// base of the same file directly, so only Android loses direct play.
+	case !supportsDVStream(caps, v) && (androidClient(caps) || len(caps.DVProfileVariants) > 0):
+		// Android may select an unsupported decoder (#328). A Vela
+		// declaration also limits which exact variants we can send intact.
 		return fmt.Sprintf("client lacks Dolby Vision profile %d: delivering its HDR10 base layer", v.DolbyVisionProfile)
 	case clientreg.HasQuirk(id, "plex-appletv-hdr10-base"):
 		return fmt.Sprintf("native Plex Apple TV compatibility: Dolby Vision profile %d uses its HDR10 base layer", v.DolbyVisionProfile)
 	case clientreg.HasQuirk(id, "plex-ios-hdr10-base") && outputContainer(caps, opts, v.Codec, "") == ContainerMatroska:
 		return fmt.Sprintf("native Plex iOS compatibility: Dolby Vision profile %d in Matroska uses its HDR10 base layer", v.DolbyVisionProfile)
-	case caps.DolbyVisionBaseOnly:
+	case caps.DolbyVisionBaseOnly || (caps.DVProfilesExplicit && len(caps.DVProfiles) == 0):
 		return fmt.Sprintf("Dolby Vision off for this client: profile %d uses its HDR10 base layer", v.DolbyVisionProfile)
 	}
 	return ""
+}
+
+// DirectPlayDolbyVisionRejection reports why a client cannot direct-play the
+// original file of a Dolby Vision video stream unchanged, or "" when allowed.
+// It applies the same rules as Decide: profiles with no compatible base layer
+// (such as profile 5) and streams that must deliver only their HDR10 base
+// layer (owner Dolby Vision off, explicit empty DV profile list, Android
+// without the profile, or player quirks) cannot direct-play untouched.
+func DirectPlayDolbyVisionRejection(v *core.StreamInfo, caps core.ClientCaps, opts core.DecideOptions) string {
+	if v == nil || !v.DolbyVision {
+		return ""
+	}
+	if reason := hdr10BaseReason(v, caps, opts); reason != "" {
+		return reason
+	}
+	return rangeOK(v, caps)
 }
 
 // hasHDR10Base reports a Dolby Vision HEVC stream whose compatible HDR10
@@ -1220,6 +1236,20 @@ func androidClient(caps core.ClientCaps) bool {
 func supportsDVStream(caps core.ClientCaps, v *core.StreamInfo) bool {
 	if !SupportsDVProfile(caps, v.DolbyVisionProfile) {
 		return false
+	}
+	if len(caps.DVProfileVariants) > 0 {
+		var variant string
+		switch v.DolbyVisionProfile {
+		case 5:
+			variant = "5"
+		case 7:
+			variant = "7"
+		case 8:
+			variant = fmt.Sprintf("8.%d", v.DolbyVisionCompatibilityID)
+		}
+		if !slices.Contains(caps.DVProfileVariants, variant) {
+			return false
+		}
 	}
 	if !androidClient(caps) {
 		return true

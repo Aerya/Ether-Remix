@@ -52,15 +52,21 @@ func TestVaultEmitsAllEvents(t *testing.T) {
 		t.Fatalf("unexpected stored payload: %+v", stored)
 	}
 
-	// Set cap just above twice one record's compressed size so adding the second crosses 80% without evicting k2.
-	lib.SetCapBytes(stored.CompressedBytes*2 + stored.CompressedBytes/4)
-
-	// Store a second record so usage crosses 80% of cap.
-	const fixture2 = `<nzb><file subject="Second.Movie.2021.mkv" poster="A"><groups><group>test</group></groups><segments><segment bytes="600" number="1">cc@a</segment><segment bytes="600" number="2">dd@b</segment></segments></file></nzb>`
-	k2, err := s.Put(ctx, PutRequest{
-		NZB:     []byte(fixture2),
-		Release: core.Release{ID: "rel-2", Name: "Second.Movie.2021.mkv", IndexerID: "idx1", Size: 1200},
-	})
+	// A tiny cap must leave the NZB live. A torrent contributes to the quota.
+	lib.SetCapBytes(1)
+	if _, err := s.Get(ctx, k1); err != nil {
+		t.Fatal(err)
+	}
+	lib.SetCapBytes(stored.CompressedBytes / 2)
+	const fixture2 = `<nzb><file subject="Second.Movie.2021.mkv" poster="A"><groups><group>test</group></groups><segments><segment bytes="600" number="1">cc@a</segment></segments></file></nzb>`
+	k2, err := s.Put(ctx, PutRequest{NZB: []byte(fixture2), Release: core.Release{ID: "rel-2", IndexerID: "idx1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	torrentKey, err := s.Put(ctx, PutRequest{Torrent: &Torrent{
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+		Magnet:   "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +81,7 @@ func TestVaultEmitsAllEvents(t *testing.T) {
 	if quota.BudgetBytes <= 0 || quota.PercentUsed < 80 {
 		t.Fatalf("unexpected quota payload: %+v", quota)
 	}
-	// Restore unlimited cap so k2 isn't evicted for the MarkHealth check below.
+	// Turn off the torrent quota for the remaining event checks.
 	lib.SetCapBytes(0)
 
 	// 2. vault.record.dead
@@ -94,12 +100,22 @@ func TestVaultEmitsAllEvents(t *testing.T) {
 		t.Fatalf("unexpected dead payload: %+v", dead)
 	}
 
-	// 3. vault.pack.compacted: purge both records so the pack has 0 live bytes (< 50% of pack file size).
-	if err := lib.Purge(ctx, k1); err != nil {
+	// 3. vault.pack.compacted: only the torrent frame may become reclaimable.
+	if err := lib.Purge(ctx, k1); !errors.Is(err, ErrNZBRetained) {
+		t.Fatalf("purge NZB: %v", err)
+	}
+	if err := lib.Purge(ctx, k2); !errors.Is(err, ErrNZBRetained) {
+		t.Fatalf("purge marked NZB: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE vault_releases SET dead=1 WHERE key=?`, torrentKey)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lib.Purge(ctx, k2); err != nil {
-		t.Fatal(err)
+	// SetLayout leaves unreachable original frames for compaction to reclaim.
+	for range 6 {
+		if err := lib.SetLayout(ctx, k1, Layout{}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := lib.Compact(ctx); err != nil {
 		t.Fatal(err)

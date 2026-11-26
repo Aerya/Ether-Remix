@@ -2,9 +2,11 @@ package frontendadapter
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -16,7 +18,26 @@ const (
 	AuthEtherToken = "ether_token"
 	AuthBasic      = "basic"
 	AuthNoneLAN    = "none_lan"
+	// AuthQueryCredentials reads a per-viewer app login from the query
+	// string on every request: u (username) plus either p (the password,
+	// plain or "enc:" hex) or t and s (t = md5(password + s), lowercase hex).
+	// Ether issues and owns the login (an app password like Xtream's); the
+	// plugin never sees p, t or s.
+	AuthQueryCredentials = "query_credentials"
 )
+
+// Query parameters that carry query credentials. They are removed before the
+// request reaches the plugin.
+const (
+	queryUser     = "u"
+	queryPassword = "p"
+	queryToken    = "t"
+	querySalt     = "s"
+)
+
+// errRateLimited means the client's address exceeded the shared identity
+// limiter after failed credentials; the proxy answers 429.
+var errRateLimited = errors.New("frontendadapter: rate limited")
 
 // errNotVisible means the authenticated viewer cannot see the requested
 // library. The proxy answers 404, never 403, so a hidden library's
@@ -43,7 +64,7 @@ type authenticator struct {
 
 func newAuthenticator(decl Declaration, host frontend.Host) (*authenticator, error) {
 	switch decl.Meta.Auth {
-	case "", AuthEtherToken, AuthBasic, AuthNoneLAN:
+	case "", AuthEtherToken, AuthBasic, AuthNoneLAN, AuthQueryCredentials:
 	default:
 		return nil, fmt.Errorf("frontendadapter: adapter %q has unknown auth mode %q", decl.Meta.Key, decl.Meta.Auth)
 	}
@@ -59,6 +80,8 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (auth
 		return a.authenticateLAN(ctx, r)
 	case AuthBasic:
 		return a.authenticateBasic(ctx, r)
+	case AuthQueryCredentials:
+		return a.authenticateQuery(ctx, r)
 	default:
 		return a.authenticateToken(ctx, r)
 	}
@@ -95,6 +118,79 @@ func (a *authenticator) authenticateBasic(ctx context.Context, r *http.Request) 
 		credential = user
 	}
 	return a.resolve(ctx, r, credential)
+}
+
+// authenticateQuery resolves an app login from the query credentials. Valid
+// credentials never charge the identity limiter; failures do, per verified
+// client address, exactly like Xtream logins.
+func (a *authenticator) authenticateQuery(ctx context.Context, r *http.Request) (authenticated, error) {
+	q := r.URL.Query()
+	user := q.Get(queryUser)
+	if user == "" || a.host.Identity == nil || a.host.ClientIP == nil {
+		return authenticated{}, errUnauthenticated
+	}
+	ip, ok := a.host.ClientIP(r)
+	if !ok {
+		return authenticated{}, errUnauthenticated
+	}
+	ctx = frontend.WithQuietIdentity(frontend.WithClientIP(ctx, ip))
+	var (
+		viewer *core.Viewer
+		err    error
+	)
+	if token, salt := q.Get(queryToken), q.Get(querySalt); token != "" && salt != "" {
+		id, ok := a.host.Identity.(frontend.AppLoginTokenIdentity)
+		if !ok {
+			return authenticated{}, errUnauthenticated
+		}
+		viewer, err = id.AuthenticateAppToken(ctx, user, token, salt)
+	} else if password, ok := queryPasswordValue(q.Get(queryPassword)); ok {
+		id, ok := a.host.Identity.(frontend.AppPasswordIdentity)
+		if !ok {
+			return authenticated{}, errUnauthenticated
+		}
+		viewer, err = id.AuthenticateAppPassword(ctx, user, password)
+	} else {
+		return authenticated{}, errUnauthenticated
+	}
+	if errors.Is(err, frontend.ErrRateLimited) {
+		return authenticated{}, errRateLimited
+	}
+	if err != nil || viewer == nil {
+		return authenticated{}, errUnauthenticated
+	}
+	return a.visible(viewer)
+}
+
+// queryPasswordValue decodes a p parameter: plain text, or "enc:" followed by
+// the password's bytes in hex.
+func queryPasswordValue(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	if rest, ok := strings.CutPrefix(raw, "enc:"); ok {
+		decoded, err := hex.DecodeString(rest)
+		if err != nil || len(decoded) == 0 {
+			return "", false
+		}
+		return string(decoded), true
+	}
+	return raw, true
+}
+
+// stripQueryCredentials removes the credential parameters from a query the
+// plugin will see. The username stays: it is the login name the client shows,
+// not a secret.
+func stripQueryCredentials(values url.Values) url.Values {
+	out := make(url.Values, len(values))
+	for k, v := range values {
+		switch k {
+		case queryPassword, queryToken, querySalt:
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // authenticateLAN follows the DLNA rule: only a request Ether has already

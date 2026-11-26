@@ -10,6 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/tmdb"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 func (a *App) loadLibraryPolicies(ctx context.Context) catalog.LibraryPolicies {
@@ -67,6 +68,16 @@ func (a *App) buildCatalogue(ctx context.Context, cfg config.Config) error {
 	if a.catalog, err = catalog.New(a.db, a.tmdb, cfg.Catalog, log.With("component", "catalog"), opts...); err != nil {
 		return fmt.Errorf("catalog: %w", err)
 	}
+
+	a.metadataSources = a.catalog.MetadataSources() // Catalog registers the TMDB adapter.
+	a.metadataSources.Register(tvdb.NewSource(filepath.Join(a.opts.DataDir, "cache", "tvdb"), func() (string, string) {
+		cfg := a.cfg.Read().Catalog
+		return cfg.TVDBKey, cfg.Language
+	}))
+	a.catalog.SetEpisodeOrderDefault(a.libraryEpisodeOrder)
+	a.catalog.SetEpisodeOrderBatchDefault(a.libraryEpisodeOrders)
+	a.catalog.SetMetadataSourceDefault(a.libraryMetadataSource)
+	a.catalog.SetSourceIdentityRekey(a.rekeyTitleBindings)
 
 	return nil
 }

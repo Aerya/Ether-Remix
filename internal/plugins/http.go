@@ -162,11 +162,7 @@ func (m *Manager) resolveIconURL(ctx context.Context, r Record) string {
 			return icon
 		}
 		if icon != "" && !unsafePath(icon) && m.store.hasFile(ctx, r.ID, r.Version, icon) {
-			rev := r.Version
-			if !r.UpdatedAt.IsZero() {
-				rev += "-" + strconv.FormatInt(r.UpdatedAt.Unix(), 10)
-			}
-			return "/ether/api/plugins/" + url.PathEscape(r.ID) + "/icon?v=" + url.QueryEscape(rev)
+			return pluginIconURL(r, "")
 		}
 	} else if logo := strings.TrimSpace(r.Manifest.Logo); isHTTPURL(logo) {
 		return logo
@@ -179,6 +175,49 @@ func (m *Manager) resolveIconURL(ctx context.Context, r Record) string {
 	return ""
 }
 
+// pluginIconURL is the cache-busted icon route for a plugin, or for one of
+// its frontend adapters when adapter is set.
+func pluginIconURL(r Record, adapter string) string {
+	rev := r.Version
+	if !r.UpdatedAt.IsZero() {
+		rev += "-" + strconv.FormatInt(r.UpdatedAt.Unix(), 10)
+	}
+	q := url.Values{}
+	if adapter != "" {
+		q.Set("adapter", adapter)
+	}
+	q.Set("v", rev)
+	return "/ether/api/plugins/" + url.PathEscape(r.ID) + "/icon?" + q.Encode()
+}
+
+// adapterIconPath returns the package path of an adapter's declared icon.
+func adapterIconPath(r Record, key string) (string, bool) {
+	if r.Manifest.Ether == nil {
+		return "", false
+	}
+	for _, a := range r.Manifest.Ether.Contributes.FrontendAdapters {
+		if a.Key == key && ValidAdapterIconPath(a.Icon) {
+			return a.Icon, true
+		}
+	}
+	return "", false
+}
+
+// AdapterIconURL is the mark the Apps page shows for one of a plugin's
+// frontend adapters: the adapter's declared icon, else the plugin's own.
+func (m *Manager) AdapterIconURL(ctx context.Context, r Record, key string) string {
+	if p, ok := adapterIconPath(r, key); ok && m.store.hasFile(ctx, r.ID, r.Version, p) {
+		return pluginIconURL(r, key)
+	}
+	if u := m.resolveIconURL(ctx, r); u != "" {
+		return u
+	}
+	if logo := strings.TrimSpace(r.Manifest.Logo); isHTTPURL(logo) {
+		return logo
+	}
+	return ""
+}
+
 func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 	rec, err := m.store.record(r.Context(), r.PathValue("id"))
 	if err != nil || rec.Manifest.Ether == nil {
@@ -186,6 +225,15 @@ func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	iconPath := strings.TrimSpace(rec.Manifest.Ether.Icon)
+	ref := "plugin-icon:" + rec.ID
+	if key := r.URL.Query().Get("adapter"); key != "" {
+		p, ok := adapterIconPath(rec, key)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		iconPath, ref = p, "plugin-adapter-icon:"+rec.ID+":"+key
+	}
 	if iconPath == "" || isHTTPURL(iconPath) || unsafePath(iconPath) {
 		http.NotFound(w, r)
 		return
@@ -195,9 +243,9 @@ func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, ct, err := m.iconRaster.Rasterize(
+	data, ct, err := m.iconRaster.RasterizeIcon(
 		r.Context(),
-		"plugin-icon:"+rec.ID+":"+digestOf(raw),
+		ref+":"+digestOf(raw),
 		raw,
 		artwork.RasterOptions{Width: 128, Height: 128, Format: "png"},
 	)
@@ -218,7 +266,9 @@ type Detail struct {
 	Summary
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
-	Permissions   struct {
+	// ListItems is how many titles one sync of each of its lists reads.
+	ListItems   *ListItemsGrant `json:"listItems,omitempty"`
+	Permissions struct {
 		Lines              []string    `json:"lines"`
 		Declared           Permissions `json:"declared"`
 		Grants             Grants      `json:"grants"`
@@ -286,6 +336,8 @@ func (m *Manager) fail(w http.ResponseWriter, err error) {
 			fields[i] = FieldError{"permissions", a}
 		}
 		writeErr(w, http.StatusConflict, "permission_increase", "This update asks for more access. Review it, then confirm.", fields)
+	case errors.Is(err, ErrNoUpdateSource):
+		writeErr(w, http.StatusConflict, "no_update_source", "This plugin was installed from a file and the marketplace doesn't list it, so there's nothing to check for updates. Install a newer package file to update it.", nil)
 	case errors.Is(err, ErrDigestMismatch):
 		writeErr(w, http.StatusBadRequest, "digest_mismatch", "The downloaded package did not match its expected digest.", nil)
 	case errors.Is(err, ErrRevoked):
@@ -362,6 +414,7 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 		d.Impact.Items, _ = fn(r.Context(), id)
 	}
 	d.Impact.MaxItems = m.grantedMaxItems(rec.Manifest, m.runtimeCeilings(id))
+	d.ListItems = m.ListItemsGrant(id, rec.Manifest)
 	if rec.UpdateVersion != "" && rec.updateManifest != "" {
 		if next, err := ParseManifest([]byte(rec.updateManifest)); err == nil {
 			d.AddedPermissions = PermissionDiff(rec.Manifest, next)
@@ -1060,13 +1113,6 @@ func (m *Manager) localizedKindLibraries(ctx context.Context, id string, man Man
 		screens := append([]ScreenMeta(nil), c.Screens...)
 		for i := range screens {
 			resolveField(&screens[i].Title)
-			if len(screens[i].Sections) > 0 {
-				secs := append([]ScreenSection(nil), screens[i].Sections...)
-				for j := range secs {
-					resolveField(&secs[j].Title)
-				}
-				screens[i].Sections = secs
-			}
 		}
 		ether.Contributes.Screens = screens
 	}

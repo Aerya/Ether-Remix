@@ -91,16 +91,10 @@ func regularSeriesEpisodes(eps []Title, series RatingKey) []Title {
 		}
 		show := ep.ShowKey
 		if show == 0 {
-			show = ShowKey(ep.Key.TMDB())
+			show = ep.Key.Parent().Parent()
 		}
 		if series != 0 && show != series {
 			continue
-		}
-		if ep.Season == 0 {
-			ep.Season = ep.Key.Season()
-		}
-		if ep.Episode == 0 {
-			ep.Episode = ep.Key.Episode()
 		}
 		if ep.Type == "" {
 			ep.Type = core.TypeEpisode

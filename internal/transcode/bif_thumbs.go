@@ -48,10 +48,14 @@ type Thumbnails struct {
 	entries map[string]*thumbEntry
 	running map[string]*thumbJob
 	seq     uint64
+	rev     uint64
 	closed  bool
 }
 
-var _ core.TrickplayProvider = (*Thumbnails)(nil)
+var (
+	_ core.TrickplayProvider  = (*Thumbnails)(nil)
+	_ core.TrickplayInspector = (*Thumbnails)(nil)
+)
 
 const thumbReadBehind = 30 * time.Second
 
@@ -82,6 +86,7 @@ type thumbJob struct {
 
 type thumbEntry struct {
 	frames         map[time.Duration][]byte
+	slotTimes      []time.Duration
 	fallback       []byte
 	duration       time.Duration
 	availableUntil time.Duration // latest playback position reported (it moves back on a seek)
@@ -91,6 +96,7 @@ type thumbEntry struct {
 	retryAt        time.Time
 	bytes          int64
 	seq            uint64
+	revision       uint64
 }
 
 // NewThumbnails builds an empty thumbnail store. Call Close on shutdown.
@@ -296,11 +302,79 @@ func (t *Thumbnails) SetTrickplayFallback(releaseID string, jpeg []byte) {
 		return
 	}
 	e := t.entryLocked(releaseID)
+	if bytes.Equal(e.fallback, jpeg) {
+		return
+	}
 	e.bytes -= int64(len(e.fallback))
 	e.fallback = append([]byte(nil), jpeg...)
 	e.bytes += int64(len(jpeg))
 	e.dead = false
+	t.bumpRevisionLocked(e)
 	t.evictLocked(releaseID)
+}
+
+// TrickplayState implements core.TrickplayInspector without starting work.
+func (t *Thumbnails) TrickplayState(releaseID string, duration time.Duration) (core.TrickplayState, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[releaseID]
+	if !ok || e.dead {
+		return core.TrickplayState{}, false
+	}
+	sample := e.sampleJPEGLocked()
+	if len(sample) == 0 {
+		return core.TrickplayState{}, false
+	}
+	t.touchLocked(e)
+	return core.TrickplayState{
+		SampleJPEG:    sample,
+		CoverageUntil: e.coverageUntilLocked(duration),
+		Revision:      e.revision,
+		Generating:    t.running[releaseID] != nil,
+	}, true
+}
+
+// TrickplaySheetSnapshot implements core.TrickplayInspector without starting work.
+func (t *Thumbnails) TrickplaySheetSnapshot(releaseID string, duration time.Duration, startSlot, slotCount int) (core.TrickplaySheetSnapshot, bool) {
+	if startSlot < 0 || slotCount <= 0 {
+		return core.TrickplaySheetSnapshot{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[releaseID]
+	if !ok || e.dead {
+		return core.TrickplaySheetSnapshot{}, false
+	}
+	sample := e.sampleJPEGLocked()
+	if len(sample) == 0 {
+		return core.TrickplaySheetSnapshot{}, false
+	}
+	t.touchLocked(e)
+	cells := make([][]byte, slotCount)
+	fallback, drawn := false, false
+	for i := 0; i < slotCount; i++ {
+		if raw := e.realFrameLocked(startSlot + i); len(raw) > 0 {
+			cells[i] = raw
+			drawn = true
+			continue
+		}
+		fallback = true
+		if len(e.fallback) > 0 {
+			cells[i] = e.fallback
+			drawn = true
+		}
+	}
+	return core.TrickplaySheetSnapshot{
+		State: core.TrickplayState{
+			SampleJPEG:    sample,
+			CoverageUntil: e.coverageUntilLocked(duration),
+			Revision:      e.revision,
+			Generating:    t.running[releaseID] != nil,
+		},
+		Cells:    cells,
+		Fallback: fallback,
+		Drawn:    drawn,
+	}, true
 }
 
 // entryLocked returns (creating if needed) the entry for a release.
@@ -317,6 +391,113 @@ func (t *Thumbnails) entryLocked(releaseID string) *thumbEntry {
 func (t *Thumbnails) touchLocked(e *thumbEntry) {
 	t.seq++
 	e.seq = t.seq
+}
+
+func (t *Thumbnails) bumpRevisionLocked(e *thumbEntry) {
+	t.rev++
+	e.revision = t.rev
+}
+
+func (e *thumbEntry) sampleJPEGLocked() []byte {
+	if raw := e.frames[0]; len(raw) > 0 {
+		return raw
+	}
+	var first time.Duration
+	var sample []byte
+	for tm, raw := range e.frames {
+		if len(raw) == 0 {
+			continue
+		}
+		if sample == nil || tm < first {
+			first, sample = tm, raw
+		}
+	}
+	if len(sample) > 0 {
+		return sample
+	}
+	return e.fallback
+}
+
+func (e *thumbEntry) realFrameLocked(slotIdx int) []byte {
+	if slotIdx < 0 || e.interval <= 0 || len(e.frames) == 0 {
+		return nil
+	}
+	if slotIdx < len(e.slotTimes) {
+		if tm := e.slotTimes[slotIdx]; tm >= 0 {
+			if raw := e.frames[tm]; len(raw) > 0 {
+				return raw
+			}
+		}
+		if slotIdx > 0 {
+			return nil
+		}
+		// Slot 0 may have its first keyframe slightly after 0.
+		var first time.Duration
+		var found []byte
+		for tm, raw := range e.frames {
+			if tm >= 0 && tm < e.interval && len(raw) > 0 && (found == nil || tm < first) {
+				first, found = tm, raw
+			}
+		}
+		return found
+	}
+	at := time.Duration(slotIdx) * e.interval
+	if raw := e.frames[at]; len(raw) > 0 {
+		return raw
+	}
+	if slotIdx == 0 {
+		var first time.Duration
+		var found []byte
+		for tm, raw := range e.frames {
+			if tm >= 0 && tm < e.interval && len(raw) > 0 && (found == nil || tm < first) {
+				first, found = tm, raw
+			}
+		}
+		return found
+	}
+	low := at - e.interval
+	var best time.Duration
+	var found []byte
+	for tm, raw := range e.frames {
+		if tm > low && tm <= at && len(raw) > 0 && (found == nil || tm > best) {
+			best, found = tm, raw
+		}
+	}
+	return found
+}
+
+func (e *thumbEntry) coverageUntilLocked(duration time.Duration) time.Duration {
+	if duration <= 0 {
+		duration = e.duration
+	}
+	if duration <= 0 || e.interval <= 0 || len(e.frames) == 0 {
+		return 0
+	}
+	count := int(duration / e.interval)
+	if duration%e.interval != 0 {
+		count++
+	}
+	if count < 1 {
+		count = 1
+	}
+	if count > 100000 {
+		return 0
+	}
+	contiguous := 0
+	for slot := 0; slot < count; slot++ {
+		if len(e.realFrameLocked(slot)) == 0 {
+			break
+		}
+		contiguous++
+	}
+	if contiguous == 0 {
+		return 0
+	}
+	cov := time.Duration(contiguous) * e.interval
+	if cov > duration {
+		cov = duration
+	}
+	return cov
 }
 
 // snapshotLocked lists the frames for a BIF build: real frames plus, when
@@ -395,6 +576,11 @@ func intervalSlots(duration, interval time.Duration) []time.Duration {
 // slot boundary, keeping extraction behind the already-read playback
 // position. Without keyframes it uses the interval grid.
 func planFrames(duration, interval time.Duration, keyframes []core.KeyframePoint) []time.Duration {
+	extract, _ := slotPlan(duration, interval, keyframes)
+	return extract
+}
+
+func slotPlan(duration, interval time.Duration, keyframes []core.KeyframePoint) (extract, slotTimes []time.Duration) {
 	kfs := make([]core.KeyframePoint, 0, len(keyframes))
 	for _, kf := range keyframes {
 		if kf.Time >= 0 {
@@ -407,19 +593,26 @@ func planFrames(duration, interval time.Duration, keyframes []core.KeyframePoint
 	}
 	slots := intervalSlots(duration, interval)
 	if len(kfs) == 0 {
-		return slots
+		return slots, slots
 	}
 	out := make([]time.Duration, 0, len(slots))
+	mapped := make([]time.Duration, len(slots))
 	ki := 0
-	for _, slot := range slots {
+	for idx, slot := range slots {
+		mapped[idx] = -1
 		for ki+1 < len(kfs) && kfs[ki+1].Time <= slot {
 			ki++
 		}
-		if kfs[ki].Time <= slot && (len(out) == 0 || kfs[ki].Time > out[len(out)-1]) {
-			out = append(out, kfs[ki].Time)
+		if kfs[ki].Time <= slot {
+			if slot-kfs[ki].Time <= interval {
+				mapped[idx] = kfs[ki].Time
+			}
+			if len(out) == 0 || kfs[ki].Time > out[len(out)-1] {
+				out = append(out, kfs[ki].Time)
+			}
 		}
 	}
-	return out
+	return out, mapped
 }
 
 // thumbArgs builds the ffmpeg invocation for one frame: an input-side
@@ -492,7 +685,14 @@ func (t *Thumbnails) generate(ctx context.Context, src core.TrickplaySource) {
 	case <-ctx.Done():
 		return
 	}
-	plan := planFrames(src.Info.Duration, t.interval, src.Info.Keyframes)
+	plan, slotTimes := slotPlan(src.Info.Duration, t.interval, src.Info.Keyframes)
+	if len(slotTimes) > 0 {
+		t.mu.Lock()
+		if e, ok := t.entries[src.ReleaseID]; ok {
+			e.slotTimes = slotTimes
+		}
+		t.mu.Unlock()
+	}
 	failures := 0
 	for {
 		// Next missing batch.
@@ -564,11 +764,14 @@ func (t *Thumbnails) generate(ctx context.Context, src core.TrickplaySource) {
 			failures = 0
 			t.mu.Lock()
 			if e, ok := t.entries[src.ReleaseID]; ok {
-				if old, have := e.frames[slot]; have {
-					e.bytes -= int64(len(old))
+				if old, have := e.frames[slot]; !have || !bytes.Equal(old, jpeg) {
+					if have {
+						e.bytes -= int64(len(old))
+					}
+					e.frames[slot] = jpeg
+					e.bytes += int64(len(jpeg))
+					t.bumpRevisionLocked(e)
 				}
-				e.frames[slot] = jpeg
-				e.bytes += int64(len(jpeg))
 				t.touchLocked(e)
 				t.evictLocked(src.ReleaseID)
 			}

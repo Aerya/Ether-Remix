@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -24,7 +25,22 @@ type HLSRamp struct {
 	Duration time.Duration
 }
 
+// ArchiveRangeOpener opens the sequential loopback input at a session-relative
+// offset. Release closes its upstream connection once the encoder is done.
+type ArchiveRangeOpener func(context.Context, time.Duration) (ArchiveRangeInput, error)
+
+type ArchiveRangeInput struct {
+	URL     string
+	Trim    time.Duration
+	Release func()
+}
+
 type HLSRequest struct {
+	// WaitForEncoder gives interactive starts a bounded wait at the local encoder.
+	// EncoderViewer identifies a viewer in owner-only capacity diagnostics.
+	WaitForEncoder bool   `json:"-"`
+	EncoderViewer  string `json:"-"`
+
 	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
 	PMSDASH bool
 
@@ -83,6 +99,11 @@ type HLSRequest struct {
 	// LiveInput permits playlist demuxers for owner-configured live sources.
 	// Ordinary resolved media must leave this false, even if duration is unknown.
 	LiveInput bool
+	// ArchiveInput reads a finite provider range from a sequential HTTP
+	// response. ArchiveTrim discards the provider's rounded leading time.
+	ArchiveInput     bool               `json:"-"`
+	ArchiveTrim      time.Duration      `json:"-"`
+	OpenArchiveRange ArchiveRangeOpener `json:"-"`
 	// NoVideoTranscode enforces the owner's per-viewer "no video transcoding"
 	// policy on this session (never re-encode video; LiveInput is unaffected).
 	NoVideoTranscode bool `json:",omitempty"`
@@ -91,6 +112,9 @@ type HLSRequest struct {
 	// stability reserve), so the backlog primes the reserve instead of the
 	// demuxer's default three segments from the live edge.
 	LiveFromBacklog bool
+	// LiveEndOnEOF publishes the final live segments and ends the playlist
+	// on a clean encoder exit, letting an owned relay splice the next input.
+	LiveEndOnEOF bool `json:"-"`
 	// CopyTimestamps preserves source timestamps for HTTP Matroska output.
 	CopyTimestamps bool
 	// InputHeaders are optional HTTP headers ffmpeg must send when reading
@@ -213,6 +237,9 @@ type DecideOptions struct {
 
 // PlaySession binds a user, a title and a client to a resolved, open source.
 type PlaySession struct {
+	// OriginalRevision is the revision a replanned native file URL must name.
+	OriginalRevision string `json:"-"`
+
 	Encoder       *EncoderStatus `json:"encoder,omitempty"`
 	PlaybackGroup string         `json:"playbackGroup,omitempty"`
 	// PreparedOnly marks a source reserved for planning but not opened by a
@@ -406,6 +433,62 @@ type PlaybackRevisionPin interface {
 	UnpinSourceRevision(id string)
 }
 
+// SourceBinding says why an exact session is held on its release, which
+// decides whether that release may still be replaced when it fails.
+type SourceBinding uint8
+
+const (
+	// SourceBindingUnspecified keeps the exact selection locked.
+	SourceBindingUnspecified SourceBinding = iota
+	// SourceBindingExplicit is a version the viewer picked. It is never
+	// replaced. A provably unreadable release ends playback with
+	// ErrVersionUnreadable instead.
+	SourceBindingExplicit
+	// SourceBindingRemembered resumes the release this viewer last played.
+	// It is replaced only when it is proven unreadable.
+	SourceBindingRemembered
+	// SourceBindingAuto is the release a client was handed as its Auto or
+	// default entry. It fails over like any automatic session.
+	SourceBindingAuto
+)
+
+// ErrVersionUnreadable ends playback of a picked version whose release is
+// provably unreadable (corrupt or missing data on every provider).
+var ErrVersionUnreadable = fmt.Errorf("this version can't be played: the file is incomplete on your provider: %w", ErrReleaseRejected)
+
+// ErrOriginalLost means all eligible debrid accounts confirmed that the
+// same file cannot be recovered. Expired links and transient failures do not
+// establish loss.
+var ErrOriginalLost = fmt.Errorf("provider no longer has the original: %w", ErrSourceUnavailable)
+
+// OriginalRecovery replaces the current original after confirmed loss. Admit
+// scores a probed candidate between zero (incompatible) and one (best fit).
+// Direct range requests must name the new revision after replacement.
+type OriginalRecovery interface {
+	ReplaceLostOriginal(ctx context.Context, id, revision string, position time.Duration, explicit bool, admit func(*PlaySession) float64) (*PlaySession, time.Duration, error)
+}
+
+type originalRangeKey struct{}
+
+type OriginalRange struct {
+	Revision string
+	Lost     func()
+}
+
+func WithOriginalRange(ctx context.Context, request OriginalRange) context.Context {
+	return context.WithValue(ctx, originalRangeKey{}, request)
+}
+
+func OriginalRangeFrom(ctx context.Context) OriginalRange {
+	request, _ := ctx.Value(originalRangeKey{}).(OriginalRange)
+	return request
+}
+
+// SourceBinder records why an exact playback session holds its release.
+type SourceBinder interface {
+	BindSource(id string, binding SourceBinding)
+}
+
 // PlaybackSourceObservation contains scalar facts from one opened source
 // generation. Empty Revision means its identity cannot be established safely;
 // nil HDR and empty codec/zero height remain unknown.
@@ -436,4 +519,24 @@ type PlaybackSourceSnapshot interface {
 // The source fence is acquired before any manual-intent database writer in fn.
 type PlaybackSelectionFence interface {
 	WithSourceSelection(context.Context, string, string, func(MediaInfo) error) error
+}
+
+type sourceDecisionKey struct{}
+
+// SourceDecision evaluates a candidate before its source identity is published.
+// The estimate may lack full track evidence, so the chooser checks again on open.
+type SourceDecision struct {
+	Options DecideOptions
+	Decide  func(MediaInfo, *Resolution) Decision
+}
+
+// WithSourceDecision carries the playback request's output permissions
+// into source selection, before the source revision is published.
+func WithSourceDecision(ctx context.Context, selection SourceDecision) context.Context {
+	return context.WithValue(ctx, sourceDecisionKey{}, selection)
+}
+
+func PlaybackSourceDecision(ctx context.Context) (SourceDecision, bool) {
+	selection, ok := ctx.Value(sourceDecisionKey{}).(SourceDecision)
+	return selection, ok
 }

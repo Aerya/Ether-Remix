@@ -463,6 +463,13 @@ func containerExpandDedupKey(pluginID, kindKey string, itemRef core.ItemRef) str
 // self-refresh), and timedOut is true when page 1 did not finish within the
 // bounded wait.
 func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, container core.KindItem) (bool, bool) {
+	return c.expandContainer(ctx, rec, lib, container, true)
+}
+
+// expandContainer starts (or joins) a container's expansion. A viewer's open
+// (interactive) may use one slot beyond the background pool; when even that
+// is busy the expansion is queued and retried, never dropped.
+func (c *KindCatalog) expandContainer(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, container core.KindItem, interactive bool) (bool, bool) {
 	if c == nil || c.items == nil || c.mgr == nil || core.NoContainerExpand(ctx) {
 		return false, false
 	}
@@ -518,10 +525,11 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 	var firstOnce sync.Once
 	signal := func() { firstOnce.Do(func() { close(firstPage) }) }
 
-	started, startErr := c.mgr.StartExpandJob(rec.PluginID, routePath, dedupKey, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
+	started, startErr := c.mgr.StartExpandJobPriority(rec.PluginID, routePath, dedupKey, interactive, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
 		defer func() {
 			expandReady.Delete(dedupKey)
 			signal()
+			c.kickDeferredExpansions()
 		}()
 		<-ready
 		return c.runContainerExpansion(jobCtx, run, rec, lib.ID, routePath, container, signal)
@@ -542,6 +550,7 @@ func (c *KindCatalog) maybeExpandContainer(ctx context.Context, rec pluginitems.
 		close(ready)
 		expandLaunchMu.Unlock()
 		c.log.Debug("container expansion deferred", "plugin", rec.PluginID, "kind", rec.KindKey, "container", container.ID, "level", container.Level, "err", startErr)
+		c.deferExpansion(dedupKey, rec, lib, container)
 		return false, false
 	}
 	markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1219,4 +1228,45 @@ func (c *KindCatalog) runContainerHydration(
 	}
 
 	finish(pluginitems.ExpansionStateDone, totalAdded, "")
+}
+
+// FillChildren opens a container for a frontend adapter's viewer
+// (kinds.expand) exactly as opening it in an Ether app does: an expanding
+// level starts or joins its expansion on the interactive path and waits as
+// long as an open does; any other level hydrates missing children. pending
+// reports children still arriving.
+func (c *KindCatalog) FillChildren(ctx context.Context, lib core.Library, externalID string) (bool, error) {
+	if c == nil || c.items == nil {
+		return false, plugins.ErrUnavailable
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return false, err
+	}
+	item, libID, err := c.items.GetByExternal(ctx, lib.PluginID, lib.KindKey, externalID)
+	if err != nil {
+		return false, err
+	}
+	if libID != lib.ID {
+		return false, core.ErrNotFound
+	}
+	if core.NoContainerExpand(ctx) {
+		return false, nil
+	}
+	if rec.Decl.Browse.Expand.ExpandsLevel(item.Level) {
+		_, pending := c.maybeExpandContainer(ctx, rec, lib, item)
+		return pending, nil
+	}
+	if _, levelIdx, ok := rec.Decl.Level(item.Level); ok {
+		c.maybeHydrateContainer(ctx, rec, lib, item, levelIdx)
+	}
+	return false, nil
+}
+
+// SearchCount runs an app's search of lib for a frontend adapter's viewer
+// (kinds.search): local matches plus the kind's bounded live search, whose
+// finds Ether stores. It returns how many matches the library holds.
+func (c *KindCatalog) SearchCount(ctx context.Context, lib core.Library, query string, limit int) (int, error) {
+	titles, err := c.Search(ctx, lib, query, frontend.ItemQuery{}, limit)
+	return len(titles), err
 }

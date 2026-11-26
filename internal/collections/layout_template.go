@@ -11,7 +11,7 @@ import (
 
 // Explicit allowlist: never restore source URLs, ownership or audience from a
 // presentation template. The current spec supplies all non-visual fields.
-var layoutFields = []string{"name", "description", "artwork", "rotate", "limit", "sort", "sortDesc", "rankedTop10", "navigationGroup", "navigationOrder", "previewOnFocus", "enabled"}
+var layoutFields = []string{"name", "description", "artwork", "rotate", "limit", "sort", "sortDesc", "rankedTop10", "navigationGroup", "navigationOrder", "previewOnFocus", "enabled", "browseInApps"}
 
 func (s *Service) LayoutTemplatePart() layouts.Part {
 	type item struct {
@@ -42,10 +42,6 @@ func (s *Service) LayoutTemplatePart() layouts.Part {
 					x.Fields[key] = v
 				}
 			}
-			if e = json.Unmarshal(sp["targets"], &x.Targets); e != nil {
-				return nil, e
-			}
-			delete(x.Targets, "users")
 			out = append(out, x)
 		}
 		if e = rows.Err(); e != nil {
@@ -72,22 +68,11 @@ func (s *Service) LayoutTemplatePart() layouts.Part {
 					sp[key] = v
 				}
 			}
-			var targets map[string]json.RawMessage
-			if e := json.Unmarshal(sp["targets"], &targets); e != nil {
-				return e
+			// Old snapshots stored browse placement under targets.
+			if v, ok := x.Targets["collectionsTab"]; ok {
+				sp["browseInApps"] = v
 			}
-			for _, key := range []string{"collectionsTab", "homeRow", "sectionRow", "schedule"} {
-				delete(targets, key)
-				if v, ok := x.Targets[key]; ok {
-					targets[key] = v
-				}
-			}
-			b, e := json.Marshal(targets)
-			if e != nil {
-				return e
-			}
-			sp["targets"] = b
-			b, e = json.Marshal(sp)
+			b, e := json.Marshal(sp)
 			if e != nil {
 				return e
 			}

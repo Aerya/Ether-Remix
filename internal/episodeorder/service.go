@@ -74,6 +74,31 @@ func New(db *sql.DB, source Source, catalog core.Catalog) *Service {
 	return &Service{db: db, source: source, catalog: catalog, cache: map[string]cachedLayout{}}
 }
 
+func (s *Service) groupsConfigured() bool {
+	if keyed, ok := s.source.(interface{ HasKey() bool }); ok {
+		return keyed.HasKey()
+	}
+	return s.source != nil
+}
+
+func (s *Service) groups(ctx context.Context, key core.RatingKey) ([]tmdb.EpisodeGroupSummary, error) {
+	if !s.groupsConfigured() {
+		return nil, nil
+	}
+	title, err := s.catalog.Get(ctx, key)
+	if errors.Is(err, core.ErrNotFound) || (err == nil && (title == nil || title.IDs.TMDB <= 0)) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.source.EpisodeGroups(ctx, title.IDs.TMDB)
+	if errors.Is(err, tmdb.ErrNoKey) {
+		return nil, nil
+	}
+	return groups, err
+}
+
 func (s *Service) userPreferences(ctx context.Context, user int64) (map[core.RatingKey]Preference, error) {
 	s.mu.Lock()
 	gen := s.generation
@@ -126,6 +151,9 @@ func (s *Service) Preference(ctx context.Context, user int64, show core.RatingKe
 // defaults, change some series' episode set: an episode group, or hidden
 // specials. Showing specials first or last only reorders them.
 func (s *Service) Customized(ctx context.Context, u *core.User) (bool, error) {
+	if !s.groupsConfigured() {
+		return false, nil
+	}
 	uid := userID(u)
 	if reqmemo.Active(ctx) {
 		s.mu.Lock()
@@ -148,7 +176,7 @@ func (s *Service) Customized(ctx context.Context, u *core.User) (bool, error) {
 // catalogue without loading its layout title by title.
 func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.RatingKey) (map[core.RatingKey]bool, error) {
 	grouped := map[core.RatingKey]bool{}
-	if len(shows) == 0 {
+	if len(shows) == 0 || !s.groupsConfigured() {
 		return grouped, nil
 	}
 	if reqmemo.Active(ctx) {
@@ -162,7 +190,7 @@ func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.Rating
 				grouped[sk] = true
 			}
 		}
-		return grouped, nil
+		return s.effectiveViewerGroups(ctx, grouped)
 	}
 	for len(shows) > 0 {
 		n := min(len(shows), 500)
@@ -195,17 +223,43 @@ func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.Rating
 			delete(grouped, k)
 		}
 	}
+	return s.effectiveViewerGroups(ctx, grouped)
+}
+
+func (s *Service) effectiveViewerGroups(ctx context.Context, grouped map[core.RatingKey]bool) (map[core.RatingKey]bool, error) {
+	if len(grouped) == 0 {
+		return grouped, nil
+	}
+	cached, ok := s.catalog.(interface {
+		CachedGetMany(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	})
+	if !ok {
+		return grouped, nil
+	}
+	keys := make([]core.RatingKey, 0, len(grouped))
+	for key := range grouped {
+		keys = append(keys, key)
+	}
+	shows, err := cached.CachedGetMany(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for key, title := range shows {
+		if !allowsViewerOrder(title) {
+			delete(grouped, key)
+		}
+	}
 	return grouped, nil
 }
 func (s *Service) Save(ctx context.Context, user int64, show core.RatingKey, p Preference) error {
-	if user < 0 || show.Kind() != core.KindShow || show.TMDB() <= 0 {
+	if user < 0 || show.Kind() != core.KindShow {
 		return fmt.Errorf("invalid viewer or show")
 	}
 	if p.Specials != "first" && p.Specials != "last" && p.Specials != "hidden" {
 		return fmt.Errorf("specials must be first, last, or hidden")
 	}
 	if p.GroupID != "" {
-		groups, e := s.source.EpisodeGroups(ctx, show.TMDB())
+		groups, e := s.groups(ctx, show)
 		if e != nil {
 			return e
 		}
@@ -232,10 +286,28 @@ func (s *Service) Reset(ctx context.Context, user int64, show core.RatingKey) er
 	_, e := s.db.ExecContext(ctx, `DELETE FROM episodeorder_preferences WHERE user_id=? AND show_key=?`, user, int64(show))
 	return e
 }
+
+// MetadataGroup reads the existing shared group cache after verifying show ownership.
+func (s *Service) MetadataGroup(ctx context.Context, id int64, groupID string) (*tmdb.EpisodeGroup, error) {
+	if s.source == nil || id <= 0 {
+		return nil, core.ErrUnsupported
+	}
+	groups, err := s.source.EpisodeGroups(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		if group.ID == groupID {
+			return s.group(ctx, groupID)
+		}
+	}
+	return nil, core.ErrNotFound
+}
+
 func (s *Service) group(ctx context.Context, id string) (*tmdb.EpisodeGroup, error) {
 	var body string
 	var at int64
-	if e := s.db.QueryRowContext(ctx, `SELECT body,updated_at FROM episodeorder_groups WHERE id=?`, id).Scan(&body, &at); e == nil && time.Since(time.Unix(at, 0)) < 24*time.Hour {
+	if e := s.db.QueryRowContext(ctx, `SELECT body,updated_at FROM episodeorder_groups WHERE id=?`, id).Scan(&body, &at); e == nil && !core.MetadataRefreshRequested(ctx) && time.Since(time.Unix(at, 0)) < 24*time.Hour {
 		var g tmdb.EpisodeGroup
 		if json.Unmarshal([]byte(body), &g) == nil {
 			return &g, nil
@@ -282,23 +354,54 @@ func userID(u *core.User) int64 {
 	return u.ID
 }
 func showKey(k core.RatingKey) core.RatingKey {
-	if k.Kind() == core.KindShow {
+	switch k.Kind() {
+	case core.KindShow:
 		return k
+	case core.KindSeason:
+		return k.Parent()
+	case core.KindEpisode:
+		return k.Parent().Parent()
 	}
-	return core.ShowKey(k.TMDB())
+	return 0
+}
+
+func allowsViewerOrder(t core.Title) bool {
+	return !t.Key.Allocated() && (t.EpisodeOrder.Source == "" ||
+		t.EpisodeOrder.Source == core.MetadataTMDB && t.EpisodeOrder.Kind == core.OrderAired)
+}
+
+func (s *Service) overlayShow(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	return reqmemo.Do(ctx, fmt.Sprintf("episodeorder:overlay-show:%p:%d", s, key), func() (*core.Title, error) {
+		if local, ok := s.catalog.(interface {
+			CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+		}); ok {
+			return local.CachedGet(ctx, key)
+		}
+		return s.catalog.Get(ctx, key)
+	})
 }
 func (s *Service) layout(ctx context.Context, u *core.User, k core.RatingKey) (*layout, error) {
 	l, _, err := s.layoutWithPref(ctx, u, k)
 	return l, err
 }
 func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.RatingKey) (*layout, Preference, error) {
+	if k.Allocated() || !s.groupsConfigured() {
+		return nil, Preference{Specials: "last"}, nil
+	}
 	show := showKey(k)
+	if show == 0 || show.Allocated() {
+		return nil, Preference{}, nil
+	}
 	cacheKey := fmt.Sprintf("%d:%d", userID(u), show)
 	s.mu.Lock()
 	cached, ok := s.cache[cacheKey]
 	generation := s.generation
 	s.mu.Unlock()
 	if ok && time.Now().Before(cached.expires) {
+		st, err := s.overlayShow(ctx, show)
+		if err != nil || st == nil || !allowsViewerOrder(*st) {
+			return nil, Preference{}, err
+		}
 		return cached.value, Preference{}, nil
 	}
 	p, e := s.Preference(ctx, userID(u), show)
@@ -308,15 +411,18 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 	if p.GroupID == "" {
 		return nil, p, nil
 	}
+	st, e := s.overlayShow(ctx, show)
+	if e != nil || st == nil || !allowsViewerOrder(*st) {
+		return nil, Preference{}, e
+	}
 	g, e := s.group(ctx, p.GroupID)
+	if errors.Is(e, tmdb.ErrNoKey) {
+		return nil, p, nil
+	}
 	if e != nil {
 		return nil, p, e
 	}
 	eps, e := s.catalog.Grandchildren(ctx, show)
-	if e != nil {
-		return nil, p, e
-	}
-	st, e := s.catalog.Get(ctx, show)
 	if e != nil {
 		return nil, p, e
 	}
@@ -341,7 +447,7 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 		if added.IsZero() {
 			added = st.DateAdded(now)
 		}
-		out.seasons = append(out.seasons, core.Title{Key: core.SeasonKey(show.TMDB(), n), Type: core.TypeSeason, ShowKey: show, ShowTitle: st.Title, Title: name, SeasonTitle: name, Season: n, ChildCount: len(kids), LeafCount: len(kids), PosterPath: st.PosterPath, BackdropPath: st.BackdropPath, ContentRating: st.ContentRating, AddedAt: added})
+		out.seasons = append(out.seasons, core.Title{Key: core.SeasonKey(show.TMDB(), n), Type: core.TypeSeason, ParentKey: show, ShowKey: show, ShowIDs: st.IDs, ShowTitle: st.Title, Title: name, SeasonTitle: name, Season: n, ChildCount: len(kids), LeafCount: len(kids), PosterPath: st.PosterPath, BackdropPath: st.BackdropPath, ContentRating: st.ContentRating, AddedAt: added})
 		out.episodes = append(out.episodes, kids...)
 	}
 	for i, group := range groups {
@@ -429,9 +535,17 @@ func (s *Service) Get(ctx context.Context, u *core.User, k core.RatingKey) (*cor
 
 // CachedVirtualSeason returns only an already-computed, unexpired layout for
 // this viewer. It never refreshes preferences, the catalogue, or TMDB.
-func (s *Service) CachedVirtualSeason(_ context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
-	if u == nil || u.ID <= 0 || k.Kind() != core.KindSeason || k.Season() < virtualBase {
+func (s *Service) CachedVirtualSeason(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
+	if u == nil || u.ID <= 0 || k.Kind() != core.KindSeason || k.Season() < virtualBase || !s.groupsConfigured() {
 		return nil, core.ErrNotFound
+	}
+	if local, ok := s.catalog.(interface {
+		CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+	}); ok {
+		st, err := local.CachedGet(ctx, showKey(k))
+		if err != nil || st == nil || !allowsViewerOrder(*st) {
+			return nil, core.ErrNotFound
+		}
 	}
 	cacheKey := fmt.Sprintf("%d:%d", u.ID, showKey(k))
 	s.mu.Lock()
@@ -473,6 +587,9 @@ func (s *Service) canonicalChildren(ctx context.Context, k core.RatingKey, p Pre
 	items, e := s.catalog.Children(ctx, k)
 	if e != nil {
 		return nil, e
+	}
+	if k.Allocated() || (len(items) > 0 && !allowsViewerOrder(items[0])) {
+		return items, nil
 	}
 	if k.Kind() == core.KindSeason && k.Season() == 0 && p.Specials == "hidden" {
 		return nil, nil
@@ -526,6 +643,9 @@ func (s *Service) OrderStoredGrandchildren(ctx context.Context, u *core.User, k 
 }
 
 func orderUngroupedEpisodes(p Preference, items []core.Title) []core.Title {
+	if len(items) > 0 && !allowsViewerOrder(items[0]) {
+		return items
+	}
 	var special, normal []core.Title
 	for _, t := range items {
 		if t.Season == 0 {
@@ -558,6 +678,9 @@ func (s *Service) Position(ctx context.Context, u *core.User, k core.RatingKey) 
 
 // SearchNumbering reads only the independent owner release group.
 func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, season, episode int, cachedOnly bool) (int, int, error) {
+	if show.Allocated() || !s.groupsConfigured() {
+		return 0, 0, nil
+	}
 	p, err := s.ReleasePreference(ctx, show)
 	if err != nil || p.Mode != "group" {
 		return 0, 0, err
@@ -578,30 +701,7 @@ func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, seas
 	if err != nil {
 		return 0, 0, err
 	}
-	// TMDB subgroup order is already the season number when the orders
-	// start at 1, or when order 0 is the Specials subgroup (One Piece
-	// "TVDB Order": 0=Specials, 16=Season 16). Only a set whose first
-	// subgroup is a regular season at order 0 numbers seasons order+1.
-	seasonOffset := 0
-	for _, group := range g.Groups {
-		if group.Order != 0 {
-			continue
-		}
-		specials := strings.EqualFold(strings.TrimSpace(group.Name), "specials")
-		if !specials && len(group.Episodes) > 0 {
-			specials = true
-			for _, ep := range group.Episodes {
-				if ep.SeasonNumber != 0 {
-					specials = false
-					break
-				}
-			}
-		}
-		if !specials {
-			seasonOffset = 1
-		}
-		break
-	}
+	seasonOffset := tmdb.GroupSeasonOffset(g)
 	var found bool
 	var sn, en int
 	for _, group := range g.Groups {

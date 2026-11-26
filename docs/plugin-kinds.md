@@ -27,6 +27,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
     "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
+    "experience": "listen",         // optional: watch | listen | read | gallery | live, or another id (default by media class)
     "tabs": [                       // optional (<= 50); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
       { "key": "library", "label": "Library", "kind": "library" },
@@ -72,6 +73,7 @@ unless the owner agrees to replace the library's contents.
 - `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). A level may also declare `parent` (to branch from an earlier level rather than the previous one) and its own `media` class (for example a `video` concert branch under a `music` artist). For containers with stored children, `media.childCounts` carries direct-child counts keyed by child role (or level key when role-less) from the indexed per-level tally on both list and detail responses, and `media.childCount` is the direct-child total (the sum over `media.childCounts`, not the recursive leaf count). On a branching container's detail response (`GET /vela/v0/titles/{id}`), `seasons` lists only the primary child level (the first child level matching the container's media class, else the first declared child level); other child branches are listed via `GET /vela/v0/titles/{id}/children?role=<role>`. Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
+- `library.experience`: how apps present the whole library, as an experience id. Ether's ids are `"watch"` (films and TV: the app's ordinary library pages and tabs), `"listen"` (a listening app — in Vela a library sidebar, a persistent now-playing bar, a queue and full-screen Now Playing, in place of the tab strip), `"read"` (books and comics), `"gallery"` (photos and home videos) and `"live"` (a guide, multiview, sports). The set is open: any id matching `^[a-z][a-z0-9-]{0,31}$` is accepted, and an app that does not know an id presents the library as `watch`. It defaults by the kind's media class: `listen` for `music`, `audiobook` and `podcast`; `read` for `book`; `gallery` for `photo`; `watch` for everything else — so a music kind opts out with `"watch"` and a sports kind opts into `"live"`. Vela receives it as `experience` at the top level of every `/vela/v0/libraries` entry (always sent), and `features.libraryExperiences.experiences` lists Ether's ids. It is library-level only and unrelated to a tab's `layout` (`grid`/`list`/`timeline`). In the listen experience Vela builds its pages from the same data as any library: the library's rows (a `continue` row reads "Continue listening"), item roles, `media.credits` (author, narrator, host), episode dates and durations, played state and resume, and chapters.
 - `library.tabs`: up to 50 entries of `{key, label, kind, level?, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). `library`, `view`, `collections`, and `people` tabs may set optional `level` (naming a declared `levels[].key`) to scope browsing, facets, facet collections, and people lists to a non-root hierarchy level (for example an `Albums` or `Tracks` tab on an `artist -> album -> track` kind). Vela exposes `level` on each tab and accepts `?level=<key>` on `/items` and `/facets/{field}` (or inherits the tab's `level` from `?tab=<key>`); Plex `?type=8/9/10` and Jellyfin `IncludeItemTypes=MusicArtist/MusicAlbum/Audio` resolve to matching declared levels on the indexed SQL path.
   - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
@@ -113,7 +115,8 @@ unless the owner agrees to replace the library's contents.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
     "shelves": [
-      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "purpose": "recentContexts", "filters": [{ "field": "viewer", "value": { "history": true } }] },
+      { "key": "recently-played", "label": "Recently played", "level": "track", "sort": "lastViewed", "layout": "tracks" },
       { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
       { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
       { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
@@ -126,6 +129,8 @@ unless the owner agrees to replace the library's contents.
     - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
     - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
     - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
+    - `purpose` (optional): what the shelf is for, so apps can draw it their own way and keep its titles out of other rows: `recentContexts` (a "Jump back in" of albums, playlists and artists the viewer played) or `liked` (the viewer's liked items, such as Liked songs with `filters: [{ "field": "viewer", "value": { "favorite": true } }]`). Omitted, the shelf is a plain recommendation.
+    - `layout` (optional): the shelf's default look, `standard`, `hero`, `wide`, `tiles` or `tracks` (a track list, for track-level shelves in listening libraries). An owner's look for the row on a Recommendations page wins.
 
 ## The item envelope
 
@@ -137,7 +142,11 @@ optional `summary/year/released/rating`, `playable`, counts, `art`
 against your declaration; unknown keys are dropped, wrong types
 reject the item), `hints` (an opaque JSON object ≤16 KiB, stored and
 handed back to your resolver verbatim — put ids and locators there,
-never secrets), and an `etag` for cheap re-syncs.
+never secrets), an optional `recording` (≤200 characters: the work the item
+is a copy of, identical on every release that carries it, e.g.
+`"isrc:GBDUW0000053"` for a song on its album, single and compilations;
+apps use it to group duplicates and Vela receives it as
+`media.recordingId`), and an `etag` for cheap re-syncs.
 
 Caps: title 500 characters, summary 20k, each field 4k, 16 art roles.
 
@@ -154,12 +163,17 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or container at a declared `browse.expand.levels` level | For facets/people: background only when `browse.expand.facets` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For declared container levels (`browse.expand.levels`, each a `container: true` level): triggered when a viewer opens the container (`Item`) or its children (`Children`, including `?role=` / `?level=`) across every frontend whenever no fresh expansion exists within `ttlHours` or the container has 0 stored children; receives `{parentId, level, cursor?}` where `level` is the container's own level key. Single-flight per `(plugin, kind, itemRef)`, bounded first-page wait (~1.8s), background continuation via the expand job, additive upserts (direct children at any child level, optional grandchildren, optional self-refresh of the container), never triggered on Search, lists, Home, or in the background. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/browse` with `level` = a list level | Pull sync, after the main tree | A **list level** (`levels[].members: true`, e.g. role `playlist`) is a root of its own: no parent, never playable, and no level names it as parent. Its items carry `members`: up to 500 external ids of other items of the kind, in order, which become its children. A page of a list level may also return those members and their parents (an album and artist a track needs), parents first, so everything is stored together; members not stored are skipped when the list is read. |
+| `/ether/v1/kinds/{kind}/import` | A viewer imports a playlist link from one of the sites in `import.links` (for example `deezer`) | `{url}` → `{name, description?, tracks: [{title, artist, album?, isrc?, durationSec?}], total?, truncated?}`; answer 404 for a link you do not read. Set `truncated` when the source shared fewer tracks than the playlist has (with `total` when it says how many), so apps can tell the viewer instead of silently importing part of it. At most 500 tracks are used. 10 s deadline. |
+| `/ether/v1/kinds/{kind}/identify` | Ether matches an imported playlist's tracks (from a link or an M3U/CSV file) to your items, in batches, only when `import.identify` is true | `{tracks}` → `{items, matches: [{index, id?, by?, candidates?}]}`. `items` are stored like live-search results (parents first). One match per track you answered: `id` and `by` (`isrc` or `title`), or `candidates` (external ids) when several releases fit equally, or neither when nothing matched. Leave out tracks you ran out of time for; Ether asks for them again (up to three times). Viewers see matched and unmatched tracks honestly and pick a release for ambiguous ones. 10 s deadline. |
+| `/ether/v1/kinds/{kind}/related` | A viewer opens an item (purpose `similar`), or a queue of the kind's items nears its end (purpose `continuation`), only for purposes declared in `related: {similar, continuation}` | `{item, purpose, limit}` → `{label?, items, order?}`. `items` are stored like live-search results (send any parents a playable item needs); `order` names the external ids to show, in order (default: items at the same level for `similar`, playable items for `continuation`). One call per item and purpose at a time; answers are remembered for six hours (empty ones for one). `similar` becomes the item's detail row (Vela `GET /rows?placement=detail`); `continuation` is Vela `GET /titles/{id}/continuation` (autoplay). |
+| `/ether/v1/kinds/{kind}/lyrics` | A viewer opens a playable item's lyrics, only when the kind declares `lyrics: true` | `{item}` (the stored item, with `hints` and `fields`) → `{syncedLyrics?, plainLyrics?, instrumental?, source?, lines?}`; `syncedLyrics` is LRC (`[mm:ss.xx] words`; enhanced `<mm:ss.xx>word` stamps give word timing). `lines` (optional, used instead of `syncedLyrics`) are structured `{startMs, endMs?, text, words?: [{startMs, endMs?, text}], translation?, romanization?}` for providers with per-word timing, translations or romanization; Vela receives them on `GET /titles/{id}/lyrics` (`features.lyrics.words`/`romanization`). Answer 404 when there are none. Never called ahead of use; Ether remembers answers for a day and misses for six hours, and serves them to every client (Vela `GET /titles/{id}/lyrics`). |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
 | `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, source?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value for remote plugins; hosted plugins receive every value of a repeated key, such as Subsonic's `id=1&id=2`, as an array). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, `X-Ether-Origin` (`scheme://host[:port][/prefix]` derived from the request using Ether's trusted proxy policy, with any client-supplied `X-Ether-Origin` stripped), and a request-scoped `X-Ether-Viewer-Token` for `kinds.visible`, `kinds.browse`, and remote `frontend.streamURL` callbacks — never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -170,6 +184,14 @@ your `refresh`, minimum 15m) or **push** (you call the `KindUpsert`
 host service; refused for pull kinds — one writer per kind). A pull
 walk that would delete more than half the library aborts and raises
 owner attention instead of wiping it.
+
+Push writes are journalled for undo, which keeps up to 30 days, 10,000
+entries, or 256 MiB of inverse data per plugin. By default (`sync.undo:
+"snapshots"`), unchanged items with the same content hash are skipped
+and only modified items are snapshotted. Large push catalogues can
+declare `sync.undo: "ids"` to record only created and touched IDs
+without reading snapshots; undo then removes only items the batch
+created.
 
 ### Live search
 
@@ -269,8 +291,8 @@ same ranked sliding window it uses for movies and TV: two opens stay in
 flight in rank order, failing opens advance immediately, a ready
 equivalent backup may overtake a stalled lead after the 2 s grace
 period, two confirmed permanent failures widen the window to four for
-equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
-or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+equivalent candidates, and sources that spend an indexer grab (`nzbRef`,
+or `torrentRef` without an `infoHash`/`magnet`) join a single healthy
 in-flight open only as a hedge after the learned health-hedge delay
 (default 1.5 s) so a healthy open normally costs one grab. Losing opens
 are cancelled and their readers closed before playback starts.
@@ -487,20 +509,52 @@ TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
 `{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
 `ether.sources.resolve` returns that envelope directly).
 
+### Request an NZB
+
+Call `ether.sources.resolve({kind: "nzb_request", nzbRef})` with a reference
+returned by indexer search. A native release can also be requested with
+`nzbIdentity: {indexerId, guid}`. The single candidate in the response contains
+`files` (up to 2,000 descriptor entries, with estimated sizes), `fileCount`,
+and an `nzbRef` for the stored NZB. Save that reference for future playback
+using `{pattern: "release", release: {nzbRef}}`. Pass the original candidate
+to `release_files` when you need Ether to inspect files inside archives, or to
+`usenet_check` to sample article availability.
+
+Ether checks the NZB vault first. A miss uses the originating indexer's normal
+grab limits and stores the NZB in the vault. A temporary grab refusal leaves
+other candidates available. Installed plugins with `kind_resolver` and
+`permissions.sources` can request NZBs. Background requests also need the
+`+check` grant and use the background allowance. Ether refuses plugin HTTP
+calls to configured indexer hosts and keeps indexer URLs and API keys in
+server configuration. Sidecars use this same sources API. Their own HTTP
+clients run under OS or container network policy, so operators can restrict
+direct access there. Existing `nzb:<download link>` sources for configured
+indexer endpoints still use the shared grab path.
+
+Use `Context.RequestNZB` in Go, `requestNzb(ctx, ref)` in TypeScript, or
+`client.kinds.request_nzb(ref)` in Python. The SDKs also expose the
+`nzb_request` query through their source resolver methods.
+
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
-names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
-`indexer_search` have the indexer's API key and secrets stripped (standard
-`apikey` query parameters are removed; non-standard credential placements use
-URL-safe origin-confined tokens), and Ether re-attaches credentials only at
-fetch time on the originating indexer's origin when the candidate is handed
-back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
-keyed on the key-less link, so plugins can persist candidates in KV without
-storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
-not support category filters and reject scoped searches. Omit `category` for
-the default media search. Results and acquired files are cached separately by
+names are rejected. Usenet candidates carry an opaque `nzbRef`, and torrent
+candidates that need a descriptor download carry a `torrentRef`. The deprecated
+`nzbUrl` and `torrentUrl` fields mirror those stable references as
+`ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>`. Existing plugins can pass
+those values back in the deprecated fields. New code should use the reference
+fields directly.
+Invalid categories are rejected. Stremio add-ons and
+source plugins are asked by title id only, so they reject scoped searches,
+unless a source plugin declared the category (see "Source plugins that answer
+category searches" below). Omit `category` for the default media search.
+On a category search, `lookup: {type, fields}` (for example
+`{type: "album", fields: {artist: "Air", title: "Moon Safari"}}`) adds a typed
+lookup for source plugins that declared that type; every other indexer
+searches `query` alone, so keep `query` meaningful. A lookup needs a
+`category`, a simple `type` key and at most 8 camelCase fields of up to 256
+bytes. Results and acquired files are cached separately by
 category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
@@ -533,13 +587,13 @@ and `debrid_acquire` results carry the same `cachedBy` field (for
 `debrid_acquire`, the service that actually served the acquisition).
 
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
-`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+`torrentRef`, or `candidate` carrying an `indexer_search` result back) returns
 one candidate whose `files` lists what is inside the release:
 `[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
 file selection counts (provider file-list order for torrents, NZB document order
 for Usenet). Torrent candidates carry their download or details page link in
-`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
-`torrentUrl` through the originating indexer first, populates `infoHash` and
+`torrentRef`: when `infoHash` is absent, Ether resolves
+`torrentRef` through the originating indexer first, populates `infoHash` and
 `magnet` on the returned candidate, lists files from a debrid provider when
 cached, and falls back to `.torrent` metainfo files (with `cached: false`)
 when uncached or when no debrid provider is configured. NZBs are fetched
@@ -557,7 +611,58 @@ to `source.size`, and setting `release.fileHint` to an exact member path from
 `members` or `release.track` when matching by disc/track/title); the choice is
 honoured on Usenet as on debrid.
 
-`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+A candidate with `pluginRelease: {plugin, id}` came from a source plugin's
+category search (below). It has no `infoHash` or `nzbUrl`: hand the candidate
+back to `release_files` (Ether asks the plugin for its files) and return it in
+a `release` source with `release.file` or `release.fileIndex`; Ether opens it
+through that plugin. It is never cached on debrid, so skip `debrid_check` and
+`usenet_check` for it.
+
+### Source plugins that answer category searches
+
+A `stream_source` plugin is asked by title id (`/stream/{type}/{id}.json`). To
+also answer the category searches content kinds make (Music searches
+`category: "3000"`, Books `"7000"`), it declares them:
+
+```json
+"contributes": {
+  "source": {
+    "class": "indexer",
+    "search": { "categories": [3000, 7000], "lookups": ["album"] }
+  }
+}
+```
+
+`categories` lists 1 to 16 Newznab categories; a top category (`3000`) covers
+its subcategories (`3010`, `3040`), a subcategory covers only itself.
+`lookups` lists up to 8 typed lookups the plugin understands. Ether then calls
+the plugin for an `indexer_search` whose category it declared, and only then;
+every other add-on keeps refusing scoped searches:
+
+- `GET /ether/search?query=&category=3000[&purpose=][&lookup=album&lookup.artist=&lookup.title=]`
+  (10 s route deadline, bounded by the caller's search deadline). `category`
+  holds the requested categories the plugin declared, `purpose` why Ether
+  searches (`playback`, `detail`, `warmup`, ...), and the lookup appears only
+  for a declared type. Answer in the stream route's shape,
+  `{streams: [...]}`: a lazy stream (`ether: {lazy: true, id, releaseName,
+  size?, languages?}`) becomes a candidate with `pluginRelease`; a torrent
+  (`infoHash`) or NZB stream becomes an ordinary torrent or Usenet candidate.
+  Plain `url` streams and owner-folder `file` streams are skipped there. The
+  answer goes through Ether's search cache, the plugin's search limits and
+  the caller's quality profile like any indexer result.
+- `GET /ether/files/{id}` answers `release_files` for a lazy release:
+  `{files: [{path, size?}]}` in the order `fileIndex` counts (at most 2,000).
+- `GET /ether/open/{id}?file=&fileIndex=` opens the chosen file, answering
+  `{url, headers?}` (or `{file}` inside an owner-granted folder) as a lazy
+  stream does. Ether reads the URL with HTTP Range requests; the URL and every
+  redirect must be on the plugin's `permissions.network` hosts (or an
+  owner-granted local host), so a plugin cannot point Ether at an arbitrary
+  host. Header values may use `{secret:name}` with the plugin's own secrets.
+
+A `pluginRelease` handed back by a caller is honoured only for an enabled
+plugin that declares `source.search`.
+
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbRef`) checks an
 NZB's article availability before your resolver offers it, returning a single
 candidate with `usenetCheck: {available, checked, missing, cached?,
 playbackFailed?, reason?, checkedAt?}`:
@@ -635,15 +740,27 @@ part:
   without a part selector) resolve `partIndex: 0` for single-part items and
   deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
   parts (`0 .. N-1`).
-- **Per-part and per-source opens** let frontend adapters and multi-file clients
-  fetch a specific file or a specific resolver `PlayableSource.id`:
-  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source? }).url`
+- **Per-part, per-source, and absolute stream URLs** let frontend adapters and
+  multi-file or native clients fetch a specific file, pin a resolver
+  `PlayableSource.id`, or embed an absolute URL (`<origin>/ether/v1/kind-media/{ticket}`):
+  - Mint a scoped ticket URL with `ether.frontend.streamURL(itemRef, { partIndex?, source?, absolute? }).url`
     (hosted JS; the positional `ether.frontend.streamURL(itemRef, partIndex).url` form still works),
-    `streamUrl(ctx, itemRef, { partIndex?, source? })` (TypeScript SDK; positional `partIndex` also works),
-    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source})` /
+    `streamUrl(ctx, itemRef, { partIndex?, source?, absolute? })` (TypeScript SDK; positional `partIndex` also works),
+    `ctx.StreamURLWithOptions(itemRef, StreamURLOptions{PartIndex, Source, Absolute})` /
     `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
-    `ctx.stream_url(item_ref, part_index=..., source=...)` (Python SDK) — backed by
-    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?}`.
+    `ctx.stream_url(item_ref, part_index=..., source=..., absolute=...)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"?, "source"?, "absolute"?}`
+    (forwarding `X-Ether-Viewer-Token` from remote adapters so Ether can resolve the active request origin and adapter key).
+  - By default stream URLs stay root-relative (`/ether/v1/kind-media/{ticket}`).
+    When `absolute: true` is set, Ether prepends the request's `X-Ether-Origin`
+    (`scheme://host[:port][/prefix]`, honouring trusted proxies only and omitting
+    container bridge hosts), falling back to the adapter's first published
+    address (`frontends["plugin:<id>:<adapter>"].publishedAddresses`, preserving
+    any path prefix) when the request carries none, and finally to the
+    root-relative path if neither is available. HTTP redirects (`Location`)
+    still require root-relative paths; use `{ absolute: true }` for protocol
+    documents handed to native clients (such as Kodi or Subsonic players) that
+    open URLs verbatim.
   - When `source` is set in the ticket grant, Ether passes `KindResolveRequest.source`
     to `/resolve` and opens **only** the matching source (matching `PlayableSource.id`)
     with no failover to other sources and without clobbering the shared default resolution
@@ -747,6 +864,70 @@ unless the plugin explicitly declares a custom mapping.
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.
 
+### Frontend adapter icon
+
+`contributes.frontendAdapters[].icon` names the adapter's own mark: a
+path to an SVG or PNG inside the package (a PNG at most 512 KB and
+1024 px on a side). The Apps page shows it on the adapter's tab and
+cards, the way it shows Plex or Jellyfin. Without one, a `subsonic`
+adapter shows the OpenSubsonic mark Ether ships; any other adapter
+falls back to the plugin's `ether.icon`, and then a generic plug. Ether serves it from
+the plugin's icon route (`/ether/api/plugins/{id}/icon?adapter={key}`),
+cache-busted per version, and the conformance kit fails a package whose
+adapter icon is missing or cannot be rendered.
+
+```json
+"frontendAdapters": [
+  { "key": "subsonic", "label": "Subsonic", "protocolHint": "subsonic",
+    "pathPrefix": "/rest", "auth": "query_credentials",
+    "icon": "assets/opensubsonic.svg" }
+]
+```
+
+Use a protocol's or app's own logo only to identify it, and record its
+source and licence in your package's NOTICE.
+
+### Frontend adapter authentication
+
+`contributes.frontendAdapters[].auth` picks how Ether authenticates the
+viewer before your adapter sees a request:
+
+| Mode | Client sends | Notes |
+|---|---|---|
+| `ether_token` (default) | `Authorization: Bearer <token>` (or the token as a Basic password) | Connect apps hands the viewer a token. |
+| `basic` | HTTP Basic, username + an Ether-issued app password | |
+| `none_lan` | nothing | Trusted LAN only, with an owner-picked viewer (DLNA rule). |
+| `query_credentials` | `u` plus `p` (plain or `enc:<hex>`) or `t` + `s` (`t` = md5(password + `s`), lowercase hex) on every request | Subsonic's scheme. Ether issues each viewer dedicated, revocable **app logins** (a generated username and a 15-character app password, like Xtream logins) from Connect apps and the adapter's page under Apps. The household password is never accepted, failed attempts share Ether's per-address sign-in limiter, and `p`, `t` and `s` are removed before the request reaches you (`u` stays). |
+
+In `query_credentials` mode a request without valid credentials is not
+answered with a bare 401: Ether relays it to
+`/ether/v1/frontend/{key}/.unauthenticated/<original path>` with **no**
+viewer headers or token, so you can answer in your protocol's own error
+shape (Subsonic error 40) or serve a document the protocol defines as
+public (OpenSubsonic's `getOpenSubsonicExtensions`). Anything you do not
+handle there (404) falls back to 401.
+
+### Host-served media and artwork
+
+An adapter response may name bytes for Ether to serve at the adapter URL
+itself, instead of a body or a redirect:
+
+- `{"media": {"itemRef", "partIndex"?, "source"?}}` — one of your playable
+  items, opened for the authenticated viewer through the same path as a
+  stream ticket (resolver, Range requests, read-ahead). Every Range request
+  re-authenticates with the client's own credentials, so players that seek
+  long after a 2-minute ticket would have expired keep working, and clients
+  that do not follow redirects are fine.
+- `{"art": {"itemRef", "role"?}}` — the stored artwork of one of your items
+  (`poster`, `thumb`, `backdrop`, `logo`; empty picks the first). Ether
+  fetches and caches the image; the URL comes from the stored item, never
+  from your response.
+
+Both are hosted-runtime fields (like `blob`), checked for item ownership
+and library visibility before anything is written. A hosted adapter's
+string `body` is the document itself (XML, HTML, text) and is written
+unquoted; object and array bodies are JSON.
+
 ## Matching
 
 Matching is yours; persistence and the console are Ether's. A manual
@@ -766,20 +947,62 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
-A `kinds.browse` query filters with three facet maps that combine with
-AND: `facets` (any of the listed values per field), `allFacets` (every
-listed value per field, for "tagged both X and Y"), and `excludeFacets`
-(none of the listed values, for "without X"). All three accept the same
-per-type values as `facets`, including `lo..hi` ranges for numbers and
-dates and people names, and are evaluated inside the browse query so
-paging and `total` stay correct. The total number of facet values
-across the three maps is bounded (256 per query). Pass `total` to
-control whether `KindPage.total` is computed: `"cheap"` (the default)
-returns `total` only when it is O(1) (item or single-facet field
-tallies, an already-cached exact count, or a single-page result) and
-omits `total` otherwise rather than scanning the library; `"none"` never
-computes or returns `total`; `"exact"` computes and caches an exact
-count for the current library generation.
+A `kinds.browse` query filters with facet maps, any-of groups, field
+presence tests, and text matching that all combine with AND: `facets`
+(any of the listed values per field), `allFacets` (every listed value
+per field, for "tagged both X and Y"), `excludeFacets` (none of the
+listed values, for "without X"), `anyGroups` (an array of OR-groups,
+each either `{field, values}` on one field — for example `(Rock OR Hard
+Rock) AND (Live OR Live Recording)` on `genres` — or `{any: [{field,
+values}, ...]}` to OR alternatives across fields, for example `label =
+"North" OR parentLabel = "North"`), `empty` (a `{field: bool}` map where
+`true` keeps items with no value in the field and `false` keeps items
+with at least one, covering declared fields and item columns such as
+`released`, `year`, `rating`, `summary`, and `recording`; unknown fields
+are rejected), `query` (full-text match), and `excludeQuery` (same text
+matching as `query`; matching items are dropped). All facet filters
+accept the same per-type values as `facets`, including `lo..hi` ranges
+for numbers and dates and people names, and are evaluated inside the
+browse query so paging and `total` stay correct. A query may carry at
+most 32 `anyGroups` and at most 256 total facet values across `facets`,
+`allFacets`, `excludeFacets`, and `anyGroups` (counting every
+alternative's values in `{any: [...]}`); `empty` counts toward neither
+bound. Pass `total` to control whether `KindPage.total` is
+computed: `"cheap"` (the default) returns `total` only when it is O(1)
+(item or single-facet field tallies, an already-cached exact count, or a
+single-page result) and omits `total` otherwise rather than scanning the
+library; `"none"` never computes or returns `total`; `"exact"` computes
+and caches an exact count for the current library generation.
+
+Frontend adapters also read and write the authenticated viewer's own
+state for your items, in the same stores every Ether app uses (likes are
+the viewer's favourites, plays and ratings their watch state, playlists
+their Ether playlists), so a star in a Subsonic app is a like in Vela.
+Hosted JS, all scoped to the adapter viewer and your own items of one kind:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.get(kind, ids)` | stored items the viewer may see (≤500 ids), in request order |
+| `ether.kinds.state(kind, ids)` | `[{id, playCount, lastPlayedAt?, favorite, rating?}]` (≤500) |
+| `ether.kinds.favorite(kind, ids, on)` | likes or unlikes (≤500) |
+| `ether.kinds.played(kind, id)` | records a completed play |
+| `ether.kinds.rate(kind, id, rating)` | 0–10, `0` clears |
+| `ether.kinds.favorites(kind, {level?, limit?})` | `[{id, level, addedAt}]`, newest first (≤1000) |
+| `ether.kinds.playlists(kind)` | the viewer's playlists that are empty or hold your items: `[{id, title, summary?, createdAt, updatedAt, total, items, indexes}]` (`items` lists only your items; `indexes` are their positions in the whole playlist) |
+| `ether.kinds.playlist(kind, id)` | one playlist |
+| `ether.kinds.playlistCreate(kind, title, ids)` | the new playlist |
+| `ether.kinds.playlistUpdate(kind, id, {title?, summary?, remove?, add?})` | `remove` takes whole-playlist positions and runs before `add` |
+| `ether.kinds.playlistDelete(kind, id)` | |
+
+A pull-synced kind takes no pushes, so an adapter never stores catalogue
+items itself. When its viewer opens something Ether has no children for yet,
+or searches for something Ether has not seen, ask Ether to do what an Ether
+app would, then read the result with `kinds.browse`:
+
+| Call | Returns |
+|---|---|
+| `ether.kinds.expand(kind, id)` | `{pending}`. Opens the container the way an app's open does: Ether runs your `/expand` (or hydrates the level) on the interactive path, stores the children, and waits as long as an open does. `pending: true` means children are still arriving; browse again shortly. A container the viewer may not see is `not_found`. |
+| `ether.kinds.search(kind, query, {limit?})` | `{found}`. Runs the kind's search the way an app's search does, your live `/search` included (bounded), and stores what it finds; read the matches with `kinds.browse({query})`. `limit` defaults to 50, at most 200. |
 
 `cache.delete(blobRef)` removes a blob from the calling plugin's own cache
 namespaces and frees its quota immediately (deleting an absent or already
@@ -1127,3 +1350,34 @@ Plugins that derive temporary session credentials can store them sealed with
 under a declared non-owner name in `permissions.secrets`, then reference them as
 `{secret:<name>}` in source headers and `http.hash`. See the worked example
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
+
+
+## Sync viewer watch state
+
+Declare `ether.permissions.viewers.write_watch_state: "granted_viewers"` and
+have the owner grant the viewers your plugin may update. Send the selected
+viewer's ID, the item ID and a watched boolean. The host accepts a playable
+item reference owned by your plugin (`pk:<pluginId>:<kind>:<externalId>`) or a
+catalogue movie or episode ID returned by the host catalogue. Provider IDs
+accepted by `catalog.get` also work when they resolve to a movie or episode.
+For shows, send individual episode keys. The host checks viewer access and
+writes through Ether's shared watch state. The SDK write takes a boolean.
+
+```js
+ether.viewers.setWatchState({ viewerId, titleId: itemRef, watched: true });
+```
+
+Subscribe with the `events` capability and `contributes.events.subscribe`.
+Declare `viewers.identity: "granted_viewers"` to receive the viewer ID for
+granted viewers. The `viewer.watch.scrobbled` subscription covers explicit marks
+and playback completion. Alternatively, subscribe to `viewer.watch.watched`
+and `viewer.watch.unwatched` for separate triggers, including current-state
+updates from imports. `viewer.watch.progress` carries resume checkpoints in
+`positionMs`. A plugin's writes are skipped when dispatching back to that plugin.
+
+Events keep `titleKey` and `watched` and add `state` (`watched`, `unwatched`,
+`progress`) and `source` (`playback`, `manual`, `plugin`, `import`). The
+optional `surface` identifies the app or writing plugin. Use `itemRef` for your
+own plugin's items. Catalogue events include available `tmdbId`, `tvdbId` and
+`imdbId` fields. For episodes these are the series IDs, paired with `season`
+and `episode`. Season zero represents specials.

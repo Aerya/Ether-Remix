@@ -22,7 +22,7 @@ func sqliteCompactExpr(expr string) string {
 	s := `lower(coalesce(` + expr + `,''))`
 	for _, lit := range []string{
 		`' '`, `char(9)`, `char(10)`, `char(13)`,
-		`'-'`, `'_'`, `'.'`, `','`, `'&'`, `'|'`, `'/'`, `'\'`,
+		`'-'`, `'_'`, `'.'`, `','`, `'&'`, `'|'`, `'/'`, `'\\'`,
 		`':'`, `';'`, `''''`, `'"'`, `'('`, `')'`, `'['`, `']'`,
 		`'+'`, `'!'`, `'?'`, `'*'`, `'#'`, `'@'`, `'~'`,
 	} {
@@ -295,6 +295,116 @@ func channelMatchesText(name, number, extra, query string) bool {
 	return ok
 }
 
+type policyRowCatalog interface {
+	CachedPolicyRows(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+}
+
+// searchPolicyCache batches and memoizes local catalogue policy lookups for a
+// single Live TV search so indexed virtual/personal programmes do not trigger
+// per-programme full-title reads (including trailers, credits, and alt titles).
+type searchPolicyCache struct {
+	s      *Service
+	batch  policyRowCatalog
+	loaded map[core.RatingKey]bool
+	rows   map[core.RatingKey]core.Title
+}
+
+func newSearchPolicyCache(s *Service) *searchPolicyCache {
+	var batch policyRowCatalog
+	if s.o.Catalog != nil {
+		batch, _ = s.o.Catalog.(policyRowCatalog)
+	}
+	return &searchPolicyCache{
+		s:      s,
+		batch:  batch,
+		loaded: map[core.RatingKey]bool{},
+		rows:   map[core.RatingKey]core.Title{},
+	}
+}
+
+func (pc *searchPolicyCache) preload(ctx context.Context, keys []core.RatingKey) error {
+	if pc.batch == nil || len(keys) == 0 {
+		return nil
+	}
+	missing := make([]core.RatingKey, 0, len(keys))
+	seen := make(map[core.RatingKey]bool, len(keys))
+	for _, k := range keys {
+		if k == 0 || pc.loaded[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		missing = append(missing, k)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	got, err := pc.batch.CachedPolicyRows(ctx, missing)
+	if err != nil {
+		return err
+	}
+	for _, k := range missing {
+		pc.loaded[k] = true
+	}
+	for k, t := range got {
+		pc.rows[k] = t
+	}
+	return nil
+}
+
+func (pc *searchPolicyCache) lookup(c Channel) func(context.Context, core.RatingKey) (*core.Title, error) {
+	if pc.s.o.Catalog == nil {
+		return nil
+	}
+	return func(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+		if pc.loaded[key] {
+			if t, ok := pc.rows[key]; ok {
+				return &t, nil
+			}
+			return nil, core.ErrNotFound
+		}
+		if pc.batch != nil {
+			if err := pc.preload(ctx, []core.RatingKey{key}); err != nil {
+				return nil, err
+			}
+			if t, ok := pc.rows[key]; ok {
+				return &t, nil
+			}
+			return nil, core.ErrNotFound
+		}
+		fn := pc.s.o.Catalog.Get
+		if c.Personal != nil {
+			if cached, ok := pc.s.o.Catalog.(interface {
+				CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+			}); ok {
+				fn = cached.CachedGet
+			}
+		}
+		t, err := fn(ctx, key)
+		if ctx.Err() == nil {
+			pc.loaded[key] = true
+			if err == nil && t != nil {
+				pc.rows[key] = *t
+			}
+		}
+		return t, err
+	}
+}
+
+func (s *Service) allowedProgrammeWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error)) bool {
+	if !s.Enabled() {
+		return false
+	}
+	if p != nil && p.policyTag != nil {
+		tag := p.policyTag
+		var tagLookup func(context.Context, core.RatingKey) (*core.Title, error)
+		if tag.catalog {
+			tagLookup = func(context.Context, core.RatingKey) (*core.Title, error) { return tag.title, nil }
+		}
+		return s.allowedWithLookup(ctx, u, c, p, tagLookup, false)
+	}
+	return s.allowedWithLookup(ctx, u, c, p, lookup, false)
+}
+
 // SearchLiveTV searches identities once, regardless of group overlap. Only a
 // bounded candidate window is decoded and checked by the normal viewer policy.
 func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query string, limit int) (frontend.LiveSearchResults, error) {
@@ -472,7 +582,8 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 	if err != nil {
 		return out, err
 	}
-	candidates, err := h.s.searchAllowedChannels(ctx, viewer, unique)
+	policyCache := newSearchPolicyCache(h.s)
+	candidates, err := h.s.searchAllowedChannelsWithPolicy(ctx, viewer, unique, policyCache)
 	if err != nil {
 		return out, err
 	}
@@ -503,18 +614,46 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 		out.Channels = append(out.Channels, ToFrontendChannel(matched[i].c))
 	}
 	channelIDs := map[string]bool{}
-	ctx, _, err = h.s.withPolicy(ctx, viewer)
-	if err != nil {
-		return out, err
-	}
 	seen := map[string]bool{}
-	for _, p := range ps {
-		if c, ok := allowed[p.ChannelID]; ok && !seen[p.ID] && h.s.allowedProgramme(ctx, viewer, c, &p) && len(out.Programmes) < limit {
+	for i := 0; i < len(ps) && len(out.Programmes) < limit; {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		batchSize := max(limit-len(out.Programmes), 32)
+		batch := make([]Programme, 0, batchSize)
+		preloadKeys := make([]core.RatingKey, 0, batchSize)
+		for i < len(ps) && len(batch) < batchSize {
+			p := ps[i]
+			i++
+			if _, ok := allowed[p.ChannelID]; !ok || seen[p.ID] {
+				continue
+			}
 			seen[p.ID] = true
-			out.Programmes = append(out.Programmes, toFrontendProgramme(p))
-			if !channelIDs[c.ID] {
-				channelIDs[c.ID] = true
-				out.ProgrammeChannels = append(out.ProgrammeChannels, ToFrontendChannel(c))
+			batch = append(batch, p)
+			if p.policyTag == nil && p.Item.Key != 0 {
+				preloadKeys = append(preloadKeys, p.Item.Key)
+			}
+		}
+		if len(preloadKeys) > 0 {
+			if err := policyCache.preload(ctx, preloadKeys); err != nil {
+				return out, err
+			}
+		}
+		for j := range batch {
+			if len(out.Programmes) >= limit {
+				break
+			}
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+			p := batch[j]
+			c := allowed[p.ChannelID]
+			if h.s.allowedProgrammeWithLookup(ctx, viewer, c, &p, policyCache.lookup(c)) {
+				out.Programmes = append(out.Programmes, toFrontendProgramme(p))
+				if !channelIDs[c.ID] {
+					channelIDs[c.ID] = true
+					out.ProgrammeChannels = append(out.ProgrammeChannels, ToFrontendChannel(c))
+				}
 			}
 		}
 	}
@@ -756,6 +895,10 @@ func (s *Service) ownerSearchRoute(w http.ResponseWriter, r *http.Request) {
 // Search consumes only existing schedules. In particular a name hit must not
 // prepare an unwatched virtual channel as a side effect of policy checking.
 func (s *Service) searchAllowedChannels(ctx context.Context, viewer *core.Viewer, ids []string) ([]Channel, error) {
+	return s.searchAllowedChannelsWithPolicy(ctx, viewer, ids, newSearchPolicyCache(s))
+}
+
+func (s *Service) searchAllowedChannelsWithPolicy(ctx context.Context, viewer *core.Viewer, ids []string, policyCache *searchPolicyCache) ([]Channel, error) {
 	ctx, policy, err := s.withPolicy(ctx, viewer)
 	if err != nil {
 		return nil, err
@@ -783,21 +926,70 @@ func (s *Service) searchAllowedChannels(ctx context.Context, viewer *core.Viewer
 	for i, p := range current {
 		airing[iptv[i].ID] = p
 	}
-	out := []Channel{}
+	audienceOK := make([]Channel, 0, len(cs))
+	personalIDs := []string{}
 	for _, c := range cs {
 		if !s.audienceAllowed(ctx, viewer, c) {
 			continue
 		}
+		audienceOK = append(audienceOK, c)
+		if c.Personal != nil && viewer != nil {
+			personalIDs = append(personalIDs, c.ID)
+		}
+	}
+	personalAiring := map[string]Programme{}
+	if len(personalIDs) > 0 && viewer != nil {
+		nowMS := now.UnixMilli()
+		for chunk := range store.Chunks(personalIDs, 200) {
+			ph := strings.Repeat("?,", len(chunk))
+			ph = ph[:len(ph)-1]
+			args := make([]any, 0, len(chunk)+3)
+			args = append(args, viewer.ID)
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			args = append(args, nowMS, nowMS)
+			rows, qerr := s.o.DB.QueryContext(ctx, `SELECT channel_id, data FROM livetv_search_virtual WHERE viewer_id=? AND channel_id IN (`+ph+`) AND start_ms<=? AND end_ms>? ORDER BY channel_id, start_ms DESC`, args...)
+			if qerr != nil {
+				return nil, qerr
+			}
+			for rows.Next() {
+				var cid string
+				var raw []byte
+				if qerr = rows.Scan(&cid, &raw); qerr != nil {
+					break
+				}
+				if _, seen := personalAiring[cid]; seen {
+					continue
+				}
+				var cur Programme
+				if qerr = json.Unmarshal(raw, &cur); qerr != nil {
+					break
+				}
+				personalAiring[cid] = cur
+			}
+			re := rows.Err()
+			rows.Close()
+			if qerr != nil {
+				return nil, qerr
+			}
+			if re != nil {
+				return nil, re
+			}
+		}
+	}
+	type channelCandidate struct {
+		c Channel
+		p *Programme
+	}
+	pending := make([]channelCandidate, 0, len(audienceOK))
+	var preloadKeys []core.RatingKey
+	for _, c := range audienceOK {
 		var p *Programme
 		if c.Personal != nil && viewer != nil {
-			var raw []byte
-			e := s.o.DB.QueryRowContext(ctx, `SELECT data FROM livetv_search_virtual WHERE channel_id=? AND viewer_id=? AND start_ms<=? AND end_ms>? ORDER BY start_ms DESC LIMIT 1`, c.ID, viewer.ID, now.UnixMilli(), now.UnixMilli()).Scan(&raw)
-			if e == nil {
-				var current Programme
-				if e = json.Unmarshal(raw, &current); e != nil {
-					return nil, e
-				}
-				p = &current
+			if cur, ok := personalAiring[c.ID]; ok {
+				copy := cur
+				p = &copy
 			}
 		} else if c.Kind == "virtual" {
 			s.virtualGuide.mu.RLock()
@@ -809,13 +1001,34 @@ func (s *Service) searchAllowedChannels(ctx context.Context, viewer *core.Viewer
 				}
 			}
 		} else if a, ok := airing[c.ID]; ok {
-			p = &a
+			copy := a
+			p = &copy
 		}
 		if p == nil && c.Kind == "virtual" && viewer != nil && (viewer.MaxContentRating != "" || policy.MaxRating != "") {
 			continue
 		}
-		if s.allowedProgramme(ctx, viewer, c, p) {
+		if p != nil && p.policyTag == nil && p.Item.Key != 0 {
+			preloadKeys = append(preloadKeys, p.Item.Key)
+		}
+		pending = append(pending, channelCandidate{c: c, p: p})
+	}
+	if len(preloadKeys) > 0 && policyCache != nil {
+		if err := policyCache.preload(ctx, preloadKeys); err != nil {
+			return nil, err
+		}
+	}
+	out := []Channel{}
+	for _, cand := range pending {
+		c := cand.c
+		var ok bool
+		if policyCache != nil {
+			ok = s.allowedProgrammeWithLookup(ctx, viewer, c, cand.p, policyCache.lookup(c))
+		} else {
+			ok = s.allowedProgramme(ctx, viewer, c, cand.p)
+		}
+		if ok {
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			out = append(out, c)
 		}

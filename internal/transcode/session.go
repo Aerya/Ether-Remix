@@ -26,6 +26,9 @@ import (
 // track per representation (video, audio); ffmpeg's dash muxer writes short
 // chunks that the session regroups into numbered segments by timestamp.
 type Session struct {
+	archiveInput     bool
+	openArchiveRange core.ArchiveRangeOpener
+	archiveTrim      time.Duration
 	// Explicit quality sessions retire the old run before starting a rung.
 	serialRungs             bool
 	copyOrigin              bool // continuous copy uses a measured presentation origin
@@ -38,6 +41,7 @@ type Session struct {
 	resumeWarm              *Session
 	resumeWarmAt            int
 	resumeWarmUsed          bool
+	resumePlayhead          bool // the player's latest media GET went to resumeWarm
 	speculative             bool
 	androidMatroskaHLS      bool // immutable client HLS contract, retained across source swaps
 	healTimestamps          bool // positively sampled MPEG-TS clock discontinuity
@@ -46,6 +50,7 @@ type Session struct {
 	qsvMode                 string
 	qsvRetried              bool
 	normalizeNegativeDTS    bool
+	keepSourceRecord        bool // the in-band parameter set filter failed to start; copy without it
 	encoder                 *encoderLifetime
 	mediaGeneration         string // immutable HLS resource namespace for this session instance
 	id                      string
@@ -95,6 +100,7 @@ type sessionInput struct {
 	liveInput              bool
 	noVideoTranscode       bool
 	liveFromBacklog        bool
+	liveEndOnEOF           bool
 	inputLease             core.EncoderInputLease
 	inputHeaders           map[string]string
 	input                  string
@@ -259,7 +265,8 @@ type mkvDelivery struct {
 
 // run is one ffmpeg process producing segments from startSeg on.
 type run struct {
-	textSubtitles map[int]*textSubtitleRead
+	textSubtitles       map[int]*textSubtitleRead
+	releaseArchiveInput func()
 
 	rtx          bool
 	rtxConfirmed atomic.Bool
@@ -296,6 +303,8 @@ type run struct {
 	mode               SegMode   // plan mode this run produces
 	planEnd            int       // first segment NOT produced by this run (mode change); -1 none
 	track              int       // session track (HLS rung / DASH video rep) encoded
+	initConfigured     bool      // fMP4 init checked (and completed) for decoder configuration
+	initHeld           bool      // fMP4 init waits for its first audio frame (logged once)
 
 	progressMu      sync.Mutex
 	progress        Progress
@@ -530,10 +539,20 @@ func (s *Session) SegmentDuration() time.Duration { return s.segDur }
 
 // RequestedPosition is the title position of the player's latest segment
 // request. Source reads can be far ahead or at the container's tail index.
+// While the warm resume session serves the player, its playhead is this
+// session's (#780).
 func (s *Session) RequestedPosition() time.Duration {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.segStart(s.lastReq)
+	child := s.resumeWarm
+	if !s.resumePlayhead {
+		child = nil
+	}
+	at := s.segStart(s.lastReq)
+	s.mu.Unlock()
+	if child != nil {
+		return child.RequestedPosition()
+	}
+	return at
 }
 
 // Container is "mpegts", "fmp4", or explicitly negotiated "mkv".
@@ -603,6 +622,7 @@ func (s *Session) Close() error {
 }
 
 // PlaybackDelivered distinguishes actual output from ffmpeg input/read-ahead.
+// Output delivered through the warm resume session counts (#780).
 func (s *Session) PlaybackDelivered() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

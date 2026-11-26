@@ -49,7 +49,7 @@ func (b *Broker) StartSegmentedHLS(ctx context.Context, viewer *core.User, playI
 			if revision == "" {
 				return nil, core.ErrSourceChanged
 			}
-			return remote.StartDistributedHLS(ctx, v.ID, playID, revision, q)
+			return remote.StartDistributedHLS(context.WithoutCancel(ctx), v.ID, playID, revision, q)
 		}
 		if remote.Allocated(publicID) {
 			return nil, core.ErrNotAvailable
@@ -71,11 +71,12 @@ func (b *Broker) StartSegmentedHLS(ctx context.Context, viewer *core.User, playI
 		}
 		q.InputLease = lease
 	}
+	q.WaitForEncoder, q.EncoderViewer = true, v.Username
 	hs, err := b.deps.Transcoder.StartHLS(ctx, q)
 	if (err != nil || hs == nil) && lease != nil {
 		lease.SealInput()
 	}
-	return hs, err
+	return hs, b.recordEncoderFailure(playID, err)
 }
 
 // SegmentedHLSSession reports ownership independently of current availability. A nil

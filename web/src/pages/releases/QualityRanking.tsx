@@ -23,7 +23,6 @@ import {
   allQualities,
   builtinFormat,
   definitionKey,
-  formatApplies,
   isPluginFormat,
   isRuleFormat,
   itemName,
@@ -437,7 +436,7 @@ export function CustomFormatsSection({
     const d = definitions.find((f) => definitionKey(f) === id);
     return (d?.name as string | undefined) || id;
   };
-  const builtins = BUILTIN_FORMATS.filter((f) => formatApplies(f, draft.mediaType));
+  const builtins = BUILTIN_FORMATS;
   const listedBuiltins = builtins.filter((f) => scores[f.id] != null);
   const listedCustom = Object.keys(scores).filter(
     (id) => !id.startsWith("ether:") && !isRuleFormat(id) && !isPluginFormat(id),
@@ -455,7 +454,7 @@ export function CustomFormatsSection({
         .filter((id) => id && scores[id] == null)
         .map((id) => ({ value: id, label: defName(id) })),
     ],
-    [scores, definitions, locale, draft.mediaType],
+    [scores, definitions, locale],
   );
   const [toAdd, setToAdd] = useState("");
   const chosen = addable.some((o) => o.value === toAdd) ? toAdd : (addable[0]?.value ?? "");
@@ -648,7 +647,7 @@ export function CustomFormatsSection({
             })}
           </p>
           <p className="px-4 pb-2 text-sm">
-            <Link to="/quality/history" className="text-primary underline">
+            <Link to="/releases/history" className="text-primary underline">
               {t("Inspect release scores and rejection reasons")}
             </Link>
           </p>

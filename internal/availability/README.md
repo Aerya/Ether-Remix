@@ -25,8 +25,11 @@ Default daily background allowances (UTC, shared across nodes):
   `Deps.Pace` (3 s) apart.
 - In total, the sum of those (or the owner's custom total).
 - 100 validation API requests, 20 candidate checks and 20 descriptor grabs.
-- 512 MiB of conservative data reservations. NNTP BODY reservations use the
-  provider's maximum article size, so actual transferred bytes can be much lower.
+- 512 MiB of background data. An NNTP BODY read reserves the worst case for
+  the provider's maximum article size before it goes out and settles to the
+  bytes it actually moved when it returns (a body abandoned mid-transfer keeps
+  the bound for what the provider may still send), so the allowance counts
+  real traffic. A check another allowance refuses gives its check unit back.
 
 An allowance of zero disables that work. Foreground requests still have their
 normal account limits. Every feed page, provider API request and source read goes

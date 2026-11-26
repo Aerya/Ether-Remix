@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/agent/builtin"
 	"github.com/braedonsaunders/ether/internal/agent/tools"
+	"github.com/braedonsaunders/ether/internal/clientreg"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -24,6 +27,7 @@ type fakeEnv struct {
 	genCalls      int
 	scores        map[string]map[string]int
 	rules         map[string][]core.ReleaseRule
+	quality       config.Quality
 	stremioURLs   []string
 	m3uSources    []livetv.Source
 	frontends     map[string]bool
@@ -37,22 +41,36 @@ func newFakeEnv() (*fakeEnv, builtin.Deps) {
 		rules:     map[string][]core.ReleaseRule{"Default": {}},
 		frontends: map[string]bool{"plex": true, "jellyfin": false},
 		plugins:   map[string]bool{"subtitles-pro": true},
+		quality: config.Quality{
+			Default:     "4K",
+			DefaultAway: "1080p",
+			Profiles: []core.QualityProfile{
+				{Name: "4K", MaxHeight: 2160},
+				{Name: "1080p", MaxHeight: 1080},
+				{Name: "720p", MaxHeight: 720},
+			},
+			Rules: []config.QualityRule{
+				{ID: "r_seed1", Name: "Phones away", Devices: []config.DeviceMatch{{Group: clientreg.ClassMobile}}, Where: config.WhereAway, MaxBitrateKbps: 8000},
+				{ID: "r_seed2", Name: "TVs at home", Devices: []config.DeviceMatch{{Group: clientreg.ClassTV}}, Where: config.WhereHome, Profile: "4K"},
+			},
+		},
 	}
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	d := builtin.Deps{
-		Status:      f,
-		Playback:    f,
-		Resolver:    resolverAdapter{f},
-		Logs:        f,
-		Catalog:     f,
-		Collections: f,
-		LiveTV:      f,
-		Sources:     f,
-		Plugins:     f,
-		Approvals:   f,
-		Profiles:    f,
-		Frontends:   f,
-		Server:      f,
+		Status:       f,
+		Playback:     f,
+		Resolver:     resolverAdapter{f},
+		Logs:         f,
+		Catalog:      f,
+		Collections:  f,
+		LiveTV:       f,
+		Sources:      f,
+		Plugins:      f,
+		Approvals:    f,
+		Profiles:     f,
+		QualityRules: f,
+		Frontends:    f,
+		Server:       f,
 		OwnerUser: func(ctx context.Context) (*core.User, error) {
 			return &core.User{ID: 1, Username: "owner", IsOwner: true}, nil
 		},
@@ -363,12 +381,12 @@ func (f *fakeEnv) Profiles(ctx context.Context) ([]builtin.ProfileInfo, error) {
 	}, nil
 }
 
-func (f *fakeEnv) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
+func (f *fakeEnv) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
 	f.writes++
 	return nil
 }
 
-func (f *fakeEnv) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
+func (f *fakeEnv) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
 	f.writes++
 	for id, v := range scores {
 		f.scores[profile][id] = v
@@ -376,10 +394,88 @@ func (f *fakeEnv) SetFormatScores(ctx context.Context, profile, media string, sc
 	return nil
 }
 
-func (f *fakeEnv) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
+func (f *fakeEnv) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
 	f.writes++
 	f.rules[profile] = append(f.rules[profile], rule)
 	return nil
+}
+
+func cloneFakeQuality(q config.Quality) config.Quality {
+	b, _ := json.Marshal(q)
+	var out config.Quality
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func (f *fakeEnv) QualityRules(ctx context.Context, includeDevices bool) (builtin.QualityRulesSnapshot, error) {
+	q := cloneFakeQuality(f.quality)
+	profiles := make([]string, 0, len(q.Profiles))
+	for _, p := range q.Profiles {
+		profiles = append(profiles, p.Name)
+	}
+	snap := builtin.QualityRulesSnapshot{
+		Default:     q.Default,
+		DefaultAway: q.DefaultAway,
+		Profiles:    profiles,
+		Rules:       q.Rules,
+		Libraries: []builtin.QualityLibraryRef{
+			{ID: 1, Name: "Movies", MediaType: "movie"},
+			{ID: 2, Name: "TV Shows", MediaType: "show"},
+		},
+		Viewers: []builtin.QualityViewerRef{
+			{ID: 1, Name: "Owner"},
+		},
+	}
+	if includeDevices {
+		snap.Devices = &builtin.QualityDevicesRef{
+			Groups:  clientreg.Classes(),
+			Types:   clientreg.DeviceTypes(),
+			Apps:    []builtin.QualityDeviceAppRef{{ID: "plex:Plex for iOS", Name: "Plex for iOS", Protocol: "plex"}},
+			Clients: []builtin.QualityDeviceClientRef{{ID: "cid-1", Name: "Living Room TV", Group: clientreg.ClassTV, Type: "Apple TV"}},
+		}
+	}
+	return snap, nil
+}
+
+func (f *fakeEnv) ExplainQuality(ctx context.Context, req builtin.QualityExplainRequest) (resolver.QualityAnswer, error) {
+	caps := core.ClientCaps{Remote: req.Remote, HDR10: true, DolbyVision: true}
+	if req.Client != nil {
+		caps.Product = req.Client.Product
+		caps.Platform = req.Client.Platform
+		caps.Device = req.Client.Device
+	}
+	return resolver.ExplainQuality(resolver.QualityQuestion{
+		Quality: f.quality,
+		Caps:    caps,
+		Kind:    req.Kind,
+	}), nil
+}
+
+func (f *fakeEnv) ValidateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	cfg := config.Defaults("")
+	cfg.Quality = cloneFakeQuality(f.quality)
+	if err := mutate(&cfg.Quality); err != nil {
+		return config.Quality{}, err
+	}
+	config.AssignRuleIDs(&cfg.Quality)
+	if errs := admin.ValidateConfig(cfg); len(errs) > 0 {
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Field+" "+e.Message)
+		}
+		return config.Quality{}, tools.Userf("%s", strings.Join(msgs, "; "))
+	}
+	return cfg.Quality, nil
+}
+
+func (f *fakeEnv) UpdateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	next, err := f.ValidateQuality(ctx, mutate)
+	if err != nil {
+		return config.Quality{}, err
+	}
+	f.writes++
+	f.quality = next
+	return cloneFakeQuality(f.quality), nil
 }
 
 func (f *fakeEnv) Frontends(ctx context.Context) ([]builtin.FrontendInfo, error) {
@@ -417,12 +513,13 @@ func callTool(t *testing.T, cat *tools.Catalogue, ctx context.Context, p tools.P
 func TestBuiltinCatalogueAndSchemaInvariants(t *testing.T) {
 	_, d := buildDeps()
 	all := builtin.All(d)
-	if len(all) != 44 {
-		t.Fatalf("expected 44 built-in tools, got %d", len(all))
+	if len(all) != 50 {
+		t.Fatalf("expected 50 built-in tools, got %d", len(all))
 	}
 
 	wantRead := []string{
-		"quality_profiles", "server_status", "health_details", "playback_history", "resolve_trace",
+		"quality_profiles", "quality_rules_list", "quality_explain",
+		"server_status", "health_details", "playback_history", "resolve_trace",
 		"release_health", "logs_tail", "catalog_search", "title_details",
 		"collection_list", "collection_preview", "collection_draft", "livetv_channels", "sources_list",
 		"plugins_list", "plugin_health", "approval_status", "navigate",
@@ -432,7 +529,8 @@ func TestBuiltinCatalogueAndSchemaInvariants(t *testing.T) {
 	wantWrite := []string{
 		"livetv_channel_apply", "livetv_guide_match",
 		"collection_create_from_prompt", "release_blocklist", "release_pin",
-		"quality_order_set", "format_scores_set", "rule_add", "source_add_stremio", "source_add_m3u",
+		"quality_order_set", "quality_rule_add", "quality_rule_edit", "quality_rule_move", "quality_defaults_set",
+		"format_scores_set", "rule_add", "source_add_stremio", "source_add_m3u",
 		"frontend_enable", "plugin_enable", "server_restart", "livetv_look_save", "livetv_channel_look",
 		"flow_create_from_template", "flow_enable", "flow_test_run",
 	}
@@ -537,6 +635,8 @@ func TestReadToolsNeverMutate(t *testing.T) {
 		"plugin_health":      {"pluginId": "subtitles-pro"},
 		"approval_status":    {"approvalId": "ap-1"},
 		"navigate":           {"route": "/releases"},
+		"quality_rules_list": {"includeDevices": true},
+		"quality_explain":    {"remote": true, "kind": "movie"},
 	}
 
 	for name, in := range inputs {
@@ -619,6 +719,57 @@ func TestWriteToolsProposeBeforeMutating(t *testing.T) {
 			check: func(t *testing.T) {
 				if f.scores["Default"]["ether:remux"] != 9000 {
 					t.Fatalf("expected the new score, got %v", f.scores["Default"])
+				}
+			},
+		},
+		{
+			name: "quality_rule_add",
+			input: map[string]any{
+				"name":      "Movies cap",
+				"libraries": []any{float64(1)},
+				"profile":   "1080p",
+				"maxHeight": float64(1080),
+			},
+			check: func(t *testing.T) {
+				if len(f.quality.Rules) != 3 || f.quality.Rules[2].Name != "Movies cap" || !strings.HasPrefix(f.quality.Rules[2].ID, "r_") {
+					t.Fatalf("expected quality rule added with r_ id, got %+v", f.quality.Rules)
+				}
+			},
+		},
+		{
+			name: "quality_rule_edit",
+			input: map[string]any{
+				"ruleId":         "r_seed1",
+				"maxBitrateKbps": float64(6000),
+				"stereoAudio":    true,
+			},
+			check: func(t *testing.T) {
+				if f.quality.Rules[0].MaxBitrateKbps != 6000 || !f.quality.Rules[0].StereoAudio {
+					t.Fatalf("expected quality rule edited, got %+v", f.quality.Rules[0])
+				}
+			},
+		},
+		{
+			name: "quality_rule_move",
+			input: map[string]any{
+				"ruleId":   "r_seed2",
+				"position": float64(1),
+			},
+			check: func(t *testing.T) {
+				if f.quality.Rules[0].ID != "r_seed2" {
+					t.Fatalf("expected r_seed2 at position 1, got %+v", f.quality.Rules)
+				}
+			},
+		},
+		{
+			name: "quality_defaults_set",
+			input: map[string]any{
+				"default":     "1080p",
+				"defaultAway": "720p",
+			},
+			check: func(t *testing.T) {
+				if f.quality.Default != "1080p" || f.quality.DefaultAway != "720p" {
+					t.Fatalf("expected defaults updated, got default=%q away=%q", f.quality.Default, f.quality.DefaultAway)
 				}
 			},
 		},

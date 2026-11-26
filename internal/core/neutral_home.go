@@ -27,6 +27,14 @@ type NeutralHomeRow struct {
 	PreviewOnFocus       bool
 	PreviewOnFocusPolicy *bool
 	Always               bool
+	// Style is the owner's row style (RowPolicy.Style); "" leaves the
+	// app's own style in place.
+	Style string
+	// HideWatched asks the app to drop the viewer's watched titles.
+	HideWatched bool
+	// Present is how the app should draw the row (Recommendations pages).
+	// The engine fills it in FinalizeNeutralHome; apps copy it to the wire.
+	Present RowPresentation
 }
 
 // NeutralHomeLayoutSource arranges rows without a protocol-specific context.

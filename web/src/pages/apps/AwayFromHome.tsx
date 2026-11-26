@@ -1,10 +1,18 @@
-import { SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Button,
+  SettingsSection,
+  Spinner,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { useMemo, useState } from "react";
 import { MoreOptions } from "../../components/ConfigSection";
 import { ErrorPanel } from "../../components/feedback";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { t } from "../../i18n";
-import { ApiError, api } from "../../lib/api";
+import { ApiError, api, apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import { SchemaField, type FieldDef } from "../settings/SchemaForm";
 import * as schema from "../settings/schema";
@@ -12,6 +20,15 @@ import { translatePlexFieldError, validateCustomUrls } from "./plex-account";
 
 type Obj = Record<string, unknown>;
 type AwayDraft = { plex: Obj; server: Obj };
+
+/** A home-network peer forwarding visitor addresses that Ether does not trust yet. */
+interface UntrustedProxy {
+  address: string;
+  /** Host or container name that resolves back to the address, when there is one. */
+  name?: string;
+  requests: number;
+  lastSeen: string;
+}
 
 function group(id: string) {
   const found = schema.AWAY.find((item) => item.id === id);
@@ -43,6 +60,13 @@ export function AwayFromHome() {
     };
   }, [config.data, plexKeys, serverKeys]);
   const { draft, setDraft, dirty, reset } = useDraft(saved);
+  const hint = useAsync(
+    (signal) =>
+      config.data
+        ? apiFetch<{ proxies: UntrustedProxy[] }>("/server/proxy-hint", { signal })
+        : Promise.resolve({ proxies: [] }),
+    [config.data],
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>();
   const [saving, setSaving] = useState(false);
@@ -104,6 +128,13 @@ export function AwayFromHome() {
     ));
   const hasError = (list: FieldDef[] | undefined, section: "plex" | "server") =>
     (list ?? []).some((f) => Boolean(shown[`${section}.${f.key}`]));
+  const trustedList = Array.isArray(draft.server.trustedProxyCIDRs)
+    ? (draft.server.trustedProxyCIDRs as string[])
+    : [];
+  // A proxy the draft already trusts (by name or address) needs no hint.
+  const untrusted = (hint.data?.proxies ?? []).filter(
+    (p) => !trustedList.includes(p.address) && !(p.name && trustedList.includes(p.name)),
+  );
   return (
     <SettingsSection title={address.title} description={address.description}>
       <MoreOptions
@@ -114,6 +145,40 @@ export function AwayFromHome() {
       >
         {fields(address.more, "plex")}
       </MoreOptions>
+      {untrusted.map((p) => {
+        const entry = p.name || p.address;
+        return (
+          <Alert key={p.address} variant="warning" role="status">
+            <AlertTitle>{t("A reverse proxy is not trusted yet")}</AlertTitle>
+            <AlertDescription>
+              <p>
+                {p.name
+                  ? t(
+                      "{name} ({address}) is forwarding visitor addresses, but Ether does not trust it. Every viewer behind it looks like they are at home, so limits for viewers away from home do not apply. Trust it only if it is your own reverse proxy.",
+                      { name: p.name, address: p.address },
+                    )
+                  : t(
+                      "{address} is forwarding visitor addresses, but Ether does not trust it. Every viewer behind it looks like they are at home, so limits for viewers away from home do not apply. Trust it only if it is your own reverse proxy.",
+                      { address: p.address },
+                    )}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-2"
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    server: { ...draft.server, trustedProxyCIDRs: [...trustedList, entry] },
+                  })
+                }
+              >
+                {t("Trust {entry}", { entry })}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        );
+      })}
       <MoreOptions
         setting={proxy.id}
         label={t("Reverse proxy")}

@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -99,10 +100,10 @@ func TestVaultTracksAndAliasKeys(t *testing.T) {
 		t.Fatalf("audio languages = %v, want [jpn eng]", audioLangs)
 	}
 
-	if err := reopened.Purge(ctx, key); err != nil {
-		t.Fatal(err)
+	if err := reopened.Purge(ctx, key); !errors.Is(err, ErrNZBRetained) {
+		t.Fatalf("purge NZB: %v", err)
 	}
-	if _, hit, err := reopened.(TrackStore).Tracks(ctx, key, 0, 0); err != nil || hit {
-		t.Fatalf("Tracks after purge: hit=%v err=%v", hit, err)
+	if _, hit, err := reopened.(TrackStore).Tracks(ctx, key, 0, 0); err != nil || !hit {
+		t.Fatalf("Tracks after refused purge: hit=%v err=%v", hit, err)
 	}
 }

@@ -24,6 +24,10 @@ type Discovery struct {
 	now     func() time.Time
 	// NotInterested applies only to recommendation rows, never Continue.
 	NotInterested func(context.Context, *core.User) ([]NotInterestedSignal, error)
+	// AllowedFacts is what allowed reads of a title beyond its row for a
+	// viewer (safety.Service.TitleFacts). A light read loads only those;
+	// without it, every visibility fact.
+	AllowedFacts func(*core.User) core.TitleFacts
 }
 
 func NewDiscovery(db *sql.DB, cat core.Catalog, st core.State, allowed func(*core.User, *core.Title) bool) *Discovery {
@@ -128,12 +132,31 @@ func (d *Discovery) FilterContinue(ctx context.Context, u *core.User, titles []c
 	return out
 }
 func (d *Discovery) YearInReview(ctx context.Context, u *core.User, year, limit int) (core.Hub, error) {
-	return d.yearInReview(ctx, u, year, limit, false)
+	return d.yearInReview(ctx, u, year, limit, false, "", 0)
+}
+
+// reviewPage is how many completed keys a Year in Review build reads at a
+// time; a build stops reading once it holds limit titles.
+const reviewPage = 256
+
+// reviewKinds are the key kinds that can become a title of want ("" is
+// every kind); plugin keys only tell their type once hydrated.
+func reviewKinds(want core.MediaType) []core.KeyKind {
+	switch want {
+	case core.TypeMovie:
+		return []core.KeyKind{core.KindMovie, core.KindLocal}
+	case core.TypeShow:
+		return []core.KeyKind{core.KindShow, core.KindSeason, core.KindEpisode, core.KindLocal}
+	}
+	return nil
 }
 
 // yearInReview applies exclusions only when this history is suggested as a
 // discovery row; direct collection access continues to show viewing history.
-func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit int, recommendation bool) (core.Hub, error) {
+// want limits it to films or shows ("" is both). maxKeys > 0 stops the build
+// after that many completed keys even if it holds fewer than limit titles
+// (a listing's card reads only the latest few).
+func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit int, recommendation bool, want core.MediaType, maxKeys int) (core.Hub, error) {
 	hub := core.Hub{ID: fmt.Sprintf("discovery.review.%d", year), Title: fmt.Sprintf("Your %d in Review", year), Context: "hub.home.yearinreview", Promoted: true}
 	if u == nil || d.state == nil {
 		return hub, nil
@@ -156,32 +179,82 @@ func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit 
 	// film finished on New Year's Eve evening belongs to that year.
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, d.now().Location())
 	end := start.AddDate(1, 0, 0)
-	entries, e := d.state.History(ctx, u.ID, start, 10000)
-	if e != nil {
-		return hub, e
+	// One entry per key completed inside the year, from an aggregate over
+	// only this viewer's completed rows in it. A newest-first history page
+	// (capped at 500 rows) dropped the start of the year, or all of it, for
+	// active viewers once later and started-only rows filled the page (#799).
+	completed, ok := d.state.(core.CompletedHistoryStore)
+	if !ok {
+		return hub, nil
 	}
 	seen := map[core.RatingKey]bool{}
-	// Hydrate a window at a time. The row stops at limit, so the rest of a
-	// long year is not loaded onto the home request.
-	for startAt := 0; startAt < len(entries) && len(hub.Items) < limit; startAt += 64 {
-		window := entries[startAt:min(startAt+64, len(entries))]
+	// Read the year a page at a time and hydrate a window at a time. The
+	// build stops at limit, so the rest of a long year is neither read nor
+	// loaded onto a Home or listing request.
+	kinds := reviewKinds(want)
+	for offset := 0; len(hub.Items) < limit && (maxKeys <= 0 || offset < maxKeys); offset += reviewPage {
+		size := reviewPage
+		if maxKeys > 0 {
+			size = min(size, maxKeys-offset)
+		}
+		page, e := completed.CompletedBetween(ctx, u.ID, start, end, kinds, offset, size)
+		if e != nil {
+			return hub, e
+		}
+		d.reviewWindows(ctx, u, page, limit, want, maxKeys > 0, excluded, seen, &hub)
+		if len(page) < size {
+			break
+		}
+	}
+	return hub, nil
+}
+
+// reviewWindows hydrates entries a window at a time (64, or fewer for a
+// small build such as a listing's card) into hub until it holds limit
+// titles of want. A light build (a listing's card) reads only the stored
+// rows a visibility decision needs, never credits or trailers, and skips a
+// key the catalogue does not hold instead of fetching it.
+func (d *Discovery) reviewWindows(ctx context.Context, u *core.User, entries []core.HistoryEntry, limit int, want core.MediaType, light bool, excluded excludedTitles, seen map[core.RatingKey]bool, hub *core.Hub) {
+	size := min(64, max(8, limit))
+	for startAt := 0; startAt < len(entries) && len(hub.Items) < limit; startAt += size {
+		window := entries[startAt:min(startAt+size, len(entries))]
 		keys := make([]core.RatingKey, 0, len(window)*2)
 		for _, h := range window {
-			if h.Completed && !h.ViewedAt.Before(start) && h.ViewedAt.Before(end) && !seen[tasteKey(h.Key)] {
+			if !seen[tasteKey(h.Key)] {
 				keys = append(keys, h.Key, tasteKey(h.Key))
 			}
 		}
-		cached := mirroredTitles(ctx, d.catalog, keys)
-		for _, h := range window {
-			if !h.Completed || h.ViewedAt.Before(start) || !h.ViewedAt.Before(end) {
-				continue
+		var cached map[core.RatingKey]core.Title
+		rows, lightRead := d.catalog.(visibilityRowSource)
+		lightRead = light && lightRead
+		if lightRead {
+			var err error
+			facts := core.VisibilityFacts
+			if d.AllowedFacts != nil {
+				facts = d.AllowedFacts(u)
 			}
+			if cached, err = rows.CachedVisibilityRows(ctx, keys, facts); err != nil {
+				return
+			}
+		} else {
+			cached = mirroredTitles(ctx, d.catalog, keys)
+		}
+		title := func(k core.RatingKey) (*core.Title, error) {
+			if lightRead {
+				if t, ok := cached[k]; ok {
+					return &t, nil
+				}
+				return nil, core.ErrNotFound
+			}
+			return historyTitle(ctx, d.catalog, cached, k)
+		}
+		for _, h := range window {
 			// Episode keys already identify their show. Once that show is in the
 			// row, do not hydrate every remaining watched episode just to discard it.
 			if seen[tasteKey(h.Key)] {
 				continue
 			}
-			t, e := historyTitle(ctx, d.catalog, cached, h.Key)
+			t, e := title(h.Key)
 			if e != nil || !d.visible(u, t) || excluded.contains(t) {
 				continue
 			}
@@ -190,10 +263,13 @@ func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit 
 				continue
 			}
 			if k != t.Key {
-				t, e = historyTitle(ctx, d.catalog, cached, k)
+				t, e = title(k)
 				if e != nil || !d.visible(u, t) || excluded.contains(t) {
 					continue
 				}
+			}
+			if want != "" && t.Type != want {
+				continue
 			}
 			seen[k] = true
 			hub.Items = append(hub.Items, *t)
@@ -202,8 +278,14 @@ func (d *Discovery) yearInReview(ctx context.Context, u *core.User, year, limit 
 			}
 		}
 	}
-	return hub, nil
 }
+
+// visibilityRowSource is the catalogue's batched read of the stored rows a
+// visibility decision needs (catalog.CachedVisibilityRows).
+type visibilityRowSource interface {
+	CachedVisibilityRows(context.Context, []core.RatingKey, core.TitleFacts) (map[core.RatingKey]core.Title, error)
+}
+
 func (d *Discovery) Rediscover(ctx context.Context, u *core.User, limit int) (core.Hub, error) {
 	hub := core.Hub{ID: "discovery.rediscover", Title: "Rediscover", Context: "hub.home.rediscover", Promoted: true}
 	if u == nil || d.state == nil {
@@ -275,7 +357,7 @@ func (d *Discovery) Hubs(ctx context.Context, u *core.User, limit int) ([]core.H
 	if d.now().Month() < time.December {
 		year--
 	}
-	review, e := d.yearInReview(ctx, u, year, limit, true)
+	review, e := d.yearInReview(ctx, u, year, limit, true, "", 0)
 	if e != nil {
 		return out, e
 	}

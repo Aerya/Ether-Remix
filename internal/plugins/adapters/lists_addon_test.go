@@ -50,7 +50,7 @@ func TestAddonCatalogMatchesByIDAndCountsUnmatched(t *testing.T) {
 	if _, ok := h.cols.KindRegistry().Lookup(movies); !ok {
 		t.Fatalf("add-on catalog %s is not a collection source", movies)
 	}
-	if _, ok := h.pers.RowKindRegistry().Lookup(movies); !ok {
+	if _, ok := h.pers.RowKindRegistry().Source(movies); !ok {
 		t.Fatalf("add-on catalog %s is not a Home row kind", movies)
 	}
 
@@ -69,8 +69,8 @@ func TestAddonCatalogMatchesByIDAndCountsUnmatched(t *testing.T) {
 	}
 	sp := core.CollectionSpec{
 		Name: "Action picks", MediaType: "movie", Sort: "source", Refresh: "daily", Enabled: true,
-		Sources: []core.CollectionSource{{Kind: movies, Params: map[string]string{"genre": "Action"}}},
-		Targets: core.CollectionTargets{HomeRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		Sources:      []core.CollectionSource{{Kind: movies, Params: map[string]string{"genre": "Action"}}},
+		BrowseInApps: true,
 	}
 	prev, err := h.cols.Preview(ctx, sp, 20)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestAddonCatalogPagesWithSkipUntilTheEnd(t *testing.T) {
 	// skip=3 is not routed: the fake answers 404, the protocol's end of a
 	// paged catalog, which is not a failure.
 	created, err := h.cols.CreateSpec(ctx, core.CollectionSpec{Name: "Series", MediaType: "show", Refresh: "daily", Enabled: true,
-		Sources: []core.CollectionSource{{Kind: series}}, Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()}})
+		Sources: []core.CollectionSource{{Kind: series}}, BrowseInApps: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,14 +245,12 @@ func TestAddonCatalogForeignIDFallbackPartialSkipAndHomeDesignerRow(t *testing.T
 		return plugins.Response{}, errors.New("upstream gateway timeout")
 	}
 
-	// Place the plugin catalog row directly on Home via Home Designer.
-	layout := core.HomeLayout{
-		Global: []core.LayoutPage{{
-			Section: "home",
-			Rows:    []core.RowPolicy{{Row: watchlist, Status: "always"}},
-		}},
-	}
-	if _, err := h.pers.SetHomeLayout(ctx, layout); err != nil {
+	// Place the plugin catalog row directly on Home.
+	page := core.RowPage{Key: core.PageHome, Mode: core.PagePersonalized, Picks: true, Rows: []core.Row{{
+		Source:    core.RowSource{Kind: watchlist},
+		Placement: core.RowPlacement{Mode: core.PlacementShow, Audience: core.Audience{Mode: core.AudienceEveryone}},
+	}}}
+	if _, err := h.pers.SavePage(ctx, page); err != nil {
 		t.Fatal(err)
 	}
 	user := &core.User{ID: 1, Username: "owner", IsOwner: true}

@@ -14,7 +14,7 @@ import (
 func qualityProfilesTool(d Deps) tools.Tool {
 	return tool(tools.Tool{
 		Name: "quality_profiles", Title: "Quality profiles", ReadOnly: true,
-		Description: "Read quality profiles, their media, quality order (best first), custom format scores, language settings and resolution limits. Qualities in one group tie; existing Proper/Repack handling applies before scores. Use before quality_order_set or format_scores_set. Language scores cannot outrank separate higher quality groups.",
+		Description: "Read quality profiles, their quality order (best first), custom format scores, language settings and resolution limits. Qualities in one group tie; existing Proper/Repack handling applies before scores. Use before quality_order_set or format_scores_set. Language scores cannot outrank separate higher quality groups.",
 		InputSchema: schema(map[string]any{}),
 		Execute: func(ctx context.Context, _ tools.Principal, _ map[string]any) (tools.Result, error) {
 			profiles, err := d.Profiles.Profiles(ctx)
@@ -28,7 +28,7 @@ func qualityProfilesTool(d Deps) tools.Tool {
 					order = []core.QualityItem{}
 				}
 				out = append(out, map[string]any{
-					"name": p.Name, "media": p.Media,
+					"name":         p.Name,
 					"qualityOrder": order, "scores": p.Scores,
 					"language": p.Language, "audioLanguageMode": p.AudioLanguageMode,
 					"preferredLanguages": p.PreferredLanguages,
@@ -36,7 +36,7 @@ func qualityProfilesTool(d Deps) tools.Tool {
 					"allowedQualities": p.AllowedQualities,
 				})
 			}
-			return tools.Result{Data: map[string]any{"profiles": out}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/quality/profiles"}}}, nil
+			return tools.Result{Data: map[string]any{"profiles": out}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/releases/profiles"}}}, nil
 		},
 	})
 }
@@ -47,7 +47,6 @@ func qualityOrderTool(d Deps) tools.Tool {
 		Description: "Propose replacing one profile's quality order, best first. Qualities in one group rank equally; existing Proper/Repack handling applies before custom format scores. To let a viewer-language score prefer 1080p over 4K, put those qualities in the same group, preserving other groups. Read quality_profiles first. This does not change language scores, allowed qualities, device gates or resolution limits. An empty order ranks all qualities equally. Changes require owner approval.",
 		InputSchema: schema(map[string]any{
 			"profile": pString("Profile name; defaults to the first profile", 80),
-			"media":   pEnum("Which media's profile, when a movie and a TV profile share the name", "movie", "tv"),
 			"qualityOrder": map[string]any{"type": "array", "maxItems": 64, "description": "Quality groups, best first; an empty list makes every quality equal", "items": map[string]any{
 				"type": "object", "additionalProperties": false, "required": []string{"qualities"}, "properties": map[string]any{
 					"name":      pString("Optional group name", 80),
@@ -82,14 +81,14 @@ func qualityOrderTool(d Deps) tools.Tool {
 			if err != nil {
 				return tools.Result{}, err
 			}
-			return propose("Change quality order", fmt.Sprintf("Change the quality order on the %s profile (%s).", profile.Name, profile.Media),
-				[]tools.ProposalDetail{{Label: "Profile", Value: profile.Name}, {Label: "Media", Value: profile.Media}, {Label: "Before", Value: describeQualityOrder(profile.QualityOrder)}, {Label: "After", Value: describeQualityOrder(order)}},
-				map[string]any{"profile": profile.Name, "media": profile.Media, "qualityOrder": order},
+			return propose("Change quality order", fmt.Sprintf("Change the quality order on the %s profile.", profile.Name),
+				[]tools.ProposalDetail{{Label: "Profile", Value: profile.Name}, {Label: "Before", Value: describeQualityOrder(profile.QualityOrder)}, {Label: "After", Value: describeQualityOrder(order)}},
+				map[string]any{"profile": profile.Name, "qualityOrder": order},
 				func(ctx context.Context) (tools.Result, error) {
-					if err := d.Profiles.SetQualityOrder(ctx, profile.Name, profile.Media, order); err != nil {
+					if err := d.Profiles.SetQualityOrder(ctx, profile.Name, order); err != nil {
 						return tools.Result{}, err
 					}
-					return tools.Result{Data: map[string]any{"updated": true, "profile": profile.Name, "media": profile.Media}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/quality/profiles"}}}, nil
+					return tools.Result{Data: map[string]any{"updated": true, "profile": profile.Name}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/releases/profiles"}}}, nil
 				}), nil
 		},
 	})

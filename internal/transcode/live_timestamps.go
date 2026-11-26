@@ -7,7 +7,7 @@ import "github.com/braedonsaunders/ether/internal/core"
 // copyts disables FFmpeg's discontinuity correction and can leave video minutes
 // ahead of audio, so let FFmpeg normalize the initial live run instead.
 func inputTimestampArgs(s runSpec) []string {
-	if s.HealTimestamps {
+	if s.HealTimestamps || s.ArchiveRetuned {
 		return nil
 	}
 	if s.Protocol == core.ProtocolHTTP && s.Info.Video() == nil {

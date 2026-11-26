@@ -2,6 +2,7 @@ package pluginitems
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -194,13 +195,25 @@ func (s *Service) KeepExistingItems(ctx context.Context, pluginID, kindKey strin
 	if _, err := s.GetKind(ctx, pluginID, kindKey); err != nil {
 		return SyncState{}, err
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE plugin_sync_state SET last_error = '', guard_json = '' WHERE plugin_id = ? AND kind_key = ?`,
-		pluginID, kindKey); err != nil {
-		return SyncState{}, err
+	for cursor := ""; ; {
+		ids, err := s.missedWalkIDs(ctx, pluginID, kindKey, cursor)
+		if err != nil {
+			return SyncState{}, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		if err := s.writeMissedWalks(ctx, pluginID, kindKey, ids,
+			`UPDATE plugin_items SET missed_walks = 0 WHERE missed_walks <> 0`); err != nil {
+			return SyncState{}, err
+		}
+		cursor = ids[len(ids)-1]
+		if err := s.betweenWriteChunks(ctx); err != nil {
+			return SyncState{}, err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE plugin_items SET missed_walks = 0 WHERE plugin_id = ? AND kind_key = ? AND missed_walks <> 0`,
+		`UPDATE plugin_sync_state SET last_error = '', guard_json = '' WHERE plugin_id = ? AND kind_key = ?`,
 		pluginID, kindKey); err != nil {
 		return SyncState{}, err
 	}
@@ -382,6 +395,26 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 
 	nowEnd := s.now().Unix()
 	durMS := max(s.now().Sub(startedAt).Milliseconds(), int64(0))
+	var totalAfter int
+	if syncErr == nil {
+		nextCursor := res.NextCursor
+		if nextCursor == "" {
+			nextCursor = state.Cursor
+		}
+		_, syncErr = s.runWriteChunk(runCtx, func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			totalAfter, err = countKindItems(ctx, tx, pluginID, kindKey)
+			if err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `
+				UPDATE plugin_sync_state
+				SET cursor = ?, generation = ?, last_ok = ?, last_error = '', guard_json = '', items = ?
+				WHERE plugin_id = ? AND kind_key = ?`,
+				nextCursor, int64(s.syncGen.Add(1)), nowEnd, int64(totalAfter), pluginID, kindKey)
+			return err
+		})
+	}
 	if syncErr != nil {
 		var guardErr *DeleteGuardError
 		switch {
@@ -402,7 +435,7 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 			_, _ = s.db.ExecContext(context.Background(),
 				`UPDATE plugin_sync_state SET last_error = ?, guard_json = '' WHERE plugin_id = ? AND kind_key = ?`,
 				syncErr.Error(), pluginID, kindKey)
-			if !errors.Is(syncErr, plugins.ErrBusy) {
+			if !errors.Is(syncErr, plugins.ErrBusy) && !errors.Is(syncErr, errWriteChunkBudget) {
 				s.noteAttention(context.Background(), pluginID, syncErr.Error())
 			}
 			if job != nil {
@@ -422,18 +455,6 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		return res, syncErr
 	}
 
-	nextCursor := res.NextCursor
-	if nextCursor == "" {
-		nextCursor = state.Cursor
-	}
-	totalAfter, _ := s.countKindItems(runCtx, pluginID, kindKey)
-	gen := int64(s.syncGen.Add(1))
-	_, _ = s.db.ExecContext(runCtx, `
-		UPDATE plugin_sync_state
-		SET cursor = ?, generation = ?, last_ok = ?, last_error = '', guard_json = '', items = ?
-		WHERE plugin_id = ? AND kind_key = ?`,
-		nextCursor, gen, nowEnd, int64(totalAfter), pluginID, kindKey,
-	)
 	mode := "sync"
 	if opts.Force {
 		mode = "force"
@@ -471,8 +492,12 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 }
 
 func (s *Service) countKindItems(ctx context.Context, pluginID, kindKey string) (int, error) {
+	return countKindItems(ctx, s.db, pluginID, kindKey)
+}
+
+func countKindItems(ctx context.Context, q queryer, pluginID, kindKey string) (int, error) {
 	var total int
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(t.n), 0)
 		FROM plugin_item_tally t
 		JOIN plugin_kinds pk ON pk.library_id = t.library_id
@@ -598,13 +623,21 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 		}
 	}
 
+	// Only live tombstones contribute to the guard. On a retry the plugin
+	// can replay the same cursor even though some deletes already committed.
 	if exceedsDeleteGuard(storedCount, len(allDeletes), opts.Force) {
-		return res, false, &DeleteGuardError{
-			PluginID: rec.PluginID,
-			KindKey:  rec.KindKey,
-			Source:   "changes",
-			Missing:  len(allDeletes),
-			Total:    storedCount,
+		existing, err := s.lookupLevelsByExternalIDs(ctx, rec.PluginID, rec.KindKey, allDeletes)
+		if err != nil {
+			return res, false, err
+		}
+		if exceedsDeleteGuard(storedCount, len(existing), opts.Force) {
+			return res, false, &DeleteGuardError{
+				PluginID: rec.PluginID,
+				KindKey:  rec.KindKey,
+				Source:   "changes",
+				Missing:  len(existing),
+				Total:    storedCount,
+			}
 		}
 	}
 
@@ -783,12 +816,12 @@ func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRec
 	}
 
 	if len(seenUnchanged) > 0 {
-		if err := s.setMissedWalks(ctx, rec.PluginID, rec.KindKey, seenUnchanged, 0); err != nil {
+		if err := s.updateMissedWalks(ctx, rec.PluginID, rec.KindKey, seenUnchanged, false); err != nil {
 			return res, err
 		}
 	}
 	if len(toIncrement) > 0 {
-		if err := s.incrementMissedWalks(ctx, rec.PluginID, rec.KindKey, toIncrement); err != nil {
+		if err := s.updateMissedWalks(ctx, rec.PluginID, rec.KindKey, toIncrement, true); err != nil {
 			return res, err
 		}
 	}
@@ -1014,41 +1047,51 @@ func (s *Service) findEngagedUnseen(ctx context.Context, candidates []existingSy
 	return engaged, nil
 }
 
-func (s *Service) setMissedWalks(ctx context.Context, pluginID, kindKey string, externalIDs []string, val int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+// updateMissedWalks groups independent bookkeeping changes into bounded
+// indexed writes. The missing case only changes rows that still have zero
+// misses, so replay cannot increment the same miss twice.
+func (s *Service) updateMissedWalks(ctx context.Context, pluginID, kindKey string, externalIDs []string, missing bool) error {
+	if missing {
+		return s.writeMissedWalks(ctx, pluginID, kindKey, externalIDs,
+			`UPDATE plugin_items SET missed_walks = 1 WHERE missed_walks = 0 AND pinned = 0`)
 	}
-	defer tx.Rollback()
-	now := s.now().Unix()
-	for _, extID := range externalIDs {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE plugin_items SET missed_walks = ?, seen_at = ?
-			WHERE plugin_id = ? AND kind_key = ? AND external_id = ?`,
-			val, now, pluginID, kindKey, extID,
-		); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return s.writeMissedWalks(ctx, pluginID, kindKey, externalIDs,
+		`UPDATE plugin_items SET seen_at = ?, missed_walks = 0 WHERE missed_walks <> 0`, s.now().Unix())
 }
 
-func (s *Service) incrementMissedWalks(ctx context.Context, pluginID, kindKey string, externalIDs []string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, extID := range externalIDs {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE plugin_items SET missed_walks = missed_walks + 1
-			WHERE plugin_id = ? AND kind_key = ? AND external_id = ?`,
-			pluginID, kindKey, extID,
-		); err != nil {
-			return err
+func (s *Service) writeMissedWalks(ctx context.Context, pluginID, kindKey string, ids []string, update string, updateArgs ...any) error {
+	return s.writeChunks(ctx, len(ids), func(start, end int) (time.Duration, error) {
+		args := make([]any, 0, len(updateArgs)+end-start)
+		args = append(args, updateArgs...)
+		for _, id := range ids[start:end] {
+			args = append(args, string(core.NewItemRef(pluginID, kindKey, id)))
 		}
+		query := update + ` AND item_ref IN (` + store.Placeholders(end-start) + `)`
+		return s.runWriteChunk(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, query, args...)
+			return err
+		})
+	})
+}
+
+func (s *Service) missedWalkIDs(ctx context.Context, pluginID, kindKey, after string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT external_id FROM plugin_items
+WHERE plugin_id = ? AND kind_key = ? AND external_id > ? AND missed_walks <> 0
+ORDER BY external_id LIMIT ?`, pluginID, kindKey, after, upsertChunkSize)
+	if err != nil {
+		return nil, err
 	}
-	return tx.Commit()
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // walkBrowseTree walks /ether/v1/kinds/{kind}/browse starting at the root level
@@ -1181,6 +1224,22 @@ func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec K
 			if nextHasChildren && len(nextWave) > 0 {
 				queue = append(queue, levelWave{level: nextLevel, items: nextWave})
 			}
+		}
+	}
+
+	// List levels (members: true) are roots of their own. A page of one may
+	// carry the lists' members and their parents too; nothing below a list
+	// is walked, its members are what it names.
+	for _, lv := range rec.Decl.ListLevels() {
+		items, retry, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, lv.Key, "", collectAll, onPage)
+		if retry > maxRetry {
+			maxRetry = retry
+		}
+		if err != nil {
+			return nil, maxRetry, err
+		}
+		if collectAll {
+			allItems = append(allItems, items...)
 		}
 	}
 

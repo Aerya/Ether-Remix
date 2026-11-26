@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/state"
 )
@@ -332,9 +331,9 @@ func TestOverridesAndLayoutPersist(t *testing.T) {
 		}
 	}
 
-	saved, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindTrending, Status: "off"}}}}})
-	if err != nil || len(saved.Global) != 1 || saved.UpdatedAt.IsZero() {
-		t.Fatalf("set layout = %+v %v", saved, err)
+	saved, err := h.e.SavePage(ctx, rpage(core.PageHome, prow(KindTrending, core.PlacementHide, 0)))
+	if err != nil || len(saved.Rows) != 1 || saved.UpdatedAt.IsZero() || saved.Revision != 1 {
+		t.Fatalf("save page = %+v %v", saved, err)
 	}
 	// A fresh engine over the same database loads it.
 	e2, err := New(Options{DB: h.db, Catalog: h.cat, Logger: quietLogger(), Now: h.clock.Now, Location: time.UTC, RefreshEvery: -1})
@@ -342,17 +341,17 @@ func TestOverridesAndLayoutPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer e2.Close()
-	got, _ := e2.HomeLayout(ctx)
-	if len(got.Global) != 1 || got.Global[0].Rows[0].Row != KindTrending || got.Global[0].Rows[0].Status != "off" {
-		t.Fatalf("persisted layout = %+v", got)
+	got, ok := e2.Page(ctx, core.PageHome)
+	if !ok || len(got.Rows) != 1 || got.Rows[0].Source.Kind != KindTrending || got.Rows[0].Placement.Mode != core.PlacementHide {
+		t.Fatalf("persisted page = %+v", got)
 	}
 	os, _ := e2.store.overrides(ctx, 1)
 	if len(os) != 1 {
 		t.Fatalf("persisted overrides = %+v", os)
 	}
-	avail, _ := h.e.AvailableRows(ctx)
-	if len(avail) < len(kinds) || avail[0].HubID != KindContinue {
-		t.Fatalf("available rows = %+v", avail[:3])
+	avail := h.e.SourceInfos()
+	if len(avail) < len(kinds) || avail[0].Kind != KindContinue {
+		t.Fatalf("row sources = %+v", avail[:3])
 	}
 }
 
@@ -510,7 +509,3 @@ func TestScoreTitles(t *testing.T) {
 		t.Fatalf("a sci-fi fan should score sci-fi higher: %v", scores)
 	}
 }
-
-// The engine is what the admin API's viewers, layout and insights
-// endpoints are wired to.
-var _ admin.Personalization = (*Engine)(nil)

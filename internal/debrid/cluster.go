@@ -55,6 +55,11 @@ CREATE INDEX debrid_leases_node ON debrid_leases(node_id);`)
 // TopicBackoff carries provider pauses between nodes.
 const TopicBackoff = "debrid:backoff"
 
+// TopicAnalysisPause carries background-analysis pauses between nodes. It
+// is separate from TopicBackoff: a rate-limited CDN read stops analysis
+// everywhere without pausing the provider's API.
+const TopicAnalysisPause = "debrid:analysis-pause"
+
 var (
 	// claimStale is when another node may take over an add claim whose
 	// holder never finished (crashed mid-add).
@@ -78,7 +83,10 @@ func (s *Service) SetCluster(node clusterbus.Node) {
 	if node != nil {
 		s.origin = clusterbus.NewOrigin()
 		s.inval = clusterbus.NewInvalidator(node, "debrid", s.log, s.applyKnown)
-		s.unsubs = []func(){node.Subscribe(TopicBackoff, s.onBackoff)}
+		s.unsubs = []func(){
+			node.Subscribe(TopicBackoff, s.onBackoff),
+			node.Subscribe(TopicAnalysisPause, s.onAnalysisPause),
+		}
 	}
 	s.clusterMu.Unlock()
 	old.Close()
@@ -165,6 +173,16 @@ func (l *limiter) acquire(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (l *limiter) tryAcquire() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.used >= l.limit || l.waiting != 0 {
+		return false
+	}
+	l.used++
+	return true
 }
 
 // reacquire is acquire for a caller that must end up holding a slot (its
@@ -274,6 +292,45 @@ func (s *Service) onBackoff(msg []byte) {
 		e.applyRemote(s.now(), ev)
 		s.notifyChange()
 	}
+}
+
+// analysisPauseEvent is a background-analysis pause on one account, Until
+// in Unix milliseconds.
+type analysisPauseEvent struct {
+	Provider string `json:"provider"`
+	Until    int64  `json:"until"`
+}
+
+// publishAnalysisPause tells the other nodes to pause analysis on id.
+func (s *Service) publishAnalysisPause(id string, until time.Time) {
+	node := s.clusterNode()
+	if node == nil {
+		return
+	}
+	s.clusterMu.RLock()
+	origin := s.origin
+	s.clusterMu.RUnlock()
+	raw, _ := json.Marshal(analysisPauseEvent{Provider: id, Until: until.UnixMilli()})
+	ctx, cancel := context.WithTimeout(context.Background(), clusterbus.PublishTimeout)
+	defer cancel()
+	if err := node.Publish(ctx, TopicAnalysisPause, clusterbus.Tag(origin, raw)); err != nil {
+		s.log.Warn("debrid: publish analysis pause", "provider", id, "err", err)
+	}
+}
+
+func (s *Service) onAnalysisPause(msg []byte) {
+	origin, raw := clusterbus.Untag(msg)
+	s.clusterMu.RLock()
+	own := origin == s.origin
+	s.clusterMu.RUnlock()
+	if own {
+		return
+	}
+	var ev analysisPauseEvent
+	if json.Unmarshal(raw, &ev) != nil || ev.Provider == "" {
+		return
+	}
+	s.applyRemoteAnalysisPause(ev.Provider, time.UnixMilli(ev.Until))
 }
 
 // applyRemote applies another node's pause, never beyond the longest pause

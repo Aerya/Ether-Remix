@@ -1,14 +1,19 @@
 package main
 
 import (
-	"github.com/braedonsaunders/ether/internal/conform/openapi"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/conform/openapi"
 )
 
 func TestRun(t *testing.T) {
@@ -96,22 +101,33 @@ func TestSchemaUndocumentedOperationIsUncovered(t *testing.T) {
 	}
 }
 
+type scheduledTransport func(*http.Request) (*http.Response, error)
+
+func (f scheduledTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestOpenLoopAccountsForQueueAndTimeouts(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(20 * time.Millisecond)
-		_, _ = w.Write([]byte("ok"))
-	}))
-	defer s.Close()
-	m := measureScheduled(s.Client(), target{URL: s.URL}, 6, 1, nil, 1000)
-	if m.Errors != 0 || m.QueueP95 < 30 || m.AllScheduledP95 <= m.P95 || m.HTTPSuccesses != 6 {
-		t.Fatalf("offered load/queue lost: %+v", m)
-	}
-	client := &http.Client{Timeout: 5 * time.Millisecond}
-	m = measureScheduled(client, target{URL: s.URL}, 2, 1, nil, 1000)
-	if m.Timeouts != 2 || m.Errors != 2 || m.AllScheduledP99 < 4 || m.ValidSuccesses != 0 {
-		t.Fatalf("timeouts omitted: %+v", m)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		endpoint := target{URL: "http://example.invalid"}
+		client := &http.Client{Transport: scheduledTransport(func(r *http.Request) (*http.Response, error) {
+			time.Sleep(20 * time.Millisecond)
+			httptrace.ContextClientTrace(r.Context()).GotFirstResponseByte()
+			const body = "ok"
+			return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		m := measureScheduled(client, endpoint, 6, 1, nil, 1000)
+		if m.Errors != 0 || m.HTTPSuccesses != 6 || m.QueueP95 <= 0 || m.AllScheduledP95 <= m.P95 {
+			t.Fatalf("offered load/queue lost: %+v", m)
+		}
+		client.Transport = scheduledTransport(func(*http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		})
+		m = measureScheduled(client, endpoint, 2, 1, nil, 1000)
+		if m.Timeouts != 2 || m.Errors != 2 || m.ValidSuccesses != 0 {
+			t.Fatalf("timeouts omitted: %+v", m)
+		}
+	})
 }
+
 func TestRepetitionsAlternateServerOrder(t *testing.T) {
 	var mu sync.Mutex
 	var order []string

@@ -2,6 +2,7 @@ package watchlist
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -38,4 +39,23 @@ func (s *Service) Watchlisted(ctx context.Context) (map[int64][]core.RatingKey, 
 		}
 	}
 	return out, rows.Err()
+}
+
+// ListedTitleKeys returns distinct watchlist identities across all viewers,
+// including unreleased entries. Consumers resolve parents with the catalogue.
+func ListedTitleKeys(ctx context.Context, db *sql.DB) ([]core.RatingKey, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT item_key FROM watchlist_items`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []core.RatingKey
+	for rows.Next() {
+		var key core.RatingKey
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }

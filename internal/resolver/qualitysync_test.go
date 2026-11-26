@@ -61,9 +61,8 @@ func newSyncFixture(t *testing.T, tree map[string]string, cfg config.Config) *sy
 
 func trashImported(name, profileID string) core.QualityProfile {
 	return core.QualityProfile{
-		Name:      name,
-		MediaType: core.MediaMovie,
-		Import:    &core.ProfileImport{Source: ImportSourceTrash, App: AppRadarr, Profile: profileID},
+		Name:   name,
+		Import: &core.ProfileImport{Source: ImportSourceTrash, App: AppRadarr, Profile: profileID},
 	}
 }
 
@@ -110,7 +109,7 @@ func TestQualitySyncUpdatesProfileAndDefinitionsExactly(t *testing.T) {
 	if !maps.Equal(prof.CustomFormatScores, wantScores) {
 		t.Fatalf("scores %v, want exactly %v", prof.CustomFormatScores, wantScores)
 	}
-	if prof.MediaType != core.MediaMovie || prof.Import == nil || prof.Import.SyncedAt != f.now || prof.Import.Profile != "hd-bluray-web" {
+	if prof.Import == nil || prof.Import.SyncedAt != f.now || prof.Import.Profile != "hd-bluray-web" {
 		t.Fatalf("profile provenance %+v", prof)
 	}
 	if !slices.Equal(prof.AllowedQualities, []string{"bluray-1080", "webrip-1080", "webdl-1080"}) {
@@ -220,7 +219,7 @@ func TestQualitySyncSonarrSetsTVMedia(t *testing.T) {
 		t.Fatalf("report %+v", report)
 	}
 	prof := f.cfg.Quality.Profiles[0]
-	if prof.MediaType != core.MediaTV || prof.Import.App != AppSonarr {
+	if prof.Import.App != AppSonarr {
 		t.Fatalf("profile %+v", prof)
 	}
 	if f.cfg.Quality.Sync.Interval.D() != 24*time.Hour {
@@ -269,7 +268,7 @@ func TestQualitySyncDictionarry(t *testing.T) {
 		t.Fatalf("report %+v", report)
 	}
 	prof := f.cfg.Quality.Profiles[0]
-	if prof.MediaType != core.MediaMovie || prof.CustomFormatScores["dictionarry-radarr-2160p-remux"] != 860000 {
+	if prof.CustomFormatScores["dictionarry-radarr-2160p-remux"] != 860000 {
 		t.Fatalf("profile %+v", prof)
 	}
 	for _, d := range f.cfg.Resolver.CustomFormats {
@@ -356,12 +355,12 @@ func TestQualitySyncRespectsOwnership(t *testing.T) {
 	plan := QualityImportPlan{App: AppRadarr, Source: ImportSourceTrash, ProfileID: "hd", Definitions: []core.CustomFormat{format("shared", "Guide definition", nil, titleSpec)}}
 	s := NewQualitySyncer(QualitySyncDeps{})
 	report := QualitySyncReport{}
-	s.apply(&c, "Imported", core.MediaMovie, saved, plan, time.Now(), &report)
+	s.apply(&c, "Imported", saved, plan, time.Now(), &report)
 	if c.Resolver.CustomFormats[0].Name != manual.Name || c.Resolver.CustomFormats[0].ManagedBy != "" {
 		t.Fatal("manual format overwritten")
 	}
-	c.Quality.Profiles[0] = core.QualityProfile{Name: "Imported", MediaType: core.MediaMovie, MaxHeight: 720}
-	s.apply(&c, "Imported", core.MediaMovie, saved, plan, time.Now(), &report)
+	c.Quality.Profiles[0] = core.QualityProfile{Name: "Imported", MaxHeight: 720}
+	s.apply(&c, "Imported", saved, plan, time.Now(), &report)
 	if c.Quality.Profiles[0].Import != nil || c.Quality.Profiles[0].MaxHeight != 720 {
 		t.Fatal("manual replacement overwritten")
 	}

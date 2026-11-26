@@ -19,6 +19,15 @@ import (
 // ResolveRowViews shares hydration, current-policy proofs and receipt admission
 // across a bounded home page. It never scans titles outside these visits.
 func (s *RowViewService) ResolveRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) ([]frontend.RowViewPage, error) {
+	return s.resolveRowViews(ctx, reqs, true)
+}
+
+func (s *RowViewService) ValidateRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) error {
+	_, err := s.resolveRowViews(ctx, reqs, false)
+	return err
+}
+
+func (s *RowViewService) resolveRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest, issueReceipts bool) ([]frontend.RowViewPage, error) {
 	if len(reqs) == 0 {
 		return []frontend.RowViewPage{}, nil
 	}
@@ -119,6 +128,13 @@ func (s *RowViewService) ResolveRowViews(ctx context.Context, reqs []frontend.Ro
 			}
 		}
 		return s.resolveAll(policyCtx, active, first.Device, first.Protocol, refs)
+	}
+	if !issueReceipts {
+		if _, err := validate(u, true); err != nil {
+			return nil, err
+		}
+		_, err := load(nil)
+		return nil, err
 	}
 	resolved, err := validate(u, false)
 	if err != nil {

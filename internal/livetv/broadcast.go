@@ -201,6 +201,8 @@ type broadcast struct {
 	intro                broadcastPlan
 	introUntil           time.Time
 	dvr                  time.Duration
+	dvrCache             *transcode.LiveDVRCache
+	dvrLiveWindow        time.Duration
 	black                []byte
 	viewers              int
 	attaching            int
@@ -212,7 +214,6 @@ type broadcast struct {
 	planner              broadcastPlanner
 	runner               transcode.ContinuousRunner
 	origin               time.Time
-	anchorOrigin         time.Time
 	lastSeq              int64
 	haveSeq              bool
 	mu                   sync.Mutex
@@ -495,7 +496,7 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 	b.mu.Unlock()
 	lifetime, cancel := context.WithCancel(b.ctx)
 	stop := context.AfterFunc(ctx, cancel)
-	encoder, err := b.runner.StartEncoder(lifetime, transcode.EncoderRequest{SessionID: id, Source: b.format, Decision: decision, ClientCaps: clientCaps, SegmentDuration: b.segment, DVRWindow: b.dvr, LiveSource: b.burstNoWait, StartSeq: startSeq})
+	encoder, err := b.runner.StartEncoder(lifetime, transcode.EncoderRequest{SessionID: id, Source: b.format, Decision: decision, ClientCaps: clientCaps, SegmentDuration: b.segment, DVRWindow: b.dvr, DVRCache: b.dvrCache, DVRLiveWindow: b.dvrLiveWindow, LiveSource: b.burstNoWait, StartSeq: startSeq})
 	stop()
 	if err != nil {
 		cancel()
@@ -574,9 +575,6 @@ func (b *broadcast) addRendition(ctx context.Context, id string, decision core.D
 		r.origin = first.Start
 		r.originErr = err
 		if err == nil {
-			if b.anchorOrigin.IsZero() || first.Start.Before(b.anchorOrigin) {
-				b.anchorOrigin = first.Start
-			}
 			if !b.haveSeq || first.Seq > b.lastSeq {
 				b.lastSeq = first.Seq
 				b.haveSeq = true

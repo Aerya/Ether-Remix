@@ -137,6 +137,9 @@ func (c *Catalog) readSearchFull(ctx context.Context, items []core.Title, at []i
 		}
 		full := st.t
 		full.SearchScore = items[i].SearchScore
+		// Search and browse project the selected show order onto the page.
+		// Keep that projection when replacing a partial title with its facts.
+		full.EpisodeOrder = items[i].EpisodeOrder
 		items[i] = full
 	}
 	return nil

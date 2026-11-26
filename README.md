@@ -27,7 +27,7 @@ L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur e
 
 ## Remix, en bref
 
-La synchronisation Ether du 23 novembre intègre les évolutions amont des bibliothèques, plugins, versions de lecture et de la console mobile. Les bibliothèques à thème, la musique, les contrôles stricts des releases et les réglages Remix sont conservés. Les migrations préservent les réglages et les origines des collections existantes.
+La synchronisation Ether du 26 novembre réunit la personnalisation de l’accueil et des bibliothèques dans **Recommandations**. Les collections définissent leur contenu ; leurs rangées se placent sur ces pages. Les anciens placements, modèles de disposition et restrictions par spectateur sont repris. Les imports Xperience/Jukebox, la musique et les contrôles stricts des releases restent disponibles.
 
 Les épisodes sans année dans le nom sont admis après vérification du catalogue local : année de série connue, titre complet, épisode exact et absence d’homonyme connu. Une année contradictoire reste refusée ; une erreur de catalogue conserve le contrôle strict.
 

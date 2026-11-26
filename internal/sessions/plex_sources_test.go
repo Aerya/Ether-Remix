@@ -35,17 +35,17 @@ func TestPlexSourcesPreserveBoundedAdmission(t *testing.T) {
 	source := PartSources{Playback: p}
 	viewer := &core.User{ID: 7}
 	caps := core.ClientCaps{ClientID: "device"}
-	if _, err := source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", time.Second); !errors.Is(err, context.Canceled) || p.admitted != 0 {
+	if _, err := source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", false, time.Second); !errors.Is(err, context.Canceled) || p.admitted != 0 {
 		t.Fatalf("wait failure fell through: %v %+v", err, p)
 	}
 	p.waitErr = nil
-	ps, err := source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", time.Second)
+	ps, err := source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", false, time.Second)
 	if err != nil || ps.ID != "picked" || p.admitted != 1 || p.waited != 2 {
 		t.Fatalf("variant admission: %+v %v %+v", ps, err, p)
 	}
 	// A base-only manager intentionally retains automatic fallback.
 	source.Playback = struct{ core.Playback }{p}
-	ps, err = source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", time.Second)
+	ps, err = source.Prepare(context.Background(), viewer, core.MovieKey(1), caps, "picked", false, time.Second)
 	if err != nil || ps.ID != "auto" || p.admitted != 2 {
 		t.Fatalf("automatic fallback: %+v %v", ps, err)
 	}
@@ -102,7 +102,7 @@ func TestPartSourcesRoutesPluginKeyThroughKindPlayback(t *testing.T) {
 			return &core.KindInput{Title: title, SourceID: k.String()}, nil
 		},
 	}
-	ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "", time.Second)
+	ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "", false, time.Second)
 	if err != nil || ps == nil || ps.ID != "kind" {
 		t.Fatalf("plugin Prepare = %v %v", ps, err)
 	}
@@ -115,10 +115,10 @@ func TestPartSourcesRoutesPluginKeyThroughKindPlayback(t *testing.T) {
 	}
 	// A plugin key with an explicit release pick forwards PreferSourceID to
 	// KindPlayback; the synthetic Auto slot leaves PreferSourceID empty.
-	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "v1", time.Second); err != nil || ps == nil || play.lastPrefer != "v1" {
+	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, "v1", false, time.Second); err != nil || ps == nil || play.lastPrefer != "v1" {
 		t.Fatalf("plugin Prepare with release = (%v, %v, prefer=%q), want prefer=v1", ps, err, play.lastPrefer)
 	}
-	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, core.KindAutoVersionID, time.Second); err != nil || ps == nil || play.lastPrefer != "" {
+	if ps, err := source.Prepare(context.Background(), &core.User{ID: 7}, key, core.ClientCaps{ClientID: "device"}, core.KindAutoVersionID, false, time.Second); err != nil || ps == nil || play.lastPrefer != "" {
 		t.Fatalf("plugin Prepare with Auto slot = (%v, %v, prefer=%q), want empty prefer", ps, err, play.lastPrefer)
 	}
 }

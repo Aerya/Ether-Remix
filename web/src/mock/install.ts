@@ -18,6 +18,8 @@ export function installMockBackend(): void {
   setMockAgentPace(Number(params.get("agentPace") ?? 70));
   const fake = createFakeServer({
     latencyMs: 120,
+    fastUsenetSpeed: params.get("usenetSpeed") === "fast",
+    whatsNew: params.has("whatsNew"),
     // `?vela` previews an owner-installed Vela client.
     velaInstalled: params.has("vela"),
     velaDistribution:
@@ -47,6 +49,59 @@ export function installMockBackend(): void {
     fake.state.boot.ownerConfigured = true;
   }
   if (params.get("backups") === "empty") fake.state.backups = [];
+  // `?quality=upgraded` previews Releases just after upgrading from 0.3.20:
+  // the rules its settings became, each with where it came from, and the note.
+  if (params.get("quality") === "upgraded") {
+    fake.state.config.quality = {
+      ...fake.state.config.quality,
+      rules: [
+        {
+          id: "r_away0001",
+          where: "away",
+          maxBitrateKbps: 8000,
+          from: { kind: "awayLimit" },
+        },
+        {
+          id: "r_viewer01",
+          viewers: [2],
+          maxBitrateKbps: 5000,
+          from: { kind: "viewerLimit", name: "Sam Rivera" },
+        },
+        {
+          id: "r_appletv1",
+          devices: [{ type: "Apple TV", label: "Apple TV" }],
+          profile: "4K",
+          from: { kind: "rule", name: "Apple TV" },
+        },
+        {
+          id: "r_phones01",
+          devices: [{ group: "mobile", label: "Phones & tablets" }],
+          where: "away",
+          profile: "1080p",
+          maxHeight: 1080,
+          from: { kind: "rule", name: "Phones" },
+        },
+        {
+          id: "r_anime001",
+          libraries: [7],
+          profile: "1080p",
+          from: { kind: "library", name: "Anime Shows" },
+        },
+        {
+          id: "r_movies01",
+          libraries: [1],
+          profile: "4K",
+          from: { kind: "library", name: "Movies" },
+        },
+      ],
+      default: "1080p",
+      defaultLimits: {},
+      defaultAway: "",
+      defaultAwayLimits: {},
+      migratedRules: 1,
+      migrationNote: { at: "2026-11-24T15:04:05Z", dismissed: false },
+    };
+  }
   const offApps = new Set(
     (params.get("off") ?? "")
       .split(",")
@@ -54,10 +109,18 @@ export function installMockBackend(): void {
       .filter(Boolean),
   );
   fake.state.config.frontends = Object.fromEntries(
-    ["plex", "jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream", "dlna"].map((id) => [
-      id,
-      { enabled: !offApps.has(id) },
-    ]),
+    [
+      "plex",
+      "jellyfin",
+      "emby",
+      "silo",
+      "stremio",
+      "webdav",
+      "m3u",
+      "xtream",
+      "dlna",
+      "plugin:ether.music:subsonic",
+    ].map((id) => [id, { enabled: !offApps.has(id) }]),
   );
   if (params.get("catalogKey") === "missing") fake.state.config.catalog.tmdbKey = "";
   // Deterministic account workspaces for owner-console visual review.
@@ -133,6 +196,33 @@ export function installMockBackend(): void {
       }));
       if (path.endsWith("/dashboard")) body.sections.sessions = sessions;
       else body.value = sessions;
+      return new Response(JSON.stringify(body), {
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+  }
+  // `?health=problems|warn|setup` previews the health pill's other verdicts.
+  const healthPreview = params.get("health");
+  if (healthPreview) {
+    const original = fake.fetch;
+    fake.fetch = async (input, init) => {
+      const response = await original(input, init);
+      const path = new URL(String(input), window.location.origin).pathname;
+      if (!path.endsWith("/dashboard")) return response;
+      const body = await response.json();
+      const sections = body.sections;
+      if (healthPreview === "problems") {
+        sections.remote.cert.notAfter = "2020-01-01T00:00:00Z";
+        sections.remote.tokenRejected = true;
+      } else if (healthPreview === "warn") {
+        sections.remote.cert.notBefore = "2999-01-01T00:00:00Z";
+      } else if (healthPreview === "setup") {
+        body.plexEnabled = false;
+        sections.providers = [];
+        sections.debrid = { enabled: false };
+        sections.indexers = [{ indexer: "Torrentio", enabled: true, hitsLimit: 0 }];
+        sections.catalog = { movies: 0, shows: 0 };
+      }
       return new Response(JSON.stringify(body), {
         headers: { "Content-Type": "application/json" },
       });

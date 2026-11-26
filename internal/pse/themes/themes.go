@@ -512,10 +512,10 @@ func (s *Service) ShowPresetCollections(ctx context.Context, ed Editor) error {
 	}
 	changed := false
 	for _, sp := range specs {
-		if sp.Description != presetDescription || sp.Targets.CollectionsTab {
+		if sp.Description != presetDescription || sp.BrowseInApps {
 			continue
 		}
-		sp.Targets.CollectionsTab = true
+		sp.BrowseInApps = true
 		if _, err := ed.UpdateSpec(ctx, sp.ID, sp); err != nil {
 			return err
 		}

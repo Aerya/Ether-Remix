@@ -212,6 +212,10 @@ func (s *continuousSegmentIndex) refresh() {
 							delete(s.policyTags, seq)
 						}
 					}
+					for _, seg := range s.segments {
+						s.enc.store.remove(s.ts(seg.Seq))
+						s.enc.store.remove(s.mp4(seg.Seq))
+					}
 					s.segments = nil
 				}
 				break
@@ -239,28 +243,44 @@ func (s *continuousSegmentIndex) refresh() {
 		delete(s.policyTags, s.next)
 		s.segments = append(s.segments, segment)
 		s.next++
-		for len(s.segments) > 1 {
-			evict := len(s.segments) > 6
-			if s.enc.req.DVRWindow > 0 {
-				latest := s.segments[len(s.segments)-1]
-				first := s.segments[0]
-				evict = latest.Start.Add(latest.Duration).Sub(first.Start.Add(first.Duration)) >= s.enc.req.DVRWindow
-			}
-			if !evict {
-				break
-			}
-			old := s.segments[0]
-			s.segments = s.segments[1:]
-			s.enc.store.remove(s.ts(old.Seq))
-			s.enc.store.remove(s.mp4(old.Seq))
-		}
+		s.evictLocked()
 		close(s.changed)
 		s.changed = make(chan struct{})
 	}
 }
+func (s *continuousSegmentIndex) liveCount() int {
+	cut := s.enc.req.SegmentDuration
+	if cut <= 0 {
+		cut = s.duration
+	}
+	return max(6, continuousWindow(s.enc.req.DVRLiveWindow, cut))
+}
+
+func (s *continuousSegmentIndex) evictLocked() {
+	if len(s.segments) == 0 {
+		return
+	}
+	latest := s.segments[len(s.segments)-1]
+	liveCount := s.liveCount()
+	for len(s.segments) > 1 {
+		first := s.segments[0]
+		evict := LiveDVREvict(len(s.segments), liveCount, first.Start.Add(first.Duration).Sub(s.start), latest.Start.Add(latest.Duration).Sub(s.start), s.enc.req.DVRWindow)
+		if !evict && s.enc.store.dvr != nil && len(s.segments) > liveCount {
+			evict = first.Seq < s.enc.store.dvr.Floor() || !s.enc.store.retained(s.ts(first.Seq)) || !s.enc.store.retained(s.mp4(first.Seq))
+		}
+		if !evict {
+			break
+		}
+		s.segments = s.segments[1:]
+		s.enc.store.remove(s.ts(first.Seq))
+		s.enc.store.remove(s.mp4(first.Seq))
+	}
+}
+
 func (s *continuousSegmentIndex) Latest() (Segment, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.evictLocked()
 	if len(s.segments) == 0 {
 		return Segment{}, false
 	}
@@ -269,6 +289,7 @@ func (s *continuousSegmentIndex) Latest() (Segment, bool) {
 func (s *continuousSegmentIndex) Window(from, until time.Time) []Segment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.evictLocked()
 	var out []Segment
 	for _, seg := range s.segments {
 		if seg.Start.Before(until) && seg.Start.Add(seg.Duration).After(from) {
@@ -280,6 +301,7 @@ func (s *continuousSegmentIndex) Window(from, until time.Time) []Segment {
 func (s *continuousSegmentIndex) Since(seq int64, max int) []Segment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.evictLocked()
 	if max <= 0 {
 		return nil
 	}
@@ -293,6 +315,7 @@ func (s *continuousSegmentIndex) Wait(ctx context.Context, after int64) (Segment
 	}
 	for {
 		s.mu.Lock()
+		s.evictLocked()
 		if len(s.segments) > 0 {
 			first := s.segments[0].Seq
 			if after == -1 && first == s.startSeq {
@@ -323,6 +346,7 @@ func (s *continuousSegmentIndex) Wait(ctx context.Context, after int64) (Segment
 }
 func (s *continuousSegmentIndex) serve(w http.ResponseWriter, r *http.Request, seq int64, mp4 bool) {
 	s.mu.Lock()
+	s.evictLocked()
 	known := len(s.segments) > 0 && seq >= s.segments[0].Seq && seq < s.next
 	s.mu.Unlock()
 	if !known {

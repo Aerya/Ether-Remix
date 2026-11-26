@@ -215,6 +215,11 @@ func TestPlexTimelineIntegerThresholdForShortContent(t *testing.T) {
 	defer f.srv.Close()
 	watch := state.New(store.OpenTest(t), state.Options{})
 	f.srv.setState(watch)
+	// One-second content: the title's runtime must agree, or the report reads
+	// as other media (a trailer) reported against a feature.
+	short := fightClub
+	short.Runtime = time.Second
+	f.catalog.titles[short.Key] = short
 	for _, position := range []int{1, 900} {
 		rec := f.get(t, fmt.Sprintf("/:/timeline?ratingKey=%s&state=playing&time=%d&duration=1001", fightClub.Key, position))
 		if rec.Code != 200 {

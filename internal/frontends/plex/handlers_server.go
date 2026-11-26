@@ -153,7 +153,7 @@ func sectionPivots(sec Section) []model.Pivot {
 		playlistType = "photo"
 	}
 	return []model.Pivot{
-		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommended", Context: "content.discover", Symbol: "star"},
+		{ID: "recommended", Key: "/hubs/sections/" + id, Type: "hub", Title: "Recommendations", Context: "content.discover", Symbol: "star"},
 		{ID: "library", Key: "/library/sections/" + id + "/all?type=" + typeNum, Type: "list", Title: "Library", Context: "content.library", Symbol: "library"},
 		{ID: "collections", Key: "/library/sections/" + id + "/collections", Type: "list", Title: "Collections", Context: "content.collections", Symbol: "stack"},
 		{ID: "playlists", Key: "/playlists?type=15&sectionID=" + id + "&playlistType=" + playlistType, Type: "list", Title: "Playlists", Context: "content.playlists", Symbol: "playlist"},
@@ -203,7 +203,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	now := s.now().Unix()
 	includePrefs := r.URL.Query().Get("includePreferences") == "1"
-	userSecs := s.userSections(u)
+	userSecs := s.viewerSections(r)
 	dirs := []model.ProviderDirectory{{HubKey: "/hubs", Title: "Home"}} // discovery only: no browse key
 	for _, sec := range s.pseWithThemes(u, userSecs) {
 		agent, scanner := agentFor(sec.Type)

@@ -33,7 +33,7 @@ func TestSystemPeopleBuiltinSchemasComplete(t *testing.T) {
 		{EventLibraryWatchlistSynced, "library", false, nil, nil},
 		{EventLibraryMetadataFailed, "library", false, nil, nil},
 
-		// Viewer (9)
+		// Viewer (12)
 		{EventViewerAccountJoined, "viewer", false, []string{"viewer.added", "user.joined"}, []string{"username"}},
 		{EventViewerAccountDeactivated, "viewer", false, nil, []string{"username"}},
 		{EventViewerAccountMerged, "viewer", false, nil, nil},
@@ -42,6 +42,9 @@ func TestSystemPeopleBuiltinSchemasComplete(t *testing.T) {
 		{EventViewerInviteCreated, "viewer", false, nil, nil},
 		{EventViewerInviteAccepted, "viewer", false, nil, []string{"username"}},
 		{EventViewerWatchScrobbled, "viewer", false, nil, []string{"username"}},
+		{EventViewerWatchWatched, "viewer", false, nil, []string{"username"}},
+		{EventViewerWatchUnwatched, "viewer", false, nil, []string{"username"}},
+		{EventViewerWatchProgress, "viewer", false, nil, []string{"username"}},
 		{EventViewerRatingSubmitted, "viewer", false, nil, []string{"username"}},
 
 		// Auth (9)
@@ -183,8 +186,8 @@ func TestSystemPeopleSchemasPublishThroughBus(t *testing.T) {
 			count++
 		}
 	}
-	if count != 59 {
-		t.Fatalf("published %d domain events, want 59", count)
+	if count != 62 {
+		t.Fatalf("published %d domain events, want 62", count)
 	}
 	for _, d := range domains {
 		for _, s := range reg.ListByDomain(d) {

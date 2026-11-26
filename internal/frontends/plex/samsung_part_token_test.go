@@ -237,7 +237,7 @@ func anyTitleFixture(t *testing.T, opts ...func(*testServerDeps)) (*fixture, *pl
 	cfg.Quality.Default = "test"
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "test", MaxHeight: 1080}}
 	cfg.Quality.Rules = nil
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	rs := resolver.New(titleIndexer{}, nil, nil, cfg, resolver.Options{})
 	t.Cleanup(func() { rs.Close() })
 	fixtureOpts := append([]func(*testServerDeps){func(d *testServerDeps) { d.DisableEnrichment = true }}, opts...)

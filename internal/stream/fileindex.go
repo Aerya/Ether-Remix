@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
@@ -35,6 +36,10 @@ type postedFile struct {
 	fixedSlots   bool  // slot count is fixed to listed NZB segments (byte-split chunk)
 	assumed      int64 // size assumed by a volume layout until known
 	name         string
+
+	// misses tells the fetcher which providers keep lacking this file's
+	// articles, so a tier peer is asked first (usenet/misshint.go).
+	misses core.ProviderMissHint
 }
 
 // maxTailGrowth permits a few missing parts in addition to twice the listed

@@ -27,7 +27,7 @@ import { LevelBadge } from "../../components/status";
 import { t } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { apiFetch } from "../../lib/api";
-import { invalidateRegistry } from "../../lib/extend";
+import { invalidateRegistry, setPluginEnabled } from "../../lib/extend";
 import { useStreamEvent } from "../../lib/stream";
 import { CatalogueTab } from "./CatalogueTab";
 import { DirectoryBrowser } from "./DirectoryBrowser";
@@ -110,11 +110,7 @@ export default function Plugins() {
     setToggling(p.id);
     setPlugins((list) => list.map((x) => (x.id === p.id ? { ...x, enabled: on } : x)));
     try {
-      await apiFetch(`/plugins/${encodeURIComponent(p.id)}/${on ? "enable" : "disable"}`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      invalidateRegistry();
+      await setPluginEnabled(p.id, on);
     } catch (e) {
       setLoadError(e);
     } finally {

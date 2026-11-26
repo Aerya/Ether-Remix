@@ -1,10 +1,17 @@
 package admin
 
 import (
+	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
+
+// ActivityStats supplies daily observed playback totals matching Activity › Viewing.
+type ActivityStats interface {
+	Activity(ctx context.Context, days int, tzMinutes ...int) ([]core.ActivityDay, error)
+}
 
 // Insights: which rows lead to plays, and server-wide viewing.
 
@@ -33,7 +40,16 @@ func (h *Handler) handleInsightRanker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleInsightActivity(w http.ResponseWriter, r *http.Request) {
-	days, err := h.deps.Personalization.Activity(r.Context(), 30)
+	var (
+		days []core.ActivityDay
+		err  error
+	)
+	if h.deps.ActivityStats != nil {
+		tz, _ := strconv.Atoi(r.URL.Query().Get("tz"))
+		days, err = h.deps.ActivityStats.Activity(r.Context(), 30, tz)
+	} else {
+		days, err = h.deps.Personalization.Activity(r.Context(), 30)
+	}
 	if err != nil {
 		writeEngineError(w, err)
 		return

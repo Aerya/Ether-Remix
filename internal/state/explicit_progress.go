@@ -11,6 +11,10 @@ import (
 func (s *State) explicitProgressAt(ctx context.Context, user int64, key core.RatingKey, w progressWrite) error {
 	skipResume := w.skipResume || s.shouldSkipResume(ctx, key)
 	return s.updateAt(ctx, user, []core.RatingKey{key}, w.at, func(cur *row, now time.Time) (bool, bool, []Event) {
+		if !w.at.IsZero() && now.Before(cur.watchAt) {
+			cur.skipSave = true
+			return false, false, nil
+		}
 		complete := w.state == "explicit-complete"
 		before := cur.ws.ViewOffset
 		if w.duration > 0 {

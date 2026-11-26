@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/store"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -14,6 +15,19 @@ import (
 // string; comparing it as an integer lets the catalogue's key index serve the
 // probe.
 const favoritesTitleJoin = ` FROM favorites_items f JOIN catalog_titles e ON e.key=CAST(f.subject_id AS INTEGER) JOIN catalog_titles t ON t.key=e.show_key`
+
+// favoritesTitleJoinSQLite pins the join order with CROSS JOIN, which SQLite
+// treats as "left table drives": with a covering favorites index the planner
+// otherwise walks every released episode and probes the viewer's favorites,
+// which scales with the library instead of the favorite set.
+const favoritesTitleJoinSQLite = ` FROM favorites_items f CROSS JOIN catalog_titles e ON e.key=CAST(f.subject_id AS INTEGER) JOIN catalog_titles t ON t.key=e.show_key`
+
+func (c *Catalog) favoritesJoin() string {
+	if store.DialectOf(c.db) == store.Postgres {
+		return favoritesTitleJoin
+	}
+	return favoritesTitleJoinSQLite
+}
 
 // favoriteEpisodesWhere is playedEpisodesWhere's filter shape without the
 // watched predicate: the series and episode predicates a browse filter names.
@@ -44,7 +58,7 @@ func (c *Catalog) FavoriteEpisodesByKey(ctx context.Context, show core.Filter, u
 	if err != nil {
 		return nil, err
 	}
-	q := `SELECT ` + prefixedCols("e") + favoritesTitleJoin +
+	q := `SELECT ` + prefixedCols("e") + c.favoritesJoin() +
 		` WHERE f.viewer_id=? AND f.kind='title' AND ` + where +
 		` ORDER BY t.sort_title ASC, e.season ASC, e.episode ASC, e.key ASC LIMIT ? OFFSET ?`
 	a := append([]any{userID}, args...)
@@ -61,7 +75,7 @@ func (c *Catalog) CountFavoriteEpisodes(ctx context.Context, show core.Filter, u
 	}
 	var total int
 	a := append([]any{userID}, args...)
-	err = c.db.QueryRowContext(ctx, `SELECT COUNT(*)`+favoritesTitleJoin+
+	err = c.db.QueryRowContext(ctx, `SELECT COUNT(*)`+c.favoritesJoin()+
 		` WHERE f.viewer_id=? AND f.kind='title' AND `+where, a...).Scan(&total)
 	return total, err
 }

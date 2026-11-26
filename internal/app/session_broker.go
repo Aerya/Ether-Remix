@@ -14,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	playlimits "github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/sessions"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/trackprefs"
@@ -164,9 +165,15 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			}
 			return a.safety.UserPolicy(v), nil
 		},
-		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmAdmission, CurrentPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: a.safety.BitrateLimit, ViewerVideoTranscodingOff: a.safety.VideoTranscodingDisabled,
+		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmAdmission, CurrentPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: func(*core.Viewer) int { return 0 }, ViewerVideoTranscodingOff: a.safety.VideoTranscodingDisabled,
+		ApplyRuleLimits: func(ctx context.Context, caps core.ClientCaps, viewer *core.Viewer, title *core.Title) core.ClientCaps {
+			q := a.cfg.Read().Quality
+			if title != nil {
+				return resolver.ApplyClientRulesForTitle(q, caps, viewer, title, a.membershipFor(ctx, title))
+			}
+			return resolver.ApplyClientRulesForMedia(q, caps, viewer, core.MediaAny)
+		},
 		StreamLimit:         func(v *core.Viewer) int { return playlimits.UserStreamLimit(a.cfg.Read(), v) },
-		RemoteBitrateLimit:  func() int { return a.cfg.Read().Transcode.RemoteMaxBitrateKbps },
 		RemoteUploadCap:     a.remoteUploadCap,
 		RecordUploadCap:     a.recordUploadCap,
 		VideoTranscodingOff: func() bool { return a.cfg.Read().Transcode.VideoTranscodingOff() },

@@ -3,7 +3,6 @@ package xtream
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"net/http"
 	"strings"
 
@@ -114,19 +113,7 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 func (i *instance) admit(w http.ResponseWriter, r *http.Request, l login, req frontend.PlanRequest) bool {
 	if admission, ok := i.host.LazyStreams.(frontend.AppConnectionAdmission); ok {
 		if err := admission.PrepareAppConnection(r, l.credential, req); err != nil {
-			var reqLang *frontend.RequiredAudioLanguageError
-			if errors.As(err, &reqLang) {
-				http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
-				return false
-			}
-			status := http.StatusServiceUnavailable
-			if errors.Is(err, frontend.ErrStreamLimit) {
-				status = http.StatusTooManyRequests
-			}
-			if errors.Is(err, frontend.ErrUnauthorized) {
-				status = http.StatusUnauthorized
-			}
-			http.Error(w, "Playback unavailable", status)
+			frontend.WriteAppConnectionError(w, r, err)
 			return false
 		}
 	}

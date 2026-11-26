@@ -195,7 +195,12 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	if !(pin.frozen && pin.selected != 0 && pin.selected != int64(t.Key)) && frontend.IsAutoVersionSelector(playedSelector) {
 		alignPlayedAutoVariant(vs, alignRelease)
 	}
-	probedReady := !probed.Estimated && len(probed.Streams) > 0 && probed.Video() != nil
+	ids, err := s.variantIDsFor(ctx, s.variantRefs(t, vs))
+	if err != nil {
+		pr.versionErr = err
+		return nil, ""
+	}
+	probedReady := !probed.Estimated && probed.HasPlayableMedia()
 	// playedIdx is the Media the session plays: the one it was admitted on
 	// when known, otherwise the version whose release is playing (Auto
 	// when the playing release is not one of the explicit non-Auto picks,
@@ -203,7 +208,7 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	playedIdx := -1
 	if pin.frozen && pin.selected != 0 {
 		for i, v := range vs {
-			if s.variantMediaID(t, v) == pin.selected {
+			if s.variantMediaID(t, v, ids) == pin.selected {
 				playedIdx = i
 				break
 			}
@@ -242,13 +247,13 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 		warmAuto := playedIdx < 0 && probedReady && v.Auto
 		variant := v
 		if played || warmAuto {
-			keepReleaseBitrate := !probeDisagrees(v.Info, probed) && v.Info.BitrateKbps > 0 && (probedRelease != "" || autoDuplicatesRow || probed.BitrateKbps <= 0)
+			keepReleaseBitrate := probed.Video() != nil && !probeDisagrees(v.Info, probed) && v.Info.BitrateKbps > 0 && (probedRelease != "" || autoDuplicatesRow || probed.BitrateKbps <= 0)
 			variant.Info = mergeProbedVariantInfo(v.Info, probed, keepReleaseBitrate)
 		} else if !v.Auto && sameVariantRelease(v.Release, vs[0].Release) && probedReady && !matchedNonAuto && !probeDisagrees(v.Info, probed) {
-			variant.Info = mergeProbedVariantInfo(v.Info, probed, v.Info.BitrateKbps > 0)
+			variant.Info = mergeProbedVariantInfo(v.Info, probed, probed.Video() != nil && v.Info.BitrateKbps > 0)
 		}
 		variant.Info = variantInfoForClient(variant.Info, caps)
-		m := buildMediaVariant(t, variant, stamp, s.variantIDs)
+		m := buildMediaVariant(t, variant, stamp, s.variantMediaID(t, variant, ids))
 		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, now)
 		if s.previewAvailable(pr, t.Key, v.Release.ID) {
 			m.Part[0].Indexes = "sd"
@@ -304,17 +309,6 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	return out, edition
 }
 
-// variantMediaID is the Media/Part id buildMediaVariant gives v.
-func (s *Server) variantMediaID(t *frontend.Title, v frontend.ReleaseVariant) int64 {
-	if v.Auto || s.variantIDs == nil {
-		return int64(t.Key)
-	}
-	return s.variantIDs.idFor(t.Key, versionIdentity(v))
-}
-
-// buildMediaVariant renders one variant's Media/Part. Auto keeps the
-// historical ids (ratingKey); other variants get their registry id and
-// the variant label as the Media title Plex apps show in "Play Version".
 func anyMediaSelected(media []model.Media) bool {
 	for i := range media {
 		if media[i].Selected != nil && *media[i].Selected {
@@ -355,19 +349,13 @@ func variantInfoForClient(info frontend.MediaInfo, caps frontend.ClientCaps) fro
 	return info
 }
 
-func buildMediaVariant(t *frontend.Title, v frontend.ReleaseVariant, stamp int64, registry *variantIDRegistry) model.Media {
+// buildMediaVariant attaches the issued Part ID and the label for Play Version.
+func buildMediaVariant(t *frontend.Title, v frontend.ReleaseVariant, stamp, id int64) model.Media {
 	m := buildMedia(t, v.Info, stamp)
-	var id int64
-	if v.Auto || registry == nil {
-		id = int64(t.Key)
-	} else {
-		id = registry.idFor(t.Key, versionIdentity(v))
-	}
 	if id != int64(t.Key) {
-		ext := containerExt(plexContainer(v.Info.Container))
 		m.ID = id
 		m.Part[0].ID = id
-		m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, ext)
+		m.Part[0].Key = mediaPartKey(id, stamp, v.Info)
 	}
 	if v.Label != "" {
 		m.Extra = []model.Attr{model.A("title", v.Label)}
@@ -716,9 +704,16 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 			return nil, errDecisionMediaIndex
 		}
 	}
-	releaseID := s.resolveVariantSelection(ctx, pr, p)
-	p.variantRelease = releaseID
-	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID)
+	p.variantRelease = s.resolveVariantSelection(ctx, pr, p)
+	mediaID, err := s.admittedMedia(ctx, p)
+	if err != nil {
+		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
+		return nil, err
+	}
+	p.mediaID = mediaID
+	// A restart after a track change keeps the release being watched.
+	releaseID, exact := s.restartRelease(s.playIdentityFor(pr, p.key), p.variantRelease)
+	ps, err := s.prepareForRelease(p.sourceDecisionContext(ctx), pr.User, p.key, p.sourceSelectionCaps(), releaseID, exact)
 	if err != nil {
 		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
 	}
@@ -727,26 +722,28 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 
 // admittedMedia is the Media id a prepared request plays: the Part it
 // addressed, the Play Version it picked by position, or Auto.
-func (s *Server) admittedMedia(p *playRequest) int64 {
+func (s *Server) admittedMedia(ctx context.Context, p *playRequest) (int64, error) {
 	if p.requestedPart != 0 {
 		if k, rel, ok := s.partTitle(p.requestedPart); ok && k == p.key {
 			if rel == "" {
-				return int64(p.key)
+				return int64(p.key), nil
 			}
-			return p.requestedPart
+			return p.requestedPart, nil
 		}
 	}
 	if p.variantRelease != "" && p.mediaIndex > 0 && s.variantIDs != nil {
-		return s.variantIDs.idFor(p.key, p.variantRelease)
+		ref := frontend.VariantRef{Key: p.key, ReleaseID: p.variantRelease}
+		ids, err := s.variantIDsFor(ctx, []frontend.VariantRef{ref})
+		return ids[ref], err
 	}
-	return int64(p.key)
+	return int64(p.key), nil
 }
 
 // prepareForRelease prepares a session on a specific release ("" = Auto).
 // When the playback manager cannot target a release, it logs and plays
-// the normal choice instead of failing.
-func (s *Server) prepareForRelease(ctx context.Context, user *frontend.User, key frontend.RatingKey, caps frontend.ClientCaps, releaseID string) (*frontend.PlaySession, error) {
-	return s.plexSources().Prepare(ctx, user, key, caps, releaseID, decisionSourceWait)
+// the normal choice instead of failing. exact opens that release or fails.
+func (s *Server) prepareForRelease(ctx context.Context, user *frontend.User, key frontend.RatingKey, caps frontend.ClientCaps, releaseID string, exact bool) (*frontend.PlaySession, error) {
+	return s.plexSources().Prepare(ctx, user, key, caps, releaseID, exact, decisionSourceWait)
 }
 
 // variantWatchSchedule is when a detail page rendered with a single version

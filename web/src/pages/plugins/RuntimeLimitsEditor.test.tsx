@@ -56,6 +56,7 @@ it("edits the global catalogue item ceiling above 2,000,000 with no upper cap", 
       archiveExpandedBytes: 0,
       archiveMembers: 0,
       maxItems: 5000000,
+      listItems: 0,
     },
   });
 });

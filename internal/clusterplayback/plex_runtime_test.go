@@ -262,12 +262,8 @@ func TestRealPlexRuntimeDecisionStartSeekAcrossFrontends(t *testing.T) {
 	start.RemoteAddr = "192.168.1.9:1234"
 	start.Header.Set("X-Plex-Token", "offline-account")
 	start.Header.Set("X-Plex-Client-Identifier", "composed-client")
-	unarmed := httptest.NewRecorder()
-	publicOwner.ServeHTTP(unarmed, start.Clone(ctx))
-	if unarmed.Code != http.StatusBadRequest || len(remote.Sessions()) != 0 {
-		t.Fatalf("unarmed Plex start status %d, admitted sessions %d", unarmed.Code, len(remote.Sessions()))
-	}
-	// PMS requires a decision for this player and item before HLS start.
+	// A start without a prior decision decides implicitly (PMS does not
+	// require one); plex tests cover that. Here the client decides first.
 	decisionRequest := httptest.NewRequest("GET", "https://public"+strings.Replace(startURI, "start.m3u8", "decision", 1), nil)
 	decisionRequest.RemoteAddr = start.RemoteAddr
 	decisionRequest.Header = start.Header.Clone()

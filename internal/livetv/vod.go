@@ -310,6 +310,12 @@ func (s *Service) RefreshVOD(ctx context.Context, id string) (err error) {
 		return err
 	}
 	defer seen.Close()
+	// changed counts rows the refresh actually wrote or removed: the upsert
+	// skips a row whose data did not change. Only a real change is
+	// announced; an unchanged catalogue must not make the resolver forget
+	// its searches (every scheduled refresh did, and the re-searches spent
+	// indexers' daily API budgets).
+	var changed int64
 	dec := json.NewDecoder(staged)
 	for {
 		var row entry
@@ -343,15 +349,23 @@ func (s *Service) RefreshVOD(ctx context.Context, id string) (err error) {
 			tmdb = v.TMDBAlt.Int()
 		}
 		b, _ := json.Marshal(v)
-		if _, e := up.ExecContext(ctx, id, kind, sid, tmdb, title, year, string(v.Modified)+":"+string(v.Added), string(b)); e != nil {
+		res, e := up.ExecContext(ctx, id, kind, sid, tmdb, title, year, string(v.Modified)+":"+string(v.Added), string(b))
+		if e != nil {
 			return e
+		}
+		if n, e := res.RowsAffected(); e == nil {
+			changed += n
 		}
 		if _, e := seen.ExecContext(ctx, kind, sid); e != nil {
 			return e
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM xtream_vod WHERE provider=? AND NOT EXISTS(SELECT 1 FROM xtream_vod_seen s WHERE s.kind=xtream_vod.kind AND s.id=xtream_vod.id)`, id); err != nil {
+	removed, err := tx.ExecContext(ctx, `DELETE FROM xtream_vod WHERE provider=? AND NOT EXISTS(SELECT 1 FROM xtream_vod_seen s WHERE s.kind=xtream_vod.kind AND s.id=xtream_vod.id)`, id)
+	if err != nil {
 		return err
+	}
+	if n, e := removed.RowsAffected(); e == nil {
+		changed += n
 	}
 	hours := src.RefreshHours
 	if hours == 0 {
@@ -367,7 +381,7 @@ func (s *Service) RefreshVOD(ctx context.Context, id string) (err error) {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	if s.o.VODChanged != nil {
+	if changed > 0 && s.o.VODChanged != nil {
 		s.o.VODChanged()
 	}
 	return nil
@@ -757,7 +771,7 @@ func (s *Service) reserveVODProvider(ctx context.Context, id string, limit int, 
 		if ss.inputSource.AuthSourceID != "" {
 			source = ss.inputSource.AuthSourceID
 		}
-		if source == id {
+		if !ss.archiveInput && source == id {
 			channels[ss.info.Channel.ID] = true
 		}
 	}

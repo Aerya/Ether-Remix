@@ -194,6 +194,31 @@ const iptv = (id: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe("Live TV studio", () => {
+  it("shows archive badges and saves zero rewind minutes from Live TV Settings", async () => {
+    const { fake } = renderAppWith("/livetv", () => undefined);
+    const archived = await screen.findByRole("button", { name: "100 News 24" }, WAIT);
+    expect(archived).toHaveAccessibleDescription("Catch-up: 7 days");
+    expect(screen.getByRole("button", { name: "102 Retro TV" })).not.toHaveAccessibleDescription();
+
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const drawer = await screen.findByRole("dialog", { name: "Live TV settings" });
+    const slider = await within(drawer).findByRole("slider", {
+      name: "Rewind live TV up to 60 minutes",
+    });
+    fireEvent.change(slider, { target: { value: "0" } });
+    expect(slider).toHaveAccessibleName("Rewind live TV up to 0 minutes");
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(fakeCalls(fake, "PUT", "/config/livetv").at(-1)?.body).toEqual({
+        timeshiftMinutes: 0,
+      });
+      expect(fake.state.config.liveTV).toMatchObject({
+        timeshiftMinutes: 0,
+        latencyProfile: "auto",
+      });
+    });
+  });
   it("finds channels in the lineup and narrows to favourites", async () => {
     backend(
       Array.from({ length: 25 }, (_, i) => ({

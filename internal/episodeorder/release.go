@@ -24,7 +24,7 @@ func (s *Service) ReleasePreference(ctx context.Context, show core.RatingKey) (R
 }
 
 func (s *Service) SaveReleasePreference(ctx context.Context, show core.RatingKey, p ReleasePreference) error {
-	if show.Kind() != core.KindShow || show.TMDB() <= 0 {
+	if show.Kind() != core.KindShow {
 		return fmt.Errorf("invalid show")
 	}
 	switch p.Mode {
@@ -33,7 +33,7 @@ func (s *Service) SaveReleasePreference(ctx context.Context, show core.RatingKey
 			return fmt.Errorf("unexpected group")
 		}
 	case "group":
-		groups, err := s.source.EpisodeGroups(ctx, show.TMDB())
+		groups, err := s.groups(ctx, show)
 		if err != nil {
 			return err
 		}

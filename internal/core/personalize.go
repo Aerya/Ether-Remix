@@ -64,23 +64,13 @@ type ImpressionSink interface {
 	RecordImpressions(user *User, hc HubContext, hubs []Hub)
 }
 
-// CollectionRow is an owner-designed collection offered as a Home or
-// section row for a user in a context (targeting and schedules already
-// applied).
+// CollectionRow is an owner collection (or a plugin list) served as a row
+// for a viewer: enabled, visible to them, with their content-rating limit,
+// personal rules, order and rotation applied. Where it shows is a row on a
+// Recommendations page.
 type CollectionRow struct {
 	Hub          Hub    `json:"hub"`
 	CollectionID string `json:"collectionId"`
-	HomeRow      bool   `json:"homeRow"`
-	SectionRow   bool   `json:"sectionRow"`
-	// Schedule is the collection's schedule. The personalization engine
-	// applies it (a viewer's Home override may replace it).
-	Schedule *CollectionSchedule `json:"schedule,omitempty"`
-}
-
-// CollectionRows is implemented by the collection engine for the
-// personalization engine.
-type CollectionRows interface {
-	HomeRowsFor(ctx context.Context, user *User, hc HubContext) ([]CollectionRow, error)
 }
 
 // PersonalScorer scores titles for a user (higher = better fit). The

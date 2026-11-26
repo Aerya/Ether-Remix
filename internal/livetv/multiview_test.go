@@ -435,10 +435,11 @@ func TestMultiviewFourConcurrentColdBroadcastTilesAllPlay(t *testing.T) {
 	})
 }
 
-// Replanning a running tile to a new rendition (for example 480p -> 1080p)
-// must carry the broadcast's live anchor forward monotonically and gather a
-// multi-segment cushion rather than resetting to {mediaSequence: 0,
-// windowStartSeconds: 0} with a 2 s live edge.
+// Replanning a running tile to a new rendition (for example 480p -> 1080p ->
+// 480p) must advance mediaSequence monotonically and gather a multi-segment
+// cushion, while keeping windowStartSeconds and liveEdgeSeconds on the new
+// rendition's own 0-based media timeline rather than carrying the old
+// rendition's elapsed offset.
 func TestMultiviewReplanKeepsLiveAnchorAndCushion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		origin := time.Now()
@@ -512,16 +513,57 @@ func TestMultiviewReplanKeepsLiveAnchorAndCushion(t *testing.T) {
 		if win1080.Anchor.MediaSequence <= latest480.Seq {
 			t.Fatalf("replanned mediaSequence = %d, want > old 480p latest %d", win1080.Anchor.MediaSequence, latest480.Seq)
 		}
-		if win1080.Anchor.WindowStartSeconds <= 0 {
-			t.Fatalf("replanned windowStartSeconds = %v, want > 0 (carried from broadcast anchor)", win1080.Anchor.WindowStartSeconds)
+		if win1080.Anchor.WindowStartSeconds != 0 {
+			t.Fatalf("replanned windowStartSeconds = %v, want 0 (re-based to new rendition playlist)", win1080.Anchor.WindowStartSeconds)
 		}
 		buffer := win1080.LiveEdgeSeconds - win1080.Anchor.WindowStartSeconds
 		if buffer+1e-6 < (3 * segment).Seconds() {
 			t.Fatalf("replanned buffer = %.2fs (edge=%.2fs start=%.2fs), want >= %.2fs", buffer, win1080.LiveEdgeSeconds, win1080.Anchor.WindowStartSeconds, (3 * segment).Seconds())
 		}
+		if maxEdge := float64(len(segs1080)+1) * segment.Seconds(); win1080.LiveEdgeSeconds > maxEdge {
+			t.Fatalf("replanned liveEdgeSeconds = %.2fs exceeds new rendition duration %.2fs (leaked old rendition timeline)", win1080.LiveEdgeSeconds, maxEdge)
+		}
 
+		// Handover commits (releases 480p), 1080p runs, then user returns to 480p grid.
 		lease480.close()
+		time.Sleep(12 * time.Second)
+		synctest.Wait()
+
+		latest1080, ok := idx1080.Latest()
+		if !ok {
+			t.Fatal("1080p latest missing")
+		}
+		lease480Back, err := reg.acquire(handoverCtx, key, "h264-480p", core.Decision{VideoCodec: "h264", AudioCodec: "aac", MaxHeight: 480}, func() (*broadcast, error) {
+			t.Fatal("replan back to 480p must reuse running broadcast")
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitBroadcastCushion(handoverCtx, lease480Back, false); err != nil {
+			t.Fatalf("awaitBroadcastCushion 480p return: %v", err)
+		}
+		idx480Back, err := lease480Back.output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		segs480Back := idx480Back.Since(-1, 0)
+		win480Back, err := broadcastLiveWindow(t.Context(), lease480Back, idx480Back, segs480Back)
+		if err != nil {
+			t.Fatalf("return 480p LiveWindow: %v", err)
+		}
+		if win480Back.Anchor.MediaSequence <= latest1080.Seq {
+			t.Fatalf("return 480p mediaSequence = %d, want > 1080p latest %d", win480Back.Anchor.MediaSequence, latest1080.Seq)
+		}
+		if win480Back.Anchor.WindowStartSeconds != 0 {
+			t.Fatalf("return 480p windowStartSeconds = %v, want 0 (re-based to new rendition playlist)", win480Back.Anchor.WindowStartSeconds)
+		}
+		if maxEdge := float64(len(segs480Back)+1) * segment.Seconds(); win480Back.LiveEdgeSeconds > maxEdge {
+			t.Fatalf("return 480p liveEdgeSeconds = %.2fs exceeds new rendition duration %.2fs (leaked old rendition timeline)", win480Back.LiveEdgeSeconds, maxEdge)
+		}
+
 		lease1080.close()
+		lease480Back.close()
 	})
 }
 

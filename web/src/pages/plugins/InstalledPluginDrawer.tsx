@@ -30,7 +30,7 @@ import { ErrorPanel, LoadingRows, MutationError } from "../../components/feedbac
 import { StatusDot } from "../../components/status";
 import { getLocale, t, tn } from "../../i18n";
 import { ApiError, apiFetch } from "../../lib/api";
-import { invalidateRegistry } from "../../lib/extend";
+import { invalidateRegistry, setPluginEnabled } from "../../lib/extend";
 import { PluginActivity } from "./drawer/PluginActivity";
 import { usePluginCalls } from "./drawer/calls";
 import { healthSummary } from "./drawer/health";
@@ -61,6 +61,7 @@ type DrawerTab = "overview" | "adds" | "setup" | "activity";
  */
 export function InstalledPluginDrawer({
   pluginId,
+  initialTab,
   logRevision = 0,
   liveLogLines = [],
   onClose,
@@ -68,6 +69,7 @@ export function InstalledPluginDrawer({
   onRemoved,
 }: {
   pluginId: string | null;
+  initialTab?: DrawerTab;
   logRevision?: number;
   liveLogLines?: string[];
   onClose: () => void;
@@ -76,7 +78,7 @@ export function InstalledPluginDrawer({
 }) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [tab, setTab] = useState<DrawerTab>("overview");
+  const [tab, setTab] = useState<DrawerTab>(initialTab ?? "overview");
   const [setupWizard, setSetupWizard] = useState(false);
   const [detail, setDetail] = useState<PluginDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -91,7 +93,10 @@ export function InstalledPluginDrawer({
   const [liveFeeds, setLiveFeeds] = useState<PluginFeedOverview[] | undefined>(undefined);
   const { calls, reload: reloadCalls } = usePluginCalls(pluginId, logRevision);
 
-  useEffect(() => setTab(params.get("tab") === "setup" ? "setup" : "overview"), [pluginId, params]);
+  useEffect(
+    () => setTab(initialTab ?? (params.get("tab") === "setup" ? "setup" : "overview")),
+    [pluginId, initialTab, params],
+  );
   useEffect(() => {
     setBusy(null);
     setLiveFeeds(undefined);
@@ -155,19 +160,17 @@ export function InstalledPluginDrawer({
     }
   };
 
-  const reload = async () => {
+  const reload = async (registryChanged = true) => {
     if (!detail) return;
-    invalidateRegistry();
+    if (registryChanged) invalidateRegistry();
     await loadDetail(detail.id, true);
     onChanged();
   };
 
   const toggleEnabled = (next: boolean) =>
     run("enable", async () => {
-      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/${next ? "enable" : "disable"}`, {
-        method: "POST",
-      });
-      await reload();
+      await setPluginEnabled(detail!.id, next);
+      await reload(false);
     });
 
   const retry = () =>
@@ -282,9 +285,12 @@ export function InstalledPluginDrawer({
     if (!detail) return;
     const ok = await confirmDialog({
       title: t("Undo everything this plugin did?"),
-      message: t("This reverses every collection and watch-state change recorded for {name}.", {
-        name: detail.name,
-      }),
+      message: t(
+        "Reverses recorded changes for {name} (kept for up to 30 days, 10,000 changes, or 256 MiB).",
+        {
+          name: detail.name,
+        },
+      ),
       confirmLabel: t("Undo changes"),
       tone: "danger",
     });

@@ -279,7 +279,6 @@ func writeTools(d Deps) []tools.Tool {
 			Description: "Propose custom format scores for a quality profile. Releases rank by quality group first, then by the sum of their custom format scores, as in Radarr and Sonarr. Read quality_profiles first; use quality_order_set to group qualities when a language preference should outrank resolution. Keys are custom format ids: the owner's or imported formats, Ether's built-in formats (ether:remux, ether:hdr, ether:codec-hevc, ether:audio-truehd, ether:viewer-language, ether:audio-transcode and the rest) or Prefer rules (rule:<id>). A score of 0 removes the format from the profile. Omit profile for the first (default) profile.",
 			InputSchema: schema(map[string]any{
 				"profile": pString("Profile name; defaults to the first profile", 80),
-				"media":   pEnum("Which media's profile, when a movie and a TV profile share the name", "movie", "tv"),
 				"scores": map[string]any{"type": "object", "minProperties": 1, "maxProperties": 64,
 					"description":          "Custom format id → score",
 					"additionalProperties": map[string]any{"type": "integer", "minimum": -1000000000, "maximum": 1000000000}},
@@ -313,9 +312,9 @@ func writeTools(d Deps) []tools.Tool {
 				return propose("Change custom format scores",
 					fmt.Sprintf("Change custom format scores on the %s profile.", profile.Name),
 					details,
-					map[string]any{"profile": profile.Name, "media": profile.Media, "scores": scores},
+					map[string]any{"profile": profile.Name, "scores": scores},
 					func(ctx context.Context) (tools.Result, error) {
-						if err := d.Profiles.SetFormatScores(ctx, profile.Name, profile.Media, scores); err != nil {
+						if err := d.Profiles.SetFormatScores(ctx, profile.Name, scores); err != nil {
 							return tools.Result{}, err
 						}
 						return tools.Result{Data: map[string]any{"updated": true, "profile": profile.Name},
@@ -328,7 +327,6 @@ func writeTools(d Deps) []tools.Tool {
 			Description: "Propose adding one release rule to a quality profile. Action: require (only releases matching), avoid (never matching) or prefer (rank matching higher). Conditions test release fields such as resolution, codec, source, group, language or name. The rule is checked before it is proposed.",
 			InputSchema: schema(map[string]any{
 				"profile":  pString("Profile name; defaults to the first profile", 80),
-				"media":    pEnum("Which media's profile, when a movie and a TV profile share the name", "movie", "tv"),
 				"name":     pString("A short name for the rule", 80),
 				"action":   pEnum("What the rule does", "require", "prefer", "avoid"),
 				"match":    pEnum("all: every condition; any: at least one", "all", "any"),
@@ -398,7 +396,7 @@ func writeTools(d Deps) []tools.Tool {
 					}
 					conds = append(conds, cond)
 				}
-				storedInput := map[string]any{"profile": profile.Name, "media": profile.Media, "name": name, "action": action, "disabled": disabled, "conditions": conds}
+				storedInput := map[string]any{"profile": profile.Name, "name": name, "action": action, "disabled": disabled, "conditions": conds}
 				if match != "" {
 					// Same reason as operator above: "match" has no "" enum member.
 					storedInput["match"] = match
@@ -413,7 +411,7 @@ func writeTools(d Deps) []tools.Tool {
 					},
 					storedInput,
 					func(ctx context.Context) (tools.Result, error) {
-						if err := d.Profiles.AddRule(ctx, profile.Name, profile.Media, rule); err != nil {
+						if err := d.Profiles.AddRule(ctx, profile.Name, rule); err != nil {
 							return tools.Result{}, err
 						}
 						return tools.Result{Data: map[string]any{"added": true, "profile": profile.Name},
@@ -622,24 +620,13 @@ func (d Deps) profile(ctx context.Context, in map[string]any) (ProfileInfo, erro
 	if len(profiles) == 0 {
 		return ProfileInfo{}, tools.Userf("no quality profiles are configured")
 	}
-	media, err := optStr(in, "media", 8)
-	if err != nil {
-		return ProfileInfo{}, err
-	}
-	if name == "" && media == "" {
+	if name == "" {
 		return profiles[0], nil
 	}
-	var matches []ProfileInfo
 	for _, p := range profiles {
-		if (name == "" || strings.EqualFold(p.Name, name)) && (media == "" || p.Media == media) {
-			matches = append(matches, p)
+		if strings.EqualFold(p.Name, name) {
+			return p, nil
 		}
-	}
-	if len(matches) == 1 || (name == "" && len(matches) > 0) {
-		return matches[0], nil
-	}
-	if len(matches) > 1 {
-		return ProfileInfo{}, tools.Userf("%q exists for movies and for TV shows; set media to \"movie\" or \"tv\"", name)
 	}
 	names := make([]string, len(profiles))
 	for i, p := range profiles {

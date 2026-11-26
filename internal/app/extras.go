@@ -96,11 +96,14 @@ func (a *App) themeTitle(ctx context.Context, viewer *core.Viewer, key core.Rati
 	default:
 		return nil, core.ErrNotFound
 	}
+	vis := experienceVisibility(a.safety, a.catalog.CachedGet, nil, nil, a.configuredLibraries())
+	if a.libraries != nil {
+		return a.librarySessionTitle(ctx, viewer, key, vis, true, false)
+	}
 	title, err := a.catalog.CachedGet(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	vis := experienceVisibility(a.safety, a.catalog.CachedGet, nil, nil, a.configuredLibraries())
 	if !vis.Playable(ctx, viewer, title) {
 		return nil, core.ErrNotFound
 	}

@@ -911,6 +911,8 @@ type DecisionArms interface {
 	Armed(pr DecisionOwner, key core.RatingKey) bool
 	Disarm(pr DecisionOwner, key core.RatingKey)
 	Current(pr DecisionOwner, key core.RatingKey) bool
+	// Stopped reports that pr.Generation of key was ended by a player stop.
+	Stopped(pr DecisionOwner, key core.RatingKey) bool
 	Refresh(now time.Time)
 	ClearOwn()
 }
@@ -975,6 +977,7 @@ type DownloadQueueStore interface {
 // VariantIDs assigns stable ids to release variants.
 type VariantIDs interface {
 	IDFor(key core.RatingKey, releaseID string) int64
+	IDsFor(ctx context.Context, refs []VariantRef) (map[VariantRef]int64, error)
 	Lookup(id int64) (VariantRef, bool)
 	Start(ctx context.Context, wg *sync.WaitGroup)
 	Flush(ctx context.Context) error
@@ -1138,7 +1141,7 @@ type SessionRuntime interface {
 	NewVariantIDs(db *sql.DB, now func() time.Time) VariantIDs
 	NewDownloadJob(playback Playback, remuxer DownloadRemuxer) DownloadJob
 	NewDownloadQueuePersistence(queue DownloadQueueStore, db *sql.DB, artifacts DownloadRemuxer, log *slog.Logger, expiry func() time.Duration, storageID func() string, users func(context.Context) ([]core.User, error)) DownloadQueuePersistence
-	PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error)
+	PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error)
 	PartSource(viewer int64, client string, key core.RatingKey, release string) PartSource
 	ServePartSource(w http.ResponseWriter, r *http.Request, sourceID string)
 	ObserveStart(ctx context.Context, source HLSSession, id string) (StartObservation, bool)
@@ -1800,7 +1803,7 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 		return "nextUp"
 	case strings.Contains(id, "watchlist"):
 		return "watchlist"
-	case h.Key != 0 || strings.Contains(id, "collection"):
+	case h.Type == "collection" || h.Key != 0 || strings.Contains(id, "collection"):
 		return "collection"
 	case strings.Contains(id, "recentlyreleased") || strings.Contains(id, "recently.released"):
 		return "recentlyReleased"
@@ -1813,6 +1816,9 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
+	// A wanted language heard only as commentary/AD is kept as a last
+	// resort: any main track (default-flagged first) plays before it.
+	wantedNonMain := -1
 	for _, lang := range langs {
 		// Within one wanted language, non-commentary/non-AD always beats
 		// commentary/AD; then the best language tier wins (exact before
@@ -1832,8 +1838,11 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
-		if best >= 0 {
+		if best >= 0 && !bestPenalized {
 			return best
+		}
+		if best >= 0 && wantedNonMain < 0 {
+			wantedNonMain = best
 		}
 	}
 	first, firstPenalized := -1, -1
@@ -1854,6 +1863,9 @@ func PickAudio(info core.MediaInfo, langs []string) int {
 	}
 	if first >= 0 {
 		return first
+	}
+	if wantedNonMain >= 0 {
+		return wantedNonMain
 	}
 	return firstPenalized
 }

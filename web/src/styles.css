@@ -525,6 +525,45 @@ body {
   padding-bottom: 0.25rem;
 }
 
+/* Keep built-in nav items visible at 900px height and show clear top/bottom
+ * scroll shadows + thin scrollbar whenever extra items overflow the rail. */
+.ether-shell aside nav.app-scroll {
+  padding-top: 0.5rem;
+  padding-bottom: 0.75rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+  background:
+    linear-gradient(var(--color-surface, #fff) 30%, transparent) center top / 100% 24px no-repeat
+      local,
+    linear-gradient(transparent, var(--color-surface, #fff) 70%) center bottom / 100% 24px no-repeat
+      local,
+    radial-gradient(
+        farthest-side at 50% 0,
+        color-mix(in srgb, var(--color-fg, #000) 14%, transparent),
+        transparent
+      )
+      center top / 100% 10px no-repeat scroll,
+    radial-gradient(
+        farthest-side at 50% 100%,
+        color-mix(in srgb, var(--color-fg, #000) 14%, transparent),
+        transparent
+      )
+      center bottom / 100% 10px no-repeat scroll;
+}
+.ether-shell aside nav.app-scroll > div {
+  margin-bottom: 0.5rem;
+}
+.ether-shell aside nav.app-scroll > div:last-child {
+  margin-bottom: 0;
+}
+.ether-shell aside nav.app-scroll > div > div:empty {
+  display: none;
+}
+.ether-shell aside nav.app-scroll a {
+  padding-top: 0.28rem;
+  padding-bottom: 0.28rem;
+}
+
 /* A ⌘K jump points at one setting row for a moment. */
 .setting-focus {
   border-radius: 0.5rem;

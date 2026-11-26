@@ -78,7 +78,7 @@ func newShieldMeasureRig(t *testing.T, mode string, cached bool) *shieldMeasureR
 	base = x.upstream.URL
 	cfg := config.Defaults(t.TempDir())
 	cfg.Quality.Default = "lab"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab", MaxHeight: 2160}}
 	switch mode {

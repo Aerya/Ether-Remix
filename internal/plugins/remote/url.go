@@ -41,6 +41,7 @@ type URLClient struct {
 	locale       string
 	trusted      bool
 	trustedHosts func() []string
+	checkHost    func(string) error
 	maxBytes     int64
 	maxStream    int64
 	timeout      time.Duration
@@ -74,7 +75,8 @@ type URLOptions struct {
 	// directory (for example https://addons.example/usercfg). Request
 	// paths are appended to it. A trailing "/manifest.json" is
 	// stripped so a manifest URL may be passed directly.
-	Base string
+	Base      string
+	CheckHost func(string) error
 	// Credential is sent as X-Ether-Plugin-Credential on every call.
 	// Plain Stremio add-ons have none.
 	Credential string
@@ -159,6 +161,11 @@ func NewURLClient(opts URLOptions) (*URLClient, error) {
 		// context so streamed bodies are not cut at a second,
 		// invisible limit.
 		httpClient: guard.Client(&http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if opts.CheckHost != nil {
+				if err := opts.CheckHost(req.URL.Hostname()); err != nil {
+					return err
+				}
+			}
 			if len(via) >= 10 {
 				return fmt.Errorf("too many plugin redirects")
 			}
@@ -183,6 +190,7 @@ func NewURLClient(opts URLOptions) (*URLClient, error) {
 		locale:       opts.Locale,
 		trusted:      trusted,
 		trustedHosts: opts.TrustedHosts,
+		checkHost:    opts.CheckHost,
 		maxBytes:     maxBytes,
 		maxStream:    opts.MaxStreamBytes,
 		timeout:      timeout,
@@ -308,6 +316,12 @@ func (c *URLClient) do(ctx context.Context, req Request) (*http.Response, contex
 	}
 	if httpReq.Header.Get("Accept") == "" {
 		httpReq.Header.Set("Accept", "application/json")
+	}
+	if c.checkHost != nil {
+		if err := c.checkHost(httpReq.URL.Hostname()); err != nil {
+			cancel()
+			return nil, nil, err
+		}
 	}
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

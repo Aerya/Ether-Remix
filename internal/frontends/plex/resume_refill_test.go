@@ -102,7 +102,7 @@ func newEtheLab(t *testing.T, resumed bool, remembered string, n int) *etheLab {
 	x.cfg.Quality.Default = "lab1080"
 	x.cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 	x.cfg.Quality.Rules = nil
-	x.cfg.Quality.Remote = ""
+	x.cfg.Quality.DefaultAway = ""
 	x.title = core.Title{Key: core.RatingKey(4000634040030005), Type: core.TypeEpisode, ShowTitle: "Taskmaster", Title: "Taskmaster S03E05", Year: 2016, Season: 3, Episode: 5, Runtime: 45 * time.Minute, Language: "en"}
 	x.idx = &etheLabIndexer{}
 	for i, group := range []string{"FLUX", "EDITH", "NTb", "OTHER", "REMEMBERED"} {

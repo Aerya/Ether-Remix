@@ -12,10 +12,10 @@ describe("catalogue synchronization", () => {
     vi.mocked(apiFetch)
       .mockResolvedValueOnce({ running: true })
       .mockResolvedValueOnce({ running: true })
-      .mockResolvedValueOnce({ running: false });
+      .mockResolvedValueOnce({ running: false, itemCount: 500, listed: 520, limit: 500 });
     const result = librariesApi.syncCatalogueSource("stremio:test:movie");
     await vi.advanceTimersByTimeAsync(3000);
-    await expect(result).resolves.toEqual({ ok: true });
+    await expect(result).resolves.toEqual({ ok: true, itemCount: 500, listed: 520, limit: 500 });
     expect(apiFetch).toHaveBeenCalledTimes(3);
     expect(apiFetch).toHaveBeenNthCalledWith(
       1,

@@ -86,9 +86,8 @@ describe("settings index", () => {
     expect(at("Allow downloads")[0]).toMatchObject({ href: "/apps/plex/downloads" });
     expect(at("Trailers and Cinema Trailers")[0]).toMatchObject({ href: "/playback/prerolls" });
     expect(at("Custom server URLs")[0]).toMatchObject({ href: "/apps/overview" });
-    expect(at("Bitrate limit")[0]).toMatchObject({ href: "/quality/profiles" });
     expect(at("Watchlist monitoring")[0]).toMatchObject({ href: "/viewers" });
-    expect(at("Adapt Home to tonight's browsing")[0]).toMatchObject({ href: "/home" });
+    expect(at("Adapt Home to tonight's browsing")[0]).toMatchObject({ href: "/recommendations" });
   });
 
   it("uses a stable More options disclosure key for hidden settings", () => {

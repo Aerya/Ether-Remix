@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func serveInBackground(t *testing.T, dataDir string, port int) (base string, sto
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, Options{DataDir: dataDir, Logger: quietLog(), Version: "9.9.9"}) }()
-	stop = func() error {
+	stop = sync.OnceValue(func() error {
 		cancel()
 		select {
 		case err := <-done:
@@ -66,8 +67,8 @@ func serveInBackground(t *testing.T, dataDir string, port int) (base string, sto
 			t.Fatal("Serve did not stop")
 			return nil
 		}
-	}
-	t.Cleanup(func() { cancel() })
+	})
+	t.Cleanup(func() { _ = stop() })
 	return fmt.Sprintf("http://127.0.0.1:%d", port), stop
 }
 
@@ -243,9 +244,6 @@ func TestServeHoldsAFailedStartAndRestoresFromItsPage(t *testing.T) {
 	if rep == nil || rep.Status != "failed" || !rep.RolledBack || rep.Source != name {
 		t.Fatalf("restore report = %+v", rep)
 	}
-	if b, err := os.ReadFile(filepath.Join(dataDir, "ether.db")); err != nil || !bytes.HasPrefix(b, []byte("not sqlite")) {
-		t.Fatalf("original database not put back: %v", err)
-	}
 	if p, _ := backup.ReadPending(dataDir); p != nil {
 		t.Fatalf("restore record left: %+v", p)
 	}
@@ -256,7 +254,7 @@ func TestServeHoldsAFailedStartAndRestoresFromItsPage(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if st, raw := fetchStatus(t, base); st.Phase != startup.PhaseFailed || st.Failure.Code != startup.FailDatabaseCorrupt {
+	if st, raw := fetchStatus(t, base); st.Phase != startup.PhaseFailed || st.Failure == nil || st.Failure.Code != startup.FailDatabaseCorrupt {
 		t.Fatalf("after the rollback: %s", raw)
 	}
 	// Finding (lock gap): the data directory stays locked across retries.
@@ -264,7 +262,12 @@ func TestServeHoldsAFailedStartAndRestoresFromItsPage(t *testing.T) {
 		l.Release()
 		t.Fatal("another instance could take the data directory during a retry")
 	}
+	// The retried SQLite open can still hold a Windows file lock while the
+	// report is visible. Join Serve before inspecting the original bytes.
 	_ = stop()
+	if b, err := os.ReadFile(filepath.Join(dataDir, "ether.db")); err != nil || !bytes.HasPrefix(b, []byte("not sqlite")) {
+		t.Fatalf("original database not put back: %v", err)
+	}
 }
 
 // A pending restore is applied by New before the database opens, and the

@@ -1,7 +1,7 @@
 import { ActionJobs } from "./ActionJobs";
-import { pluginCollectionHref } from "../../collections/links";
+import { addRowHref } from "../../../lib/recommendations";
 import { DashboardPanel } from "@braedonsaunders/appkit-dashboard/primitives";
-import { Badge, Button, Skeleton, cn } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Skeleton, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -114,7 +114,12 @@ export function PluginOverview({
       {detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data" ? (
         <ActionJobs id={detail.id} />
       ) : null}
-      <Placements detail={detail} liveEvents={liveEvents.data} onClose={onClose} />
+      <Placements
+        detail={detail}
+        liveEvents={liveEvents.data}
+        onReload={liveEvents.reload}
+        onClose={onClose}
+      />
     </div>
   );
 }
@@ -1027,11 +1032,7 @@ function CatalogueNow({
       })}
       icon={<Library size={16} />}
       actions={
-        <OpenLink
-          to={pluginCollectionHref(current!.id, textOf(current!.label))}
-          label={t("Make a collection")}
-          onClose={onClose}
-        />
+        <OpenLink to={addRowHref(current!.id)} label={t("Add as a row")} onClose={onClose} />
       }
     >
       {lists.length > 1 ? (
@@ -1225,7 +1226,6 @@ function fallbackScreens(detail: PluginDetail): PluginScreenOverview[] {
     id: sc.id,
     title: sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id,
     icon: sc.icon,
-    feed: sc.feed,
     frontends: (sc.frontends?.length ? sc.frontends : ["vela"]).map((id) => ({
       id,
       name: id === "vela" ? "Vela" : id,
@@ -1252,7 +1252,10 @@ function fallbackFeeds(detail: PluginDetail): PluginFeedOverview[] {
   }));
 }
 
-function screenPublishCopy(fe: { name: string; published: boolean; reason?: string }): {
+function screenPublishCopy(
+  fe: { name: string; published: boolean; reason?: string },
+  surface = false,
+): {
   badge: string;
   variant: "success" | "info" | "warning" | "secondary";
   detail: string;
@@ -1261,10 +1264,18 @@ function screenPublishCopy(fe: { name: string; published: boolean; reason?: stri
     return {
       badge: t("Published"),
       variant: "success",
-      detail: t("Shown in {app} navigation.", { app: fe.name }),
+      detail: surface
+        ? t("Shown in {app} where it applies.", { app: fe.name })
+        : t("Shown in {app} navigation.", { app: fe.name }),
     };
   }
   switch (fe.reason) {
+    case "owner_off":
+      return {
+        badge: t("Hidden"),
+        variant: "secondary",
+        detail: t("You turned this off for {app}.", { app: fe.name }),
+      };
     case "shadow":
       return {
         badge: t("Trying out"),
@@ -1295,12 +1306,30 @@ function screenPublishCopy(fe: { name: string; published: boolean; reason?: stri
 function Placements({
   detail,
   liveEvents,
+  onReload,
   onClose,
 }: {
   detail: PluginDetail;
   liveEvents: PluginLiveEventsOverview | null;
+  onReload?: () => void;
   onClose: () => void;
 }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const setShown = async (kind: string, id: string, frontend: string, enabled: boolean) => {
+    const key = `${kind}:${id}:${frontend}`;
+    setSaving(key);
+    try {
+      await apiFetch(`/plugins/${encodeURIComponent(detail.id)}/screen-publish`, {
+        method: "PUT",
+        body: JSON.stringify({ kind, id, frontend, enabled }),
+      });
+      onReload?.();
+    } catch {
+      toast.error(t("Could not change where this shows."));
+    } finally {
+      setSaving(null);
+    }
+  };
   const { descriptors } = useRegistry();
   const placements = buildPlacements(descriptors, detail.id, detail.manifest);
   const [collections, setCollections] = useState(0);
@@ -1347,7 +1376,8 @@ function Placements({
           <div className="space-y-2.5">
             {screens.flatMap((sc) =>
               sc.frontends.map((fe) => {
-                const status = screenPublishCopy(fe);
+                const status = screenPublishCopy(fe, sc.kind === "surface");
+                const switchKey = `${sc.kind ?? "screen"}:${sc.id}:${fe.id}`;
                 return (
                   <div
                     key={`screen:${sc.id}:${fe.id}`}
@@ -1362,11 +1392,22 @@ function Placements({
                       </div>
                       <p className="mt-0.5 text-xs text-fg-muted">{status.detail}</p>
                     </div>
-                    <Button size="sm" variant="outline" asChild>
-                      <Link to={`/apps/${encodeURIComponent(fe.id)}`} onClick={onClose}>
-                        {t("Manage in Apps")} <ArrowUpRight size={13} />
-                      </Link>
-                    </Button>
+                    {fe.enabled !== undefined ? (
+                      <Switch
+                        aria-label={t("Show {screen} in {app}", { screen: sc.title, app: fe.name })}
+                        checked={fe.enabled}
+                        disabled={saving === switchKey}
+                        onChange={(e) =>
+                          void setShown(sc.kind ?? "screen", sc.id, fe.id, e.target.checked)
+                        }
+                      />
+                    ) : (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={`/apps/${encodeURIComponent(fe.id)}`} onClick={onClose}>
+                          {t("Manage in Apps")} <ArrowUpRight size={13} />
+                        </Link>
+                      </Button>
+                    )}
                   </div>
                 );
               }),

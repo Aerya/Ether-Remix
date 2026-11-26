@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { describeUpdaterMessage, UpdatesStatus } from "../pages/settings/sections";
-import type { UpdateStatus } from "../lib/types";
+import { AutomaticWhatsNew } from "../components/UpdateNotesDrawer";
+import type { UpdateNotes, UpdateStatus } from "../lib/types";
 
 const base: UpdateStatus = {
   enabled: true,
@@ -18,12 +19,14 @@ const base: UpdateStatus = {
 };
 
 async function show(patch: Partial<UpdateStatus> = {}) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => new Response(JSON.stringify({ ...base, ...patch }))),
+  const fetch = vi.fn(
+    async (_input: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ...base, ...patch })),
   );
+  vi.stubGlobal("fetch", fetch);
   render(<UpdatesStatus />);
   await screen.findByText("Version 0.2.32");
+  return fetch;
 }
 
 describe("update availability confidence", () => {
@@ -69,7 +72,7 @@ describe("update availability confidence", () => {
     });
     expect(screen.getByText("This build can't check for signed updates.")).toBeInTheDocument();
     expect(screen.queryByText(/updater:/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check now" })).toBeDisabled();
   });
 
   it("never leaks raw updater: prefixes from Go error messages", () => {
@@ -127,12 +130,6 @@ describe("automatic update schedule", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows a finished update until dismissed", async () => {
-    await show({ installed: { from: "0.3.5", to: "0.2.32", at: "2026-11-08T03:12:00Z" } });
-    expect(screen.getByText("Updated to 0.2.32")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
-  });
-
   it("gives a container the exact pull commands", async () => {
     await show({
       capability: "notify-only",
@@ -163,5 +160,35 @@ describe("update startup progress", () => {
     render(<UpdatesStatus />);
     expect(await screen.findByText("Saving a safety copy")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("release notes", () => {
+  it("remembers an automatic dismissal across console visits", async () => {
+    const notes: UpdateNotes = {
+      version: "0.2.32",
+      markdown: "## Playback\n\n- Faster startup",
+      unseen: true,
+      installed: { from: "0.2.31", to: "0.2.32", at: "2026-11-08T03:12:00Z" },
+    };
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/dismiss")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ version: "0.2.32" });
+        notes.unseen = false;
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(notes));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const view = render(<AutomaticWhatsNew version={notes.version} />);
+    expect(await screen.findByRole("heading", { name: "Playback" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem")).toHaveTextContent("Faster startup");
+    expect(screen.getByText(/Ether installed it by itself/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    view.unmount();
+    render(<AutomaticWhatsNew version={notes.version} />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

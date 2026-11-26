@@ -332,3 +332,40 @@ func TestReceiptBoundedSweepBatchQuota(t *testing.T) {
 		t.Fatalf("expired=%d live=%d", expired, live)
 	}
 }
+
+// Eviction is planned before the write transaction. A planned receipt that is
+// claimed in between keeps its authority; another dispensable one goes.
+func TestReceiptPlannedEvictionSparesClaimSinceThePlan(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Unix(1700000000, 0)
+	opts := relayOptions(db, &now, 2, true, nil)
+	s, err := NewReceipts(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, d := &core.User{ID: 1}, core.Device{ID: "tv"}
+	older, err := s.Issue(ctx, u, d, "jellyfin", ReceiptSubject{Kind: "title", ID: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	newer, err := s.Issue(ctx, u, d, "jellyfin", ReceiptSubject{Kind: "title", ID: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := s.codec.Hash(older)
+	s.opts.beforeSweep = func(tx *sql.Tx) {
+		if _, err := tx.Exec(`INSERT INTO capability_claims(namespace,digest,purpose) VALUES(?,?,?)`, ReceiptCapabilityNamespace, digest, string(frontend.RowImpression)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.Issue(ctx, u, d, "jellyfin", ReceiptSubject{Kind: "title", ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	for token, want := range map[string]bool{older: true, newer: false} {
+		if live, err := s.receiptsLive(ctx, u.ID, d.ID, "jellyfin", []string{token}); err != nil || live != want {
+			t.Fatalf("live=%v want %v: %v", live, want, err)
+		}
+	}
+}

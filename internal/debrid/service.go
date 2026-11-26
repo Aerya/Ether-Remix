@@ -74,7 +74,8 @@ type Options struct {
 	UncachedTTL time.Duration // known-uncached memory, 0 = 30m
 	// DirectGuard guards direct HTTP stream requests (tests map fake public
 	// hosts onto local servers); nil uses a zero safefetch.Guard.
-	DirectGuard *safefetch.Guard
+	DirectGuard   *safefetch.Guard
+	IsIndexerHost func(string) bool
 	// OnChange is notified when provider configuration or breaker state changes.
 	OnChange func()
 	// Events receives non-blocking provider.* domain events when set.
@@ -152,10 +153,11 @@ type entry struct {
 	state    string // "", "backoff", "auth_failed", "quota_exceeded"
 	// probeAt is when the single half-open test after a quota pause was
 	// let through (zero: none running).
-	probeAt   time.Time
-	outageAt  time.Time
-	lastError string
-	stats     ProviderStats
+	probeAt         time.Time
+	outageAt        time.Time
+	lastError       string
+	stats           ProviderStats
+	lastSpeedSample playbackSpeedSample
 	// Add refusals (ErrAddRefused): consecutive count, the latest, and the
 	// pause on new torrents they caused.
 	addRefusals int
@@ -952,7 +954,8 @@ func (s *Service) VerifyCached(ctx context.Context, hash string) (bool, bool) {
 func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refresh bool) (map[string]bool, map[string][]core.DebridServiceRef, bool) {
 	out := map[string]bool{}
 	by := map[string][]core.DebridServiceRef{}
-	if len(hashes) == 0 {
+	entries := s.active()
+	if len(hashes) == 0 || len(entries) == 0 || ctx.Err() != nil {
 		return out, by, false
 	}
 	addService := func(h string, ref core.DebridServiceRef) {
@@ -964,7 +967,7 @@ func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refres
 		by[h] = append(by[h], ref)
 	}
 	definitive := true
-	for _, e := range s.active() {
+	for _, e := range entries {
 		if e.blocked(s.now()) != nil || e.quotaPending() {
 			// A provider waiting for its quota test is left to a real
 			// unlock: a cache check must not hold (or spend) that one test.
@@ -2088,9 +2091,8 @@ func (s *Service) fresh(p Payload) bool {
 // fresher link stored by another process path is reused without an API
 // call. The same provider regenerates the link (re-adding the torrent by
 // magnet when it was removed); otherwise another provider holding the same
-// file takes over. Errors wrap core.ErrSourceUnavailable for transient or
-// no-longer-cached outcomes (failover without marking the release bad) and
-// core.ErrArticleMissing when the file itself is gone from the torrent.
+// file takes over. ErrOriginalLost means every eligible account confirmed
+// the loss. A missing torrent member also carries ErrArticleMissing.
 func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, error) {
 	if p.IsDirect() {
 		// An addon's link resolves itself on every request: a failed
@@ -2114,7 +2116,8 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		switch {
 		case errors.Is(err, errFileMissing):
 			missing++
-		case errors.Is(err, ErrGone) || errors.Is(err, core.ErrNotCached):
+		case !refusal(err) && !errors.Is(err, core.ErrDownloadLimit) &&
+			(errors.Is(err, ErrGone) || errors.Is(err, core.ErrNotCached)):
 			gone++
 		}
 		errs = append(errs, err)
@@ -2144,7 +2147,11 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 	}
 	// Another provider may hold the same torrent.
 	for _, e := range s.active() {
-		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
+		if e.cfg.ID == p.Provider {
+			continue
+		}
+		if err := e.blocked(s.now()); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, NativeTorrentOnly: p.NativeTorrentOnly, Private: p.Private, Target: p.Target, Release: p.Release}
@@ -2166,9 +2173,9 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 	}
 	switch {
 	case missing > 0 && missing+gone == len(errs):
-		return p, fmt.Errorf("debrid: %s is gone: %w (%v)", p.Name(), core.ErrArticleMissing, joined)
+		return p, fmt.Errorf("debrid: %s is gone: %w (%v)", p.Name(), errors.Join(core.ErrArticleMissing, core.ErrOriginalLost), joined)
 	case gone > 0 && gone+missing == len(errs):
-		return p, fmt.Errorf("debrid: %s: %w: %w", p.Name(), core.ErrSourceUnavailable, core.ErrNotCached)
+		return p, fmt.Errorf("debrid: %s: %w: %w", p.Name(), core.ErrOriginalLost, core.ErrNotCached)
 	}
 	return p, fmt.Errorf("debrid: refresh link for %s: %w (%v)", p.Name(), core.ErrSourceUnavailable, joined)
 }

@@ -136,7 +136,7 @@ func TestBodyPipelineIntegratedBoundAndWire(t *testing.T) {
 	results := make(chan error, 4)
 	for i := 0; i < 4; i++ {
 		go func(i int) {
-			part, err := p.body(context.Background(), fmt.Sprintf("%d@test", i), nil, core.PriorityLive)
+			part, _, err := p.body(context.Background(), fmt.Sprintf("%d@test", i), nil, core.PriorityLive)
 			if err == nil && string(part.Data) != "payload" {
 				err = errors.New("wrong payload")
 			}
@@ -314,10 +314,10 @@ func TestBodyPipelineCanceledMemberDoesNotAbortPeers(t *testing.T) {
 	defer cancel()
 	gone := make(chan error, 1)
 	peers := make(chan error, 2)
-	go func() { _, err := p.body(canceled, "cancel@test", nil, core.PriorityLive); gone <- err }()
+	go func() { _, _, err := p.body(canceled, "cancel@test", nil, core.PriorityLive); gone <- err }()
 	for i := 0; i < 2; i++ {
 		go func(i int) {
-			part, err := p.body(ctx, fmt.Sprintf("peer%d@test", i), nil, core.PriorityLive)
+			part, _, err := p.body(ctx, fmt.Sprintf("peer%d@test", i), nil, core.PriorityLive)
 			if err == nil && string(part.Data) != "payload" {
 				err = errors.New("wrong peer body")
 			}
@@ -913,7 +913,7 @@ func TestActiveJoinedStallHonorsDeadlinesAndCancellation(t *testing.T) {
 			p := f.pools[0]
 			background, live := make(chan error, 1), make(chan error, 1)
 			go func() {
-				_, err := p.body(context.Background(), "<stalled@test>", nil, core.PriorityReadahead)
+				_, _, err := p.body(context.Background(), "<stalled@test>", nil, core.PriorityReadahead)
 				background <- err
 			}()
 			key := bodyKey{id: "<stalled@test>", prio: core.PriorityReadahead}
@@ -926,7 +926,7 @@ func TestActiveJoinedStallHonorsDeadlinesAndCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
-				_, err := p.body(ctx, "<stalled@test>", nil, core.PriorityLive)
+				_, _, err := p.body(ctx, "<stalled@test>", nil, core.PriorityLive)
 				live <- err
 			}()
 			waitPipeline(t, func() bool {

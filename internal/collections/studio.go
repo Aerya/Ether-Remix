@@ -3,14 +3,17 @@ package collections
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // The Collection Studio API, used by internal/admin.
@@ -28,9 +31,6 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 	out := make([]core.CollectionSpec, 0, len(rows))
 	var snap *snapshot
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		if _, ok := localFacetSpec(r.spec); ok {
 			// A listing waits briefly for the catalogue index's first
 			// build, which reads the whole catalogue; past that the stored
@@ -40,9 +40,6 @@ func (s *Service) ListSpecs(ctx context.Context) ([]core.CollectionSpec, error) 
 		}
 	}
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		v := r.view()
 		if key, ok := localFacetSpec(r.spec); ok && snap != nil {
 			v.ItemCount = len(snap.facetKeys(key))
@@ -65,9 +62,6 @@ func (s *Service) ListSpecsLight(ctx context.Context) ([]core.CollectionSpec, er
 	}
 	out := make([]core.CollectionSpec, 0, len(rows))
 	for _, r := range rows {
-		if strings.HasPrefix(r.slug, "plugin:") {
-			continue
-		}
 		out = append(out, r.view())
 	}
 	return out, nil
@@ -121,10 +115,10 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 	if err != nil {
 		return nil, err
 	}
-	Normalize(&sp)
-	if row.builtin {
-		sp = mergeBuiltin(row.spec, sp)
+	if sp.Users == nil {
+		sp.Users = row.spec.Users
 	}
+	Normalize(&sp)
 	// If the owner swapped away from the synced add-on catalogue source,
 	// detach the add-on sync metadata automatically.
 	if sp.AddonSync != nil {
@@ -577,6 +571,63 @@ func (s *Service) tmdbCollectionPoster(ctx context.Context, sp core.CollectionSp
 		}
 		if art, err := s.mirror.CollectionArt(ctx, src.ID); err == nil && art.PosterPath != "" {
 			return art.PosterPath
+		}
+	}
+	return ""
+}
+
+// FindCollectionCardKeys matches the start of a collection name using the
+// collection-card index. Stored IDs and match results use the same rating keys.
+func (s *Service) FindCollectionCardKeys(ctx context.Context, prefix string, limit int) ([]core.RatingKey, error) {
+	if prefix == "" || limit <= 0 {
+		return nil, nil
+	}
+	limit = min(limit, core.MaxCollectionCards)
+	var rows *sql.Rows
+	var err error
+	if store.DialectOf(s.db) == store.Postgres {
+		name := `LOWER(spec_json::jsonb->>'name') COLLATE "C"`
+		prefix = strings.ToLower(prefix)
+		seek := name + ">=?"
+		args := []any{prefix}
+		if upper := nextCollectionPrefix(prefix); upper != "" {
+			seek += " AND " + name + "<?"
+			args = append(args, upper)
+		}
+		rows, err = s.db.QueryContext(ctx, "SELECT id FROM collections_specs WHERE enabled=1 AND owner_user_id=0 AND "+seek+" ORDER BY "+name+",id LIMIT ?", append(args, limit)...)
+	} else {
+		pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(prefix) + "%"
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id FROM collections_specs
+			WHERE enabled=1 AND owner_user_id=0 AND json_extract(spec_json, '$.name') LIKE ? ESCAPE '\'
+			ORDER BY json_extract(spec_json, '$.name') COLLATE NOCASE, id LIMIT ?`, pattern, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []core.RatingKey
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		keys = append(keys, core.SmartKey(id))
+	}
+	return keys, rows.Err()
+}
+
+// nextCollectionPrefix gives the exclusive upper bound of a prefix in byte order.
+func nextCollectionPrefix(prefix string) string {
+	for prefix != "" {
+		last, size := utf8.DecodeLastRuneInString(prefix)
+		prefix = prefix[:len(prefix)-size]
+		if last < utf8.MaxRune {
+			last++
+			if last == 0xD800 {
+				last = 0xE000
+			}
+			return prefix + string(last)
 		}
 	}
 	return ""

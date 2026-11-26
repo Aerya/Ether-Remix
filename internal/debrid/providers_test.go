@@ -1,10 +1,12 @@
 package debrid
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -916,12 +918,33 @@ func TestDebridLinkErrors(t *testing.T) {
 	if _, err := p.Account(ctx); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("429: %v", err)
 	}
-	// An infringing torrent refused at add time pauses adds like Real-Debrid.
+	// An infringing torrent refused at add time is blocked for that
+	// release, like Real-Debrid; it does not pause adds on the account.
 	f.mu.Lock()
 	f.errCode, f.errHTTP = "infringingFile", 451
 	f.mu.Unlock()
-	if _, err := p.Acquire(ctx, acquireReq(true)); !errors.Is(err, ErrAddRefused) || !errors.Is(err, core.ErrNotCached) {
+	if _, err := p.Acquire(ctx, acquireReq(true)); !errors.Is(err, ErrBlocked) || errors.Is(err, ErrAddRefused) || !errors.Is(err, core.ErrNotCached) {
 		t.Fatalf("infringing add: %v", err)
+	}
+}
+
+// Two infringing releases in a row must not keep the next release on the
+// same Debrid-Link account from playing.
+func TestDebridLinkBlockedReleasesDoNotPauseAdds(t *testing.T) {
+	f := &fakeDL{cached: true, errCode: "infringingFile", errHTTP: 451}
+	_, svc, _, _ := dlService(t, f)
+	for _, hash := range []string{hashN(1), hashN(2)} {
+		rel := dlRelease()
+		rel.ID, rel.InfoHash = hash, hash
+		if _, err := svc.Acquire(t.Context(), rel); !errors.Is(err, core.ErrNotCached) {
+			t.Fatalf("blocked release: %v", err)
+		}
+	}
+	f.mu.Lock()
+	f.errCode, f.errHTTP = "", 0
+	f.mu.Unlock()
+	if _, err := svc.Acquire(t.Context(), dlRelease()); err != nil {
+		t.Fatalf("next release was prevented from playing: %v", err)
 	}
 }
 
@@ -1189,5 +1212,61 @@ func TestOffcloudErrors(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Errorf("%s: got %v, want %v", body, err, want)
 		}
+	}
+	// A DMCA refusal at add time is blocked for that release, like
+	// Real-Debrid; it does not pause adds on the account.
+	dmca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cache/info" {
+			fmt.Fprint(w, `[{"cached":true}]`)
+			return
+		}
+		fmt.Fprint(w, `{"error":"File removed due to DMCA"}`)
+	}))
+	defer dmca.Close()
+	if _, err := newOffcloud(testKey, fastOpts(dmca.URL)).Acquire(ctx, acquireReq(true)); !errors.Is(err, ErrBlocked) || errors.Is(err, ErrAddRefused) || !errors.Is(err, core.ErrNotCached) {
+		t.Fatalf("dmca add: %v", err)
+	}
+}
+
+// Two DMCA'd releases in a row must not keep the next release on the same
+// Offcloud account from playing.
+func TestOffcloudBlockedReleasesDoNotPauseAdds(t *testing.T) {
+	f := &fakeOC{cached: true}
+	base := f.handler(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL  string   `json:"url"`
+			URLs []string `json:"urls"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		switch {
+		case r.URL.Path == "/cache/info":
+			fmt.Fprint(w, "["+strings.TrimSuffix(strings.Repeat(`{"cached":true},`, len(body.URLs)), ",")+"]")
+			return
+		case r.URL.Path == "/cloud" && !strings.Contains(body.URL, testHash):
+			fmt.Fprint(w, `{"error":"File removed due to DMCA"}`)
+			return
+		case r.URL.Path == "/cloud/history": // nothing to reuse: the next release needs an add
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		base.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	p := newOffcloud(testKey, fastOpts(srv.URL))
+	cfg := config.Debrid{CachedOnly: true, RemoveUncached: true, Providers: []config.DebridProvider{{ID: "oc", Kind: "offcloud", APIKey: testKey, Enabled: true}}}
+	svc := NewService(cfg, Options{NewProvider: func(config.DebridProvider, ProviderOptions) (Provider, error) { return p, nil }})
+	rel := core.Release{ID: "oc-episode", Name: "Show.S01", Protocol: core.ProtocolTorrent, InfoHash: testHash, Target: &core.ReleaseTarget{Season: 1, Episode: 2}}
+	for _, hash := range []string{hashN(1), hashN(2)} {
+		blocked := rel
+		blocked.ID, blocked.InfoHash = hash, hash
+		if _, err := svc.Acquire(t.Context(), blocked); !errors.Is(err, core.ErrNotCached) {
+			t.Fatalf("blocked release: %v", err)
+		}
+	}
+	if _, err := svc.Acquire(t.Context(), rel); err != nil {
+		t.Fatalf("next release was prevented from playing: %v", err)
 	}
 }

@@ -179,3 +179,104 @@ func TestRefreshScheduleLeavesSettledShowsAlone(t *testing.T) {
 		t.Fatalf("ended show's seasons fetched: %v", f.fetched)
 	}
 }
+
+func TestGenresOfReadsStoredNonAdultGenres(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
+	c, err := catalog.New(store.OpenTest(t), nil, config.Catalog{}, slog.New(slog.DiscardHandler), catalog.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	titles := []core.Title{
+		{Key: core.ShowKey(800), Type: core.TypeShow, Title: "Drama Show", Released: day(1), Genres: []string{"Drama", "Sci-Fi"}},
+		{Key: core.MovieKey(801), Type: core.TypeMovie, Title: "Adult Film", Released: day(2), Adult: true, Genres: []string{"Drama"}},
+	}
+	for _, tt := range titles {
+		if err := c.UpsertTitle(ctx, tt, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := c.GenresOf(ctx, []core.RatingKey{core.ShowKey(800), core.MovieKey(801)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[core.ShowKey(800)]) != 2 {
+		t.Fatalf("show genres = %v, want 2 genres", got[core.ShowKey(800)])
+	}
+	if len(got[core.MovieKey(801)]) != 0 {
+		t.Fatalf("adult genres leaked: %v", got[core.MovieKey(801)])
+	}
+}
+
+func TestCalendarQueryPlansUseRangeIndexes(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
+	c, err := catalog.New(db, nil, config.Catalog{}, slog.New(slog.DiscardHandler), catalog.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(1); i <= 400; i++ {
+		if err := c.UpsertTitle(ctx, core.Title{
+			Key: core.MovieKey(i), Type: core.TypeMovie, Title: fmt.Sprintf("M%d", i),
+			Released: day(1).AddDate(0, 0, int(i%365)-180), Popularity: float64(1000 - i),
+		}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for sh := int64(900); sh < 940; sh++ {
+		show := core.Title{Key: core.ShowKey(sh), Type: core.TypeShow, Title: fmt.Sprintf("S%d", sh), Released: day(1).AddDate(-2, 0, 0)}
+		if err := c.UpsertTitle(ctx, show, true); err != nil {
+			t.Fatal(err)
+		}
+		for ep := 1; ep <= 25; ep++ {
+			if err := c.UpsertTitle(ctx, core.Title{
+				Key: core.EpisodeKey(sh, 1, ep), Type: core.TypeEpisode, ShowKey: show.Key, Season: 1, Episode: ep,
+				Title: fmt.Sprintf("E%d", ep), Released: day(1).AddDate(0, 0, ep-10),
+			}, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ANALYZE"); err != nil {
+		t.Fatal(err)
+	}
+	check := func(name, q string, args ...any) string {
+		rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q, args...)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		defer rows.Close()
+		var out string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			out += detail + "; "
+		}
+		return out
+	}
+	epPlan := check("episodes",
+		`SELECT key FROM catalog_titles WHERE type='episode' AND release_known=1 AND season>0 AND adult=0 AND show_key IN (?) AND released_ts>=? AND released_ts<? ORDER BY released_ts, key LIMIT ?`,
+		int64(core.ShowKey(900)), day(1).Unix(), day(30).Unix(), 500)
+	if !containsSub(epPlan, "catalog_titles_episode_aired") {
+		t.Fatalf("ScheduledShows did not use catalog_titles_episode_aired: %s", epPlan)
+	}
+	popPlan := check("popular_movies",
+		`SELECT key FROM catalog_titles WHERE type='movie' AND adult=0 AND released_ts>=? AND released_ts<? AND popularity>0 ORDER BY popularity DESC, key LIMIT ?`,
+		day(1).Unix(), day(30).Unix(), 168)
+	if !containsSub(popPlan, "catalog_plex_shelf_order") {
+		t.Fatalf("PopularScheduledMovies did not use released_ts range index: %s", popPlan)
+	}
+}
+
+func containsSub(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

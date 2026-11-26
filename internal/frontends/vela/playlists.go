@@ -151,7 +151,7 @@ func (i *instance) playlistCardsWire(r *http.Request, v *frontend.Viewer, token 
 		if images == nil {
 			images = []object{}
 		}
-		out = append(out, object{
+		card := object{
 			"id":        ids.RatingKeyGUID(pl.Key),
 			"kind":      "playlist",
 			"name":      pl.Title,
@@ -159,7 +159,11 @@ func (i *instance) playlistCardsWire(r *http.Request, v *frontend.Viewer, token 
 			"itemCount": len(pl.Items),
 			"smart":     pl.Smart,
 			"updatedAt": playlistTimestamp(pl),
-		})
+		}
+		if pl.Summary != "" {
+			card["summary"] = pl.Summary
+		}
+		out = append(out, card)
 	}
 	return out, nil
 }
@@ -332,13 +336,17 @@ func (i *instance) playlistDetail(w http.ResponseWriter, r *http.Request) {
 	items := make([]object, 0, len(pageEntries))
 	for idx, entry := range pageEntries {
 		t := wiredTitles[idx]
-		items = append(items, object{
+		item := object{
 			"id":           t["id"],
 			"entryId":      entry.EntryID,
 			"kind":         "title",
 			"title":        t,
 			"receiptToken": "",
-		})
+		}
+		if !entry.AddedAt.IsZero() {
+			item["addedAt"] = entry.AddedAt.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
 	}
 	art, err := i.playlistArtwork(r, v, token, []frontend.Playlist{contents.Playlist})
 	if err != nil {
@@ -395,13 +403,21 @@ func (i *instance) renamePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		Name string `json:"name"`
+		Name    *string `json:"name"`
+		Summary *string `json:"summary"`
 	}
-	if body(r, &b) != nil {
+	if body(r, &b) != nil || (b.Name == nil && b.Summary == nil) {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
-	pl, err := vp.RenameViewerPlaylist(r.Context(), v, k, b.Name)
+	var pl *frontend.Playlist
+	if editor, can := vp.(frontend.ViewerPlaylistEditor); can {
+		pl, err = editor.EditViewerPlaylist(r.Context(), v, k, b.Name, b.Summary)
+	} else if b.Name != nil && b.Summary == nil {
+		pl, err = vp.RenameViewerPlaylist(r.Context(), v, k, *b.Name)
+	} else {
+		err = frontend.ErrNotAvailable
+	}
 	if err != nil {
 		fail(w, err, r)
 		return

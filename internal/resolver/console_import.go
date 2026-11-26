@@ -23,11 +23,13 @@ const (
 // optional source + profile id) or carries pasted profile JSON; name is the
 // owner's choice for the saved profile.
 type importRequest struct {
-	App     string `json:"app"`
-	Source  string `json:"source"`
-	Profile string `json:"profile"`
-	JSON    string `json:"json"`
-	Name    string `json:"name"`
+	App      string `json:"app"`
+	Source   string `json:"source"`
+	Database string `json:"database,omitempty"`
+	Sync     *bool  `json:"sync,omitempty"`
+	Profile  string `json:"profile"`
+	JSON     string `json:"json"`
+	Name     string `json:"name"`
 }
 
 // maxImportBody bounds a pasted profile; TRaSH's largest is ~10 KiB.
@@ -60,15 +62,50 @@ func (h *consoleAPI) trashProfiles(w http.ResponseWriter, r *http.Request) {
 	consoleJSON(w, http.StatusOK, out)
 }
 
+func (h *consoleAPI) presets(w http.ResponseWriter, _ *http.Request) {
+	items := config.DefaultQuality().Profiles
+	for i := range items {
+		items[i].Import = nil
+	}
+	consoleJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *consoleAPI) dictionarryForDatabase(database string) (*Dictionarry, error) {
+	database = strings.TrimSpace(database)
+	if database == "" {
+		return h.deps.Dictionarry, nil
+	}
+	for _, db := range h.s.qualityCfg().Databases {
+		if db.ID == database {
+			norm, err := config.NormalizeProfileDatabase(db.Repo, db.Branch)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrDictionarryUnavailable, err)
+			}
+			return h.deps.Dictionarry.ForDatabase(db.ID, norm.ArchiveURL), nil
+		}
+	}
+	return nil, ErrDictionarryNotFound
+}
+
 func (h *consoleAPI) dictionarryProfiles(w http.ResponseWriter, r *http.Request) {
 	app := r.PathValue("app")
 	if !validApp(app) {
 		consoleError(w, http.StatusBadRequest, "invalid", "app must be radarr or sonarr")
 		return
 	}
+	database := strings.TrimSpace(r.URL.Query().Get("database"))
+	client, err := h.dictionarryForDatabase(database)
+	if err != nil {
+		if errors.Is(err, ErrDictionarryNotFound) {
+			consoleError(w, http.StatusNotFound, "not_found", "no such profile database")
+			return
+		}
+		h.dictionarryFail(w, err)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	items, err := h.deps.Dictionarry.Profiles(ctx, app)
+	items, err := client.Profiles(ctx, app)
 	if err != nil {
 		h.dictionarryFail(w, err)
 		return
@@ -77,6 +114,49 @@ func (h *consoleAPI) dictionarryProfiles(w http.ResponseWriter, r *http.Request)
 		items = []TrashProfile{}
 	}
 	consoleJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *consoleAPI) checkQualityDatabase(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Repo   string `json:"repo"`
+		Branch string `json:"branch"`
+	}
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err := d.Decode(&in); err != nil {
+		consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid request body"})
+		return
+	}
+	norm, err := config.NormalizeProfileDatabase(in.Repo, in.Branch)
+	if err != nil {
+		consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	client := h.deps.Dictionarry.ForDatabase(norm.ID, norm.ArchiveURL)
+	seen := map[string]bool{}
+	for _, app := range []string{"radarr", "sonarr"} {
+		items, ferr := client.Profiles(ctx, app)
+		if ferr != nil {
+			consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trashReason(ferr)})
+			return
+		}
+		for _, item := range items {
+			seen[item.ID] = true
+		}
+	}
+	if len(seen) == 0 {
+		consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "This database does not contain any quality profiles."})
+		return
+	}
+	consoleJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"id":       norm.ID,
+		"name":     norm.Name,
+		"repo":     norm.Repo,
+		"branch":   norm.Branch,
+		"profiles": len(seen),
+	})
 }
 
 func (h *consoleAPI) previewImport(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +252,17 @@ func (h *consoleAPI) plan(w http.ResponseWriter, r *http.Request, in importReque
 			consoleError(w, http.StatusBadRequest, "invalid", "choose a Profilarr (Dictionarry) profile")
 			return QualityImportPlan{}, false
 		}
-		imp, found, err := h.deps.Dictionarry.Import(ctx, app, in.Profile)
+		dbID := strings.TrimSpace(in.Database)
+		client, derr := h.dictionarryForDatabase(dbID)
+		if derr != nil {
+			if errors.Is(derr, ErrDictionarryNotFound) {
+				consoleError(w, http.StatusNotFound, "not_found", "no such profile database")
+				return QualityImportPlan{}, false
+			}
+			h.dictionarryFail(w, derr)
+			return QualityImportPlan{}, false
+		}
+		imp, found, err := client.Import(ctx, app, in.Profile)
 		if err != nil {
 			h.dictionarryFail(w, err)
 			return QualityImportPlan{}, false
@@ -181,7 +271,12 @@ func (h *consoleAPI) plan(w http.ResponseWriter, r *http.Request, in importReque
 		// later sync working if the guide renames its display name.
 		imp.Source, imp.ProfileID = ImportSourceDictionarry, trashSlug(in.Profile)
 		cfg := config.Config{Resolver: h.s.resolverCfg(), Quality: h.s.qualityCfg()}
-		return PlanQualityImport(imp, app, found, cfg), true
+		plan := PlanQualityImport(imp, app, found, cfg)
+		plan.Database = dbID
+		if in.Sync != nil && !*in.Sync {
+			plan.NoSync = true
+		}
+		return plan, true
 	}
 	var data []byte
 	switch {
@@ -251,6 +346,9 @@ func (h *consoleAPI) plan(w http.ResponseWriter, r *http.Request, in importReque
 				}
 			}
 		}
+	}
+	if in.Sync != nil && !*in.Sync {
+		plan.NoSync = true
 	}
 	return plan, true
 }

@@ -234,7 +234,8 @@ func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Requ
 	// output's first segment (awaitBroadcastCushion).
 	ss.mu.Lock()
 	provider := ss.info.Channel.Kind == "iptv"
-	segment := broadcastSegment(ss.broadcast)
+	lease := ss.broadcast
+	segment := broadcastSegment(lease)
 	ss.mu.Unlock()
 	wait, cancel := context.WithTimeout(ctx, segment/2)
 	defer cancel()
@@ -259,10 +260,10 @@ func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Requ
 		}
 	}
 	end := latest.Start.Add(latest.Duration)
-	from := end.Add(-s.latencyPolicy().PlaylistWindow())
+	from := s.broadcastWindowStart(lease, end)
 	if raw := r.URL.Query().Get("offset"); raw != "" {
 		seconds, err := strconv.ParseFloat(raw, 64)
-		if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds > broadcastDVR.Seconds() {
+		if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds > max(broadcastDVR, s.broadcastTimeshift(lease)).Seconds() {
 			return nil, nil, fmt.Errorf("invalid DVR offset")
 		}
 		end = end.Add(-time.Duration(seconds * float64(time.Second)))
@@ -442,7 +443,7 @@ func (s *Service) serveBroadcastDASH(w http.ResponseWriter, r *http.Request, ss 
 	}
 	init := withAuth(fmt.Sprintf("/livetv/sessions/%s/0/dash/0/header", ss.info.ID), ss.streamGrant)
 	media := withAuth(fmt.Sprintf("/livetv/sessions/%s/0/dash/0/$Number$.m4s", ss.info.ID), ss.streamGrant)
-	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease)
+	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease, segments...)
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT%dS" timeShiftBufferDepth="PT%dS" suggestedPresentationDelay="PT%dS"><Period id="0" start="PT0S"><AdaptationSet mimeType="video/mp4" segmentAlignment="true"><Representation id="0" codecs="%s" width="%d" height="%d" bandwidth="%d"><SegmentTemplate timescale="1000000000" startNumber="%d" initialization="%s" media="%s"><SegmentTimeline>`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano), minBufSec, windowSec, delaySec, html.EscapeString(codecs), width, height, bandwidth, first.Seq, html.EscapeString(init), html.EscapeString(media))
 	for _, seg := range segments {
@@ -497,7 +498,7 @@ func (s *Service) serveBroadcastDASHPart(w http.ResponseWriter, r *http.Request,
 // broadcastDASHWindow returns MPD timing attributes (minBufferTime,
 // timeShiftBufferDepth, suggestedPresentationDelay) in seconds matching the
 // session's actual segment length and live playlist window.
-func (s *Service) broadcastDASHWindow(ss *session, lease *broadcastLease) (minBufSec, windowSec, delaySec int) {
+func (s *Service) broadcastDASHWindow(ss *session, lease *broadcastLease, segments ...transcode.Segment) (minBufSec, windowSec, delaySec int) {
 	policy := s.latencyPolicy()
 	minBufSec = max(2, int(math.Ceil(broadcastSegment(lease).Seconds())))
 	delaySec = max(minBufSec, int(math.Ceil(policy.TargetLatency().Seconds())))
@@ -505,6 +506,10 @@ func (s *Service) broadcastDASHWindow(ss *session, lease *broadcastLease) (minBu
 		windowSec = 1800
 	} else {
 		windowSec = max(minBufSec*3, int(math.Ceil(policy.PlaylistWindow().Seconds())))
+		if s.broadcastTimeshift(lease) > 0 && len(segments) != 0 {
+			last := segments[len(segments)-1]
+			windowSec = max(windowSec, int(math.Ceil(last.Start.Add(last.Duration).Sub(segments[0].Start).Seconds())))
+		}
 	}
 	return minBufSec, windowSec, delaySec
 }
@@ -526,7 +531,7 @@ func (s *Service) serveBroadcastTrackDASH(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return err
 	}
-	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease)
+	minBufSec, windowSec, delaySec := s.broadcastDASHWindow(ss, lease, segments...)
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="utf-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011" availabilityStartTime="%s" publishTime="%s" minimumUpdatePeriod="PT2S" minBufferTime="PT%dS" timeShiftBufferDepth="PT%dS" suggestedPresentationDelay="PT%dS"><Period id="0" start="PT0S">`, origin.UTC().Format(time.RFC3339Nano), s.o.Now().UTC().Format(time.RFC3339Nano), minBufSec, windowSec, delaySec)
 	for rep, t := range tracks {

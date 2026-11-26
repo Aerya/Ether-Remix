@@ -204,6 +204,11 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	for k, v := range req.Query {
 		q[k] = []string{v}
 	}
+	for k, v := range req.RepeatedQuery {
+		if len(v) > 1 {
+			q[k] = append([]string(nil), v...)
+		}
+	}
 	headers := req.Headers
 	if req.Locale != "" {
 		headers = cloneHeaders(headers)
@@ -219,7 +224,19 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
 		}
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
+	var media *FrontendMedia
+	if len(resp.Media) > 0 && string(resp.Media) != "null" {
+		if err := json.Unmarshal(resp.Media, &media); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend media response: %w", err)
+		}
+	}
+	var art *FrontendArt
+	if len(resp.Art) > 0 && string(resp.Art) != "null" {
+		if err := json.Unmarshal(resp.Art, &art); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend art response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob, Media: media, Art: art}, nil
 }
 
 func (r *hostedRuntime) Close() error              { return r.p.Close() }
@@ -388,6 +405,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		out, err := json.Marshal(v)
 		return out, err
 	}
+	if strings.HasPrefix(name, "kinds.") {
+		if vs, ok := b.h.(interface {
+			callViewerState(context.Context, string, []json.RawMessage) (any, error, bool)
+		}); ok {
+			if v, err, handled := vs.callViewerState(ctx, name, args); handled {
+				return result(v, err)
+			}
+		}
+	}
 	switch name {
 	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "cache.rasterize", "archive.list", "archive.open", "archive.read", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
@@ -526,11 +552,13 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		v, err := b.h.ViewerHistory(ctx, num(0), int(num(1)), int(num(2)))
 		return result(v, err)
 	case "viewers.setWatchState":
-		var watched bool
-		if len(args) > 2 {
-			_ = json.Unmarshal(args[2], &watched)
+		var viewerID int64
+		var watched *bool
+		if len(args) != 3 || json.Unmarshal(args[0], &viewerID) != nil || viewerID <= 0 ||
+			str(1) == "" || json.Unmarshal(args[2], &watched) != nil || watched == nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "viewerId, titleId and watched are required"}
 		}
-		return result(nil, b.h.SetWatchState(ctx, num(0), str(1), watched))
+		return result(nil, b.h.SetWatchState(ctx, viewerID, str(1), *watched))
 	case "collections.upsert":
 		var col json.RawMessage
 		if len(args) > 0 {
@@ -600,7 +628,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 					dec := json.NewDecoder(bytes.NewReader(rawArg))
 					dec.DisallowUnknownFields()
 					if err := dec.Decode(&opts); err != nil {
-						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source? }"}
+						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL options must be { partIndex?, source?, absolute? }"}
 					}
 					if opts.PartIndex != nil && *opts.PartIndex < 0 {
 						return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
@@ -733,6 +761,16 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "screens.invalidate":
+		n, err := b.h.ScreensInvalidate(ctx)
+		return result(map[string]int{"streams": n}, err)
+	case "screens.putRecords":
+		var raw json.RawMessage = json.RawMessage(`[]`)
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 {
+			raw = args[0]
+		}
+		n, err := b.h.ScreensPutRecords(ctx, raw)
+		return result(map[string]int{"streams": n}, err)
 	case "ai.complete":
 		var req AICompleteRequest
 		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {

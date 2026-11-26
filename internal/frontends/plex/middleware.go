@@ -343,7 +343,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform)
 				s.recentClients.recordRequest(r, pr, s.now())
 				s.observePlaybackRequestStart(r, pr)
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, withAuthenticatedViewer(r, pr))
 				return
 			case err == nil, errors.Is(err, frontend.ErrUnauthorized), errors.Is(err, frontend.ErrNotFound):
 				// Stale or unknown token: playlist/segment reads may still
@@ -377,7 +377,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				s.svc().remoteClientSeen(pr.RemoteIP.String())
 			}
 			s.observePlaybackRequestStart(r, pr)
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, withAuthenticatedViewer(r, pr))
 			return
 		}
 		if s.forwardMissingPlexGrant(w, r, pr) {
@@ -385,6 +385,17 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		writeHTTPError(w, http.StatusUnauthorized)
 	})
+}
+
+// withAuthenticatedViewer attaches the authenticated user as the catalogue
+// viewer. parse runs before authentication, so the request context it built
+// carries no viewer, and every catalogue read would otherwise page under the
+// household rules rather than the viewer's own.
+func withAuthenticatedViewer(r *http.Request, pr *Request) *http.Request {
+	if pr.User == nil {
+		return r
+	}
+	return r.WithContext(frontend.WithCatalogViewer(r.Context(), pr.User))
 }
 
 func (s *Server) acceptToken(ctx context.Context, token string) (*frontend.User, frontend.CredentialAcceptance, error) {
@@ -682,6 +693,9 @@ const notAvailableRetryAfter = "30"
 
 // writeErr maps a component error to an HTTP status.
 func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
+	if frontend.WriteIndexersPaused(w, err, notificationLanguage(r)) {
+		return
+	}
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		http.Error(w, bedtime.Error(), http.StatusUnauthorized)
@@ -689,6 +703,11 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	}
 
 	switch {
+	case frontend.SearchWasSuperseded(r.Context()):
+		// The client's next keystroke replaced this search: answer empty,
+		// never an error a client might retry with the stale query.
+		mc := libraryContainer()
+		s.write(w, r, mc)
 	case errors.Is(err, frontend.ErrNotFound):
 		writeHTTPError(w, http.StatusNotFound)
 	case errors.Is(err, frontend.ErrUnauthorized):

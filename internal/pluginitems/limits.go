@@ -30,12 +30,15 @@ const (
 	DefaultBrowseLimit    = 200
 	MaxBrowseLimit        = 1000
 	// MaxBrowseFacetValues bounds the total facet values across the
-	// any/all/none facet maps of one browse or search query, so the
-	// generated indexed predicates stay bounded.
-	MaxBrowseFacetValues = 256
-	MaxBrowseBodyBytes   = 8 << 20
-	MaxSyncConcurrency   = 4
-	DeleteGuardRatio     = 0.5
+	// any/all/none facet maps and anyGroups of one browse or search query,
+	// so the generated indexed predicates stay bounded.
+	MaxBrowseFacetValues = plugins.MaxKindBrowseFacetValues
+	// MaxBrowseAnyGroups bounds the number of any-of facet groups in one
+	// browse or search query (#767).
+	MaxBrowseAnyGroups = plugins.MaxKindBrowseAnyGroups
+	MaxBrowseBodyBytes = 8 << 20
+	MaxSyncConcurrency = 4
+	DeleteGuardRatio   = 0.5
 )
 
 var (

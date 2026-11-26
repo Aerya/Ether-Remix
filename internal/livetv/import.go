@@ -91,6 +91,51 @@ func isVODStream(raw string) bool {
 	return false
 }
 
+// m3uArchiveAttrs takes the first alias present for each setting, so a
+// channel can explicitly override a playlist default with an empty value.
+func m3uArchiveAttrs(attrs map[string]string, defaults ChannelArchive) ChannelArchive {
+	for _, key := range []string{"catchup", "catchup-type"} {
+		if value, ok := attrs[key]; ok {
+			defaults.Mode = strings.ToLower(strings.TrimSpace(value))
+			break
+		}
+	}
+	for _, key := range []string{"catchup-days", "tvg-rec", "timeshift"} {
+		if value, ok := attrs[key]; ok {
+			days, _ := strconv.Atoi(strings.TrimSpace(value))
+			defaults.Days = min(days, 30)
+			break
+		}
+	}
+	if value, ok := attrs["catchup-source"]; ok {
+		defaults.Source = strings.TrimSpace(value)
+	}
+	return defaults
+}
+
+func m3uChannelArchive(a ChannelArchive, stream string) *ChannelArchive {
+	if a.Days <= 0 {
+		return nil
+	}
+	switch a.Mode {
+	case "xc", "xtream":
+		if base, _, _, _ := xtreamLiveParts(stream); base != "" {
+			a.Mode, a.Source = "xtream", ""
+		} else if a.Mode == "xtream" || a.Source == "" {
+			return nil
+		}
+	case "default", "append":
+		if a.Source == "" {
+			return nil
+		}
+	case "shift", "flussonic":
+		a.Source = ""
+	default:
+		return nil
+	}
+	return &a
+}
+
 // ParseM3U preserves only explicitly provided HTTP(S) streams. Executable,
 // file and media-tool pseudo protocols are rejected.
 func ParseM3U(r io.Reader, sourceID string) ([]Channel, error) {
@@ -108,6 +153,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 	var out []Channel
 	var pending *Channel
 	var pendingHeaders map[string]string
+	var archiveDefaults, pendingArchive ChannelArchive
 	header := false
 	seen := map[string]bool{}
 	for sc.Scan() {
@@ -120,6 +166,11 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 				return nil, stats, fmt.Errorf("playlist must start with #EXTM3U")
 			}
 			stats.GuideURLs = parseM3UGuideURLs(line)
+			attrs := map[string]string{}
+			for _, m := range m3uHeaderAttr.FindAllStringSubmatch(line, -1) {
+				attrs[strings.ToLower(m[1])] = m[2] + m[3]
+			}
+			archiveDefaults = m3uArchiveAttrs(attrs, ChannelArchive{})
 			header = true
 			continue
 		}
@@ -127,7 +178,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			pendingHeaders = nil
 			attrs := map[string]string{}
 			for _, m := range m3uAttr.FindAllStringSubmatch(line, -1) {
-				attrs[m[1]] = m[2]
+				attrs[strings.ToLower(m[1])] = m[2]
 				playlistMediaHeader(&pendingHeaders, m[1], m[2])
 			}
 			// Commas inside quoted attributes are not the display-name separator.
@@ -146,6 +197,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			if comma >= 0 && strings.TrimSpace(line[comma+1:]) != "" {
 				name = strings.TrimSpace(line[comma+1:])
 			}
+			pendingArchive = m3uArchiveAttrs(attrs, archiveDefaults)
 			pending = &Channel{Name: name, TvgName: attrs["tvg-name"], Number: attrs["tvg-chno"], Logo: attrs["tvg-logo"], GuideID: attrs["tvg-id"], ProviderGuideID: attrs["tvg-id"], Group: attrs["group-title"], SourceID: sourceID, Kind: "iptv", Enabled: true}
 			continue
 		}
@@ -170,6 +222,7 @@ func parseM3U(r io.Reader, sourceID string) ([]Channel, m3uStats, error) {
 			continue
 		}
 		pending.StreamURL = line
+		pending.Archive = m3uChannelArchive(pendingArchive, line)
 		identity := pending.GuideID
 		if identity == "" {
 			identity = line
@@ -321,11 +374,21 @@ func ParseXMLTV(r io.Reader) (XMLGuide, error) {
 // candidates are found without buffering programmes or reading twice.
 type guideFilter struct {
 	From, Until time.Time
+	ArchiveFrom map[string]time.Time
 	IDs         map[string]struct{}
 	Resolve     func(channels map[string]Channel, names map[string][]string) map[string]struct{}
 }
 
 func (f guideFilter) timed() bool { return !f.From.IsZero() }
+
+func (f guideFilter) from(channel string) time.Time {
+	if len(f.ArchiveFrom) > 0 {
+		if at, ok := f.ArchiveFrom[strings.ToLower(strings.TrimSpace(channel))]; ok {
+			return at
+		}
+	}
+	return f.From
+}
 
 // parseXMLTV streams an XMLTV document. dropped is true when the filter
 // discarded a channel or programme, so the caller can store the trimmed
@@ -464,7 +527,8 @@ func parseXMLTV(r io.Reader, f guideFilter) (XMLGuide, bool, error) {
 						return g, dropped, err
 					}
 				}
-				if !start.Before(f.Until) || (!end.IsZero() && !end.After(f.From)) || (end.IsZero() && start.Before(f.From.Add(-24*time.Hour))) {
+				from := f.from(channel)
+				if !start.Before(f.Until) || (!end.IsZero() && !end.After(from)) || (end.IsZero() && start.Before(from.Add(-24*time.Hour))) {
 					dropped = true
 					if err := d.Skip(); err != nil {
 						if lim := limitCause(err); lim != nil {
@@ -537,7 +601,7 @@ func parseXMLTV(r io.Reader, f guideFilter) (XMLGuide, bool, error) {
 	if f.timed() {
 		kept := g.Programmes[:0]
 		for _, p := range g.Programmes {
-			if p.Start.Before(f.Until) && p.End.After(f.From) {
+			if p.Start.Before(f.Until) && p.End.After(f.from(p.ChannelID)) {
 				kept = append(kept, p)
 				continue
 			}

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/config"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -38,16 +39,16 @@ func (s *Service) sourceInPlaybackPhase(ctx context.Context, req core.ResolveReq
 	return isFallback == fallback
 }
 
-func (s *Service) resolveWithLastResort(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile) (*core.Resolution, error) {
+func (s *Service) resolveWithLastResort(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile, q config.Quality, dec profileDecision) (*core.Resolution, error) {
 	// PSE-HOOK: opt-in quick source order — see docs/pse/FORK.fr.md.
 	if s.resolverCfg().SourceOrder.Quick.Enabled && (req.Title.Type == core.TypeMovie || req.Title.Type == core.TypeEpisode || req.Title.Type == core.TypeShow) {
 		return s.resolveQuick(ctx, req, profile)
 	}
-	res, err := s.resolve(ctx, req, profile)
+	res, err := s.resolve(ctx, req, profile, q, dec)
 	if err == nil || ctx.Err() != nil || req.PreferredOnly || s.PinnedReleaseID(req) != "" || !s.lastResortPlayback(ctx) {
 		return res, err
 	}
 	// Reuse discovery/search results, but only last-resort candidates may open.
 	fallback := context.WithValue(ctx, lastResortPhaseKey{}, true)
-	return s.resolve(fallback, req, profile)
+	return s.resolve(fallback, req, profile, q, dec)
 }

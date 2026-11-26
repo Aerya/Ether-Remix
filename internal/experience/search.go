@@ -377,7 +377,7 @@ func HasPersonOrTitleMatch(keyword []core.Title) bool {
 // results: any query of two or more words without a strong title or full-name
 // person match is descriptive when AI descriptive search is configured.
 func IsDescriptiveQuery(query string, keyword []core.Title, aiAvailable bool) bool {
-	if !aiAvailable || HasPersonOrTitleMatch(keyword) {
+	if !aiAvailable || core.IsShortSearch(query) || HasPersonOrTitleMatch(keyword) {
 		return false
 	}
 	return len(strings.Fields(query)) >= 2

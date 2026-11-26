@@ -568,7 +568,7 @@ func (s *Service) ensureGatePolicySeeded(ctx context.Context, input discoverySna
 		}
 		for _, k := range premiereEpKeys {
 			show := titleMap[core.ShowKey(k.TMDB())]
-			if show != nil && !show.Adult && show.IsReleased(input.now) {
+			if show != nil && show.EpisodeOrder.Source != core.MetadataTVDB && !show.Adult && show.IsReleased(input.now) {
 				ep := core.Title{
 					Key: k, Type: core.TypeEpisode, ShowKey: show.Key, ShowIDs: show.IDs,
 					ShowTitle: show.Title, ShowOriginalTitle: show.OriginalTitle, ShowYear: show.Year,
@@ -1088,7 +1088,7 @@ func (s *Service) seedDueChecks(ctx context.Context, cfg config.Availability) er
 	nextFollowed := map[core.RatingKey]core.RatingKey{}
 	for _, t := range candidates {
 		if t.Type == core.TypeEpisode && t.Season > 0 && t.Episode > 0 && t.Released.After(now) && (watch[t.Key] || watch[t.ShowKey]) {
-			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
+			sk := releaseSeasonKey(&t)
 			if s.isSeasonInProgress(ctx, sk, now, candidates, inProgressMemo) {
 				// Replace per-episode 72h-early probes inside an in-progress season
 				// with one season-level reveal check; keep 72h early for premieres.

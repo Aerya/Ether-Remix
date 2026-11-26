@@ -187,7 +187,7 @@ func withJellyfinListFiles(r *http.Request) *http.Request {
 	}
 	// Lists join stored artwork facts and let hashing finish behind the read.
 	// A 100ms hashing wait alone would consume the entire home-row budget.
-	ctx := frontend.WithoutSynchronousArtworkMetadata(r.Context())
+	ctx := withListVersionScope(frontend.WithoutSynchronousArtworkMetadata(r.Context()))
 	return r.WithContext(context.WithValue(ctx, jellyfinListFileKey{}, true))
 }
 
@@ -300,8 +300,16 @@ func jellyfinMediaSourceShape(source map[string]any, name string) {
 // shapeJellyfinItem adds the list-item shell recorded from Jellyfin 12.4 and
 // the optional fields the client asked for. Unknown file facts stay empty
 // strings or null rather than invented containers, dates or image tags.
+//
+// Both protocols' movies and shows name the library that lists them here,
+// so every list row that is shaped carries it.
 func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, item map[string]any, title frontend.Title) {
-	if i == nil || i.protocol != "jellyfin" || item == nil {
+	if i == nil || item == nil {
+		return
+	}
+	i.setVideoCanDownload(viewer, item, title)
+	i.attachTitleLibrary(r, viewer, item, title)
+	if i.protocol != "jellyfin" {
 		return
 	}
 	setMissing(item, "ChannelId", nil)
@@ -318,16 +326,12 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 		}
 		setMissing(item, "VideoType", "VideoFile")
 		setMissing(item, "Container", "")
-		if title.Type == "movie" {
-			i.attachLibraryParent(r, viewer, item, "movie")
-		}
 	case "show":
 		if nonVideo {
 			break
 		}
 		setMissing(item, "AirDays", []string{})
 		setMissing(item, "MediaType", "Unknown")
-		i.attachLibraryParent(r, viewer, item, "show")
 		if title.Status != "" {
 			setMissing(item, "Status", jellyfinSeriesStatus(title.Status))
 		}
@@ -398,7 +402,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 		source := i.defaultMediaSource(r, viewer, authhdr.MediaBrowserToken(r), title.Key)
 		jellyfinMediaSourceShape(source, title.Title)
 		i.presentJellyfinFile(item, source, title)
-		item["MediaSources"] = []any{source}
+		item["MediaSources"] = append([]any{source}, i.listedVersionSources(r, viewer, item, source, title)...)
 	}
 	if title.Type == "season" || title.Type == "show" {
 		i.attachUnplayedCount(r, viewer, item, title)
@@ -650,52 +654,8 @@ func (i *instance) boxSetDTO(collection frontend.Collection) map[string]any {
 	return item
 }
 
-// attachLibraryParent sets ParentId to the one visible library of viewType.
-// A missing or ambiguous library leaves the field absent. Episodes and
-// seasons already name their season or show.
-func (i *instance) attachLibraryParent(r *http.Request, viewer *frontend.Viewer, item map[string]any, viewType frontend.MediaType) {
-	if r == nil || viewer == nil || i.host.Experience == nil || viewType == "" {
-		return
-	}
-	if _, ok := item["ParentId"]; ok {
-		return
-	}
-	// PSE-HOOK: associer les titres à leur vue Remix autorisée — voir docs/pse/FORK.fr.md
-	if parent := pseJellyfinScopedParent(r); parent != "" {
-		item["ParentId"] = parent
-		return
-	}
-	views, err := i.host.Experience.Views(r.Context(), viewer)
-	if err != nil {
-		return
-	}
-	var libraryID string
-	for _, view := range views {
-		if view.Type != viewType || pseJellyfinIsThemeViewID(view.ID) { // PSE-HOOK: ne pas déduire un thème d'après le seul type — voir docs/pse/FORK.fr.md
-			continue
-		}
-		if libraryID != "" {
-			return
-		}
-		libraryID = view.ID
-	}
-	if libraryID == "" {
-		return
-	}
-	viewNum, err := ids.ParseDecimal(libraryID)
-	if err != nil {
-		return
-	}
-	viewID, err := ids.GUID(ids.View, viewNum)
-	if err != nil {
-		return
-	}
-	item["ParentId"] = viewID
-}
-
 // fillSeriesTitles copies each episode or season's show title onto the row
-// when the list item did not carry it. The show id comes from ShowKey or
-// from the episode key. One lookup is shared by every row of that show.
+// when the list item did not carry it. One lookup serves each distinct show.
 func (i *instance) fillSeriesTitles(r *http.Request, viewer *frontend.Viewer, titles []frontend.Title) {
 	if i == nil || r == nil || viewer == nil || i.host.Experience == nil {
 		return
@@ -706,10 +666,7 @@ func (i *instance) fillSeriesTitles(r *http.Request, viewer *frontend.Viewer, ti
 		if title.ShowTitle != "" || (title.Type != "episode" && title.Type != "season") {
 			continue
 		}
-		show := title.ShowKey
-		if show == 0 && (title.Key.Kind() == frontend.KindEpisode || title.Key.Kind() == frontend.KindSeason) {
-			show = frontend.ShowKey(title.Key.TMDB())
-		}
+		show := parentShowKey(*title)
 		if show == 0 {
 			continue
 		}
@@ -798,8 +755,8 @@ func (i *instance) nameChildSeries(r *http.Request, viewer *frontend.Viewer, par
 
 // attachParentIdentity writes the show and season ids and names the title
 // already carries. An episode key encodes its season when ShowKey was left
-// empty. A show key plus a season number encodes the season when the item
-// key does not.
+// empty. For episodes with an independent key, a canonical parent season
+// also identifies the show and season.
 func attachParentIdentity(m map[string]any, t frontend.Title) {
 	if mbDeclaredNonVideo(t) {
 		// A declared music/book/photo item names its immediate parent in
@@ -829,9 +786,10 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 		return
 	}
-	show := t.ShowKey
-	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
-		show = frontend.ShowKey(t.Key.TMDB())
+	show := parentShowKey(t)
+	seasonKey := t.ParentKey
+	if seasonKey == 0 && t.Type == frontend.TypeEpisode {
+		seasonKey = t.Key.Parent()
 	}
 	if show == 0 && t.MBItemType == "Video" && t.ParentKey != 0 {
 		m["ParentId"] = ids.RatingKeyGUID(t.ParentKey)
@@ -846,16 +804,6 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 	}
 	seasonNumber, episodeNumber := t.Season, t.Episode
-	if seasonNumber == 0 {
-		if n := t.Key.Season(); n > 0 {
-			seasonNumber = n
-		}
-	}
-	if episodeNumber == 0 && t.Key.Kind() == frontend.KindEpisode {
-		if n := t.Key.Episode(); n > 0 {
-			episodeNumber = n
-		}
-	}
 	labeled := t
 	labeled.Season = seasonNumber
 	// Lab season rows put "Season N" in Name and omit SeasonName. Episodes
@@ -871,17 +819,8 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 	}
 	if t.Type == "episode" {
-		season := t.Key.Parent()
-		if season == 0 && show.Kind() == frontend.KindShow && (seasonNumber > 0 || t.SeasonTitle != "") {
-			season = frontend.SeasonKey(show.TMDB(), seasonNumber)
-		}
-		// A plugin library published as TV shows keeps its own item tree:
-		// the season is the episode's parent container item.
-		if season == 0 && t.Key.IsPluginKey() && t.ParentKey != 0 && t.ParentKey != show {
-			season = t.ParentKey
-		}
-		if season != 0 {
-			id := ids.RatingKeyGUID(season)
+		if seasonKey != 0 && seasonKey != show {
+			id := ids.RatingKeyGUID(seasonKey)
 			m["SeasonId"] = id
 			m["ParentId"] = id
 		}
@@ -889,8 +828,8 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		m["IndexNumber"] = episodeNumber
 	}
 	if t.Type == "season" {
-		parent := t.Key.Parent()
-		if parent == 0 && show != 0 {
+		parent := t.ParentKey
+		if parent == 0 {
 			parent = show
 		}
 		if parent != 0 {
@@ -1586,14 +1525,21 @@ func (i *instance) attachParentArtwork(r *http.Request, viewer *frontend.Viewer,
 	}
 }
 
-// parentShowKey is the series of an episode or season: its ShowKey, or the
-// show its key encodes.
+// parentShowKey resolves the series relationship for season and episode rows.
 func parentShowKey(title frontend.Title) frontend.RatingKey {
-	show := title.ShowKey
-	if show == 0 && (title.Key.Kind() == frontend.KindEpisode || title.Key.Kind() == frontend.KindSeason) {
-		show = frontend.ShowKey(title.Key.TMDB())
+	if title.ShowKey != 0 {
+		return title.ShowKey
 	}
-	return show
+	switch title.Key.Kind() {
+	case frontend.KindSeason:
+		if title.ParentKey != 0 {
+			return title.ParentKey
+		}
+		return title.Key.Parent()
+	case frontend.KindEpisode:
+		return title.Key.Parent().Parent()
+	}
+	return 0
 }
 
 // prefetchParentArtwork signs the series artwork of every episode and

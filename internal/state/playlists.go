@@ -37,6 +37,14 @@ func init() {
  `)
 }
 
+func init() {
+	// When each entry was added. Older entries take their playlist's creation time.
+	store.Register("state", 13, `
+ ALTER TABLE state_playlist_items ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0;
+ UPDATE state_playlist_items SET added_at=COALESCE((SELECT p.added_at FROM state_playlists p WHERE p.id=state_playlist_items.playlist_id),0);
+ `)
+}
+
 func playlistID(key core.RatingKey) (int64, error) {
 	if key.Kind() != core.KindPlaylist {
 		return 0, fmt.Errorf("%v: not a playlist key", key)
@@ -74,19 +82,24 @@ func loadPlaylistFrom(ctx context.Context, db playlistQuerier, userID, id int64)
 	if upd > 0 {
 		p.UpdatedAt = time.Unix(0, upd).UTC()
 	}
-	rows, err := db.QueryContext(ctx, `SELECT rating_key, item_id FROM state_playlist_items WHERE playlist_id=? ORDER BY position`, id)
+	rows, err := db.QueryContext(ctx, `SELECT rating_key, item_id, added_at FROM state_playlist_items WHERE playlist_id=? ORDER BY position`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	p.Items = []core.RatingKey{}
 	for rows.Next() {
-		var k, itemID int64
-		if err := rows.Scan(&k, &itemID); err != nil {
+		var k, itemID, added int64
+		if err := rows.Scan(&k, &itemID, &added); err != nil {
 			return nil, err
 		}
 		p.Items = append(p.Items, core.RatingKey(k))
 		p.ItemIDs = append(p.ItemIDs, itemID)
+		at := time.Time{}
+		if added > 0 {
+			at = time.Unix(0, added).UTC()
+		}
+		p.ItemAddedAt = append(p.ItemAddedAt, at)
 	}
 	return &p, rows.Err()
 }
@@ -268,7 +281,7 @@ func (s *State) Create(ctx context.Context, userID int64, title string, items []
 		return nil, err
 	}
 	for i, k := range items {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO state_playlist_items(playlist_id, position, rating_key) VALUES(?,?,?)`, id, i, int64(k)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO state_playlist_items(playlist_id, position, rating_key, added_at) VALUES(?,?,?,?)`, id, i, int64(k), now.UnixNano()); err != nil {
 			return nil, err
 		}
 	}
@@ -320,9 +333,9 @@ func (s *State) rewriteItems(ctx context.Context, userID int64, key core.RatingK
 	for i, k := range items {
 		var err error
 		if k.id == 0 {
-			_, err = tx.ExecContext(ctx, `INSERT INTO state_playlist_items(playlist_id, position, rating_key) VALUES(?,?,?)`, id, i, int64(k.key))
+			_, err = tx.ExecContext(ctx, `INSERT INTO state_playlist_items(playlist_id, position, rating_key, added_at) VALUES(?,?,?,?)`, id, i, int64(k.key), now.UnixNano())
 		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO state_playlist_items(item_id,playlist_id, position, rating_key) VALUES(?,?,?,?)`, k.id, id, i, int64(k.key))
+			_, err = tx.ExecContext(ctx, `INSERT INTO state_playlist_items(item_id,playlist_id, position, rating_key, added_at) VALUES(?,?,?,?,?)`, k.id, id, i, int64(k.key), k.added)
 		}
 		if err != nil {
 			return err
@@ -332,23 +345,24 @@ func (s *State) rewriteItems(ctx context.Context, userID int64, key core.RatingK
 }
 
 type playlistEntry struct {
-	key core.RatingKey
-	id  int64
+	key   core.RatingKey
+	id    int64
+	added int64
 }
 
 func playlistItemsTx(ctx context.Context, tx *sql.Tx, id int64) ([]playlistEntry, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT rating_key,item_id FROM state_playlist_items WHERE playlist_id=? ORDER BY position`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT rating_key,item_id,added_at FROM state_playlist_items WHERE playlist_id=? ORDER BY position`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []playlistEntry
 	for rows.Next() {
-		var k, itemID int64
-		if err := rows.Scan(&k, &itemID); err != nil {
+		var k, itemID, added int64
+		if err := rows.Scan(&k, &itemID, &added); err != nil {
 			return nil, err
 		}
-		out = append(out, playlistEntry{core.RatingKey(k), itemID})
+		out = append(out, playlistEntry{core.RatingKey(k), itemID, added})
 	}
 	return out, rows.Err()
 }

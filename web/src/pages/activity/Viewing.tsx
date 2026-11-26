@@ -40,12 +40,7 @@ function TitleThumb({
     );
   }
   return (
-    <Artwork
-      src={title?.poster}
-      alt=""
-      title={label}
-      className="aspect-[2/3] w-8 shrink-0 rounded"
-    />
+    <Artwork src={title?.poster} alt="" title="" className="aspect-[2/3] w-8 shrink-0 rounded" />
   );
 }
 

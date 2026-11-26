@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderAppWith } from "./routes";
-import { calls } from "./harness";
+import { calls, renderApp } from "./harness";
 
 const title = {
   key: "1000000000000007",
@@ -175,8 +175,10 @@ describe("Catalog workspace", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Add to Watchlist" })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Select loaded titles" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Add to Watchlist" })[0]!);
+    const selectLoaded = await screen.findByRole("button", { name: "Select loaded titles" });
+    const toolbar = selectLoaded.parentElement!;
+    fireEvent.click(selectLoaded);
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Add to Watchlist" }));
     await screen.findByRole("button", { name: "Remove from Watchlist" });
     expect(calls(fake, "PUT", `/discovery/users/1/catalog/${title.key}`)).toHaveLength(1);
   });
@@ -285,12 +287,14 @@ describe("Catalog workspace", () => {
     );
   });
 
-  it("shows a one-line notice linking to /services/tmdb when no TMDB key is configured", async () => {
-    renderAppWith("/catalog", (_method, path) => {
-      if (path === "/catalog/browse") return { items: [], total: 0 };
+  it("links to the Catalogues cards when no metadata source is configured", async () => {
+    renderApp("/catalog", {}, (fake) => {
+      fake.state.config.catalog.tmdbDisabled = true;
     });
-    const link = await screen.findByRole("link", { name: "Add a TMDB key" });
-    expect(link).toHaveAttribute("href", "/services/tmdb");
+    const link = await screen.findByRole("link", { name: "Add a metadata source" });
+    expect(link).toHaveAttribute("href", "/services/overview");
+    fireEvent.click(link);
+    expect(await screen.findByRole("heading", { name: "Catalogues" })).toBeInTheDocument();
   });
 
   it("shows errors with retry and provides an empty-result reset", async () => {
@@ -307,9 +311,15 @@ describe("Catalog workspace", () => {
     await waitFor(() => expect(screen.getByText("No matching titles")).toBeInTheDocument());
     // A pending catalogue refresh can briefly replace the empty state with
     // skeletons. Wait for the action itself before trying to click it.
-    await waitFor(() => {
-      fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
-    });
-    await waitFor(() => expect(screen.getByLabelText("Find a title")).toHaveValue(""));
+    await waitFor(
+      () => {
+        if ((screen.getByLabelText("Find a title") as HTMLInputElement).value !== "") {
+          const clear = screen.queryAllByRole("button", { name: "Clear filters" })[0];
+          if (clear) fireEvent.click(clear);
+        }
+        expect(screen.getByLabelText("Find a title")).toHaveValue("");
+      },
+      { timeout: 4000 },
+    );
   });
 });

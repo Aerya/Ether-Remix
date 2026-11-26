@@ -40,6 +40,9 @@ func (m *Manager) previewFetchOne(ctx context.Context, network []string, req Fet
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return FetchResponse{}, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
+	if err := m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return FetchResponse{}, err
+	}
 	if !hostAllowed(network, u.Hostname()) {
 		return FetchResponse{}, fmt.Errorf("%w: %s is not in the plugin's network permissions", ErrPermissionDenied, u.Hostname())
 	}
@@ -68,6 +71,9 @@ func (m *Manager) previewFetchOne(ctx context.Context, network []string, req Fet
 	})
 	previous := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if err := m.CheckIndexerNetwork(next.URL.Hostname()); err != nil {
+			return err
+		}
 		redirectHeaders.Apply(next)
 		if !hostAllowed(network, next.URL.Hostname()) {
 			return fmt.Errorf("%w: redirect to %s", ErrPermissionDenied, next.URL.Hostname())

@@ -64,7 +64,7 @@ func (s *Service) Router() http.Handler {
 			http.Error(w, "Invalid show", 400)
 			return
 		}
-		groups, e := s.source.EpisodeGroups(r.Context(), k.TMDB())
+		groups, e := s.groups(r.Context(), k)
 		if e != nil {
 			http.Error(w, "Episode orders unavailable", 502)
 			return

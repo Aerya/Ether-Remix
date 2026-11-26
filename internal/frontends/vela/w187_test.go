@@ -40,7 +40,7 @@ func (e *levelPresExperience) LibraryFacetPeople(ctx context.Context, v *core.Vi
 	return e.pluginPresExperience.LibraryFacetPeople(ctx, v, d, viewID, field, order, page)
 }
 
-func (e *levelPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, dev core.Device, viewID string) ([]frontend.Row, error) {
+func (e *levelPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, dev core.Device, viewID, _ string) ([]frontend.Row, error) {
 	e.lastRowLang = dev.Language
 	return e.pluginRows[viewID], nil
 }

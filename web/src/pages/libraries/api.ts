@@ -298,10 +298,23 @@ export interface CatalogueSource {
   group: "builtin" | "plugin" | "stremio";
   mediaTypes: string[];
   health: string;
+  enabled: boolean;
   itemCount?: number;
+  /** Items the last sync read from the list. */
+  listed?: number;
+  /** Most items one sync reads (the plugin's "Titles per list"). */
+  limit?: number;
   pluginId?: string;
   kindKey?: string;
   libraries: { id: number; name: string }[];
+}
+
+/** One catalogue-source sync: titles synced, items read and the most it could read. */
+export interface CatalogueSourceSyncResult {
+  ok: boolean;
+  itemCount: number;
+  listed: number;
+  limit: number;
 }
 
 export interface Library {
@@ -312,6 +325,7 @@ export interface Library {
   sources?: string[];
   source: "builtin" | "plugin" | "catalogue" | "collection";
   mediaType?: string;
+  metadataSource?: string;
   pluginId?: string;
   kindKey?: string;
   /** Collection-source libraries: the collection whose titles it shows. */
@@ -323,8 +337,6 @@ export interface Library {
   present?: Presentations;
   /** Server-resolved per-app presentations separating HOW (plugin/inferred/unavailable) from WHETHER (owner switches). */
   presentations?: ResolvedPresentations;
-  /** Quality profile titles in this library rank with; "" = Default. */
-  qualityProfile?: string;
   tabs?: LibraryTab[];
   tabsCustomized?: boolean;
   effectiveTabs?: LibraryTab[];
@@ -426,7 +438,7 @@ export interface PluginLibrarySource {
 export const librariesApi = {
   syncCatalogueSource: async (id: string) => {
     const path = `/libraries/catalogue-sources/${encodeURIComponent(id)}/sync`;
-    type Status = { running: boolean; error?: string };
+    type Status = CatalogueSourceSyncResult & { running: boolean; error?: string };
     let status = await apiFetch<Status>(path, { method: "POST" });
     const deadline = Date.now() + 21 * 60 * 1000;
     while (status.running && Date.now() < deadline) {
@@ -436,12 +448,15 @@ export const librariesApi = {
     if (status.error) throw new Error(status.error);
     if (status.running)
       throw new Error("Catalogue synchronization is still running; check again later.");
-    return { ok: true };
+    return { ok: true, itemCount: status.itemCount, listed: status.listed, limit: status.limit };
   },
-  catalogueSources: (signal?: AbortSignal) =>
-    apiFetch<{ sources: CatalogueSource[] }>("/libraries/catalogue-sources", { signal }).then(
-      (r) => r.sources,
-    ),
+  catalogueSources: (signal?: AbortSignal, options?: { includeDisabled: boolean }) =>
+    apiFetch<{ sources: CatalogueSource[] }>(
+      options?.includeDisabled
+        ? "/libraries/catalogue-sources?includeDisabled=true"
+        : "/libraries/catalogue-sources",
+      { signal },
+    ).then((r) => r.sources),
   list: (signal?: AbortSignal) =>
     apiFetch<{ libraries: Library[] }>("/libraries", { signal }).then((r) => r.libraries),
   get: (id: number, signal?: AbortSignal) => apiFetch<Library>(`/libraries/${id}`, { signal }),
@@ -471,6 +486,7 @@ export const librariesApi = {
     visibilityDefault: string,
     present?: Presentations,
     sources?: string[],
+    metadataSource?: string,
   ) =>
     apiFetch<Library>("/libraries", {
       method: "POST",
@@ -480,6 +496,7 @@ export const librariesApi = {
         rules,
         visibilityDefault,
         sources,
+        metadataSource,
         ...(present ? { present } : {}),
       }),
     }),
@@ -489,6 +506,7 @@ export const librariesApi = {
     mediaType: string,
     present?: Presentations,
     sources?: string[],
+    metadataSource?: string,
   ) =>
     apiFetch<Library>("/libraries", {
       method: "POST",
@@ -497,6 +515,7 @@ export const librariesApi = {
         collectionId,
         mediaType,
         sources,
+        metadataSource,
         ...(present ? { present } : {}),
       }),
     }),

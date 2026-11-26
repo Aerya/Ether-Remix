@@ -136,6 +136,12 @@ func (s surfaceTrackPreferences) ForgetChoice(ctx context.Context, user int64, k
 	}
 	return s.app.trackprefs.ForgetChoice(ctx, user, key, kind)
 }
+func (s surfaceTrackPreferences) SubtitleOff(ctx context.Context, user int64, key frontend.RatingKey) (bool, error) {
+	if s.app == nil || s.app.trackprefs == nil {
+		return false, core.ErrNotAvailable
+	}
+	return s.app.trackprefs.SubtitleOff(ctx, user, key)
+}
 func (s surfaceTrackPreferences) PreloadChoices(ctx context.Context, user int64, keys []frontend.RatingKey) error {
 	if s.app == nil || s.app.trackprefs == nil {
 		return nil

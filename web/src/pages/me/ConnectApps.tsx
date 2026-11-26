@@ -7,6 +7,7 @@ import {
   EmbyMark,
   SiloMark,
   householdIcon,
+  protocolMark,
 } from "../../components/integration-brands";
 import { StremioMark } from "../sources/marks";
 import { t } from "../../i18n";
@@ -15,6 +16,7 @@ type AdapterMeta = {
   name: string;
   logo?: string;
   auth?: string;
+  protocolHint?: string;
 };
 
 type Connection = {
@@ -156,7 +158,7 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
                   className="block size-7 rounded-md object-contain"
                 />
               ) : (
-                householdIcon(id)
+                (protocolMark(adapters[id]?.protocolHint) ?? householdIcon(id))
               )}
               <span className="truncate">{appName(id)}</span>
             </div>

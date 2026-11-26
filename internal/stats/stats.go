@@ -735,12 +735,84 @@ func mergePlatformBuckets(raw []Bucket) []Bucket {
 	return out
 }
 
+// A play delivered media. A failed attempt stays in History, marked
+// with its error, but is not a play, and neither is a zero-byte row an
+// earlier version recorded for a probe or a duplicate open.
+const summaryPlayFilter = `(bytes>0 OR watched_ms>0)`
+
+func (s *Service) daysWindow(days int) (since, until time.Time) {
+	if days <= 0 {
+		days = 30
+	}
+	now := s.opts.Now().UTC()
+	return now.AddDate(0, 0, -days), now.Add(time.Second)
+}
+
+func tzShift(tzMinutes ...int) int {
+	if len(tzMinutes) > 0 && tzMinutes[0] >= -1440 && tzMinutes[0] <= 1440 {
+		return tzMinutes[0] * 60
+	}
+	return 0
+}
+
+// Activity returns daily observed playback totals over the same rolling window,
+// timezone bucketing, and play filter as Summary (GET /stats/summary?days=<days>),
+// oldest first, including empty days so overview charts keep a continuous axis.
+func (s *Service) Activity(ctx context.Context, days int, tzMinutes ...int) ([]core.ActivityDay, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 3660 {
+		days = 3660
+	}
+	since, until := s.daysWindow(days)
+	shift := tzShift(tzMinutes...)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+		`SELECT (started+%d)/86400,COUNT(*),CAST(COALESCE(SUM(watched_ms),0) AS BIGINT),COUNT(DISTINCT user_id) FROM stats_plays WHERE started>=? AND started<? AND `+summaryPlayFilter+` GROUP BY 1 ORDER BY 1`,
+		shift,
+	), since.Unix(), until.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type agg struct {
+		plays     int
+		watchedMS int64
+		viewers   int
+	}
+	byDay := map[int64]agg{}
+	for rows.Next() {
+		var dayIdx int64
+		var a agg
+		if err := rows.Scan(&dayIdx, &a.plays, &a.watchedMS, &a.viewers); err != nil {
+			return nil, err
+		}
+		byDay[dayIdx] = a
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Cover every local calendar day overlapping [since, until), matching
+	// Summary's rolling window so summing daily entries equals Summary totals.
+	firstDay := (since.Unix() + int64(shift)) / 86400
+	lastDay := (until.Unix() - 1 + int64(shift)) / 86400
+	out := make([]core.ActivityDay, 0, lastDay-firstDay+1)
+	for d := firstDay; d <= lastDay; d++ {
+		ad := core.ActivityDay{Date: time.Unix(d*86400, 0).UTC().Format("2006-01-02")}
+		if a, ok := byDay[d]; ok {
+			ad.Plays = a.plays
+			ad.WatchedMS = a.watchedMS
+			ad.Hours = math.Round(float64(a.watchedMS)/360000) / 10
+			ad.UniqueViewers = a.viewers
+		}
+		out = append(out, ad)
+	}
+	return out, nil
+}
+
 func (s *Service) Summary(ctx context.Context, since, until time.Time, user int64, tzMinutes ...int) (Summary, error) {
 	out := Summary{Since: since, Until: until}
-	// A play delivered media. A failed attempt stays in History, marked
-	// with its error, but is not a play, and neither is a zero-byte row an
-	// earlier version recorded for a probe or a duplicate open.
-	where := ` FROM stats_plays WHERE started>=? AND started<? AND (?=0 OR user_id=?) AND (bytes>0 OR watched_ms>0)`
+	where := ` FROM stats_plays WHERE started>=? AND started<? AND (?=0 OR user_id=?) AND ` + summaryPlayFilter
 	args := []any{since.Unix(), until.Unix(), user, user}
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),CAST(COALESCE(SUM(watched_ms),0) AS BIGINT),CAST(COALESCE(SUM(bytes),0) AS BIGINT),CAST(COALESCE(SUM(completed),0) AS BIGINT)`+where, args...).Scan(&out.Plays, &out.WatchedMS, &out.Bytes, &out.Completed)
 	if err != nil {
@@ -754,10 +826,7 @@ func (s *Service) Summary(ctx context.Context, since, until time.Time, user int6
 	if bitrateTime > 0 {
 		out.AvgBitrateKbps = float64(bitrateBytes) * 8 / float64(bitrateTime)
 	}
-	shift := 0
-	if len(tzMinutes) > 0 && tzMinutes[0] >= -1440 && tzMinutes[0] <= 1440 {
-		shift = tzMinutes[0] * 60
-	}
+	shift := tzShift(tzMinutes...)
 	// Day and hour buckets group on integer arithmetic (portable across
 	// SQLite and PostgreSQL) and are labelled here, in UTC.
 	day := func(n int64) string { return time.Unix(n*86400, 0).UTC().Format("2006-01-02") }

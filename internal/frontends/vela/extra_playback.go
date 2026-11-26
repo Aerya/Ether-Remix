@@ -43,8 +43,8 @@ func (i *instance) extraPlayback(w http.ResponseWriter, r *http.Request, v *fron
 		fail(w, err, r)
 		return
 	}
-	profile := caps.DeviceProfile{MaxStreamingBitrate: c.MaxBitrate, DirectPlayProfiles: []caps.DirectPlayProfile{{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}}
-	declared, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: requestDevice(r).ID, DeviceName: c.Device.Name, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, MaxHeight: c.MaxHeight, MaxBitrateKbps: c.MaxBitrate / 1000}, Profile: profile, UserAgent: r.UserAgent()})
+	profile := caps.DeviceProfile{MaxStreamingBitrate: max(c.MaxBitrate, 0), DirectPlayProfiles: []caps.DirectPlayProfile{{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}}
+	declared, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: requestDevice(r).ID, DeviceName: c.Device.Name, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, MaxHeight: max(c.MaxHeight, 0), MaxBitrateKbps: clientBitrateKbps(c.MaxBitrate)}, Profile: profile, UserAgent: r.UserAgent()})
 	if err != nil {
 		fail(w, err, r)
 		return

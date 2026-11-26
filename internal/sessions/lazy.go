@@ -561,6 +561,19 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			existingLive = existing
 		} else if req.Channel != "" {
 			id = ""
+		} else if existing.originalReplaced && stored.HLS == nil && r.URL.Query().Get("sourceRevision") != existing.sourceETag {
+			w.Header().Set("Cache-Control", "no-store")
+			if r.Header.Get("Range") != "" || r.Header.Get("If-Range") != "" {
+				w.Header().Set("X-Ether-Playback-Error", "source_replaced")
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			target := *r.URL
+			query := target.Query()
+			query.Set("sourceRevision", existing.sourceETag)
+			target.RawQuery = query.Encode()
+			http.Redirect(w, r, target.RequestURI(), http.StatusTemporaryRedirect)
+			return
 		} else if stored.HLS != nil && existing.format == frontend.StreamHLS && !existing.live {
 			existingHLS = existing
 		}
@@ -623,6 +636,10 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/sessions/media/" + id + "/" + existingHLS.grant + "/master.m3u8"
 	} else {
 		stream := frontend.StreamRequest{Format: format}
+		if format == frontend.StreamDirect {
+			revision := r.URL.Query().Get("sourceRevision")
+			stream.ExpectedOriginalRevision = &revision
+		}
 		if stored.HLS != nil {
 			stream = *stored.HLS
 		}
@@ -732,6 +749,15 @@ func (s *lazyStreams) sourceGone(w http.ResponseWriter, r *http.Request) {
 // 404. Only a full encoder or admission slot stays 503, with Retry-After
 // when the broker named a delay.
 func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, core.ErrVersionUnavailable) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Ether-Playback-Error", "version_unavailable")
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
+	if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+		return
+	}
 	if errors.Is(err, core.ErrPreparing) {
 		w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")
@@ -775,6 +801,10 @@ func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request,
 			seconds++
 		}
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	if msg := frontend.VideoEncoderCapacityMessage(err, r.Header.Get("Accept-Language")); msg != "" {
+		http.Error(w, msg, http.StatusServiceUnavailable)
+		return
 	}
 	http.Error(w, "playback unavailable", http.StatusServiceUnavailable)
 }

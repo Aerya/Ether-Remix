@@ -20,15 +20,19 @@ type Grant = {
 function XtreamLoginRow({
   grant,
   viewer,
+  surface,
   index,
   busy,
   revoke,
+  revealed,
 }: {
   grant: Grant;
   viewer: string;
+  surface: string;
   index: number;
   busy: boolean;
   revoke: () => void;
+  revealed: (url: string) => void;
 }) {
   const [secret, setSecret] = useState<Connection>();
   const [limit, setLimit] = useState(String(grant.xtreamStreamLimit || ""));
@@ -44,8 +48,14 @@ function XtreamLoginRow({
     try {
       const result = await apiFetch<Connection & { available: boolean }>(
         `/users/${viewer}/devices/xtream/reveal`,
-        { method: "POST", body: JSON.stringify({ hash: grant.hash }) },
+        {
+          method: "POST",
+          body: JSON.stringify(
+            surface === "xtream" ? { hash: grant.hash } : { hash: grant.hash, surface },
+          ),
+        },
       );
+      if (result.url) revealed(result.url);
       if (result.available) setSecret(result);
       else setError(t("Not available — create a new short login"));
     } catch (e) {
@@ -92,7 +102,7 @@ function XtreamLoginRow({
       {grant.revealAvailable ? (
         <div className="flex items-center justify-between gap-3">
           <code className="font-mono text-base tracking-wide">
-            {secret?.password ?? "••••-••••-••"}
+            {secret?.password ?? (surface === "xtream" ? "••••-••••-••" : "•••••-•••••-•••••")}
           </code>
           <div className="flex gap-2">
             <Button
@@ -110,23 +120,25 @@ function XtreamLoginRow({
       ) : (
         <p className="text-sm text-fg-muted">{t("Not available — create a new short login")}</p>
       )}
-      <label className="block space-y-1 text-sm">
-        <span>{t("Streams on this device")}</span>
-        <input
-          type="number"
-          min={1}
-          max={1000}
-          step={1}
-          value={limit}
-          onChange={(e) => setLimit(e.target.value)}
-          onBlur={() => void saveLimit()}
-          disabled={busy || saving}
-          className="block w-full rounded-lg border border-border bg-surface p-2"
-        />
-        <span className="block text-fg-muted">
-          {t("Leave empty to use the viewer’s stream limit.")}
-        </span>
-      </label>
+      {surface === "xtream" && (
+        <label className="block space-y-1 text-sm">
+          <span>{t("Streams on this device")}</span>
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            step={1}
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            onBlur={() => void saveLimit()}
+            disabled={busy || saving}
+            className="block w-full rounded-lg border border-border bg-surface p-2"
+          />
+          <span className="block text-fg-muted">
+            {t("Leave empty to use the viewer’s stream limit.")}
+          </span>
+        </label>
+      )}
       {error && (
         <p role="alert" className="text-sm text-danger">
           {error}
@@ -136,7 +148,19 @@ function XtreamLoginRow({
   );
 }
 
-export function XtreamLogins() {
+/**
+ * App logins for one surface: Xtream, or a plugin frontend adapter that signs
+ * in with per-viewer app logins (query credentials, e.g. Subsonic apps).
+ */
+export function XtreamLogins({
+  surface = "xtream",
+  title,
+  description,
+}: {
+  surface?: string;
+  title?: string;
+  description?: string;
+} = {}) {
   const [viewers, setViewers] = useState<Viewer[]>([]);
   const [viewer, setViewer] = useState("");
   const [grants, setGrants] = useState<Grant[]>([]);
@@ -169,8 +193,8 @@ export function XtreamLogins() {
       void apiFetch<{ devices: Grant[]; xtreamUrl?: string }>(`/users/${viewer}/devices`)
         .then((v) => {
           if (!live) return;
-          setGrants(v.devices.filter((g) => g.surface === "xtream"));
-          setServerUrl(v.xtreamUrl ?? "");
+          setGrants(v.devices.filter((g) => g.surface === surface));
+          if (surface === "xtream") setServerUrl(v.xtreamUrl ?? "");
         })
         .catch((e) => {
           if (live) setError(errorMessage(e));
@@ -178,22 +202,25 @@ export function XtreamLogins() {
     return () => {
       live = false;
     };
-  }, [viewer]);
+  }, [viewer, surface]);
   async function create() {
     setBusy(true);
     setError("");
     setConnection(undefined);
     setShowCreated(false);
     try {
-      const result = await apiFetch<Connection>(`/viewers/${viewer}/apps/xtream`, {
-        method: "POST",
-      });
+      const result = await apiFetch<Connection>(
+        `/viewers/${viewer}/apps/${encodeURIComponent(surface)}`,
+        {
+          method: "POST",
+        },
+      );
       setConnection(result);
       const list = await apiFetch<{ devices: Grant[]; xtreamUrl?: string }>(
         `/users/${viewer}/devices`,
       );
-      setGrants(list.devices.filter((g) => g.surface === "xtream"));
-      setServerUrl(list.xtreamUrl || result.url);
+      setGrants(list.devices.filter((g) => g.surface === surface));
+      setServerUrl((surface === "xtream" && list.xtreamUrl) || result.url);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -219,14 +246,16 @@ export function XtreamLogins() {
   }
   return (
     <SettingsSection
-      title={t("IPTV apps (Xtream)")}
-      description={t("Live TV, movies and series in IPTV player apps.")}
+      title={title ?? t("IPTV apps (Xtream)")}
+      description={description ?? t("Live TV, movies and series in IPTV player apps.")}
     >
       <div className="space-y-4 px-5 py-4">
         <p className="text-sm text-fg-muted">
-          {t(
-            "Create a separate login for each device. All logins share the viewer’s stream limit.",
-          )}
+          {surface === "xtream"
+            ? t(
+                "Create a separate login for each device. All logins share the viewer’s stream limit.",
+              )
+            : t("Create a separate login for each device or app. Revoke one to sign that app out.")}
         </p>
         <label className="block space-y-2 text-sm">
           <span>{t("Viewer")}</span>
@@ -266,7 +295,11 @@ export function XtreamLogins() {
                 <div className="text-sm font-medium">{label}</div>
                 <div className="flex items-center justify-between gap-3">
                   <code className="min-w-0 break-all font-mono text-base tracking-wide select-all">
-                    {field === 2 && !showCreated ? "••••-••••-••" : value}
+                    {field === 2 && !showCreated
+                      ? surface === "xtream"
+                        ? "••••-••••-••"
+                        : "•••••-•••••-•••••"
+                      : value}
                   </code>
                   <div className="flex gap-2">
                     {field === 2 && (
@@ -302,9 +335,11 @@ export function XtreamLogins() {
             key={`${viewer}:${g.hash}`}
             grant={g}
             viewer={viewer}
+            surface={surface}
             index={index}
             busy={busy}
             revoke={() => void revoke(g.hash)}
+            revealed={(url) => setServerUrl((old) => old || url)}
           />
         ))}
         {error && (

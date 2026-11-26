@@ -9,7 +9,8 @@ import type {
 } from "../pages/libraries/api";
 import { COLLECTIONS, KEYWORDS, NETWORKS, PEOPLE, STUDIOS, type FakeTitle } from "./data";
 
-const SCOPE_NOTE = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.";
+const SCOPE_NOTE =
+  "Vela shows these as tabs. Plex, Jellyfin, Emby and Silo show the first rows tab as the library's Recommended page.";
 
 const VALID_KINDS = new Set<LibraryTabKind>([
   "recommended",
@@ -94,7 +95,7 @@ export function createLibraryTabsMock({
     [
       7,
       [
-        { key: "recommended", label: "Recommended", kind: "recommended" },
+        { key: "recommended", label: "Recommendations", kind: "recommended" },
         {
           key: "library",
           label: "All Anime",
@@ -230,7 +231,7 @@ export function createLibraryTabsMock({
       (x) => (!mediaType || mediaType === "mixed" || x.type === mediaType) && Boolean(x.studio),
     );
     const collections: LibraryFacetOption[] = [
-      { id: "", label: "Owner collections", category: "essentials" },
+      { id: "", label: "Your collections", category: "essentials" },
       { id: "genre", label: "Genres", category: "essentials" },
     ];
     if (mediaType === "show") {
@@ -295,7 +296,7 @@ export function createLibraryTabsMock({
     if (lib.source === "plugin") {
       const name = String(lib.name ?? "Items");
       return [
-        { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+        { key: "recommended", label: "Recommendations", kind: "recommended", search: false },
         {
           key: "library",
           label: name,
@@ -328,7 +329,7 @@ export function createLibraryTabsMock({
       ];
     }
     return [
-      { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+      { key: "recommended", label: "Recommendations", kind: "recommended", search: false },
       {
         key: "library",
         label: "Library",

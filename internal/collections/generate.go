@@ -160,8 +160,8 @@ func (s *Service) parseDraft(ctx context.Context, content, mediaType string) (*c
 	sp := core.CollectionSpec{
 		Name: firstNonEmpty(d.Name, d.Title), Description: d.Description, MediaType: strings.ToLower(d.MediaType),
 		Match: strings.ToLower(d.Match), Sort: d.Sort, Refresh: RefreshDaily, Enabled: true,
-		Artwork: core.CollectionArtwork{Mode: "auto"},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
+		BrowseInApps: true,
 	}
 	if sp.Name == "" {
 		return nil, "", nil, errors.New("the spec has no name")
@@ -249,7 +249,7 @@ func (s *Service) parseDraft(ctx context.Context, content, mediaType string) (*c
 	for _, src := range sp.Sources {
 		entity := map[string]string{"tmdbCollection": "collection", "tmdbKeyword": "keyword", "tmdbCompany": "company",
 			"tmdbNetwork": "network", "tmdbPerson": "person", "watchProvider": "watchProvider"}[src.Kind]
-		if entity == "" || src.ID > 0 || s.api.c == nil {
+		if entity == "" || src.ID > 0 || !s.api.configured() {
 			kept = append(kept, src)
 			continue
 		}
@@ -268,7 +268,7 @@ func (s *Service) parseDraft(ctx context.Context, content, mediaType string) (*c
 	if len(sp.Sources) == 0 {
 		sp.Sources = []core.CollectionSource{{Kind: "catalog"}}
 	}
-	if s.api.c != nil {
+	if s.api.configured() {
 		for i := range sp.Rules {
 			sp.Rules[i] = s.resolveRuleValue(rctx, sp.Rules[i], &notes)
 		}

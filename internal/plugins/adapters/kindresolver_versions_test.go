@@ -188,13 +188,14 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 	}
 
 	// 2. Detail listing resolves once and returns W152 shape: index 0 Auto backed by 4K,
-	// followed by 1080p and 720p without duplicating the 4K release.
+	// followed by every source as an explicit row, the 4K Auto pick included, so
+	// the 4K release can be forced separately from Auto.
 	versions, err := kr.KindVersions(ctx, viewer1, key, nil, true)
 	if err != nil {
 		t.Fatalf("KindVersions: %v", err)
 	}
-	if len(versions) != 3 {
-		t.Fatalf("len(versions) = %d, want 3: %+v", len(versions), versions)
+	if len(versions) != 4 {
+		t.Fatalf("len(versions) = %d, want 4: %+v", len(versions), versions)
 	}
 	if !versions[0].Auto || versions[0].ID != core.KindAutoVersionID || versions[0].Release.ID != "kind:"+hash4K {
 		t.Fatalf("versions[0] = %+v, want Auto backed by 4K", versions[0])
@@ -202,11 +203,14 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 	if !versions[0].Info.Estimated || versions[0].Release.Info.Height != 2160 || versions[0].Availability != core.VersionCached {
 		t.Fatalf("versions[0] metadata = info:%+v rel:%+v avail:%q", versions[0].Info, versions[0].Release.Info, versions[0].Availability)
 	}
-	if versions[1].Auto || versions[1].ID != "kind:"+hash1080p || versions[1].Release.Info.Height != 1080 {
-		t.Fatalf("versions[1] = %+v, want 1080p", versions[1])
+	if versions[1].Auto || versions[1].ID != "kind:"+hash4K || versions[1].Release.ID != "kind:"+hash4K || versions[1].Release.Info.Height != 2160 {
+		t.Fatalf("versions[1] = %+v, want explicit 4K row", versions[1])
 	}
-	if versions[2].Auto || versions[2].ID != "kind:"+nzb720p || versions[2].Release.Info.Height != 720 {
-		t.Fatalf("versions[2] = %+v, want 720p", versions[2])
+	if versions[2].Auto || versions[2].ID != "kind:"+hash1080p || versions[2].Release.Info.Height != 1080 {
+		t.Fatalf("versions[2] = %+v, want 1080p", versions[2])
+	}
+	if versions[3].Auto || versions[3].ID != "kind:"+nzb720p || versions[3].Release.Info.Height != 720 {
+		t.Fatalf("versions[3] = %+v, want 720p", versions[3])
 	}
 	if resolveCalls.Load() != 1 {
 		t.Fatalf("resolveCalls = %d, want 1", resolveCalls.Load())
@@ -217,8 +221,8 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 	// without re-running plugin /resolve.
 	krFresh := newResolver()
 	versions2, err := krFresh.KindVersions(ctx, viewer1, key, nil, false)
-	if err != nil || len(versions2) != 3 {
-		t.Fatalf("persisted KindVersions = (%d, %v), want 3", len(versions2), err)
+	if err != nil || len(versions2) != 4 {
+		t.Fatalf("persisted KindVersions = (%d, %v), want 4", len(versions2), err)
 	}
 	kmAuto, err := krFresh.OpenKindExcluding(ctx, viewer1, key, nil, nil)
 	if err != nil {
@@ -253,18 +257,18 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 	// 4. Remembered viewer choice: recording viewer1's pick of 1080p promotes 1080p into
 	// viewer1's Auto slot and Auto playback without affecting viewer2.
 	title := &core.Title{Key: key, Type: core.TypeMovie, Title: "Live Concert 2025"}
-	if err := resSvc.RecordViewerChoice(ctx, viewer1.ID, title, versions[1].ID, versions[1].Release, nil); err != nil {
+	if err := resSvc.RecordViewerChoice(ctx, viewer1.ID, title, versions[2].ID, versions[2].Release, nil); err != nil {
 		t.Fatalf("RecordViewerChoice: %v", err)
 	}
 	v1List, err := krFresh.KindVersions(ctx, viewer1, key, nil, true)
-	if err != nil || len(v1List) != 3 {
+	if err != nil || len(v1List) != 4 {
 		t.Fatalf("viewer1 KindVersions after choice = (%+v, %v)", v1List, err)
 	}
 	if !v1List[0].Auto || !v1List[0].Remembered || v1List[0].Release.ID != "kind:"+hash1080p {
 		t.Fatalf("viewer1 Auto slot = %+v, want remembered 1080p", v1List[0])
 	}
-	if v1List[1].Release.ID != "kind:"+hash4K {
-		t.Fatalf("viewer1 slot[1] = %+v, want displaced 4K release", v1List[1])
+	if v1List[1].Release.ID != "kind:"+hash4K || v1List[2].Release.ID != "kind:"+hash1080p {
+		t.Fatalf("viewer1 rows = %+v, want explicit 4K then 1080p", v1List[1:])
 	}
 	// Auto playback for viewer1 opens remembered 1080p; viewer2 still gets 4K default.
 	kmV1, err := krFresh.OpenKindExcluding(ctx, viewer1, key, nil, nil)
@@ -292,7 +296,7 @@ func TestKindVersionsCachingOpenSourceAndRememberedChoice(t *testing.T) {
 		t.Fatalf("ClearViewerChoice = (%v, %v), want (true, nil)", cleared, err)
 	}
 	v1Cleared, err := krFresh.KindVersions(ctx, viewer1, key, nil, true)
-	if err != nil || len(v1Cleared) != 3 || v1Cleared[0].Remembered || v1Cleared[0].Release.ID != "kind:"+hash4K {
+	if err != nil || len(v1Cleared) != 4 || v1Cleared[0].Remembered || v1Cleared[0].Release.ID != "kind:"+hash4K {
 		t.Fatalf("viewer1 KindVersions after clear = %+v, err=%v", v1Cleared, err)
 	}
 }

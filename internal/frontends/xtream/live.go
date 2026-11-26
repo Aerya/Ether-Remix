@@ -184,7 +184,11 @@ func (i *instance) live(w http.ResponseWriter, r *http.Request, l login, action 
 		}
 		first = false
 		num++
-		_ = jsonEncoder(w, map[string]any{"num": num, "name": c.Name, "stream_type": "live", "stream_id": l.channels[c.ID], "stream_icon": i.image(r, l, 0, c.ID, c.Images), "epg_channel_id": c.ID, "added": "0", "category_id": liveCategory(l, c), "category_ids": liveCategoryIDs(l, c), "custom_sid": "", "tv_archive": 0, "tv_archive_duration": 0, "direct_source": ""})
+		archive := 0
+		if c.ArchiveDays > 0 {
+			archive = 1
+		}
+		_ = jsonEncoder(w, map[string]any{"num": num, "name": c.Name, "stream_type": "live", "stream_id": l.channels[c.ID], "stream_icon": i.image(r, l, 0, c.ID, c.Images), "epg_channel_id": c.ID, "added": "0", "category_id": liveCategory(l, c), "category_ids": liveCategoryIDs(l, c), "custom_sid": "", "tv_archive": archive, "tv_archive_duration": c.ArchiveDays, "direct_source": ""})
 	}
 	_, _ = w.Write([]byte("]"))
 }
@@ -202,9 +206,15 @@ func (i *instance) findChannel(r *http.Request, l login, id string) (frontend.Li
 	return frontend.LiveChannel{}, false
 }
 
-func (i *instance) programmes(r *http.Request, l login, c frontend.LiveChannel, limit int) ([]frontend.LiveProgramme, error) {
-	now := time.Now().UTC()
-	return i.host.LiveTV.Guide(r.Context(), l.viewer, frontend.LiveGuideQuery{Device: l.device, Channels: []string{c.ID}, From: now.Add(-6 * time.Hour), Until: now.Add(48 * time.Hour), Limit: limit})
+func (i *instance) liveNow() time.Time {
+	if i.host.Now != nil {
+		return i.host.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (i *instance) programmes(r *http.Request, l login, c frontend.LiveChannel, from, until time.Time) ([]frontend.LiveProgramme, error) {
+	return i.host.LiveTV.Guide(r.Context(), l.viewer, frontend.LiveGuideQuery{Device: l.device, Channels: []string{c.ID}, From: from, Until: until, Limit: 10000})
 }
 
 func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action string) {
@@ -213,7 +223,13 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 		http.NotFound(w, r)
 		return
 	}
-	ps, err := i.programmes(r, l, c, 10000)
+	now := i.liveNow()
+	from := now.Add(-6 * time.Hour)
+	until := now.Add(48 * time.Hour)
+	if action == "get_simple_data_table" && c.ArchiveDays > 0 {
+		from = now.AddDate(0, 0, -min(c.ArchiveDays, 30))
+	}
+	ps, err := i.programmes(r, l, c, from, until)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -226,7 +242,6 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 		}
 	}
 	out := []map[string]any{}
-	now := time.Now()
 	for _, p := range ps {
 		if p.ChannelID != c.ID || !p.End.After(p.Start) || action == "get_short_epg" && !p.End.After(now) {
 			continue
@@ -235,7 +250,11 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 		if !p.Start.After(now) && p.End.After(now) {
 			playing = 1
 		}
-		out = append(out, map[string]any{"id": p.ID, "epg_id": strconv.FormatInt(int64(l.channels[c.ID]), 10), "channel_id": c.ID, "title": base64.StdEncoding.EncodeToString([]byte(p.Title)), "description": base64.StdEncoding.EncodeToString([]byte(p.Summary)), "lang": "", "start": p.Start.UTC().Format("2006-01-02 15:04:05"), "end": p.End.UTC().Format("2006-01-02 15:04:05"), "start_timestamp": strconv.FormatInt(p.Start.Unix(), 10), "stop_timestamp": strconv.FormatInt(p.End.Unix(), 10), "now_playing": playing, "has_archive": 0})
+		hasArchive := 0
+		if ended, _ := frontend.ArchiveFlags(c.ArchiveDays, p.Start, p.End, now); ended {
+			hasArchive = 1
+		}
+		out = append(out, map[string]any{"id": p.ID, "epg_id": strconv.FormatInt(int64(l.channels[c.ID]), 10), "channel_id": c.ID, "title": base64.StdEncoding.EncodeToString([]byte(p.Title)), "description": base64.StdEncoding.EncodeToString([]byte(p.Summary)), "lang": "", "start": p.Start.UTC().Format("2006-01-02 15:04:05"), "end": p.End.UTC().Format("2006-01-02 15:04:05"), "start_timestamp": strconv.FormatInt(p.Start.Unix(), 10), "stop_timestamp": strconv.FormatInt(p.End.Unix(), 10), "now_playing": playing, "has_archive": hasArchive})
 		if len(out) >= limit {
 			break
 		}
@@ -259,8 +278,9 @@ func (i *instance) xmltv(w http.ResponseWriter, r *http.Request, l login) {
 			Name    string   `xml:"display-name"`
 		}{ID: c.ID, Name: c.Name})
 	}
+	now := i.liveNow()
 	for _, c := range cs {
-		ps, err := i.programmes(r, l, c, 10000)
+		ps, err := i.programmes(r, l, c, now.Add(-6*time.Hour), now.Add(48*time.Hour))
 		if err != nil {
 			return
 		}

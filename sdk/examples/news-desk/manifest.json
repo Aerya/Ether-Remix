@@ -1,0 +1,33 @@
+{
+  "id": "org.ether.examples.newsdesk",
+  "version": "1.0.0",
+  "name": "News desk",
+  "description": "A front page of stories by topic, with topics a viewer follows: a plugin screen with no live feed.",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": ["screens"],
+    "summary": "$t:summary",
+    "runtime": { "kind": "hosted", "entry": "plugin.ts" },
+    "permissions": { "viewers": { "identity": "all" } },
+    "strings": { "en": "i18n/en.json" },
+    "contributes": {
+      "screens": [
+        {
+          "id": "desk",
+          "title": "$t:screen_title",
+          "icon": "newspaper",
+          "pages": { "index": "screens/desk.json" },
+          "actions": {
+            "follow-topic": {
+              "args": {
+                "topic": { "type": "string", "enum": ["top", "local", "tech"], "required": true },
+                "on": { "type": "bool", "required": true }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

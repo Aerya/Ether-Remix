@@ -162,7 +162,7 @@ func TestVersionSlotSourceAgreement(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			cfg := testCfg()
 			cfg.Quality.Rules = nil
-			cfg.Quality.Default, cfg.Quality.Remote = "4K", "4K"
+			cfg.Quality.Default, cfg.Quality.DefaultAway = "4K", "4K"
 			cfg.Resolver.AlternativesPerResolution = true
 			cfg.Resolver.OfferHigherVersions = true
 			releases := []core.Release{
@@ -380,7 +380,7 @@ func TestPickedTierSlotFailsOverWithinTierAndStepsDownNeverUp(t *testing.T) {
 	newCfg := func() config.Config {
 		cfg := testCfg()
 		cfg.Quality.Rules = nil
-		cfg.Quality.Default, cfg.Quality.Remote = "4K", "4K"
+		cfg.Quality.Default, cfg.Quality.DefaultAway = "4K", "4K"
 		cfg.Resolver.AlternativesPerResolution = true
 		cfg.Resolver.SameQualityAlternatives = 1
 		return cfg

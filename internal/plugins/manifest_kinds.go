@@ -39,6 +39,9 @@ var kindSorts = map[string]bool{
 	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true, "lastViewed": true,
 }
 
+// importSiteName is a playlist link site a kind reads ("deezer").
+var importSiteName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 var kindLibraryCards = map[string]bool{
 	"poster": true, "landscape": true, "square": true,
 }
@@ -147,6 +150,22 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
 		}
+		if k.Import != nil {
+			if len(k.Import.Links) > 8 {
+				add(base+".import.links", "at most 8 sites may be named")
+			}
+			for i, site := range k.Import.Links {
+				if !importSiteName.MatchString(site) {
+					add(fmt.Sprintf("%s.import.links[%d]", base, i), "must be a short lowercase site name such as deezer")
+				}
+			}
+			if len(k.Import.Links) > 0 && !k.Import.Identify {
+				add(base+".import.identify", "link imports need identify")
+			}
+		}
+		if k.Library.Experience != "" && !core.ValidLibraryExperience(k.Library.Experience) {
+			add(base+".library.experience", "must be an experience id such as watch, listen, read, gallery or live")
+		}
 		if len(k.Library.Tabs) > MaxKindLibraryTabs {
 			add(base+".library.tabs", fmt.Sprintf("at most %d tabs may be declared", MaxKindLibraryTabs))
 		}
@@ -180,7 +199,17 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
-		if lv.Parent != "" {
+		if lv.Members {
+			switch {
+			case j == 0:
+				add(lbase+".members", "the root level cannot be a list level")
+			case lv.Parent != "":
+				add(lbase+".members", "a list level has no parent")
+			case lv.Playable:
+				add(lbase+".members", "a list level cannot be playable")
+			}
+		}
+		if lv.Parent != "" && !lv.Members {
 			switch {
 			case j == 0:
 				add(lbase+".parent", "the root level cannot set parent")
@@ -204,6 +233,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	}
 	if len(k.Levels) > 0 && !playable {
 		add(base+".levels", "at least one level must be playable")
+	}
+	for j, lv := range k.Levels {
+		if lv.Parent != "" {
+			if parent, _, ok := k.Level(lv.Parent); ok && parent.Members {
+				add(fmt.Sprintf("%s.levels[%d].parent", base, j), "a list level cannot be a parent (its children are its members)")
+			}
+		}
 	}
 
 	fields := map[string]KindField{}
@@ -600,6 +636,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(base+".sync.refresh", "must be a duration of at least 15m")
 		}
 	}
+	if k.Sync.Undo != "" {
+		if k.Sync.Mode != KindSyncPush {
+			add(base+".sync.undo", "only push kinds configure sync.undo")
+		} else if k.Sync.Undo != KindSyncUndoSnapshots && k.Sync.Undo != KindSyncUndoIDs {
+			add(base+".sync.undo", "must be snapshots or ids")
+		}
+	}
 	if k.Cache.MaxBytes < 0 {
 		add(base+".cache.maxBytes", "must not be negative")
 	}
@@ -765,8 +808,8 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 		if a.DefaultPort < 0 || a.DefaultPort > 65535 {
 			add(base+".defaultPort", "must be a port number")
 		}
-		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true}[a.Auth] {
-			add(base+".auth", "must be ether_token, basic or none_lan")
+		if a.Auth != "" && !map[string]bool{"ether_token": true, "basic": true, "none_lan": true, "query_credentials": true}[a.Auth] {
+			add(base+".auth", "must be ether_token, basic, none_lan or query_credentials")
 		}
 		seenLib := map[string]bool{}
 		for j, key := range a.Libraries {
@@ -794,7 +837,17 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 			}
 			seenSearch[norm] = true
 		}
+		if a.Icon != "" && !ValidAdapterIconPath(a.Icon) {
+			add(base+".icon", "must be an SVG or PNG file inside the package")
+		}
 	}
+}
+
+// ValidAdapterIconPath reports whether p names an SVG or PNG file inside
+// the package; the conformance kit checks the file itself.
+func ValidAdapterIconPath(p string) bool {
+	lower := strings.ToLower(p)
+	return !unsafePath(p) && !isHTTPURL(p) && (strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".png"))
 }
 
 // MediaKindByKey returns the declared kind with this key, if any.
@@ -831,7 +884,7 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 // level (index 0) and unknown keys return "".
 func (k MediaKindMeta) LevelParent(key string) string {
 	lv, idx, ok := k.Level(key)
-	if !ok || idx == 0 {
+	if !ok || idx == 0 || lv.Members {
 		return ""
 	}
 	if lv.Parent != "" {
@@ -1094,6 +1147,12 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
 			add(sbase+".direction", "must be asc or desc")
 		}
+		if sh.Purpose != "" && sh.Purpose != string(core.PurposeRecentContexts) && sh.Purpose != string(core.PurposeLiked) {
+			add(sbase+".purpose", "must be recentContexts or liked")
+		}
+		if sh.Layout != "" && !core.ValidRowStyle(sh.Layout) {
+			add(sbase+".layout", "must be standard, hero, wide, tiles or tracks")
+		}
 		if sh.Facet != "" && !sh.Filters.IsEmpty() {
 			add(sbase+".filters", "cannot be combined with facet")
 		}
@@ -1166,4 +1225,15 @@ func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, 
 			}
 		}
 	}
+}
+
+// ListLevels are the kind's list levels (members), roots of their own.
+func (k MediaKindMeta) ListLevels() []KindLevel {
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if lv.Members {
+			out = append(out, lv)
+		}
+	}
+	return out
 }

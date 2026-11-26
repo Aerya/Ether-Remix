@@ -2,6 +2,7 @@ package personalize
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -54,5 +55,45 @@ func TestYearInReviewUsesServerLocalYear(t *testing.T) {
 	h, err = d.YearInReview(ctx, &core.User{ID: 1}, 2026, 20)
 	if err != nil || len(h.Items) != 0 {
 		t.Fatalf("2026 review = %d items, %v; want none", len(h.Items), err)
+	}
+}
+
+// Year in Review reads the whole covered year however much the viewer
+// watched in it or since (#799, thanks theatarr): it once read a 500-row
+// newest-first page, so later plays crowded out the start of the year.
+func TestYearInReviewCountsWholeBusyYear(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cat := newFakeCatalog(testNow)
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	st := state.New(db, state.Options{Now: func() time.Time { return at }})
+	for i := 0; i < 600; i++ {
+		key := core.MovieKey(int64(500_000 + i))
+		cat.set(core.Title{Key: key, Type: core.TypeMovie, Title: fmt.Sprint("Film ", i)})
+		if err := st.Scrobble(ctx, 1, key); err != nil {
+			t.Fatal(err)
+		}
+		at = at.Add(12 * time.Hour)
+	}
+	at = time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	later := movieKey(0, 1)
+	for i := 0; i < 500; i++ {
+		if err := st.Scrobble(ctx, 1, later); err != nil {
+			t.Fatal(err)
+		}
+		at = at.Add(time.Hour)
+	}
+	d := NewDiscovery(db, cat, st, nil)
+	d.now = func() time.Time { return testNow }
+	h, err := d.YearInReview(ctx, &core.User{ID: 1}, 2025, 10000)
+	if err != nil || len(h.Items) != 600 {
+		t.Fatalf("2025 review = %d items, %v; want all 600 films", len(h.Items), err)
+	}
+	if h.Items[0].Key != core.MovieKey(500_599) || h.Items[599].Key != core.MovieKey(500_000) {
+		t.Fatalf("review order %v … %v; want latest completion first", h.Items[0].Key, h.Items[599].Key)
 	}
 }

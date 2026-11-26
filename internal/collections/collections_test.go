@@ -147,10 +147,6 @@ func TestCreateAndDeleteSmart(t *testing.T) {
 	if err := svc.DeleteSmart(ctx, created.Key); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("double delete: %v", err)
 	}
-	// Builtins cannot be deleted.
-	if err := svc.DeleteSmart(ctx, collections.BuiltinKey("trending-week-movie")); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("builtin delete: %v", err)
-	}
 }
 
 func TestHideFranchiseCollectionsAppliesWithoutRestart(t *testing.T) {
@@ -231,40 +227,6 @@ func TestFranchiseCollections(t *testing.T) {
 	}
 }
 
-func TestBuiltinLiveCollections(t *testing.T) {
-	ctx := context.Background()
-	svc, _ := setup(t)
-	key := collections.BuiltinKey("top-rated-movie")
-	if key == 0 || key.Kind() != core.KindSmart {
-		t.Fatalf("builtin key %v", key)
-	}
-	c, err := svc.Get(ctx, nil, key)
-	if err != nil || c.Title != "Top Rated Movies" {
-		t.Fatalf("builtin get: %+v %v", c, err)
-	}
-	// Offline catalog.List falls back to Browse rating-desc: Lonely (9.0) first.
-	page, err := svc.Items(ctx, nil, key, 0, 2)
-	if err != nil || len(page.Items) != 2 {
-		t.Fatalf("builtin items: %+v %v", page, err)
-	}
-	if page.Items[0].Title != "Lonely Franchise Film" {
-		t.Fatalf("top rated order: %+v", page.Items)
-	}
-	// List by type partitions builtins.
-	shows, err := svc.List(ctx, nil, core.TypeShow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range shows {
-		if c.Type == core.TypeMovie {
-			t.Fatalf("movie collection in show list: %+v", c)
-		}
-	}
-	if _, err := svc.Get(ctx, nil, core.MovieKey(1)); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("movie key Get: %v", err)
-	}
-}
-
 func TestSmartNeverStale(t *testing.T) {
 	ctx := context.Background()
 	svc, cat := setup(t)
@@ -325,9 +287,9 @@ func TestDamagedStoredRuleSkipsAndWarnsWithoutBreakingHomeRows(t *testing.T) {
 		Rules: []core.CollectionRule{
 			{Field: "genre", Op: "in", Value: json.RawMessage(`["Science Fiction"]`)},
 		},
-		Refresh: "live",
-		Enabled: true,
-		Targets: core.CollectionTargets{HomeRow: true, SectionRow: true, CollectionsTab: true, Users: core.AllUsers()},
+		Refresh:      "live",
+		Enabled:      true,
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +306,7 @@ func TestDamagedStoredRuleSkipsAndWarnsWithoutBreakingHomeRows(t *testing.T) {
 	if len(got.Rules) != 1 || len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0], `Rule "year" has a damaged value`) {
 		t.Fatalf("expected damaged rule to be skipped with warning, got rules=%+v warnings=%+v", got.Rules, got.Warnings)
 	}
-	rows, err := svc.HomeRowsFor(ctx, &core.User{ID: 1, IsOwner: true}, core.HubContext{Now: time.Now()})
+	rows, err := collections.PageRowsForTest(ctx, svc, &core.User{ID: 1, IsOwner: true})
 	if err != nil {
 		t.Fatal(err)
 	}

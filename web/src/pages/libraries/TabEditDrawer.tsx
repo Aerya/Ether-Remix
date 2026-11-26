@@ -1,60 +1,32 @@
-import {
-  Avatar,
-  Badge,
-  Button,
-  Input,
-  SearchSelect,
-  Select,
-  Spinner,
-  Switch,
-  cn,
-} from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, Select, Switch, cn } from "@braedonsaunders/appkit-ui";
 import {
   CheckCircle2,
   Filter,
   Folders,
+  LayoutList,
   Library as LibraryIcon,
   Plus,
   Radio,
-  RotateCcw,
   Search,
   Sparkles,
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
-import { useViewers, viewerName } from "../../components/pickers";
 import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { api } from "../../lib/api";
 import { asObj } from "../settings/SchemaForm";
-import type {
-  HomeLayout,
-  LibraryLayoutDoc,
-  LibraryLayoutSection,
-  Rule,
-  RuleField,
-} from "../../lib/contract";
+import type { Rule, RuleField } from "../../lib/contract";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
-import {
-  EMPTY_LAYOUT,
-  clearLibraryLayout,
-  effectiveDedupe,
-  hasLibraryLayout,
-  mediaSectionForLibrary,
-  prune,
-  sameLayout,
-  setDedupe,
-} from "../../lib/layout";
+import { libraryRowsHref } from "../../lib/recommendations";
 import { fieldMeta, isRuleComplete, type FieldMeta } from "../../lib/rules";
 import { titlePosterURL } from "../../lib/titles";
 import { RuleRow } from "../collections/RuleRow";
-import { AnchoredSlots } from "../designer/AnchoredSlots";
-import { PageSettings } from "../designer/PageSettings";
-import { RowPool } from "../designer/RowPool";
 import {
   librariesApi,
   type Library,
@@ -93,11 +65,6 @@ const FALLBACK_CATALOG_SORTS = [
   "lastViewed",
   "server",
 ] as const;
-
-export function supportsLibraryRecommendedRows(library: Library): boolean {
-  if (library.source === "plugin") return true;
-  return !library.mediaType || library.mediaType === "movie" || library.mediaType === "show";
-}
 
 function metaForField(field: RuleField): FieldMeta | undefined {
   const base = fieldMeta(field);
@@ -214,7 +181,7 @@ function facetCategoryTitle(category: LibraryFacetCategory): string {
 export function facetOptionLabel(facet: LibraryFacetOption): string {
   switch (facet.id) {
     case "":
-      return t("Owner collections");
+      return t("Your collections");
     case "genre":
       return t("Genres");
     case "studio":
@@ -333,7 +300,7 @@ export function tabKindIcon(kind: LibraryTabKind, size = 16) {
 export function tabKindTitle(kind: LibraryTabKind): string {
   switch (kind) {
     case "recommended":
-      return t("Recommended");
+      return t("Recommendations");
     case "library":
       return t("Everything");
     case "collections":
@@ -441,7 +408,7 @@ export function createSeedTab(
   const defaultDir = defaultDirectionForSort(defaultSort);
 
   if (kind === "recommended") {
-    const label = t("Recommended");
+    const label = t("Recommendations");
     return {
       key: slugTabKey("recommended", kind, existingKeys),
       label,
@@ -538,8 +505,8 @@ export function AddTabPickerDrawer({
     () => [
       {
         kind: "recommended" as const,
-        title: t("Recommended"),
-        description: t("Personalized rows and collections arranged for this library."),
+        title: t("Recommendations"),
+        description: t("Rows for this library, arranged in Recommendations."),
         badge: hasRecommended ? t("Already in tabs") : undefined,
         disabled: false,
       },
@@ -647,8 +614,6 @@ export function TabEditDrawer({
   existingKeys,
   canHide = true,
   canDelete = true,
-  libraryLayoutDoc,
-  layoutLoading,
   saving,
   onSave,
   onDelete,
@@ -663,10 +628,8 @@ export function TabEditDrawer({
   existingKeys: Set<string>;
   canHide?: boolean;
   canDelete?: boolean;
-  libraryLayoutDoc?: LibraryLayoutDoc | null;
-  layoutLoading?: boolean;
   saving: boolean;
-  onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
+  onSave: (tab: LibraryTab) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -682,8 +645,6 @@ export function TabEditDrawer({
       existingKeys={existingKeys}
       canHide={canHide}
       canDelete={canDelete}
-      libraryLayoutDoc={libraryLayoutDoc ?? null}
-      layoutLoading={layoutLoading ?? false}
       saving={saving}
       onSave={onSave}
       onDelete={onDelete}
@@ -701,8 +662,6 @@ function TabEditDrawerInner({
   existingKeys,
   canHide,
   canDelete,
-  libraryLayoutDoc,
-  layoutLoading,
   saving,
   onSave,
   onDelete,
@@ -716,10 +675,8 @@ function TabEditDrawerInner({
   existingKeys: Set<string>;
   canHide: boolean;
   canDelete: boolean;
-  libraryLayoutDoc: LibraryLayoutDoc | null;
-  layoutLoading: boolean;
   saving: boolean;
-  onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
+  onSave: (tab: LibraryTab) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -730,106 +687,6 @@ function TabEditDrawerInner({
   const [freshRuleIndex, setFreshRuleIndex] = useState<number | null>(null);
 
   const isPlugin = library.source === "plugin";
-  const section: LibraryLayoutSection = `library:${library.id}`;
-  const mediaSection = isPlugin ? null : mediaSectionForLibrary(library);
-  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
-  const { viewers, error: viewersError } = useViewers();
-  const [selectedViewerId, setSelectedViewerId] = useState<number | null | undefined>(undefined);
-  const [previewAt] = useState(() => new Date().toISOString());
-
-  const defaultViewerId = useMemo(
-    () => viewers?.find((v) => v.isOwner)?.id ?? viewers?.[0]?.id ?? null,
-    [viewers],
-  );
-  const viewersReady = viewers !== null || Boolean(viewersError);
-  const previewViewerId = selectedViewerId !== undefined ? selectedViewerId : defaultViewerId;
-  const previewViewer = (viewers ?? []).find((v) => v.id === previewViewerId);
-  const previewWho = previewViewer ? viewerName(previewViewer) : t("Typical viewer");
-
-  // i18n: memo holds no copy
-  const savedLayout = useMemo(
-    () => (libraryLayoutDoc ? prune(libraryLayoutDoc.layout) : EMPTY_LAYOUT),
-    [libraryLayoutDoc],
-  );
-  const [adoptedLayout, setAdoptedLayout] = useState<LibraryLayoutDoc | null>(
-    () => libraryLayoutDoc,
-  );
-  const [layoutDraft, setLayoutDraft] = useState<HomeLayout>(() =>
-    libraryLayoutDoc ? prune(libraryLayoutDoc.layout) : EMPTY_LAYOUT,
-  );
-  const [focusRow, setFocusRow] = useState<string | null>(null);
-  if (libraryLayoutDoc && libraryLayoutDoc !== adoptedLayout) {
-    setAdoptedLayout(libraryLayoutDoc);
-    setLayoutDraft(prune(libraryLayoutDoc.layout));
-  }
-  const availableRows = (libraryLayoutDoc?.availableRows ?? []).map((row) =>
-    row.kind === "favorites"
-      ? {
-          ...row,
-          title: t("Favorites"),
-          description: t("Titles this viewer marked as favorites."),
-        }
-      : row,
-  );
-  const rowsCustomised = supportsRecommendedRows && hasLibraryLayout(layoutDraft, section);
-  const layoutDirty = Boolean(libraryLayoutDoc) && !sameLayout(layoutDraft, savedLayout);
-  const debouncedLayoutDraft = useDebouncedValue(layoutDraft, 200);
-  const hasLoadedLibraryLayout = Boolean(libraryLayoutDoc);
-  const rowPreview = useAsync(
-    (signal) => {
-      if (
-        draft.kind !== "recommended" ||
-        !supportsRecommendedRows ||
-        !hasLoadedLibraryLayout ||
-        !viewersReady
-      ) {
-        return Promise.resolve(null);
-      }
-      const dirty = !sameLayout(debouncedLayoutDraft, savedLayout);
-      return api.previewLayout(
-        {
-          viewerId: previewViewerId,
-          device: "tv",
-          at: previewAt,
-          section,
-          ...(dirty ? { layout: debouncedLayoutDraft } : {}),
-        },
-        signal,
-      );
-    },
-    [
-      draft.kind,
-      supportsRecommendedRows,
-      hasLoadedLibraryLayout,
-      viewersReady,
-      previewViewerId,
-      previewAt,
-      section,
-      debouncedLayoutDraft,
-      savedLayout,
-    ],
-  );
-  const previewRequest = useMemo(
-    () =>
-      draft.kind === "recommended" &&
-      supportsRecommendedRows &&
-      hasLoadedLibraryLayout &&
-      viewersReady
-        ? {
-            viewerId: previewViewerId,
-            device: "tv" as const,
-            at: previewAt,
-          }
-        : null,
-    [
-      draft.kind,
-      supportsRecommendedRows,
-      hasLoadedLibraryLayout,
-      viewersReady,
-      previewViewerId,
-      previewAt,
-    ],
-  );
   const mediaType: "movie" | "show" | "mixed" =
     library.mediaType === "movie" || library.mediaType === "show" ? library.mediaType : "mixed";
 
@@ -1100,12 +957,7 @@ function TabEditDrawerInner({
     if (draft.hidden && canHide) {
       cleaned.hidden = true;
     }
-    onSave(
-      cleaned,
-      draft.kind === "recommended" && supportsRecommendedRows && layoutDirty
-        ? layoutDraft
-        : undefined,
-    );
+    onSave(cleaned);
   };
 
   const itemsPreviewData =
@@ -1138,7 +990,7 @@ function TabEditDrawerInner({
           : t("Edit {label}", { label: initialTab.label })
       }
       description={tabKindTitle(draft.kind)}
-      size={draft.kind === "recommended" && supportsRecommendedRows ? "xl" : "lg"}
+      size="lg"
       footer={
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <div>
@@ -1186,151 +1038,30 @@ function TabEditDrawerInner({
           </p>
         </div>
 
-        {/* Rows on this tab (embedded Recommended rows editor) */}
-        {draft.kind === "recommended" && supportsRecommendedRows ? (
+        {/* The rows themselves are arranged in the Recommendations designer. */}
+        {draft.kind === "recommended" ? (
           <section
             aria-label={t("Rows on this tab")}
-            className="space-y-4 rounded-xl border border-border bg-surface p-4"
+            className="flex flex-wrap items-start gap-3 rounded-xl border border-border bg-surface p-4"
           >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex min-w-0 flex-1 items-start gap-3">
-                <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
-                  <Sparkles size={16} />
-                </span>
-                <div className="min-w-0 flex-1 space-y-1">
-                  <h3 className="text-sm font-medium text-fg">{t("Rows on this tab")}</h3>
-                  <p className="text-xs text-fg-muted">
-                    {isPlugin
-                      ? t("Rows arranged for {name}'s Recommended tab.", { name: library.name })
-                      : t(
-                          "These rows also show on this library's Recommended page in Plex, Jellyfin and Emby.",
-                        )}
-                  </p>
-                </div>
-              </div>
-              {rowsCustomised ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setLayoutDraft(clearLibraryLayout(layoutDraft, section))}
-                >
-                  <RotateCcw size={13} />
-                  {t("Reset to default rows")}
-                </Button>
-              ) : null}
+            <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
+              <Sparkles size={16} />
+            </span>
+            <div className="min-w-0 flex-1 space-y-1">
+              <h3 className="text-sm font-medium text-fg">{t("Rows on this tab")}</h3>
+              <p className="text-xs text-fg-muted">
+                {isNew
+                  ? t("Add the tab first, then choose its rows in Recommendations.")
+                  : t("Choose, order and schedule this tab's rows in Recommendations.")}
+              </p>
             </div>
-
-            {layoutLoading && !libraryLayoutDoc ? (
-              <div className="flex items-center gap-2 py-3 text-xs text-fg-muted">
-                <Spinner size={14} label={t("Loading rows")} />
-                <span>{t("Loading rows…")}</span>
-              </div>
-            ) : (
-              <div className="space-y-5 border-t border-border-subtle pt-4">
-                {(viewers ?? []).length > 0 ? (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-bg-subtle/40 px-3 py-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      {previewViewer ? (
-                        <Avatar src={previewViewer.thumb} name={previewWho} size={24} />
-                      ) : (
-                        <span className="grid size-6 place-items-center rounded-full bg-primary-subtle text-primary">
-                          <Sparkles size={13} />
-                        </span>
-                      )}
-                      <span className="text-xs font-medium text-fg-muted">{t("Preview as")}</span>
-                    </div>
-                    <div className="w-56">
-                      <SearchSelect
-                        value={previewViewerId === null ? "" : String(previewViewerId)}
-                        onChange={(v) => setSelectedViewerId(v ? Number(v) : null)}
-                        ariaLabel={t("Preview as")}
-                        placeholder={t("Select…")}
-                        searchPlaceholder={t("Search…")}
-                        noMatchesLabel={t("No matches")}
-                        selectLabel={t("Select")}
-                        closeLabel={t("Close")}
-                        options={[
-                          {
-                            value: "",
-                            label: t("Typical viewer"),
-                            hint: t("The Home a new viewer gets"),
-                          },
-                          ...(viewers ?? []).map((v) => ({
-                            value: String(v.id),
-                            label: viewerName(v),
-                            hint: t("Spot-check, with their overrides"),
-                          })),
-                        ]}
-                      />
-                    </div>
-                  </div>
-                ) : null}
-                <AnchoredSlots
-                  draft={layoutDraft}
-                  onChange={setLayoutDraft}
-                  layer="global"
-                  section={section}
-                  viewers={viewers ?? []}
-                  available={availableRows}
-                  mediaSection={mediaSection}
-                />
-                <div className="border-t border-border-subtle pt-4">
-                  <RowPool
-                    draft={layoutDraft}
-                    onChange={setLayoutDraft}
-                    layer="global"
-                    section={section}
-                    viewers={viewers ?? []}
-                    available={availableRows}
-                    focusRow={focusRow}
-                    onFocusRow={setFocusRow}
-                    mediaSection={mediaSection}
-                    preview={rowPreview.data}
-                    previewWho={previewWho}
-                    previewRequest={previewRequest}
-                  />
-                </div>
-                <div className="space-y-3 border-t border-border-subtle pt-4">
-                  <PageSettings
-                    draft={layoutDraft}
-                    onChange={setLayoutDraft}
-                    layer="global"
-                    section={section}
-                    viewers={viewers ?? []}
-                    defaults={{
-                      home: 14,
-                      library: libraryLayoutDoc?.defaults.maxRows ?? 16,
-                    }}
-                    label={t("Recommended")}
-                  />
-                  {!isPlugin ? (
-                    <div className="flex items-start gap-3 rounded-lg border border-border bg-bg-subtle/40 p-3">
-                      <Switch
-                        aria-label={t("Don't repeat what Home shows")}
-                        checked={effectiveDedupe(layoutDraft, "global", section).on}
-                        onChange={(e) =>
-                          setLayoutDraft(
-                            setDedupe(layoutDraft, "global", section, e.currentTarget.checked),
-                          )
-                        }
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-fg">
-                          {t("Don't repeat what Home shows")}
-                        </p>
-                        <p className="text-xs text-fg-muted">
-                          {t(
-                            "Titles the viewer's Home leads with stay off {page}, so switching tabs always shows something new.",
-                            { page: library.name },
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            )}
+            {!isNew ? (
+              <Button asChild size="sm" variant="outline">
+                <Link to={libraryRowsHref(library.id, initialTab.key)}>
+                  <LayoutList size={14} /> {t("Edit rows")}
+                </Link>
+              </Button>
+            ) : null}
           </section>
         ) : null}
 

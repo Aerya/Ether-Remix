@@ -463,9 +463,7 @@ export function CatalogBrowser({
   };
   const hasFilters = Boolean(query || genre || decade || waiting || advancedRaw);
   const catalogStep = dashboard?.setupSteps?.find((s) => s.id === "catalog");
-  const tmdbMissing = catalogStep
-    ? !catalogStep.complete
-    : !busy && !results.error && !items.length && !hasFilters && page <= 1;
+  const metadataMissing = catalogStep?.complete === false;
   const reset = () => {
     const next = new URLSearchParams(latestParams.current);
     ["q", "genre", "decade", "waiting", "page", "filters", "viewer"].forEach((k) => next.delete(k));
@@ -627,12 +625,12 @@ export function CatalogBrowser({
               ) : null}
             </div>
           </div>
-          {tmdbMissing && !collection ? (
+          {metadataMissing && !collection ? (
             <p className="mb-3 text-sm text-fg-muted">
-              {tx("No TMDB key is configured. {link} to populate the catalog.", {
+              {tx("No metadata source is configured. {link}.", {
                 link: (
-                  <Link to="/services/tmdb" className="font-medium text-primary underline">
-                    {t("Add a TMDB key")}
+                  <Link to="/services/overview" className="font-medium text-primary underline">
+                    {t("Add a metadata source")}
                   </Link>
                 ),
               })}
@@ -664,9 +662,7 @@ export function CatalogBrowser({
                   ? t("Try another title or broaden your filters.")
                   : page > 1
                     ? t("The catalog may have changed since your last visit.")
-                    : t(
-                        "The library is empty until the catalogue syncs. That needs a TMDB key. Playback also needs a debrid account or a Usenet provider.",
-                      )
+                    : t("Titles appear here when they are added to the catalogue.")
               }
               action={
                 hasFilters ? (
@@ -745,6 +741,7 @@ export function CatalogBrowser({
         <TitleInspector
           key={selected}
           titleKey={selected}
+          onMatch={(key) => update("title", key)}
           onClose={() => update("title", "")}
           onLibraryChange={() => {
             void browsed.reload();

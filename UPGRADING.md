@@ -16,25 +16,25 @@ For a PostgreSQL cluster, back up the shared database and every node's configura
 
 ## Find settings in the current console
 
-Sidebar group headings such as **Library**, **Streaming** and **Server** organize pages; they are not extra tabs.
+Sidebar group headings such as **Content**, **Streaming** and **System** organize pages; they are not extra tabs.
 
 | Task | Console destination |
 | --- | --- |
-| Quality profiles and ranking | **Quality › Profiles** |
-| Viewer and device profile rules | **Quality › Rules** |
-| Search timing and health samples | **Quality › Searching** |
-| Blocked releases | **Quality › Blocklist** |
+| Quality profiles and ranking | **Releases › Profiles** |
+| Viewer and device profile rules | **Releases › Rules** |
+| Search timing and health samples | **Releases › Searching** |
+| Blocked releases | **Releases › Blocklist** |
 | Source accounts and indexers | **Sources › Debrid**, **Usenet**, **Indexers** |
 | Source request and provider usage | **Sources › Stats** |
 | Movie release visibility and monitoring (formerly Sources › Availability) | **Catalog › Settings › General › New releases** |
 | Library visibility rules | **Catalog › Settings › Rules** |
 | Per-viewer preferences | **Viewers › viewer › Audio & subtitles** or **Limits** |
-| Household track preferences | **Playback › Audio & subtitles** |
+| Household track preferences | **Playback › Audio** and **Playback › Subtitles** |
 | Protocols and connection addresses | **Apps**; listener ports under **General › How apps connect** |
 | Updates | **Maintenance › Updates** |
 | Snapshots and restore | **Maintenance › Backups & import › Backups** |
 
-Existing profiles keep their ranking order. Review **Quality › Profiles** only if you want to change it. New-release visibility offers **When they can play**, **On digital release** and **Right away**. See the [user guide](docs/user-guide.md) for configuration details.
+Existing profiles keep their ranking order. Review **Releases › Profiles** only if you want to change it. New-release visibility offers **When they can play**, **On digital release** and **Right away**. See the [user guide](docs/user-guide.md) for configuration details.
 
 ## Additional apps and watch sync
 

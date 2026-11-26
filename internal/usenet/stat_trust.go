@@ -274,12 +274,17 @@ func demoteUntrustedStatPools(pools []*pool) []*pool {
 func (p *pool) verifyBodyHeader(ctx context.Context, id string, groups []string, prio core.Priority) error {
 	if core.IsBackgroundCheck(ctx) {
 		prio = core.PriorityPrefetch
-		if err := core.SpendBackground(ctx, "bytes", "usenet", 2*p.o.MaxArticleSize+(64<<10)); err != nil {
-			return err
-		}
+	}
+	settle, err := p.reserveBackgroundBody(ctx)
+	if err != nil {
+		return err
 	}
 	var bodyStarted bool
-	err := p.withConn(ctx, prio, func(c *Conn) error {
+	var used int64
+	defer func() { settle(used) }()
+	err = p.withConn(ctx, prio, func(c *Conn) error {
+		before := c.wireBytes()
+		defer func() { used += c.wireBytes() - before }()
 		if p.o.UseGroup && len(groups) > 0 && !slices.Contains(groups, c.CurrentGroup()) {
 			if err := c.Group(ctx, groups[0]); err != nil && !errors.Is(err, ErrNoSuchGroup) {
 				return err
@@ -288,7 +293,9 @@ func (p *pool) verifyBodyHeader(ctx context.Context, id string, groups []string,
 		reader, err := c.Body(ctx, id)
 		bodyStarted = c.bodyStarted
 		if err == nil {
-			err = probeBodyHeader(c, reader, p.o.MaxArticleSize, core.ArticlePart{})
+			var unread int64
+			unread, err = probeBodyHeader(c, reader, p.o.MaxArticleSize, core.ArticlePart{})
+			used += unread
 		}
 		if errors.Is(err, ErrNoSuchArticle) {
 			p.bodyMisses.Add(1)
@@ -310,15 +317,20 @@ func (p *pool) verifyBodyHeader(ctx context.Context, id string, groups []string,
 func (p *pool) verifyFullBody(ctx context.Context, id string, groups []string, prio core.Priority) error {
 	if core.IsBackgroundCheck(ctx) {
 		prio = core.PriorityPrefetch
-		if err := core.SpendBackground(ctx, "bytes", "usenet", 2*p.o.MaxArticleSize+(64<<10)); err != nil {
-			return err
-		}
+	}
+	settle, err := p.reserveBackgroundBody(ctx)
+	if err != nil {
+		return err
 	}
 	var (
 		bodyStarted bool
 		rtt, took   time.Duration
+		used        int64
 	)
-	err := p.withConn(ctx, prio, func(c *Conn) error {
+	defer func() { settle(used) }()
+	err = p.withConn(ctx, prio, func(c *Conn) error {
+		before := c.wireBytes()
+		defer func() { used += c.wireBytes() - before }()
 		start := time.Now()
 		if p.o.UseGroup && len(groups) > 0 && !slices.Contains(groups, c.CurrentGroup()) {
 			if err := c.Group(ctx, groups[0]); err != nil && !errors.Is(err, ErrNoSuchGroup) {
@@ -327,6 +339,10 @@ func (p *pool) verifyFullBody(ctx context.Context, id string, groups []string, p
 		}
 		_, err := c.BodyDecode(ctx, id, &yenc.DecodeOptions{MaxSize: p.o.MaxArticleSize})
 		bodyStarted = c.bodyStarted
+		if err != nil && bodyStarted {
+			// An abandoned body's unread remainder is unknown: keep the reservation.
+			used += maxEncodedBody(p.o.MaxArticleSize)
+		}
 		rtt = c.lastRTT
 		took = time.Since(start)
 		if errors.Is(err, ErrNoSuchArticle) {

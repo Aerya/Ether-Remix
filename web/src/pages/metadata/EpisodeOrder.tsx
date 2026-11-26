@@ -1,6 +1,7 @@
 import { Badge, Button, Input, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import { Search, Tv, ArrowRight } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { MetadataWorkspace } from "./MetadataWorkspace";
 import { Drawer } from "../../components/Drawer";
@@ -8,9 +9,12 @@ import { ErrorPanel } from "../../components/feedback";
 import { Section } from "../../components/layout";
 import { localized, t, tn } from "../../i18n";
 import { api, apiFetch, errorMessage } from "../../lib/api";
-import type { TitleCard } from "../../lib/contract";
+import type { ShowOrderCard, TitleCard } from "../../lib/contract";
 import type { EtherUser } from "../../lib/types";
 import { useAsync } from "../../lib/hooks";
+import { metadataSources } from "../../lib/metadataSources";
+import { TitleInspector } from "../libraries/browser/TitleInspector";
+import { episodeOrderReason } from "../libraries/browser/TitleEpisodeOrder";
 import { nativeSelect } from "./shared";
 
 type Group = {
@@ -43,21 +47,43 @@ const viewerLabel = (u: EtherUser) => u.title || u.username;
 
 /** Find a show, then edit its episode order (a record) in a drawer. */
 export function EpisodeOrders() {
+  const sources = useAsync(metadataSources, []);
+  const tmdbAvailable = sources.data?.some((source) => source.id === "tmdb" && source.configured);
+  const [params, setParams] = useSearchParams();
+  const titleKey = params.get("title");
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<TitleCard[] | null>(null);
+  const [submitted, setSubmitted] = useState("");
+  const [results, setResults] = useState<ShowOrderCard[] | null>(null);
   const [show, setShow] = useState<TitleCard | null>(null);
   const [busy, setBusy] = useState(false);
-  const search = async () => {
-    if (!query.trim()) return;
+  const search = async (term: string) => {
+    if (!term.trim()) return;
+    setSubmitted(term);
     setBusy(true);
     try {
-      setResults(await api.searchCatalog(query, "show", 15));
+      const searchParams = new URLSearchParams({
+        q: term.trim(),
+        type: "show",
+        limit: "15",
+        episodeOrder: "1",
+      });
+      const response = await apiFetch<{ items: ShowOrderCard[] | null }>(
+        `/catalog/search?${searchParams}`,
+      );
+      setResults(response.items ?? []);
     } catch (e) {
       toast.error(t("Search failed"), { description: errorMessage(e) });
     } finally {
       setBusy(false);
     }
   };
+  const showPath = (key: string | null) => {
+    const next = new URLSearchParams(params);
+    if (key) next.set("title", key);
+    else next.delete("title");
+    return next;
+  };
+
   return (
     <>
       <MetadataWorkspace
@@ -65,15 +91,18 @@ export function EpisodeOrders() {
           <>
             <Section
               title={t("Episode order")}
-              description={t(
-                "Present a show in DVD, absolute or story order. Playback keeps the original episode numbers.",
-              )}
+              description={t("Choose how episodes are numbered and listed in your apps.")}
             >
+              {tmdbAvailable === false ? (
+                <p className="mb-3 text-sm text-fg-muted">
+                  {t("TMDB episode groups need TMDB. Manage other orders from the show’s details.")}
+                </p>
+              ) : null}
               <form
                 className="flex max-w-xl gap-2"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  void search();
+                  void search(query);
                 }}
               >
                 <Input
@@ -121,42 +150,79 @@ export function EpisodeOrders() {
               </div>
               {results.length ? (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {results.map((item) => (
-                    <button
-                      type="button"
-                      key={item.key}
-                      aria-label={
-                        item.year
-                          ? t("{title} ({year})", { title: item.title, year: item.year })
-                          : item.title
-                      }
-                      onClick={() => setShow(item)}
-                      className="flex items-center gap-4 rounded-xl border border-border bg-surface p-3 text-left hover:bg-surface-hover"
-                    >
-                      <Artwork
-                        src={item.poster}
-                        alt=""
-                        title={item.title}
-                        className="aspect-[2/3] w-16 shrink-0 rounded-md"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <strong className="block text-sm font-medium">{item.title}</strong>
-                        <span className="text-xs text-fg-muted">{item.year || t("TV series")}</span>
-                        <span className="mt-2 flex items-center gap-1 text-xs text-fg-muted">
-                          {t("Explore orders")} <ArrowRight size={12} />
-                        </span>
-                      </span>
-                    </button>
-                  ))}
+                  {results.map((item) => {
+                    const order = item.episodeOrder;
+                    const viewerOverrides = tmdbAvailable && order?.effective.source === "tmdb";
+                    return (
+                      <article
+                        key={item.key}
+                        className="flex items-start gap-3 rounded-xl border border-border bg-surface p-3"
+                      >
+                        <Artwork
+                          src={item.poster}
+                          alt=""
+                          title={item.title}
+                          className="aspect-[2/3] w-14 shrink-0 rounded-md"
+                        />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <h3 className="text-sm font-medium">{item.title}</h3>
+                          <p className="text-xs text-fg-muted">{item.year || t("TV series")}</p>
+                          {order ? (
+                            <p className="text-xs text-fg-muted">{episodeOrderReason(order)}</p>
+                          ) : null}
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1">
+                            <Link
+                              to={{ search: showPath(item.key).toString() }}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                              aria-label={t("Episode order for {title}", { title: item.title })}
+                            >
+                              {t("Episode order")} <ArrowRight size={12} aria-hidden />
+                            </Link>
+                            {viewerOverrides ? (
+                              <button
+                                type="button"
+                                onClick={() => setShow(item)}
+                                className="text-xs text-fg-muted hover:underline"
+                                aria-label={
+                                  item.year
+                                    ? t("{title} ({year})", { title: item.title, year: item.year })
+                                    : item.title
+                                }
+                              >
+                                {t("Viewer overrides")}
+                              </button>
+                            ) : null}
+                          </div>
+                          {order && order.effective.source !== "tmdb" ? (
+                            <p className="text-xs text-fg-muted">
+                              {t("Viewer overrides apply to TMDB-ordered shows.")}
+                            </p>
+                          ) : null}
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="text-sm text-fg-muted">{t("No shows match “{query}”.", { query })}</p>
+                <p className="text-sm text-fg-muted">
+                  {t("No shows match “{query}”.", { query: submitted })}
+                </p>
               )}
             </div>
           )
         }
       />
-      <ShowOrderDrawer show={show} onClose={() => setShow(null)} />
+      {show && tmdbAvailable ? <ShowOrderDrawer show={show} onClose={() => setShow(null)} /> : null}
+      {titleKey ? (
+        <TitleInspector
+          key={titleKey}
+          titleKey={titleKey}
+          openEpisodeOrder
+          onClose={() => setParams(showPath(null))}
+          onMatch={(key) => setParams(showPath(key))}
+          onEpisodeOrderSaved={() => void search(submitted)}
+        />
+      ) : null}
     </>
   );
 }

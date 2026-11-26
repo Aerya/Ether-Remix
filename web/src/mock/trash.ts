@@ -268,6 +268,188 @@ const DICTIONARRY_PROFILES: Record<StarrApp, FakeProfile[]> = {
   ],
 };
 
+const PRESET_HEIGHTS = [2160, 1080, 720, 576, 480, 360];
+const PRESET_SOURCES = ["remux", "bluray", "webdl", "webrip", "hdtv", "dvd", "unknown"];
+
+function presetResolutionGroups(maxHeight: number, minHeight: number): QualityItem[] {
+  return PRESET_HEIGHTS.filter((h) => h <= maxHeight && (minHeight <= 0 || h >= minHeight)).map(
+    (h) => ({
+      name: h === 2160 ? "4K (2160p)" : `${h}p`,
+      qualities: PRESET_SOURCES.map((src) => `${src}-${h}`),
+    }),
+  );
+}
+
+const PRESETS: QualityProfile[] = [
+  {
+    name: "4K",
+    maxHeight: 2160,
+    minHeight: 720,
+    allowHdr: true,
+    allowDolbyVision: true,
+    minSizeMbPerMin: 15,
+    maxSizeMbPerMin: 1000,
+    preferredLanguages: null,
+    audioLanguageMode: "preferred",
+    allowCam: false,
+    qualityOrder: presetResolutionGroups(2160, 720),
+    customFormatScores: {
+      "ether:viewer-language": 20000,
+      "ether:series-year-differs": -10000,
+      "ether:remux": 8000,
+      "ether:bluray": 6000,
+      "ether:webdl": 4000,
+      "ether:webrip": 2000,
+      "ether:dv-hdr10": 1500,
+      "ether:dv": 1000,
+      "ether:hdr10": 500,
+    },
+  },
+  {
+    name: "1080p",
+    maxHeight: 1080,
+    minHeight: 720,
+    allowHdr: false,
+    allowDolbyVision: false,
+    minSizeMbPerMin: 5,
+    maxSizeMbPerMin: 150,
+    preferredLanguages: null,
+    audioLanguageMode: "preferred",
+    allowCam: false,
+    qualityOrder: presetResolutionGroups(1080, 720),
+    customFormatScores: {
+      "ether:viewer-language": 10000,
+      "ether:series-year-differs": -5000,
+      "ether:webdl": 4000,
+      "ether:bluray": 3000,
+      "ether:webrip": 2000,
+      "ether:hdtv": 1000,
+    },
+  },
+  {
+    name: "720p",
+    maxHeight: 720,
+    minHeight: 480,
+    allowHdr: false,
+    allowDolbyVision: false,
+    minSizeMbPerMin: 2,
+    maxSizeMbPerMin: 60,
+    preferredLanguages: null,
+    audioLanguageMode: "preferred",
+    allowCam: false,
+    qualityOrder: presetResolutionGroups(720, 480),
+    customFormatScores: {
+      "ether:viewer-language": 10000,
+      "ether:series-year-differs": -5000,
+      "ether:webdl": 4000,
+      "ether:webrip": 3000,
+      "ether:bluray": 2000,
+      "ether:hdtv": 1000,
+    },
+  },
+];
+
+function slugDbId(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeMockDatabase(repoRaw: string, branchRaw: string) {
+  const raw = repoRaw.trim();
+  let branch = branchRaw.trim();
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return { error: "enter https://github.com/<owner>/<repo> or an https .tar.gz URL" };
+  }
+  if (u.protocol !== "https:" || !u.hostname || u.username || u.password) {
+    return { error: "enter https://github.com/<owner>/<repo> or an https .tar.gz URL" };
+  }
+  if (u.hostname.toLowerCase() === "github.com") {
+    const parts = u.pathname
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean);
+    if (parts.length < 2) return { error: "enter https://github.com/<owner>/<repo>" };
+    const owner = parts[0]!;
+    const repoName = parts[1]!.replace(/\.git$/i, "");
+    if (!repoName) return { error: "enter https://github.com/<owner>/<repo>" };
+    if (parts.length >= 4 && parts[2] === "tree") {
+      const treeBranch = parts.slice(3).join("/");
+      if (!branch && treeBranch) branch = treeBranch;
+    } else if (parts.length !== 2) {
+      return { error: "enter https://github.com/<owner>/<repo>" };
+    }
+    if (!branch) branch = "v2";
+    if (/[\s?#]|\.\./.test(branch)) return { error: "branch name is not valid" };
+    return {
+      id: slugDbId(`${owner}-${repoName}`),
+      name: repoName,
+      repo: `https://github.com/${owner}/${repoName}`,
+      branch,
+    };
+  }
+  const lower = u.pathname.toLowerCase();
+  if (!lower.endsWith(".tar.gz") && !lower.endsWith(".tgz")) {
+    return { error: "enter https://github.com/<owner>/<repo> or an https .tar.gz URL" };
+  }
+  const base = u.pathname.split("/").pop() ?? "";
+  const name = base.replace(/\.(tar\.gz|tgz)$/i, "") || u.hostname;
+  return {
+    id: slugDbId(`${u.hostname}-${name}`),
+    name,
+    repo: raw,
+    branch,
+  };
+}
+
+const CUSTOM_DB_PROFILES: Record<StarrApp, FakeProfile[]> = {
+  radarr: [
+    ...DICTIONARRY_PROFILES.radarr,
+    {
+      id: "1080p-anime-fork",
+      name: "1080p Anime Fork",
+      description: "Custom fork profile tuned for dual-audio anime movies.",
+      group: 2,
+      url: "https://dictionarry.dev",
+      formats: 1,
+      items: [
+        {
+          name: "1080p Anime Fork",
+          allowed: true,
+          items: ["Bluray-1080p", "WEBDL-1080p"],
+        },
+      ],
+      minFormatScore: 100,
+      formatItems: formatItems("radarr", ["x265"]),
+    },
+  ],
+  sonarr: [
+    ...DICTIONARRY_PROFILES.sonarr,
+    {
+      id: "1080p-anime-fork",
+      name: "1080p Anime Fork",
+      description: "Custom fork profile tuned for dual-audio anime episodes.",
+      group: 2,
+      url: "https://dictionarry.dev",
+      formats: 1,
+      items: [
+        {
+          name: "1080p Anime Fork",
+          allowed: true,
+          items: ["Bluray-1080p", "WEBDL-1080p"],
+        },
+      ],
+      minFormatScore: 100,
+      formatItems: formatItems("sonarr", ["x265"]),
+    },
+  ],
+};
+
 const SOURCE_ORDER = ["remux", "bluray", "webdl", "webrip", "hdtv", "dvd"];
 
 /** "WEBDL-1080p" → ["webdl", 1080]; null for qualities Ether has no equivalent for. */
@@ -411,10 +593,21 @@ export function createTrashMock() {
   function resolve(body: Record<string, unknown>, config: EtherConfig): QualityImportPlan | Reply {
     let a = app(body.app);
     if (!a) return fail(400, "invalid", "app must be radarr or sonarr");
+    const noSync = body.sync === false;
     if (body.source === "dictionarry") {
-      const p = DICTIONARRY_PROFILES[a].find((x) => x.id === body.profile);
+      const dbId = typeof body.database === "string" ? body.database.trim() : "";
+      if (dbId && !(config.quality.databases ?? []).some((d) => d.id === dbId)) {
+        return fail(404, "not_found", "no such profile database");
+      }
+      const catalog = dbId ? CUSTOM_DB_PROFILES[a] : DICTIONARRY_PROFILES[a];
+      const p = catalog.find((x) => x.id === body.profile);
       if (!p) return fail(404, "not_found", "Profilarr (Dictionarry) has no such profile");
-      return plan(a, p, p.scoreSet, config, { id: p.id, source: "dictionarry" });
+      const out = plan(a, p, p.scoreSet, config, { id: p.id, source: "dictionarry" });
+      if (!isReply(out)) {
+        if (dbId) out.database = dbId;
+        if (noSync) out.noSync = true;
+      }
+      return out;
     }
     if (typeof body.json === "string" && body.json.trim()) {
       let native: Native;
@@ -430,12 +623,43 @@ export function createTrashMock() {
     }
     const p = PROFILES[a].find((x) => x.id === body.profile);
     if (!p) return fail(404, "not_found", "TRaSH Guides has no such profile");
-    return plan(a, p, p.scoreSet, config, { id: p.id, source: "trash" });
+    const out = plan(a, p, p.scoreSet, config, { id: p.id, source: "trash" });
+    if (!isReply(out) && noSync) out.noSync = true;
+    return out;
   }
 
-  function handle(method: string, seg: string[], body: unknown, config: EtherConfig): Reply | null {
+  function handle(
+    method: string,
+    seg: string[],
+    body: unknown,
+    config: EtherConfig,
+    q?: URLSearchParams,
+  ): Reply | null {
     if (seg[0] !== "releases") return null;
     const b = (body ?? {}) as Record<string, unknown>;
+    if (method === "GET" && seg[1] === "presets" && seg.length === 2) {
+      return ok({ items: structuredClone(PRESETS) });
+    }
+    if (
+      method === "POST" &&
+      seg[1] === "quality-databases" &&
+      seg[2] === "check" &&
+      seg.length === 3
+    ) {
+      const norm = normalizeMockDatabase(String(b.repo ?? ""), String(b.branch ?? ""));
+      if ("error" in norm) return ok({ ok: false, error: norm.error });
+      if (norm.repo.includes("/missing/") || norm.repo.includes("/invalid")) {
+        return ok({ ok: false, error: "database archive not found" });
+      }
+      return ok({
+        ok: true,
+        id: norm.id,
+        name: norm.name,
+        repo: norm.repo,
+        branch: norm.branch,
+        profiles: CUSTOM_DB_PROFILES.radarr.length,
+      });
+    }
     if (method === "GET" && seg[1] === "trash" && seg[3] === "profiles" && seg.length === 4) {
       const a = app(seg[2]);
       if (!a) return fail(400, "invalid", "app must be radarr or sonarr");
@@ -448,11 +672,15 @@ export function createTrashMock() {
     if (method === "GET" && seg[1] === "dictionarry" && seg[3] === "profiles" && seg.length === 4) {
       const a = app(seg[2]);
       if (!a) return fail(400, "invalid", "app must be radarr or sonarr");
+      const dbId = q?.get("database")?.trim() ?? "";
+      if (dbId && !(config.quality.databases ?? []).some((d) => d.id === dbId)) {
+        return fail(404, "not_found", "no such profile database");
+      }
+      const catalog = dbId ? CUSTOM_DB_PROFILES[a] : DICTIONARRY_PROFILES[a];
       return ok({
-        items: DICTIONARRY_PROFILES[a].map(
+        items: catalog.map(
           ({ items: _i, minFormatScore: _m, language: _l, formatItems: _f, ...summary }) => summary,
         ),
-        warning: "A Profilarr (Dictionarry) group didn't load; format counts may be short.",
       });
     }
     const route = `${method} /${seg.slice(1).join("/")}`;
@@ -488,13 +716,14 @@ export function createTrashMock() {
         {
           ...p.profile,
           name,
-          mediaType: p.mediaType,
           ...(p.source
             ? {
                 import: {
                   source: p.source,
                   app: p.app,
                   profile: p.profileId ?? "",
+                  ...(p.database ? { database: p.database } : {}),
+                  ...(p.noSync ? { noSync: true } : {}),
                   ...(p.trashId ? { trashId: p.trashId } : {}),
                   ...(p.scoreSet ? { scoreSet: p.scoreSet } : {}),
                 },
@@ -506,7 +735,7 @@ export function createTrashMock() {
     }
     if (route === "POST /quality/sync") {
       const profiles = config.quality.profiles ?? [];
-      const imported = profiles.filter((p) => p.import?.source);
+      const imported = profiles.filter((p) => p.import?.source && !p.import.noSync);
       for (const p of imported) p.import!.syncedAt = new Date().toISOString();
       config.quality.sync = {
         ...(config.quality.sync ?? { enabled: false }),

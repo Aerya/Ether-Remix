@@ -328,16 +328,19 @@ func TestPerViewerNoVideoTranscodeBrokerPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		hevcHandle, h264Handle := issued["rel-hevc"], issued["rel-h264"]
+		opts := core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1, SubtitleStream: -1}
 		b.mu.Lock()
 		b.sessions["sess-sw"] = &brokerSession{
-			public:   frontend.Session{ID: "sess-sw", Protocol: "vela", ViewerID: restricted.ID, Device: access.Device, Item: key},
-			playID:   h264Start.ID,
-			clientID: clientKey("vela", access.Device),
-			caps:     switchCaps,
-			opts:     core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1, SubtitleStream: -1},
-			decision: core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: false, AudioStream: 1},
+			versionAdmission: versionAdmission{caps: switchCaps, opts: opts},
+			public:           frontend.Session{ID: "sess-sw", Protocol: "vela", ViewerID: restricted.ID, Device: access.Device, Item: key},
+			playID:           h264Start.ID,
+			clientID:         clientKey("vela", access.Device),
+			caps:             switchCaps,
+			opts:             opts,
+			decision:         core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: false, AudioStream: 1},
 		}
 		b.mu.Unlock()
+		b.bindings.Put(&Binding[frontend.PlayIntent]{ID: "sess-sw", UserID: restricted.ID, ClientID: switchCaps.ClientID, Key: key, PlayID: h264Start.ID})
 
 		if _, err := b.SwitchVersion(ctx, access, "sess-sw", hevcHandle, 0); !errors.Is(err, core.ErrVideoTranscodingDisabled) {
 			t.Fatalf("SwitchVersion(restricted, HEVC) err = %v, want ErrVideoTranscodingDisabled", err)

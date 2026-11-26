@@ -10,7 +10,7 @@ import (
 func TestNextUpEnforcesParentAndAvailability(t *testing.T) {
 	ctx := context.Background()
 	current := core.EpisodeKey(42, 1, 1)
-	title := &core.Title{Key: core.EpisodeKey(42, 1, 2), ShowKey: core.ShowKey(42), Type: core.TypeEpisode}
+	title := &core.Title{Key: core.EpisodeKey(42, 1, 2), ShowKey: core.ShowKey(42), Type: core.TypeEpisode, Season: 1, Episode: 2}
 	parent := &core.Title{Adult: true}
 	vis := Visibility{GetTitle: func(context.Context, core.RatingKey) (*core.Title, error) { return parent, nil }}
 	next := func(context.Context, core.RatingKey) (*core.Title, error) { return title, nil }

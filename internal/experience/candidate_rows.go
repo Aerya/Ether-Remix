@@ -17,6 +17,10 @@ func CandidateRows(candidates []RankedCandidate) []frontend.Row {
 			item := c.Items[i]
 			row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &item})
 		}
+		for i := range c.Collections {
+			collection := c.Collections[i]
+			row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryCollection, Collection: &collection})
+		}
 		out = append(out, row)
 	}
 	return out
@@ -32,7 +36,7 @@ func CandidatePurpose(h core.Hub) core.RowPurpose {
 		purpose = frontend.RowNextUp
 	case strings.Contains(id, "watchlist"):
 		purpose = frontend.RowWatchlist
-	case h.Key != 0 || strings.Contains(id, "collection"):
+	case h.Type == "collection" || h.Key != 0 || strings.Contains(id, "collection"):
 		purpose = frontend.RowCollection
 	case strings.Contains(id, "recentlyreleased"):
 		purpose = frontend.RowRecentlyReleased

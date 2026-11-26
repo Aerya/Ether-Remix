@@ -650,7 +650,7 @@ func kindTypeForBase(base, projected string, t *frontend.Title) string {
 // TMDB titles, which does not know plugin keys.
 func (s *Server) writeKindChildren(w http.ResponseWriter, r *http.Request, pr *Request, parent *frontend.Title, kids []frontend.Title) {
 	ctx := r.Context()
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	if parent.LibraryID != 0 {
 		if sec, ok := s.sectionForLibrary(parent.LibraryID); ok {
 			mc.LibrarySectionID = model.Ptr(sec.ID)

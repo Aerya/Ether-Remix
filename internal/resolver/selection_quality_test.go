@@ -258,7 +258,7 @@ func TestBelow4KIsExplained(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr = s.Traces()
-	if got := tr[0].Ceiling; !strings.Contains(got, "no client rule matched this client (Plex Web)") {
+	if got := tr[0].Ceiling; !strings.Contains(got, "no quality rule matched this client (Plex Web)") {
 		t.Fatalf("ceiling %q", got)
 	}
 }

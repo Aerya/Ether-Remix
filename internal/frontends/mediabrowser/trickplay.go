@@ -40,6 +40,10 @@ func (i *instance) trickplayImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if _, ok := i.authorizePlaybackItem(r, viewer, key); !ok {
+		http.NotFound(w, r)
+		return
+	}
 	access := frontend.SessionAccess{Viewer: viewer, Device: device(r), Protocol: i.protocol}
 	offer, ok := tiles.TrickplayOffer(r.Context(), access, key)
 	if !ok || offer.Width != width {

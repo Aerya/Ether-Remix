@@ -10,43 +10,64 @@ const imports = (fake: Parameters<typeof calls>[0]) =>
     (c) => c.path === "/releases/quality-import",
   );
 
-async function openImport() {
+async function openAddProfile() {
   fireEvent.click(await screen.findByRole("button", { name: "Add profile" }, WAIT));
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Import a preset quality profile" }, WAIT),
-  );
-  return screen.findByRole("dialog", { name: "Import a quality profile" }, WAIT);
+  return screen.findByRole("dialog", { name: "Add profile" }, WAIT);
 }
 
-describe("Quality profile import from guides", () => {
-  it("previews a TRaSH profile and adds it with its custom format scores", async () => {
-    const { fake } = renderApp("/quality/profiles");
-    const drawer = await openImport();
+describe("Unified Add profile drawer", () => {
+  it("starts from the four clear options and adds an Ether preset", async () => {
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
+
+    expect(within(drawer).getByText("Start from")).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: /Ether preset/ })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: /TRaSH Guides/ })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: /Profilarr database/ })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: /Blank/ })).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("button", { name: /Paste or upload a profile file/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: /Ether preset/ }));
+    fireEvent.click(await within(drawer).findByRole("radio", { name: /^720p / }, WAIT));
+    await waitFor(() => expect(within(drawer).getByLabelText("Name")).toHaveValue("720p"), WAIT);
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Add profile" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
+
+    const saved = fake.state.config.quality.profiles!.find((p) => p.name === "720p")!;
+    expect(saved).toBeDefined();
+    expect(saved.maxHeight).toBe(720);
+    expect(saved.import).toBeUndefined();
+    expect(await screen.findByText("Use it in a rule →", {}, WAIT)).toBeInTheDocument();
+  });
+
+  it("previews a TRaSH profile, shows own/default format counts, and adds it", async () => {
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
     const add = within(drawer).getByRole("button", { name: "Add profile" });
     expect(add).toBeDisabled();
 
-    fireEvent.click(await within(drawer).findByRole("button", { name: "TRaSH profile" }, WAIT));
-    fireEvent.click(await screen.findByRole("option", { name: /\[SQP\] SQP-1 \(2160p\)/ }, WAIT));
+    fireEvent.click(within(drawer).getByRole("button", { name: /TRaSH Guides/ }));
+    const sqpCard = await within(drawer).findByRole(
+      "radio",
+      { name: /\[SQP\] SQP-1 \(2160p\)/ },
+      WAIT,
+    );
+    expect(sqpCard).toHaveTextContent("3 own · 32 default");
+    fireEvent.click(sqpCard);
 
     const table = await within(drawer).findByRole("table", { name: "Custom formats" }, WAIT);
     const rows = within(table).getAllByRole("row");
-    // Sorted by score; the set's score wins over the default.
     expect(rows[1]).toHaveTextContent("WEB Tier 01");
     expect(rows[1]).toHaveTextContent("+1,800");
     expect(rows[1]).toHaveTextContent("Added");
-    expect(
-      within(drawer).getByText(
-        "This Special Quality Profile is an advanced Quality Profile designed for a specific use case.",
-      ),
-    ).toBeInTheDocument();
     expect(within(drawer).getByText(/Scored with TRaSH's sqp-1-2160p scores/)).toBeInTheDocument();
     expect(within(drawer).getByText("Blu-ray 4K")).toBeInTheDocument();
     expect(within(drawer).getByText("Bluray-2160p › WEB 2160p")).toBeInTheDocument();
     expect(within(drawer).getByText(/Left out SDTV/)).toBeInTheDocument();
-    expect(within(drawer).getByText("1,000")).toBeInTheDocument();
-    // The drawer names the source profile and the media it applies to.
-    expect(within(drawer).getByText("Source profile: sqp-1-2160p")).toBeInTheDocument();
-    expect(within(drawer).getByText("Movies")).toBeInTheDocument();
+    expect(within(drawer).getByText("Minimum score 1,000")).toBeInTheDocument();
 
     // "4K" is taken by an existing profile in the fake; rename before adding.
     fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "4K" } });
@@ -67,70 +88,85 @@ describe("Quality profile import from guides", () => {
     const saved = fake.state.config.quality.profiles!.find((p) => p.name === "UHD (TRaSH)")!;
     expect(saved.customFormatScores).toMatchObject({ c20f169ef63c5f40c2def54abaf4438e: 1800 });
     expect(saved.minCustomFormatScore).toBe(1000);
-
-    // The profile's drawer shows what the import carried over.
-    fireEvent.click(screen.getByRole("button", { name: "Edit UHD (TRaSH)" }));
-    const editor = await screen.findByRole("dialog", { name: "UHD (TRaSH)" }, WAIT);
-    expect(within(editor).getByText("Allowed qualities")).toBeInTheDocument();
-    expect(within(editor).getAllByText("WEB-DL 4K").length).toBeGreaterThan(0);
-    // The imported profile's media and source are read-only.
-    expect(
-      within(editor).getByText("Set by the Radarr profile it was imported from."),
-    ).toBeInTheDocument();
-    expect(within(editor).getByText("TRaSH Guides")).toBeInTheDocument();
-    expect(within(editor).queryByRole("radio", { name: "Both" })).not.toBeInTheDocument();
-    fireEvent.click(within(editor).getByRole("tab", { name: "Scoring" }));
-    expect(within(editor).getByLabelText("Minimum score")).toHaveValue(1000);
-  });
-
-  it("shows own and default format counts in the picker", async () => {
-    renderApp("/quality/profiles");
-    const drawer = await openImport();
-    fireEvent.click(await within(drawer).findByRole("button", { name: "TRaSH profile" }, WAIT));
-    const option = await screen.findByRole("option", { name: /\[SQP\] SQP-1/ }, WAIT);
-    expect(option).toHaveTextContent("3 own · 32 default");
+    expect(saved.import?.noSync).toBeUndefined();
   });
 
   it("warns and permits a profile with an unreachable preferred score", async () => {
-    const { fake } = renderApp("/quality/profiles");
-    const drawer = await openImport();
-    fireEvent.click(await within(drawer).findByRole("button", { name: "TRaSH profile" }, WAIT));
-    fireEvent.click(await screen.findByRole("option", { name: /Needs a perfect release/ }, WAIT));
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
+    fireEvent.click(within(drawer).getByRole("button", { name: /TRaSH Guides/ }));
+    fireEvent.click(
+      await within(drawer).findByRole("radio", { name: /Needs a perfect release/ }, WAIT),
+    );
     expect(await within(drawer).findByText(/prefers a score of 100/, {}, WAIT)).toBeInTheDocument();
     expect(within(drawer).getByRole("button", { name: "Add profile" })).toBeEnabled();
     expect(imports(fake)).toHaveLength(0);
   });
 
-  it("previews and imports a Profilarr (Dictionarry) quality profile", async () => {
-    const { fake } = renderApp("/quality/profiles");
-    const drawer = await openImport();
-    fireEvent.click(within(drawer).getByRole("radio", { name: "Profilarr (Dictionarry)" }));
+  it("checks and saves a custom Profilarr database and supports sync:false (noSync)", async () => {
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
+    fireEvent.click(within(drawer).getByRole("button", { name: /Profilarr database/ }));
 
-    fireEvent.click(await within(drawer).findByRole("button", { name: "Profilarr profile" }, WAIT));
-    fireEvent.click(await screen.findByRole("option", { name: /2160p Remux/ }, WAIT));
+    // Open Database picker and choose Add a database…
+    fireEvent.click(await within(drawer).findByRole("button", { name: "Database" }, WAIT));
+    fireEvent.click(await screen.findByRole("option", { name: "Add a database…" }, WAIT));
 
-    const table = await within(drawer).findByRole("table", { name: "Custom formats" }, WAIT);
-    const rows = within(table).getAllByRole("row");
-    expect(rows[1]).toHaveTextContent("2160p Remux");
-    expect(rows[1]).toHaveTextContent("+860,000");
-    expect(within(drawer).getByText("Remux 4K")).toBeInTheDocument();
-    expect(within(drawer).getByText("200,000")).toBeInTheDocument();
+    fireEvent.change(within(drawer).getByLabelText("GitHub repository"), {
+      target: { value: "https://github.com/kaito/database.git/" },
+    });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Check and save" }));
+
+    // Saved to quality.databases and switched to the custom database's profiles
+    await waitFor(
+      () =>
+        expect(fake.state.config.quality.databases).toEqual([
+          {
+            id: "kaito-database",
+            name: "database",
+            repo: "https://github.com/kaito/database",
+            branch: "v2",
+          },
+        ]),
+      WAIT,
+    );
+    expect(await within(drawer).findByText(/3 profiles found/, {}, WAIT)).toBeInTheDocument();
+
+    // Switch For toggle to Episodes (Sonarr) and pick the custom fork profile
+    fireEvent.click(within(drawer).getByRole("radio", { name: "Episodes (Sonarr)" }));
+    fireEvent.click(await within(drawer).findByRole("radio", { name: /1080p Anime Fork/ }, WAIT));
+
+    // Toggle "Keep in sync" off -> sends sync: false while keeping import provenance
+    const syncSwitch = await within(drawer).findByRole("switch", { name: "Keep in sync" }, WAIT);
+    expect(syncSwitch).toBeChecked();
+    fireEvent.click(syncSwitch);
+    expect(syncSwitch).not.toBeChecked();
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Add profile" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
+
     expect(imports(fake).at(-1)!.body).toEqual({
-      app: "radarr",
+      app: "sonarr",
       source: "dictionarry",
-      profile: "2160p-remux",
-      name: "2160p Remux",
+      database: "kaito-database",
+      profile: "1080p-anime-fork",
+      sync: false,
+      name: "1080p Anime Fork",
     });
-    expect(await screen.findByText("2160p Remux", {}, WAIT)).toBeInTheDocument();
+    const saved = fake.state.config.quality.profiles!.find((p) => p.name === "1080p Anime Fork")!;
+    expect(saved.import).toMatchObject({
+      source: "dictionarry",
+      app: "sonarr",
+      profile: "1080p-anime-fork",
+      database: "kaito-database",
+      noSync: true,
+    });
   });
 
   it("previews pasted profile JSON for the app its qualities name", async () => {
-    const { fake } = renderApp("/quality/profiles");
-    const drawer = await openImport();
-    fireEvent.click(within(drawer).getByRole("radio", { name: "Paste JSON" }));
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
+    fireEvent.click(within(drawer).getByRole("button", { name: /Paste or upload a profile file/ }));
     const preview = within(drawer).getByRole("button", { name: "Preview" });
     expect(preview).toBeDisabled();
 
@@ -147,28 +183,31 @@ describe("Quality profile import from guides", () => {
     });
     fireEvent.change(within(drawer).getByLabelText("Profile JSON"), { target: { value: json } });
     fireEvent.click(within(drawer).getByRole("button", { name: "Preview" }));
-    expect(await within(drawer).findByText(/This profile is for Shows/)).toBeInTheDocument();
-    expect(within(drawer).getByRole("button", { name: "Add profile" })).toBeDisabled();
-    fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Shows" }));
-    const showsDrawer = await openImport();
-    expect(within(showsDrawer).getByText("Shows (Sonarr)")).toBeInTheDocument();
-    fireEvent.click(within(showsDrawer).getByRole("radio", { name: "Paste JSON" }));
-    fireEvent.change(within(showsDrawer).getByLabelText("Profile JSON"), {
-      target: { value: json },
-    });
-    fireEvent.click(within(showsDrawer).getByRole("button", { name: "Preview" }));
-    const table = await within(showsDrawer).findByRole("table", { name: "Custom formats" }, WAIT);
+    const table = await within(drawer).findByRole("table", { name: "Custom formats" }, WAIT);
     expect(within(table).getByText("Not found")).toBeInTheDocument();
-    expect(within(showsDrawer).getByText("Remux 1080p")).toBeInTheDocument();
-    fireEvent.click(within(showsDrawer).getByRole("button", { name: "Add profile" }));
-    await waitFor(() => expect(imports(fake)).toHaveLength(1));
+    expect(within(drawer).getByText("Remux 1080p")).toBeInTheDocument();
+    // Pasted JSON has no upstream sync toggle
+    expect(within(drawer).queryByRole("switch", { name: "Keep in sync" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Add profile" }));
+    await waitFor(() => expect(imports(fake)).toHaveLength(1), WAIT);
     expect(imports(fake)[0]!.body).toEqual({
       app: "sonarr",
       json,
       name: "My remuxes",
     });
-    // A show profile is listed under Shows, not Movies.
     expect(await screen.findByText("My remuxes", {}, WAIT)).toBeInTheDocument();
+  });
+
+  it("adds a blank profile", async () => {
+    const { fake } = renderApp("/releases/profiles");
+    const drawer = await openAddProfile();
+    fireEvent.click(within(drawer).getByRole("button", { name: /Blank/ }));
+
+    fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "Scratch 1080p" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Add profile" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
+
+    expect(fake.state.config.quality.profiles!.some((p) => p.name === "Scratch 1080p")).toBe(true);
   });
 });

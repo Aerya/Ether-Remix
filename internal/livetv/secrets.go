@@ -267,3 +267,31 @@ func (s *Service) MigrateSecrets(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+func archiveSourceContext(ch Channel) []string {
+	return []string{"livetv_channels", "archive.source", ch.ID, ch.SourceID}
+}
+
+func (s *Service) sealArchive(ch *Channel, previous Channel) error {
+	if ch.Archive == nil || ch.Archive.Source == "" {
+		return nil
+	}
+	a := *ch.Archive
+	ctx := archiveSourceContext(*ch)
+	if previous.Archive != nil {
+		old := previous.Archive.Source
+		plain, legacy, err := config.OpenWith(s.o.Sealer, old, ctx...)
+		if err == nil && plain == a.Source && !legacy {
+			a.Source = old
+			ch.Archive = &a
+			return nil
+		}
+	}
+	sealed, err := config.SealWith(s.o.Sealer, a.Source, ctx...)
+	if err != nil {
+		return errors.New("livetv: could not seal archive template")
+	}
+	a.Source = sealed
+	ch.Archive = &a
+	return nil
+}

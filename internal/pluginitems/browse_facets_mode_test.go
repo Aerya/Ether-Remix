@@ -96,3 +96,125 @@ func TestBrowseFacetAllAndNoneModes(t *testing.T) {
 		t.Fatal("expected facet bound error")
 	}
 }
+
+func TestBrowseFacetAnyGroupsIntersection(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+	if _, err := s.UpsertKind(ctx, "community.books", 10, sampleBookDecl(), false); err != nil {
+		t.Fatal(err)
+	}
+	album := func(id, title string, genres []string) core.KindItem {
+		return core.KindItem{
+			ID: id, Level: "book", ParentID: "s1", Title: title, Playable: true,
+			Fields: map[string]json.RawMessage{
+				"tags": rawJSON(t, genres),
+			},
+		}
+	}
+	items := []core.KindItem{
+		{ID: "s1", Level: "series", Title: "Catalog"},
+		album("a1", "Alpha", []string{"Rock", "Live"}),
+		album("a2", "Beta", []string{"Alternative Rock", "Live Recording"}),
+		album("a3", "Gamma", []string{"Hard Rock", "Studio"}),
+		album("a4", "Delta", []string{"Jazz", "Live"}),
+		album("a5", "Epsilon", []string{"Rock", "Hard Rock"}),
+		album("a6", "Zeta", []string{"Live", "Live Recording"}),
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", items); err != nil {
+		t.Fatal(err)
+	}
+
+	groups := []core.KindBrowseFacetGroup{
+		{Field: "tags", Values: []string{"Rock", "Hard Rock", "Alternative Rock"}},
+		{Field: "tags", Values: []string{"Live", "Live Recording"}},
+	}
+
+	page, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: 10,
+		Level:     "book",
+		Sort:      "title",
+		AnyGroups: groups,
+		Limit:     50,
+	})
+	if err != nil {
+		t.Fatalf("Browse anyGroups: %v", err)
+	}
+	got := make([]string, len(page.Items))
+	for i, it := range page.Items {
+		got[i] = it.ID
+	}
+	want := []string{"a1", "a2"}
+	if !slices.Equal(got, want) || !page.TotalExact || page.Total != 2 {
+		t.Fatalf("Browse anyGroups = %v (total=%d exact=%v), want %v (total=2 exact=true)", got, page.Total, page.TotalExact, want)
+	}
+
+	// Cheap multi-page omits total for un-tallied multi-group queries; exact computes it.
+	cheapPage, err := s.Browse(ctx, BrowseQuery{
+		LibraryID:  10,
+		Level:      "book",
+		Sort:       "title",
+		AnyGroups:  groups,
+		NoTotal:    true,
+		CheapTotal: true,
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("Browse anyGroups cheap: %v", err)
+	}
+	if len(cheapPage.Items) != 1 || cheapPage.Items[0].ID != "a1" || cheapPage.TotalExact {
+		t.Fatalf("cheap multi-page = len=%d total=%d exact=%v, want len=1 exact=false", len(cheapPage.Items), cheapPage.Total, cheapPage.TotalExact)
+	}
+	exactPage, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: 10,
+		Level:     "book",
+		Sort:      "title",
+		AnyGroups: groups,
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("Browse anyGroups exact: %v", err)
+	}
+	if !exactPage.TotalExact || exactPage.Total != 2 {
+		t.Fatalf("exact multi-page = total=%d exact=%v, want 2 / true", exactPage.Total, exactPage.TotalExact)
+	}
+
+	// Search applies the same anyGroups intersection.
+	sPage, err := s.Search(ctx, SearchQuery{
+		LibraryID: 10,
+		Level:     "book",
+		Query:     "Live",
+		AnyGroups: groups,
+		Limit:     50,
+	})
+	if err != nil {
+		t.Fatalf("Search anyGroups: %v", err)
+	}
+	sGot := make([]string, len(sPage.Items))
+	for i, it := range sPage.Items {
+		sGot[i] = it.ID
+	}
+	if !slices.Equal(sGot, want) {
+		t.Fatalf("Search anyGroups = %v, want %v", sGot, want)
+	}
+
+	// Bounds: group count (> MaxBrowseAnyGroups) and combined facet values (> MaxBrowseFacetValues) are refused.
+	tooManyGroups := make([]core.KindBrowseFacetGroup, MaxBrowseAnyGroups+1)
+	for i := range tooManyGroups {
+		tooManyGroups[i] = core.KindBrowseFacetGroup{Field: "tags", Values: []string{"Rock"}}
+	}
+	if _, err := s.Browse(ctx, BrowseQuery{LibraryID: 10, Level: "book", AnyGroups: tooManyGroups}); err == nil {
+		t.Fatal("expected anyGroups count bound error")
+	}
+	bigVals := make([]string, MaxBrowseFacetValues)
+	for i := range bigVals {
+		bigVals[i] = "Rock"
+	}
+	if _, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: 10,
+		Level:     "book",
+		Facets:    map[string][]string{"tags": {"Live"}},
+		AnyGroups: []core.KindBrowseFacetGroup{{Field: "tags", Values: bigVals}},
+	}); err == nil {
+		t.Fatal("expected combined facet value bound error across facets and anyGroups")
+	}
+}

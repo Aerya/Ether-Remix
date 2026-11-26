@@ -264,6 +264,24 @@ func TestResolveKindPresentations_PrecedenceAndPartialItemTypes(t *testing.T) {
 	if appByName(t, r, "mediaBrowser").Source != core.PresentationSourcePlugin {
 		t.Fatalf("mediaBrowser source should be plugin when collectionType declared")
 	}
+
+	// A list level (playlist) is a container of members, never a single track.
+	withList := ResolveKindPresentations(KindPresentationInput{
+		Media: string(core.MediaClassMusic),
+		Levels: []KindPresentationLevel{
+			{Key: "artist", Role: string(core.MediaRoleArtist), Container: true},
+			{Key: "album", Parent: "artist", Role: string(core.MediaRoleAlbum), Container: true},
+			{Key: "track", Parent: "album", Role: string(core.MediaRoleTrack), Playable: true},
+			{Key: "playlist", Role: string(core.MediaRolePlaylist), Container: true, Members: true},
+		},
+		Present: core.Presentations{MediaBrowser: &core.MediaBrowserPresentation{
+			CollectionType: "music",
+			ItemTypes:      map[string]string{"artist": "MusicArtist", "album": "MusicAlbum", "track": "Audio"},
+		}},
+	}, core.PresentationOverrides{})
+	if got := withList.Effective.MediaBrowser.ItemTypes["playlist"]; got != "MusicAlbum" {
+		t.Fatalf("list level itemType = %q, want MusicAlbum", got)
+	}
 	if appByName(t, r, "plex").Source != core.PresentationSourceInferred || r.Effective.Plex.Base != "artist" {
 		t.Fatalf("plex should be inferred artist: %+v", r.Effective.Plex)
 	}

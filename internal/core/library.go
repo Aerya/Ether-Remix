@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -312,7 +313,7 @@ func DefaultCatalogueTabs() []LibraryTab {
 	searchOff := false
 	searchOn := true
 	return []LibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: TabRecommended, Search: &searchOff},
+		{Key: "recommended", Label: "Recommendations", Kind: TabRecommended, Search: &searchOff},
 		{Key: "library", Label: "Library", Kind: TabLibrary, Search: &searchOn},
 		{Key: "collections", Label: "Collections", Kind: TabCollections, Search: &searchOn},
 	}
@@ -450,6 +451,8 @@ type Library struct {
 	Name    string        `json:"name"` // owner-editable display name
 	Source  LibrarySource `json:"source"`
 	Sources []string      `json:"sources"`
+	// Empty selects the first configured provider that supports MediaType.
+	MetadataSource string `json:"metadataSource,omitempty"`
 	// Builtin only: TypeMovie or TypeShow.
 	MediaType MediaType `json:"mediaType,omitempty"`
 	// Plugin only.
@@ -491,6 +494,48 @@ type Library struct {
 	Hidden         bool      `json:"hidden"` // owner hid it from all clients (still in console)
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// Library experiences name how an app presents a library: watch (films and
+// TV), listen (a listening app: music, audiobooks, podcasts), read (books and
+// comics), gallery (photos and home videos) and live (a guide, multiview,
+// sports). The set is open: a plugin may name another id, and an app that
+// does not know an id presents the library as watch.
+const (
+	LibraryExperienceWatch   = "watch"
+	LibraryExperienceListen  = "listen"
+	LibraryExperienceRead    = "read"
+	LibraryExperienceGallery = "gallery"
+	LibraryExperienceLive    = "live"
+)
+
+// LibraryExperiences lists the experiences Ether itself assigns.
+var LibraryExperiences = []string{LibraryExperienceWatch, LibraryExperienceListen, LibraryExperienceRead, LibraryExperienceGallery, LibraryExperienceLive}
+
+var libraryExperienceID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// ValidLibraryExperience reports whether s is a well-formed experience id
+// (lowercase letters, digits and dashes, up to 32 characters).
+func ValidLibraryExperience(s string) bool {
+	return libraryExperienceID.MatchString(s)
+}
+
+// EffectiveLibraryExperience is the experience a library asks for: the
+// declared one, else its media class's: listen for music, audiobooks and
+// podcasts, read for books, gallery for photos, watch for the rest.
+func EffectiveLibraryExperience(declared string, class MediaClass) string {
+	if ValidLibraryExperience(declared) {
+		return declared
+	}
+	switch class {
+	case MediaClassMusic, MediaClassAudiobook, MediaClassPodcast:
+		return LibraryExperienceListen
+	case MediaClassBook:
+		return LibraryExperienceRead
+	case MediaClassPhoto:
+		return LibraryExperienceGallery
+	}
+	return LibraryExperienceWatch
 }
 
 // EffectiveCardShape resolves the library's card shape: the owner's CardShape
@@ -547,6 +592,9 @@ const (
 	MediaRoleShow       MediaRole = "show"
 	MediaRoleEpisode    MediaRole = "episode"
 	MediaRoleCollection MediaRole = "collection"
+	// MediaRolePlaylist is a list level (members: true): an ordered list of
+	// other items, such as an editorial playlist.
+	MediaRolePlaylist MediaRole = "playlist"
 )
 
 // ValidMediaRole reports whether s is a supported content kind level role.
@@ -554,7 +602,7 @@ func ValidMediaRole(s string) bool {
 	switch MediaRole(s) {
 	case MediaRoleItem, MediaRoleArtist, MediaRoleAlbum, MediaRoleTrack,
 		MediaRoleSeries, MediaRoleBook, MediaRoleAudiobook, MediaRolePart,
-		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection:
+		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection, MediaRolePlaylist:
 		return true
 	default:
 		return false

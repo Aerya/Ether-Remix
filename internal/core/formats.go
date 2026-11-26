@@ -1,7 +1,6 @@
 package core
 
 import (
-	"maps"
 	"strings"
 )
 
@@ -143,21 +142,8 @@ func StreamingFormatScores() map[string]int {
 	}
 }
 
-// TVOnlyFormats are built-in formats only TV episodes can match.
+// TVOnlyFormats are built-in formats only episodes can match.
 var TVOnlyFormats = []string{FormatSeriesYearDiffers}
-
-// ScoresForMedia is scores without the formats a profile's media can never
-// match: a movie profile scores no TV-only format.
-func ScoresForMedia(scores map[string]int, media string) map[string]int {
-	if media != MediaMovie {
-		return scores
-	}
-	out := maps.Clone(scores)
-	for _, id := range TVOnlyFormats {
-		delete(out, id)
-	}
-	return out
-}
 
 // CountsTowardMinimum reports whether a format's score counts toward a
 // profile's minimum custom format score: only the owner's and imported

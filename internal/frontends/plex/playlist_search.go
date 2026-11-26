@@ -41,13 +41,24 @@ func (s *Server) searchPlaylists(ctx context.Context, pr *Request, query, direct
 			return nil
 		}
 	}
+	var entrySecs map[frontend.RatingKey]Section
+	if directories != "" {
+		// Entries' sections for every candidate playlist in one pass.
+		var keys []frontend.RatingKey
+		for i := range lists {
+			if lists[i].UserID == pr.User.ID && playlistSearchScore(lists[i].Title, query) != 0 {
+				keys = append(keys, lists[i].Items...)
+			}
+		}
+		entrySecs = s.keySections(withPreferredSections(ctx, sectionIDList(directories)...), keys)
+	}
 	var out []model.Metadata
 	for i := range lists {
 		pl := &lists[i]
 		if pl.UserID != pr.User.ID || playlistSearchScore(pl.Title, query) == 0 {
 			continue
 		}
-		if directories != "" && !s.playlistInDirectories(pl, directories) {
+		if directories != "" && !s.playlistInDirectories(pl, directories, entrySecs) {
 			continue
 		}
 		m := s.playlistListingMetadata(ctx, pl)
@@ -66,8 +77,13 @@ func (s *Server) searchPlaylists(ctx context.Context, pr *Request, query, direct
 	return out
 }
 
-func (s *Server) playlistInDirectories(pl *frontend.Playlist, raw string) bool {
+func (s *Server) playlistInDirectories(pl *frontend.Playlist, raw string, entrySecs map[frontend.RatingKey]Section) bool {
 	wants := strings.Split(raw, ",")
+	for _, want := range wants {
+		if strings.EqualFold(strings.TrimSpace(want), "playlists") {
+			return true
+		}
+	}
 	matches := func(id int) bool {
 		for _, want := range wants {
 			if strconv.Itoa(id) == want {
@@ -92,14 +108,7 @@ func (s *Server) playlistInDirectories(pl *frontend.Playlist, raw string) bool {
 		}
 	}
 	for _, key := range pl.Items {
-		var typ frontend.MediaType
-		switch key.Kind() {
-		case frontend.KindMovie:
-			typ = frontend.TypeMovie
-		case frontend.KindShow, frontend.KindSeason, frontend.KindEpisode:
-			typ = frontend.TypeShow
-		}
-		if sec, ok := s.sectionFor(typ); ok && matches(sec.ID) {
+		if sec, ok := entrySecs[key]; ok && matches(sec.ID) {
 			return true
 		}
 	}
@@ -153,11 +162,18 @@ func (s *Server) sectionPlaylistsHub(ctx context.Context, pr *Request, section, 
 	if err != nil {
 		return h, false
 	}
+	var keys []frontend.RatingKey
+	for i := range pls {
+		if pls[i].UserID == pr.User.ID {
+			keys = append(keys, pls[i].Items...)
+		}
+	}
+	entrySecs := s.keySections(withPreferredSections(ctx, section), keys)
 	for _, pl := range pls {
 		if pl.UserID != pr.User.ID {
 			continue
 		}
-		if len(pl.Items) > 0 && !s.playlistInDirectories(&pl, strconv.Itoa(section)) {
+		if len(pl.Items) > 0 && !s.playlistInDirectories(&pl, strconv.Itoa(section), entrySecs) {
 			continue
 		}
 		h.Metadata = append(h.Metadata, s.playlistListingMetadata(ctx, &pl))
@@ -168,12 +184,12 @@ func (s *Server) sectionPlaylistsHub(ctx context.Context, pr *Request, section, 
 		h.Metadata = h.Metadata[:count]
 	}
 	h.Size = len(h.Metadata)
-	keys := make([]string, 0, h.Size)
+	hubKeys := make([]string, 0, h.Size)
 	for _, md := range h.Metadata {
-		keys = append(keys, md.RatingKey)
+		hubKeys = append(hubKeys, md.RatingKey)
 	}
-	if len(keys) > 0 {
-		h.HubKey = "/library/metadata/" + strings.Join(keys, ",")
+	if len(hubKeys) > 0 {
+		h.HubKey = "/library/metadata/" + strings.Join(hubKeys, ",")
 	}
 	return h, true
 }

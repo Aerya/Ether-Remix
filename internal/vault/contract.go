@@ -48,7 +48,8 @@ const (
 
 var (
 	// ErrNotFound: no index row.
-	ErrNotFound = errors.New("vault: not found")
+	ErrNotFound    = errors.New("vault: not found")
+	ErrNZBRetained = errors.New("vault: NZBs are permanently retained")
 	// ErrPayloadMissing: the index row exists but this node cannot read the
 	// payload (pack lost, restored without packs, or held only by an
 	// unreachable peer). Callers re-grab as if the vault had nothing.
@@ -138,38 +139,45 @@ type Record struct {
 
 // Entry is one index row (no payload).
 type Entry struct {
-	CacheID   string // original playable release ID (the parent release ID for a pack)
-	Key       Key
-	Kind      Kind
-	Name      string
-	TitleKey  string // normalized title tokens
-	TMDB      int
-	Year      int
-	Season    int
-	Episode   int
-	Size      int64
-	Segments  int
-	Source    string // indexer id, "import:sabnzbd", "rosetta", ...
-	Private   bool   // from a private indexer: DB-equivalent handling
-	Added     time.Time
-	LastUsed  time.Time
-	Uses      int
-	Health    Health
-	HealthAt  time.Time
-	ProfileFP string // profile fingerprint when it was chosen
-	Info      core.ReleaseInfo
+	CacheID    string // original playable release ID (the parent release ID for a pack)
+	Key        Key
+	Kind       Kind
+	Name       string
+	TitleKey   string // normalized title tokens
+	OwnerMatch bool   // title binding explicitly corrected by the owner
+	TMDB       int
+	Year       int
+	Season     int
+	Episode    int
+	Size       int64
+	Segments   int
+	Source     string // indexer id, "import:sabnzbd", "rosetta", ...
+	Private    bool   // from a private indexer: DB-equivalent handling
+	Added      time.Time
+	LastUsed   time.Time
+	Uses       int
+	Health     Health
+	HealthAt   time.Time
+	ProfileFP  string // profile fingerprint when it was chosen
+	Info       core.ReleaseInfo
 }
 
 // PutRequest stores a release.
 type PutRequest struct {
 	Release core.Release // the resolved release (indexer id, guid, name, title ids)
 	NZB     []byte       // Usenet
+	Aliases []string     // additional identities scoped to Release.IndexerID
 	Torrent *Torrent     // torrent (debrid)
 	Source  string
 	Private bool
 	// ProfileFP fingerprints the quality profile plus the viewer's audio
 	// and language rules at choice time (library-first rule).
 	ProfileFP string
+}
+
+// NZBIdentityLookup finds an unambiguous exact release name and size.
+type NZBIdentityLookup interface {
+	ByNZBName(ctx context.Context, name string, size int64) (Key, bool, error)
 }
 
 // Stats for the console.
@@ -286,6 +294,8 @@ const LegacyAliasIndexer = "legacy:nzb"
 // ReplicaStore is what the cluster layer needs from a node-local vault.
 type ReplicaStore interface {
 	Store
+	SpeedSampleKeys(context.Context) ([]Key, error)
+	NZBIdentityLookup
 	// ReadFrame returns the record's stored compressed frame.
 	ReadFrame(ctx context.Context, key Key) ([]byte, error)
 	// InstallFrame verifies the frame's CRC and content key, appends it to

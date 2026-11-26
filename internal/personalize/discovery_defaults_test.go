@@ -26,7 +26,7 @@ func TestDiscoveryHeadAcrossPagesAndRenderedMetadata(t *testing.T) {
 							input[i].Items = nil
 						}
 					}
-					got := order(arrangeLayout(input, core.HomeLayout{}, 1, hubContext(testNow, core.DeviceWeb), section, 8))
+					got := order(arrangePage(input, nil, 1, hubContext(testNow, core.DeviceWeb), 8))
 					want := []string{"trend", "top", "new", "crowd"}
 					if populated {
 						want = []string{"cw", "trend", "top", "new", "crowd"}
@@ -37,8 +37,10 @@ func TestDiscoveryHeadAcrossPagesAndRenderedMetadata(t *testing.T) {
 				}
 			}
 			// An explicit viewer anchor and an off policy win over new defaults.
-			d := core.HomeLayout{Viewers: []core.ViewerLayout{{UserID: 1, Pages: []core.LayoutPage{{Section: section, Rows: []core.RowPolicy{{Row: KindEra, Status: "always", Slot: 1}, {Row: KindNewReleases, Status: "off"}}}}}}}
-			got := order(arrangeLayout(rows, d, 1, hubContext(testNow, core.DeviceWeb), section, 8))
+			p := rpage(core.PageHome, prow(KindEra, core.PlacementAuto, 0), prow(KindNewReleases, core.PlacementAuto, 0))
+			viewerOverride(&p, 1, p.Rows[0].ID, core.PlacementPinned, 1)
+			viewerOverride(&p, 1, p.Rows[1].ID, core.PlacementHide, 0)
+			got := order(arrangePage(rows, compilePage(p, true, 1, nil), 1, hubContext(testNow, core.DeviceWeb), 8))
 			if got[0] != "theme" || got[1] != "trend" || got[2] != "top" {
 				t.Fatal(got)
 			}
@@ -80,7 +82,7 @@ func TestDiscoverySurvivesCandidateCapAndMixesHome(t *testing.T) {
 		a := &assembly{model: emptyModel(candidates...), user: core.User{ID: 1}, hc: hubContext(testNow, core.DeviceWeb), section: section, limit: 24, maxRows: 4, pageLen: 4, minRow: 12, day: dayOf(testNow, time.UTC)}
 		a.model.taste.Confidence = 1
 		rows := a.run()
-		got := arrangeLayout(rows, core.HomeLayout{}, 1, a.hc, sectionName(section), 4)
+		got := arrangePage(rows, nil, 1, a.hc, 4)
 		want := []string{KindTrending, KindTop10, KindNewReleases, KindCrowd}
 		if len(got) != 4 {
 			t.Fatalf("%s: %v", section, kindsOf(got))

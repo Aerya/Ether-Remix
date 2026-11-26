@@ -194,6 +194,10 @@ func (c *Client) buildURL(path string, q url.Values, cfg clientSettings) string 
 
 // getJSON performs a cached, coalesced GET and decodes into out.
 func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any) error {
+	if core.MetadataRefreshRequested(ctx) {
+		return c.getFreshJSON(ctx, path, q, out)
+	}
+
 	body, err := c.get(ctx, path, q)
 	if err != nil {
 		return err

@@ -41,6 +41,11 @@ func TestArtworkWithoutDeviceIsViewerScopedAndUnattributed(t *testing.T) {
 	if skipped != 0 || strings.Count(body, `"uncorrelated":true`) != 4 || strings.Contains(body, `"device":`) {
 		t.Fatalf("export: %s skipped=%d", body, skipped)
 	}
+	rows, findings := analyzeJournal(body)
+	report := string(reportMarkdown(rows, findings, nil))
+	if !strings.Contains(report, "could not attribute 4 of 4 requests to the selected device") || strings.Count(report, "(device unknown)") != 4 {
+		t.Fatalf("timeline omitted request attribution: %s", report)
+	}
 }
 
 func TestArtworkRequestPaths(t *testing.T) {

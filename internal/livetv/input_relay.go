@@ -78,6 +78,7 @@ type cachedManifest struct {
 }
 
 type inputGrant struct {
+	finite        bool
 	variantCaps   core.ClientCaps // immutable input quality ceilings
 	variantLogged sync.Once
 
@@ -96,6 +97,10 @@ type inputGrant struct {
 	reserve time.Duration
 	lead    time.Duration // extra join depth for a start window (grantSteadyInputLead); immutable
 	steady  bool          // feeds a real-time consumer (grantSteadyInput); immutable
+	// splitPrograms ends each reader's playlist at the provider's next
+	// discontinuity, so one ffmpeg run never crosses a program change
+	// (an owned relay producer; see hlsMedia.programCut).
+	splitPrograms atomic.Bool
 	// histChannel/histSrc name the source in its history (the session's
 	// original source entry, not the resolved URL); immutable.
 	histChannel string
@@ -206,7 +211,13 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if source == "" && c.SourceID != "" && (src.ID == stableID(c.ID, "playlist") || len(c.StreamSources) <= 1) {
 		source = c.SourceID
 	}
-	lease, err := s.leaseLogin(ss.ctx, source, src.URL, headers)
+	leaseKey := src.URL
+	if ss.archiveInput {
+		// The archive was built for the primary account and opens a distinct
+		// connection even when another viewer requests the same time range.
+		leaseKey = "vod:archive:" + randomID()
+	}
+	lease, err := s.leaseLogin(ss.ctx, source, leaseKey, headers)
 	if err != nil {
 		return err
 	}
@@ -216,7 +227,7 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 			s.releaseLogin(lease)
 		}
 	}()
-	if lease != nil {
+	if lease != nil && !ss.archiveInput {
 		src.URL = lease.raw
 		headers = lease.headers
 	}
@@ -265,7 +276,7 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if ss.inputSource.ID != "" {
 		histSrc = ss.inputSource
 	}
-	g := &inputGrant{variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, direct: direct, directGen: directGen, histChannel: c.ID, histSrc: histSrc,
+	g := &inputGrant{finite: ss.archiveInput, variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, direct: direct, directGen: directGen, histChannel: c.ID, histSrc: histSrc,
 		log:   s.sessionLog(ss).With("input", src.ID),
 		token: base64.RawURLEncoding.EncodeToString(b[:]), origin: relayOrigin(u), headers: headers.Clone(), mediaHeaders: redirectMediaHeaders(src.Headers),
 		ctx: ctx, cancel: cancel, slots: make(chan struct{}, relayConcurrency), source: source,
@@ -366,7 +377,7 @@ func (s *Service) paceSessionInput(ctx context.Context, ss *session) (time.Durat
 	mediaHeaders := g.mediaHeaders.Clone()
 	g.mu.Unlock()
 	source, limit := s.tapSource(g)
-	joined, err := r.taps.canJoinOrOpen(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit)
+	joined, err := r.taps.canJoinOrOpen(g.rootTapKey(raw, headers, mediaHeaders), source, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -427,6 +438,11 @@ func (s *Service) relayInput(ss *session) (string, error) {
 	r := &s.inputRelay
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if ss != nil {
+		if owner := ss.sharedInput.Load(); owner != nil {
+			ss = owner
+		}
+	}
 	g := r.bySess[ss]
 	if g == nil || g.ctx.Err() != nil {
 		return "", core.ErrNotAvailable
@@ -660,9 +676,17 @@ func (s *Service) serveInputRelay(w http.ResponseWriter, r *http.Request) {
 	if !root && s.servePrefetched(w, r, g, raw) {
 		return
 	}
+	if g.splitPrograms.Load() {
+		if h := g.hlsIfAny(); h != nil {
+			if ended, ok := h.endedManifest(raw); ok {
+				s.writeRelayManifest(w, g, ended.base, ended.body, true)
+				return
+			}
+		}
+	}
 	// Separate video/audio playlists of a demuxed HLS master align their
 	// starting windows on open before ffmpeg begins demuxing.
-	if !root && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
+	if !root && !g.finite && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
 		return
 	}
 	select {
@@ -775,7 +799,9 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		http.Error(w, "upstream manifest unavailable", http.StatusBadGateway)
 		return
 	}
-	if hls {
+	if hls && g.finite {
+		b = selectedHLSMaster(b, base, g.variantCaps)
+	} else if hls {
 		if isMasterPlaylist(b) {
 			if raw == g.rootURL() && g.peekManifest(raw) == nil {
 				g.setManifest(newCachedManifest(raw, b, base, true))
@@ -797,8 +823,13 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		// Health, and for Steady the reserve window (reserve_hls.go).
 		var events []UpstreamEvent
 		h := g.hlsState()
-		b, events = h.media(raw, b, base)
+		b, events = h.mediaFor(raw, b, base, true)
 		h.deliver(events)
+		if g.splitPrograms.Load() {
+			if ended, ok := h.endedManifest(raw); ok {
+				b, base = ended.body, ended.base
+			}
+		}
 	}
 	s.writeRelayManifest(w, g, base, b, hls)
 }

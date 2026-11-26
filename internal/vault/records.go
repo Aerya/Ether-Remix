@@ -282,7 +282,7 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 				cacheID = t.PackID
 				ids = append(ids, cacheID)
 			}
-			for _, id := range ids {
+			for _, id := range append(ids, p.Aliases...) {
 				_, e = tx.ExecContext(ctx, `INSERT INTO vault_aliases(indexer_id,release_id,key) VALUES(?,?,?) ON CONFLICT(indexer_id,release_id) DO UPDATE SET key=excluded.key`, p.Release.IndexerID, id, k)
 				if e != nil {
 					return e
@@ -297,7 +297,7 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 		}
 		if write {
 			if v.Events != nil && v.capBytes.Load() > 0 {
-				_ = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0), count(*) FROM vault_releases WHERE dead=0`).Scan(&quotaUsed, &quotaCount)
+				_ = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0), count(*) FROM vault_releases WHERE dead=0 AND kind<>'usenet'`).Scan(&quotaUsed, &quotaCount)
 			}
 			if err := v.evict(ctx, tx); err != nil {
 				return err
@@ -339,14 +339,14 @@ func (v *library) emitPayloadMissing(ctx context.Context, k Key, packID string) 
 }
 func (v *library) evict(ctx context.Context, tx *sql.Tx) error {
 	var total int64
-	if e := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0) FROM vault_releases WHERE dead=0`).Scan(&total); e != nil {
+	if e := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0) FROM vault_releases WHERE dead=0 AND kind<>'usenet'`).Scan(&total); e != nil {
 		return e
 	}
 	limit := v.capBytes.Load()
 	if limit <= 0 || total <= limit {
 		return nil
 	}
-	_, e := tx.ExecContext(ctx, `UPDATE vault_releases SET dead=1 WHERE key IN (SELECT key FROM (SELECT key,sum(len) OVER(ORDER BY CASE WHEN uses<=1 THEN 0 ELSE 1 END,last_used,key) - len AS prior FROM vault_releases WHERE dead=0) v WHERE prior<?)`, total-limit)
+	_, e := tx.ExecContext(ctx, `UPDATE vault_releases SET dead=1 WHERE key IN (SELECT key FROM (SELECT key,sum(len) OVER(ORDER BY CASE WHEN uses<=1 THEN 0 ELSE 1 END,last_used,key) - len AS prior FROM vault_releases WHERE dead=0 AND kind<>'usenet') v WHERE prior<?)`, total-limit)
 	return e
 }
 func members(ctx context.Context, tx *sql.Tx, k Key, m []Member) error {

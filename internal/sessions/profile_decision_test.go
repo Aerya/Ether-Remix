@@ -1,6 +1,8 @@
 package sessions
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/config"
@@ -318,10 +320,10 @@ func TestInfuseConvertSurroundAudioRuleCopiesVideoAndTranscodesAudioToAAC(t *tes
 		Default:  "4K",
 		Profiles: []core.QualityProfile{{Name: "4K", MaxHeight: 2160}},
 		Rules: []config.QualityRule{{
-			Protocol:             "jellyfin",
-			Product:              "Infuse",
-			Profile:              "4K",
-			ConvertSurroundAudio: true,
+			ID:          "r_infuse",
+			Devices:     []config.DeviceMatch{{App: "jellyfin:Infuse"}},
+			Profile:     "4K",
+			StereoAudio: true,
 		}},
 	}
 	capsOn := resolver.ApplyClientRules(qOn, infuseCaps(), nil)
@@ -520,5 +522,345 @@ func TestDecideProfilePrefersVideoCopyAcrossTranscodingProfiles(t *testing.T) {
 	})
 	if err != nil || d.Kind != core.DecisionRemux || !d.VideoCopy || d.VideoCodec != "hevc" || d.AudioCopy {
 		t.Fatalf("audio switch across transcoding profiles = %+v (err=%v), want HEVC video copy + audio transcode", d, err)
+	}
+}
+
+// Regression for #810: Vela's synthetic profile carries no VideoRangeType
+// conditions, so profile-range inference must never re-enable Dolby Vision when
+// Vela's hdr omits dv (or is empty), when an owner rule forces DV off, or when
+// an explicit empty DV profile list is set — and Vela's MKV original_runtime
+// admission (:1173) must enforce the same DV-off gate while keeping the tvOS
+// registry default [5, 8] working when dv is declared.
+func TestVelaDolbyVisionRangeInferenceAndMKVAdmission(t *testing.T) {
+	yes, no := true, false
+	dv5 := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 18000,
+		Streams: []core.StreamInfo{
+			{
+				Index: 0, Type: "video", Codec: "hevc", Profile: "Main 10",
+				Width: 3840, Height: 2160, FrameRate: 24, BitDepth: 10, PixelFormat: "yuv420p10le",
+				DolbyVision: true, DolbyVisionProfile: 5, DolbyVisionLevel: 6,
+				DolbyVisionELPresent: &no, DolbyVisionRPUPresent: &yes,
+			},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Default: true},
+		},
+	}
+	dv81 := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 22000,
+		Streams: []core.StreamInfo{
+			{
+				Index: 0, Type: "video", Codec: "hevc", Profile: "Main 10",
+				Width: 3840, Height: 2160, FrameRate: 24, BitDepth: 10, PixelFormat: "yuv420p10le",
+				ColorPrimaries: "bt2020", ColorTransfer: "smpte2084", ColorSpace: "bt2020nc",
+				DolbyVision: true, DolbyVisionProfile: 8, DolbyVisionCompatibilityID: 1, DolbyVisionLevel: 6,
+				DolbyVisionBLPresent: &yes, DolbyVisionELPresent: &no, DolbyVisionRPUPresent: &yes,
+			},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Default: true},
+		},
+	}
+	buildVelaCaps := func(platform string, hdr10, dv bool, containers []string, overrides ...core.ClientCapabilityOverride) core.ClientCaps {
+		c := core.ClientCaps{
+			Protocol:      "vela",
+			Product:       "Vela",
+			Platform:      platform,
+			HDR10:         hdr10,
+			DolbyVision:   dv,
+			Containers:    slices.Clone(containers),
+			HLSContainers: []string{"fmp4"},
+			VideoCodecs:   []string{"h264", "hevc"},
+			AudioCodecs:   []string{"aac", "ac3", "eac3"},
+			Profiles: &core.ClientCapabilityProfiles{
+				DirectPlay:  []core.ClientDirectPlayProfile{{MediaType: "video", Containers: slices.Clone(containers), VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"}}},
+				Transcoding: []core.ClientTranscodeProfile{{MediaType: "video", Delivery: "hls", Containers: []string{"mp4"}, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"}}},
+			},
+		}
+		policy := transcode.ResolvePolicy(c, overrides)
+		if len(c.DVProfiles) == 0 {
+			c.DVProfiles = slices.Clone(policy.DolbyVisionProfiles)
+		}
+		return transcode.ApplyForcedOverrides(c, "", overrides)
+	}
+
+	b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: profileTranscoder{}}}
+	opts := core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS, AudioStream: 1, SubtitleStream: -1}
+	origRuntime := &frontend.OriginalPlaybackCapabilities{
+		Version: 1, Range: true,
+		DemuxContainers: []string{"mkv", "mp4"},
+		VideoDecoders:   []string{"h264", "hevc"},
+		AudioDecoders:   []string{"aac", "ac3", "eac3"},
+	}
+
+	cases := []struct {
+		name           string
+		platform       string
+		hdr10, dv      bool
+		overrides      []core.ClientCapabilityOverride
+		wantDV         bool
+		want81BaseCopy bool // true => 8.1 copies HDR10 base layer only; false (when !wantDV) => converts to SDR
+		check81MKVOff  bool // true => 8.1 with MKV + original_runtime also rejects direct play and strips DV
+	}{
+		{
+			name: "android hdr without dv", platform: "android", hdr10: true, dv: false,
+			wantDV: false, want81BaseCopy: true, check81MKVOff: true,
+		},
+		{
+			name: "macos hdr without dv", platform: "macos", hdr10: true, dv: false,
+			wantDV: false, want81BaseCopy: true, check81MKVOff: false,
+		},
+		{
+			name: "android empty hdr", platform: "android", hdr10: false, dv: false,
+			wantDV: false, want81BaseCopy: false, check81MKVOff: true,
+		},
+		{
+			name: "android forced DV off", platform: "android", hdr10: true, dv: true,
+			overrides: []core.ClientCapabilityOverride{{Force: true, Product: "Vela", Platform: "android", DolbyVision: &no}},
+			wantDV:    false, want81BaseCopy: true, check81MKVOff: true,
+		},
+		{
+			name: "macos forced DV off", platform: "macos", hdr10: true, dv: true,
+			overrides: []core.ClientCapabilityOverride{{Force: true, Product: "Vela", Platform: "macos", DolbyVision: &no}},
+			wantDV:    false, want81BaseCopy: true, check81MKVOff: true,
+		},
+		{
+			name: "android forced empty explicit DV profiles", platform: "android", hdr10: true, dv: true,
+			overrides: []core.ClientCapabilityOverride{{Force: true, Product: "Vela", Platform: "android", DolbyVisionProfiles: []int{}}},
+			wantDV:    false, want81BaseCopy: true, check81MKVOff: true,
+		},
+		{
+			name: "tvos forced empty explicit DV profiles", platform: "tvos", hdr10: true, dv: true,
+			overrides: []core.ClientCapabilityOverride{{Force: true, Product: "Vela", Platform: "tvos", DolbyVisionProfiles: []int{}}},
+			wantDV:    false, want81BaseCopy: true, check81MKVOff: true,
+		},
+		{
+			name: "tvos hdr without dv keeps DV off despite registry [5,8]", platform: "tvos", hdr10: true, dv: false,
+			wantDV: false, want81BaseCopy: true, check81MKVOff: false,
+		},
+		{
+			name: "tvos registry default [5,8] keeps DV", platform: "tvos", hdr10: true, dv: true,
+			wantDV: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mp4Caps := buildVelaCaps(tc.platform, tc.hdr10, tc.dv, []string{"mp4"}, tc.overrides...)
+			inferred := applyProfileRangeCaps(mp4Caps)
+			if tc.wantDV {
+				if !inferred.DolbyVision || !slices.Equal(inferred.DVProfiles, []int{5, 8}) {
+					t.Fatalf("tvOS DV caps = (dv=%v profiles=%v), want (true, [5 8])", inferred.DolbyVision, inferred.DVProfiles)
+				}
+			} else if transcode.SupportsDVProfile(inferred, 5) || transcode.SupportsDVProfile(inferred, 8) {
+				t.Fatalf("DV unexpectedly enabled after range inference: %+v", inferred)
+			}
+
+			// 1. MP4 HLS path: P5 and 8.1.
+			d5, err := b.decideProfile(&core.PlaySession{Info: dv5}, frontend.PlanRequest{
+				Protocol: "vela", Caps: mp4Caps, Intent: frontend.PlayIntent{Options: opts},
+			})
+			if err != nil {
+				t.Fatalf("dv5 decideProfile: %v", err)
+			}
+			attrs5 := transcode.HLSVariantAttributes(dv5, d5)
+
+			d81, err := b.decideProfile(&core.PlaySession{Info: dv81}, frontend.PlanRequest{
+				Protocol: "vela", Caps: mp4Caps, Intent: frontend.PlayIntent{Options: opts},
+			})
+			if err != nil {
+				t.Fatalf("dv81 decideProfile: %v", err)
+			}
+			attrs81 := transcode.HLSVariantAttributes(dv81, d81)
+
+			if tc.wantDV {
+				if !d5.VideoCopy || d5.StripDolbyVision || !strings.Contains(attrs5, "dvh1.05.06") {
+					t.Fatalf("dv5 want DV copy with dvh1, got %+v attrs=%s", d5, attrs5)
+				}
+				if !d81.VideoCopy || d81.StripDolbyVision || !strings.Contains(attrs81, "dvh1.08.06/db1p") {
+					t.Fatalf("dv81 want DV copy with supplemental dvh1, got %+v attrs=%s", d81, attrs81)
+				}
+			} else {
+				if d5.Kind != core.DecisionTranscode || d5.VideoCopy || strings.Contains(attrs5, "dvh1") {
+					t.Fatalf("dv5 want conversion without dvh1, got %+v attrs=%s", d5, attrs5)
+				}
+				if tc.want81BaseCopy {
+					if d81.Kind != core.DecisionRemux || !d81.VideoCopy || !d81.StripDolbyVision || strings.Contains(attrs81, "dvh1") || strings.Contains(attrs81, "SUPPLEMENTAL-CODECS") || !strings.Contains(attrs81, "VIDEO-RANGE=PQ") {
+						t.Fatalf("dv81 want HDR10 base-layer copy without dvh1, got %+v attrs=%s", d81, attrs81)
+					}
+				} else if d81.VideoCopy || strings.Contains(attrs81, "dvh1") {
+					t.Fatalf("dv81 without HDR10 want conversion without dvh1, got %+v attrs=%s", d81, attrs81)
+				}
+			}
+
+			// 2. MKV declared: both plain direct play and original_runtime (:1173).
+			mkvCaps := buildVelaCaps(tc.platform, tc.hdr10, tc.dv, []string{"mkv", "mp4"}, tc.overrides...)
+			for _, withOrig := range []bool{false, true} {
+				intent := frontend.PlayIntent{Options: opts}
+				if withOrig {
+					intent.OriginalPlayback = origRuntime
+				}
+				got5, err := b.decideProfile(&core.PlaySession{Info: dv5}, frontend.PlanRequest{
+					Protocol: "vela", Caps: mkvCaps, Intent: intent,
+				})
+				if err != nil {
+					t.Fatalf("mkv dv5 (orig=%v): %v", withOrig, err)
+				}
+				if tc.wantDV {
+					if got5.Kind != core.DecisionDirectPlay {
+						t.Fatalf("mkv dv5 (orig=%v) want direct play, got %+v", withOrig, got5)
+					}
+				} else if got5.Kind == core.DecisionDirectPlay || got5.VideoCopy || strings.Contains(transcode.HLSVariantAttributes(dv5, got5), "dvh1") {
+					t.Fatalf("mkv dv5 (orig=%v) must not direct play or emit dvh1 when DV off, got %+v", withOrig, got5)
+				}
+
+				if tc.check81MKVOff {
+					got81, err := b.decideProfile(&core.PlaySession{Info: dv81}, frontend.PlanRequest{
+						Protocol: "vela", Caps: mkvCaps, Intent: intent,
+					})
+					if err != nil {
+						t.Fatalf("mkv dv81 (orig=%v): %v", withOrig, err)
+					}
+					if got81.Kind == core.DecisionDirectPlay || got81.Reason == "original_runtime" {
+						t.Fatalf("mkv dv81 (orig=%v) must not direct play when DV off, got %+v", withOrig, got81)
+					}
+					if tc.want81BaseCopy && (!got81.VideoCopy || !got81.StripDolbyVision || strings.Contains(transcode.HLSVariantAttributes(dv81, got81), "dvh1")) {
+						t.Fatalf("mkv dv81 (orig=%v) want HDR10 base-layer copy without dvh1, got %+v", withOrig, got81)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Other frontends reaching applyProfileRangeCaps must keep their intended
+// behaviour: Jellyfin/Emby exclusion-only profiles still infer unexcluded DV
+// unless blocked by an owner override or explicit empty list, positive profiles
+// respect overrides, range-less Jellyfin/Emby profiles keep HDR10 without
+// inventing DV, and Plex (Profiles == nil) is untouched.
+func TestApplyProfileRangeCapsOtherFrontends(t *testing.T) {
+	dp := []core.ClientDirectPlayProfile{{MediaType: "video", Containers: []string{"mkv"}, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac"}}}
+	cases := []struct {
+		name     string
+		caps     core.ClientCaps
+		wantHDR  bool
+		wantDV   bool
+		wantProf []int
+	}{
+		{
+			name: "jellyfin exclusion-only (Wholphin) infers unexcluded DV [5,8]",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Wholphin", Platform: "Android",
+				Profiles: &core.ClientCapabilityProfiles{
+					DirectPlay: dp,
+					Codecs: []core.ClientCodecProfile{{
+						MediaType:       "video",
+						Codecs:          []string{"hevc"},
+						ApplyConditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "EqualsAny", Value: "HDR10Plus"}},
+						Conditions:      []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "NotEquals", Value: "HDR10Plus"}},
+					}},
+				},
+			},
+			wantHDR: true, wantDV: true, wantProf: []int{5, 8},
+		},
+		{
+			name: "jellyfin exclusion-only (Streamyfin) excludes P5 and infers DV [8]",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Streamyfin", Platform: "Android",
+				Profiles: &core.ClientCapabilityProfiles{
+					DirectPlay: dp,
+					Codecs: []core.ClientCodecProfile{{
+						MediaType:  "video",
+						Codecs:     []string{"hevc"},
+						Conditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "NotEquals", Value: "DOVI", Required: true}},
+					}},
+				},
+			},
+			wantHDR: true, wantDV: true, wantProf: []int{8},
+		},
+		{
+			name: "jellyfin exclusion-only respects owner forced DV off",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Wholphin", Platform: "Android",
+				DolbyVisionBaseOnly: true,
+				Profiles: &core.ClientCapabilityProfiles{
+					DirectPlay: dp,
+					Codecs: []core.ClientCodecProfile{{
+						MediaType:       "video",
+						Codecs:          []string{"hevc"},
+						ApplyConditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "EqualsAny", Value: "HDR10Plus"}},
+						Conditions:      []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "NotEquals", Value: "HDR10Plus"}},
+					}},
+				},
+			},
+			wantHDR: true, wantDV: false,
+		},
+		{
+			name: "jellyfin exclusion-only respects explicit empty DV profiles",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Wholphin", Platform: "Android",
+				DVProfiles: []int{}, DVProfilesExplicit: true,
+				Profiles: &core.ClientCapabilityProfiles{
+					DirectPlay: dp,
+					Codecs: []core.ClientCodecProfile{{
+						MediaType:       "video",
+						Codecs:          []string{"hevc"},
+						ApplyConditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "EqualsAny", Value: "HDR10Plus"}},
+						Conditions:      []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "NotEquals", Value: "HDR10Plus"}},
+					}},
+				},
+			},
+			wantHDR: true, wantDV: false, wantProf: []int{},
+		},
+		{
+			name: "jellyfin positive profile (Swiftfin) respects owner forced DV off",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Swiftfin", Platform: "tvOS",
+				DolbyVisionBaseOnly: true,
+				Profiles: &core.ClientCapabilityProfiles{
+					DirectPlay: dp,
+					Codecs: []core.ClientCodecProfile{{
+						MediaType:  "video",
+						Codecs:     []string{"hevc"},
+						Conditions: []core.ClientProfileCondition{{Property: "VideoRangeType", Operator: "EqualsAny", Value: "SDR|HDR10|DOVI|DOVIWithHDR10"}},
+					}},
+				},
+			},
+			wantHDR: true, wantDV: false,
+		},
+		{
+			name: "jellyfin range-less profile (Fladder) keeps HDR10 without inventing DV",
+			caps: core.ClientCaps{
+				Protocol: "jellyfin", Product: "Fladder", Platform: "macOS",
+				Profiles: &core.ClientCapabilityProfiles{DirectPlay: dp},
+			},
+			wantHDR: true, wantDV: false,
+		},
+		{
+			name: "emby range-less profile (Infuse transcode-only) keeps HDR10 without inventing DV",
+			caps: core.ClientCaps{
+				Protocol: "emby", Product: "Infuse-Direct", Platform: "tvOS",
+				Profiles: &core.ClientCapabilityProfiles{
+					Transcoding: []core.ClientTranscodeProfile{{MediaType: "video", Delivery: "hls", Containers: []string{"mp4"}, VideoCodecs: []string{"hevc"}}},
+				},
+			},
+			wantHDR: true, wantDV: false,
+		},
+		{
+			name: "plex without device profile is untouched",
+			caps: core.ClientCaps{
+				Protocol: "plex", Product: "Plex for Android (TV)", Platform: "Android", HDR10: true,
+			},
+			wantHDR: true, wantDV: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyProfileRangeCaps(tc.caps)
+			if got.HDR10 != tc.wantHDR || got.DolbyVision != tc.wantDV || !slices.Equal(got.DVProfiles, tc.wantProf) {
+				t.Fatalf("got HDR10=%v DV=%v profiles=%v, want HDR10=%v DV=%v profiles=%v",
+					got.HDR10, got.DolbyVision, got.DVProfiles, tc.wantHDR, tc.wantDV, tc.wantProf)
+			}
+		})
 	}
 }

@@ -10,18 +10,26 @@ import {
   cn,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Film, Plug, RefreshCw, Tv } from "lucide-react";
+import { ArrowRight, Film, Globe, Home, Pencil, Plug, Plus, RefreshCw, Tv } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { SettingsRow } from "../../components/SettingsRow";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
-import { ErrorPanel } from "../../components/feedback";
-import { LoadingRows } from "../../components/feedback";
+import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
-import { errorMessage } from "../../lib/api";
+import { useLocale } from "../../i18n/react";
+import { api, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
+import { ruleHasLimits, ruleTitle, type FallbackRow, type RuleRef } from "../../lib/qualityRules";
+import { RuleDrawer, localizedRule, useRuleNames } from "../releases/RuleDrawer";
+import {
+  LimitBadges,
+  SummaryCellView,
+  createRuleResolver,
+  summaryKindLabel,
+} from "../releases/qualitySummaryUi";
 import { useQuality } from "../releases/useQuality";
 import {
   librariesApi,
@@ -35,6 +43,7 @@ import {
   type ResolvedAppPresentation,
   type ResolvedPresentations,
 } from "./api";
+import { LibraryMetadataSource } from "./LibraryMetadataSource";
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
@@ -334,48 +343,234 @@ function PresentationsEditor({
 }
 
 /**
- * "Quality profile" (spec #419): Default, or a profile from Releases ›
- * Profiles filtered to this library's media type. Titles in this library
- * rank with it wherever they appear.
+ * Library › Settings › Releases: shows what plays at home and away for this
+ * library, lists every rule from `quality.rules` that applies here, and opens
+ * `RuleDrawer` in place locked to this library.
  */
-function QualityProfileRow({
-  library,
-  value,
-  onChange,
-}: {
-  library: Library;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const { quality } = useQuality();
-  const media = library.mediaType === "show" ? "show" : "movie";
-  const profileMedia = media === "show" ? "tv" : "movie";
-  const names = (quality?.profiles ?? [])
-    .filter((p) => !p.mediaType || p.mediaType === profileMedia)
-    .map((p) => p.name);
-  const current = value && names.includes(value) ? value : "";
+function LibraryReleasesSection({ library }: { library: Library }) {
+  const { locale } = useLocale();
+  const { config, quality, refresh } = useQuality();
+  const names = useRuleNames();
+  const summary = useAsync((signal) => api.qualitySummary({}, signal), [library.id]);
+  const [drawer, setDrawer] = useState<{
+    open: boolean;
+    ruleId?: string;
+    fallback?: FallbackRow;
+  }>({ open: false });
+  const openRule = (ref: RuleRef) =>
+    setDrawer({
+      open: true,
+      ...("rule" in ref ? { ruleId: ref.rule } : {}),
+      ...("fallback" in ref ? { fallback: ref.fallback } : {}),
+    });
+
+  const row = summary.data?.rows.find((r) => r.libraryId === library.id);
+  const chosenByPlugin = row?.chosenByPlugin ?? library.source === "plugin";
+  const pluginLabel =
+    row?.plugin || library.pluginName?.trim() || library.pluginId?.trim() || t("plugin");
+
+  const resolveRule = useMemo(
+    () =>
+      createRuleResolver({
+        rules: quality?.rules,
+        rows: summary.data?.rows,
+        libraryName: names.library,
+      }),
+    [quality?.rules, summary.data?.rows, names.library, locale],
+  );
+
+  const applicableRules = useMemo(() => {
+    const rules = quality?.rules ?? [];
+    return rules
+      .map((rule, idx) => ({ rule, number: idx + 1 }))
+      .filter(({ rule }) => {
+        if (rule.libraries?.length) {
+          const listed = rule.libraries.includes(library.id);
+          if (rule.exceptLibraries ? listed : !listed) return false;
+        }
+        if (rule.kind === "movie" && library.mediaType === "show") return false;
+        if (rule.kind === "episode" && library.mediaType === "movie") return false;
+        if (chosenByPlugin) return ruleHasLimits(rule);
+        return Boolean(rule.profile) || ruleHasLimits(rule);
+      });
+  }, [quality?.rules, library.id, library.mediaType, chosenByPlugin]);
+
+  const sectionError = summary.error ?? config.error;
+  const cells = row?.cells ?? [];
 
   return (
-    <SettingsRow
-      title={t("Quality profile")}
-      description={t(
-        "Titles in this library rank with this profile. Rules and the Away profile still take precedence.",
-      )}
-      control={
-        <div className="w-56">
-          <SearchSelect
-            value={current}
-            onChange={onChange}
-            options={[
-              { value: "", label: t("Default") },
-              ...names.map((name) => ({ value: name, label: name })),
-            ]}
-            ariaLabel={t("Quality profile")}
-            searchable={false}
+    <section data-testid="library-releases" className="rounded-xl border border-border bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3.5">
+        <h2 className="text-sm font-semibold text-fg">{t("Releases")}</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link to="/releases/rules" className="text-xs font-medium text-primary hover:underline">
+            {t("All rules")}
+          </Link>
+          {!chosenByPlugin ? (
+            <Button size="sm" variant="outline" onClick={() => setDrawer({ open: true })}>
+              <Plus size={14} />
+              {t("Add a rule for {name}", { name: library.name })}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {chosenByPlugin ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3 text-xs text-fg-muted">
+          <span className="flex items-center gap-2">
+            <Plug size={13} aria-hidden />
+            {t("Releases are chosen by {plugin}. Only limits from rules apply.", {
+              plugin: pluginLabel,
+            })}
+          </span>
+          {library.pluginId ? (
+            <Link
+              to={`/plugins/installed?plugin=${encodeURIComponent(library.pluginId)}`}
+              className="font-medium text-primary hover:underline"
+            >
+              {t("Open plugin")}
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
+      {sectionError ? (
+        <div className="p-5">
+          <ErrorPanel
+            error={sectionError}
+            onRetry={() => {
+              void summary.reload();
+              void config.reload();
+            }}
           />
         </div>
-      }
-    />
+      ) : !summary.data || !quality ? (
+        <LoadingRows rows={2} />
+      ) : (
+        <>
+          <div className="grid gap-3 p-5 sm:grid-cols-2">
+            <div
+              data-testid="library-releases-home"
+              className="space-y-3 rounded-lg border border-border p-3.5"
+            >
+              <p className="flex items-center gap-1.5 text-xs text-fg-muted">
+                <Home size={13} aria-hidden />
+                <span className="font-medium text-fg">{t("At home")}</span>
+                <span>· {t("anyone, any device")}</span>
+              </p>
+              {cells.map((pair, idx) => (
+                <div key={pair.kind || idx} className="space-y-1">
+                  {cells.length > 1 && pair.kind ? (
+                    <p className="text-xs text-fg-muted">{summaryKindLabel(pair.kind)}</p>
+                  ) : null}
+                  <SummaryCellView
+                    cell={pair.home}
+                    kind={pair.kind}
+                    where="home"
+                    chosenByPlugin={chosenByPlugin}
+                    quality={quality}
+                    resolveRule={resolveRule}
+                    onOpenRule={openRule}
+                  />
+                </div>
+              ))}
+            </div>
+            <div
+              data-testid="library-releases-away"
+              className="space-y-3 rounded-lg border border-border p-3.5"
+            >
+              <p className="flex items-center gap-1.5 text-xs text-fg-muted">
+                <Globe size={13} aria-hidden />
+                <span className="font-medium text-fg">{t("Away")}</span>
+                <span>· {t("anyone, any device")}</span>
+              </p>
+              {cells.map((pair, idx) => (
+                <div key={pair.kind || idx} className="space-y-1">
+                  {cells.length > 1 && pair.kind ? (
+                    <p className="text-xs text-fg-muted">{summaryKindLabel(pair.kind)}</p>
+                  ) : null}
+                  <SummaryCellView
+                    cell={pair.away}
+                    kind={pair.kind}
+                    where="away"
+                    chosenByPlugin={chosenByPlugin}
+                    quality={quality}
+                    resolveRule={resolveRule}
+                    onOpenRule={openRule}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-border">
+            <p className="px-5 pt-3 pb-1.5 text-xs text-fg-muted">{t("Rules that apply here")}</p>
+            {applicableRules.length === 0 ? (
+              <p className="px-5 pb-4 text-sm text-fg-muted">
+                {chosenByPlugin
+                  ? t("No limit rules apply here yet.")
+                  : t("No rules apply here yet. Everything uses the defaults.")}
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {applicableRules.map(({ rule, number }) => {
+                  const r = localizedRule(rule);
+                  const showProfile = !chosenByPlugin && Boolean(r.profile);
+                  return (
+                    <li
+                      key={r.id || number}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3"
+                    >
+                      <span className="w-5 shrink-0 text-xs tabular-nums text-fg-muted">
+                        {number}
+                      </span>
+                      <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-fg">
+                        {ruleTitle(r, names)}
+                      </span>
+                      <span className="flex flex-wrap items-center gap-2">
+                        {showProfile ? (
+                          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-fg">
+                            <ArrowRight aria-hidden size={14} className="shrink-0 text-fg-muted" />
+                            <span>{r.profile}</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-fg-muted">{t("No change")}</span>
+                        )}
+                        <LimitBadges
+                          maxHeight={r.maxHeight ?? 0}
+                          maxBitrateKbps={r.maxBitrateKbps ?? 0}
+                          stereo={Boolean(r.stereoAudio)}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          aria-label={t("Edit rule {n}", { n: number })}
+                          onClick={() => setDrawer({ open: true, ruleId: r.id })}
+                        >
+                          <Pencil size={13} /> {t("Edit")}
+                        </Button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+
+      <RuleDrawer
+        open={drawer.open}
+        ruleId={drawer.ruleId}
+        fallback={drawer.fallback}
+        lockLibrary={library.id}
+        onClose={() => setDrawer({ open: false })}
+        onSaved={() => {
+          void refresh();
+          void summary.reload();
+        }}
+      />
+    </section>
   );
 }
 
@@ -411,9 +606,9 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       hidden: library.hidden,
       cardShape: storedCardShape,
       presentApps: initialAppSwitches(resolvedPresentations),
-      qualityProfile: library.qualityProfile ?? "",
       sources: library.sources ?? [],
       collectionId: library.collectionId,
+      metadataSource: library.metadataSource ?? "",
       cacheMaxBytes: cache.data?.maxBytes ?? 0,
       cacheTTL: cache.data?.ttlSeconds ?? 0,
     }),
@@ -439,8 +634,6 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
         body.cardShape =
           library.source !== "plugin" && draft.cardShape === "poster" ? "" : draft.cardShape;
       }
-      if (library.source !== "plugin" && draft.qualityProfile !== stored.qualityProfile)
-        body.qualityProfile = draft.qualityProfile;
       if (
         library.source !== "builtin" &&
         JSON.stringify(draft.presentApps) !== JSON.stringify(stored.presentApps)
@@ -458,6 +651,8 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       if (JSON.stringify(draft.sources) !== JSON.stringify(stored.sources))
         body.sources = draft.sources;
       if (draft.collectionId !== stored.collectionId) body.collectionId = draft.collectionId;
+      if (draft.metadataSource !== stored.metadataSource)
+        body.metadataSource = draft.metadataSource;
       await librariesApi.patch(library.id, body);
       if (
         cache.data &&
@@ -498,6 +693,20 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                   <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                     {t("Change")}
                   </Button>
+                }
+              />
+            ) : null}
+            {library.source !== "plugin" ? (
+              <SettingsRow
+                title={t("Details from")}
+                description={t("Sets the source for artwork, credits and episode lists.")}
+                control={
+                  <LibraryMetadataSource
+                    mediaType={library.mediaType}
+                    value={draft.metadataSource}
+                    onChange={(metadataSource) => setDraft({ ...draft, metadataSource })}
+                    disabled={saving}
+                  />
                 }
               />
             ) : null}
@@ -563,15 +772,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
               onChange={(presentApps) => setDraft({ ...draft, presentApps })}
             />
           )}
-          {library.source !== "plugin" && (
-            <SettingsSection title={t("Quality")}>
-              <QualityProfileRow
-                library={library}
-                value={draft.qualityProfile}
-                onChange={(qualityProfile) => setDraft({ ...draft, qualityProfile })}
-              />
-            </SettingsSection>
-          )}
+          <LibraryReleasesSection library={library} />
           {library.source === "plugin" && library.kind?.sync?.mode !== "push" ? (
             <PluginLibrarySyncSection library={library} onChanged={onSaved} />
           ) : null}

@@ -64,3 +64,29 @@ type TrickplayLease interface {
 	Ensure(context.Context, TrickplaySource)
 	Release(cancelIfIdle bool)
 }
+
+// TrickplayState describes what a shared provider has published for one
+// release without starting generation.
+type TrickplayState struct {
+	SampleJPEG    []byte
+	CoverageUntil time.Duration
+	Revision      uint64
+	Generating    bool
+}
+
+// TrickplaySheetSnapshot captures one sheet's addressable cell JPEGs and
+// metadata atomically from the provider.
+type TrickplaySheetSnapshot struct {
+	State    TrickplayState
+	Cells    [][]byte
+	Fallback bool
+	Drawn    bool
+}
+
+// TrickplayInspector is an optional read-only capability on TrickplayProvider
+// implementations that expose per-slot real-frame coverage, revision, and
+// fallback status without starting generation.
+type TrickplayInspector interface {
+	TrickplayState(releaseID string, duration time.Duration) (TrickplayState, bool)
+	TrickplaySheetSnapshot(releaseID string, duration time.Duration, startSlot, slotCount int) (TrickplaySheetSnapshot, bool)
+}

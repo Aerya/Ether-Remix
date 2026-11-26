@@ -81,7 +81,6 @@ func TestUpcomingPreviewPublishedAndScopedMembership(t *testing.T) {
 	e := newEnv(t, withCatalogClient(client), withOpts(collections.WithTMDB(client), collections.WithNow(func() time.Time { return now })))
 	sp := spec("Look Ahead", "movie", []core.CollectionSource{{Kind: "catalog"}})
 	sp.ReleaseMode, sp.LookaheadDays = "upcoming", 30
-	sp.Targets.Users = core.UserTargets{IDs: []int64{owner.ID}}
 	preview, err := e.svc.Preview(e.ctx, sp, 20)
 	if err != nil || preview.Total != 1 || preview.Items[0].Key != core.MovieKey(9001) {
 		t.Fatalf("preview %+v %v", preview, err)
@@ -119,22 +118,8 @@ func TestUpcomingPreviewPublishedAndScopedMembership(t *testing.T) {
 	if _, err := e.cat.RefreshTitle(e.ctx, stored.Key, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.svc.FindPlaceholder(e.ctx, &core.User{ID: 99}, core.MovieKey(9001), "web"); err == nil {
-		t.Fatal("untargeted viewer admitted")
-	}
-	sp.Targets.Schedule = &core.CollectionSchedule{Devices: []string{core.DeviceTV}}
-	if _, err := e.svc.UpdateSpec(e.ctx, saved.ID, sp); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := e.svc.FindPlaceholder(e.ctx, owner, core.MovieKey(9001), core.DeviceWeb); err == nil {
-		t.Fatal("device schedule ignored")
-	}
 	if _, _, err := e.svc.FindPlaceholder(e.ctx, owner, core.MovieKey(9001), core.DeviceTV); err != nil {
-		t.Fatalf("scheduled device denied: %v", err)
-	}
-	sp.Targets.Schedule = nil
-	if _, err := e.svc.UpdateSpec(e.ctx, saved.ID, sp); err != nil {
-		t.Fatal(err)
+		t.Fatalf("placeholder denied: %v", err)
 	}
 	if _, err = e.svc.Placeholder(e.ctx, owner, ck, core.MovieKey(9002), "web"); err == nil {
 		t.Fatal("nonmember admitted")

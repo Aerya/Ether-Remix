@@ -38,11 +38,12 @@ func (s *Service) filterDiscovery(ctx context.Context, items []core.Title, input
 				continue
 			}
 			eps := children[show.Key]
-			if len(eps) == 0 {
+			if len(eps) == 0 && !show.Key.Allocated() && show.IDs.TMDB > 0 && show.IDs.TMDB < 100_000_000 &&
+				(show.EpisodeOrder.Source == "" || show.EpisodeOrder.Source == core.MetadataTMDB && show.EpisodeOrder.Kind == core.OrderAired) {
 				// Feed-first premiere evidence: this is only an S01E01 matching
 				// descriptor. It creates no catalogue item or playable endpoint.
 				// Once episodes are mirrored their own dates take precedence.
-				eps = []core.Title{{Key: core.EpisodeKey(show.Key.TMDB(), 1, 1), Type: core.TypeEpisode,
+				eps = []core.Title{{Key: core.EpisodeKey(show.IDs.TMDB, 1, 1), Type: core.TypeEpisode,
 					Season: 1, Episode: 1, Released: show.Released, Language: show.Language}}
 			}
 			for _, ep := range eps {

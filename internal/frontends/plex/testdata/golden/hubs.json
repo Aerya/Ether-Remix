@@ -50,28 +50,16 @@
             "Media": [
               {
                 "id": 4000013960010001,
-                "duration": 8340000,
-                "bitrate": 7600,
-                "width": 1920,
-                "height": 1080,
-                "aspectRatio": 1.78,
-                "audioChannels": 6,
-                "audioCodec": "eac3",
-                "videoCodec": "h264",
-                "videoResolution": "1080",
+                "duration": 3480000,
                 "container": "mkv",
-                "videoFrameRate": "24p",
-                "videoProfile": "high",
                 "hasVoiceActivity": false,
                 "Part": [
                   {
                     "id": 4000013960010001,
                     "key": "/library/parts/4000013960010001/1790899200/file.mkv",
-                    "duration": 8340000,
+                    "duration": 3480000,
                     "file": "/ether/Boundary Bay - s01e01 - Pilot.mkv",
-                    "size": 8000000000,
-                    "container": "mkv",
-                    "videoProfile": "high"
+                    "container": "mkv"
                   }
                 ]
               }
@@ -135,17 +123,7 @@
               {
                 "id": 1000000000000550,
                 "duration": 8340000,
-                "bitrate": 7600,
-                "width": 1920,
-                "height": 1080,
-                "aspectRatio": 1.78,
-                "audioChannels": 6,
-                "audioCodec": "eac3",
-                "videoCodec": "h264",
-                "videoResolution": "1080",
                 "container": "mkv",
-                "videoFrameRate": "24p",
-                "videoProfile": "high",
                 "hasVoiceActivity": false,
                 "Part": [
                   {
@@ -153,9 +131,7 @@
                     "key": "/library/parts/1000000000000550/1790812800/file.mkv",
                     "duration": 8340000,
                     "file": "/ether/Fjord Harbor (1999).mkv",
-                    "size": 8000000000,
-                    "container": "mkv",
-                    "videoProfile": "high"
+                    "container": "mkv"
                   }
                 ]
               }
@@ -229,28 +205,16 @@
             "Media": [
               {
                 "id": 1000000000000348,
-                "duration": 8340000,
-                "bitrate": 7600,
-                "width": 1920,
-                "height": 1080,
-                "aspectRatio": 1.78,
-                "audioChannels": 6,
-                "audioCodec": "eac3",
-                "videoCodec": "h264",
-                "videoResolution": "1080",
+                "duration": 7020000,
                 "container": "mkv",
-                "videoFrameRate": "24p",
-                "videoProfile": "high",
                 "hasVoiceActivity": false,
                 "Part": [
                   {
                     "id": 1000000000000348,
                     "key": "/library/parts/1000000000000348/1788220800/file.mkv",
-                    "duration": 8340000,
+                    "duration": 7020000,
                     "file": "/ether/Alien (1979).mkv",
-                    "size": 8000000000,
-                    "container": "mkv",
-                    "videoProfile": "high"
+                    "container": "mkv"
                   }
                 ]
               }

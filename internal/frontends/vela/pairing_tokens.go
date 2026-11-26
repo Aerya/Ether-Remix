@@ -1,9 +1,9 @@
 package vela
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -40,17 +40,20 @@ func (i *instance) tokenResult(w http.ResponseWriter, r *http.Request, access, r
 	i.replays[key] = entry
 	i.replayMu.Unlock()
 	out := httptest.NewRecorder()
-	saved, conflict, err := i.claim(r.Context(), key, digest)
-	if err == nil && !conflict {
-		// Keep the canonical result at least as long as this access grant can
-		// be accepted. A repeated app-password sign-in may extend that grant;
-		// its next read must not create a second family after a 24h cache TTL.
-		retainUntil := expires.Add(24 * time.Hour).UnixMilli()
-		_, err = i.db.ExecContext(r.Context(), `UPDATE vela_replays SET expires=CASE WHEN expires<? THEN ? ELSE expires END WHERE key=?`, retainUntil, retainUntil, key)
+	pctx, pcancel := persistContext(r)
+	defer pcancel()
+	// Keep the canonical result at least as long as this access grant can be
+	// accepted. A repeated app-password sign-in may extend that grant; its
+	// next read must not create a second family after a 24h cache TTL. A
+	// pending claim keeps its short lease until the result is recorded.
+	retainUntil := expires.Add(24 * time.Hour)
+	saved, conflict, err := i.claim(pctx, key, digest)
+	if err == nil && saved != nil {
+		_, err = i.db.ExecContext(pctx, `UPDATE vela_replays SET expires=CASE WHEN expires<? THEN ? ELSE expires END WHERE key=? AND response IS NOT NULL`, retainUntil.UnixMilli(), retainUntil.UnixMilli(), key)
 	}
 	switch {
 	case errors.Is(err, errPending):
-		problem(out, 409, "conflict", "mutation_outcome_unknown")
+		pendingProblem(out, err)
 	case err != nil:
 		fail(out, err, r)
 	case conflict:
@@ -66,19 +69,17 @@ func (i *instance) tokenResult(w http.ResponseWriter, r *http.Request, access, r
 			refresh, err = i.host.Identity.IssueRefresh(r.Context(), access, d)
 		}
 		if err != nil {
-			_ = i.host.Identity.Revoke(r.Context(), access)
+			_ = i.host.Identity.Revoke(pctx, access)
 			fail(out, err, r)
 		} else {
 			send(out, 200, object{"accessToken": access, "refreshToken": refresh, "expiresAt": expires.UTC().Format(time.RFC3339), "viewer": viewerWire(v)})
 		}
 		// Once issuance committed, preserve its encrypted result even when the
-		// caller loses its connection. No token is issued again on a fresh poll key.
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-		err = i.save(saveCtx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
-		cancel()
-		if err != nil {
-			out = httptest.NewRecorder()
-			problem(out, 503, "transient", "mutation_outcome_unknown")
+		// caller loses its connection. No token is issued again on a fresh poll
+		// key. If recording fails the result is still delivered; the claim
+		// lapses after replayLease.
+		if err = i.save(pctx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()}, retainUntil); err != nil {
+			slog.Warn("vela token result not recorded", "status", out.Code, "err", err)
 		}
 	}
 	entry.status = out.Code

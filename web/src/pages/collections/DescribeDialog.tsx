@@ -437,7 +437,12 @@ export function DescribeDialog({
         ) : null}
       </Drawer>
       {openTitle ? (
-        <TitleInspector key={openTitle} titleKey={openTitle} onClose={() => setOpenTitle(null)} />
+        <TitleInspector
+          key={openTitle}
+          titleKey={openTitle}
+          onMatch={setOpenTitle}
+          onClose={() => setOpenTitle(null)}
+        />
       ) : null}
     </DescribeSurface>
   );

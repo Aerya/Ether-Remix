@@ -20,6 +20,10 @@ const (
 	virtualGuideColdWait     = 5 * time.Second
 )
 
+// errVirtualGuidePreparing marks cold virtual or personal guide snapshots as a
+// transient preparation state while keeping core.ErrNotAvailable compatibility.
+var errVirtualGuidePreparing = &core.PreparingError{RetryAfter: 2 * time.Second, Err: core.ErrNotAvailable}
+
 type virtualGuideSnapshot struct {
 	recipe               string
 	built                time.Time
@@ -535,10 +539,10 @@ func (s *Service) prepareVirtualChannels(ctx context.Context, missing []Channel,
 		select {
 		case <-f.done:
 			if f.err != nil {
-				return core.ErrNotAvailable
+				return errVirtualGuidePreparing
 			}
 		case <-waitTimer.C:
-			return core.ErrNotAvailable
+			return errVirtualGuidePreparing
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -553,9 +557,69 @@ func (s *Service) prepareVirtualChannels(ctx context.Context, missing []Channel,
 	}
 	s.virtualGuide.mu.RUnlock()
 	if !ready {
-		return core.ErrNotAvailable
+		return errVirtualGuidePreparing
 	}
 	return nil
+}
+
+// withOnNowVirtual returns immediately with whichever virtual channel snapshots
+// are already warm and starts background warming for any cold ones. Home's
+// "On Now" shelf must never stall or fail while virtual schedules compile.
+func (s *Service) withOnNowVirtual(ctx context.Context, cs []Channel) (context.Context, map[string]bool, error) {
+	hasVirtual := false
+	for _, c := range cs {
+		if c.Kind == "virtual" && c.Enabled {
+			hasVirtual = true
+			break
+		}
+	}
+	if !hasVirtual {
+		return ctx, nil, nil
+	}
+	epoch, checked := ctx.Value(virtualGuideContextKey{}).(int64)
+	if !checked {
+		if err := s.o.DB.QueryRowContext(ctx, `SELECT generation FROM livetv_channel_epoch WHERE id=1`).Scan(&epoch); err != nil {
+			return ctx, nil, err
+		}
+	}
+	now := s.o.Now()
+	if s.serviceContext() != nil {
+		s.evictIdleVirtualGuide(now)
+	}
+	s.virtualGuide.mu.RLock()
+	revision := s.virtualGuide.revision
+	ready := make(map[string]bool)
+	var missing []Channel
+	for _, c := range cs {
+		if c.Kind != "virtual" || !c.Enabled {
+			continue
+		}
+		entry := s.virtualGuide.entries[c.ID]
+		ok := entry != nil && entry.epoch == epoch && entry.revision == revision
+		if s.serviceContext() != nil {
+			ok = entryCoversNow(entry, c, epoch, revision, now)
+		}
+		if ok {
+			ready[c.ID] = true
+		} else {
+			missing = append(missing, c)
+		}
+	}
+	s.virtualGuide.mu.RUnlock()
+	if len(missing) > 0 {
+		if s.serviceContext() != nil {
+			compiled := &guideCompileCache{}
+			for _, c := range missing {
+				s.startChannelPrep(c, epoch, revision, now, compiled, nil)
+			}
+			s.noteVirtualGuideDemand(false)
+		} else {
+			s.wakeVirtualGuide()
+		}
+	} else if s.serviceContext() != nil {
+		s.noteVirtualGuideDemand(false)
+	}
+	return context.WithValue(ctx, virtualGuideContextKey{}, epoch), ready, nil
 }
 
 func (s *Service) withVirtualGuide(ctx context.Context, cs []Channel) (context.Context, error) {
@@ -611,7 +675,7 @@ func (s *Service) withVirtualGuide(ctx context.Context, cs []Channel) (context.C
 		} else {
 			s.wakeVirtualGuide()
 		}
-		return ctx, core.ErrNotAvailable
+		return ctx, errVirtualGuidePreparing
 	}
 	if s.serviceContext() != nil {
 		s.noteVirtualGuideDemand(false)
@@ -708,7 +772,7 @@ func (s *Service) ProgrammesSnapshot(ctx context.Context, u *core.User, id strin
 		} else {
 			s.wakeVirtualGuide()
 		}
-		return nil, core.ErrNotAvailable
+		return nil, errVirtualGuidePreparing
 	}
 	c := s.personalChannel(ctx, entry.channel, u)
 	ctx, err = s.withVirtualGuide(ctx, []Channel{c})
@@ -730,7 +794,7 @@ func (s *Service) ProgrammesSnapshot(ctx context.Context, u *core.User, id strin
 			if s.serviceContext() != nil && view == SnapshotTimeline {
 				s.noteVirtualGuideDemand(true)
 			}
-			return nil, core.ErrNotAvailable
+			return nil, errVirtualGuidePreparing
 		}
 		if view == SnapshotTimeline {
 			ps = entry.playback.slice(c.ID, from, until)
@@ -763,7 +827,7 @@ func (s *Service) checkVirtualWindow(c Channel, from, until time.Time) error {
 		} else {
 			s.wakeVirtualGuide()
 		}
-		return core.ErrNotAvailable
+		return errVirtualGuidePreparing
 	}
 	return nil
 }

@@ -108,7 +108,7 @@ func TestExtrasOutboundProxy(t *testing.T) {
 	if err := svcFailClosed.muxExtra(context.Background(), Resolved{URL: "https://cdn.example/v.mp4", AudioURL: "https://cdn.example/a.m4a"}, tmpOut, 8<<20); !errors.Is(err, egress.ErrNotConfigured) {
 		t.Fatalf("muxExtra fail-closed err = %v, want ErrNotConfigured", err)
 	}
-	if err := svcFailClosed.fetchTheme(context.Background(), core.Title{Key: core.ShowKey(1), Title: "Show"}, "Show"); !errors.Is(err, egress.ErrNotConfigured) {
+	if _, err := svcFailClosed.fetchTheme(context.Background(), core.Title{Key: core.ShowKey(1), Title: "Show"}, false); !errors.Is(err, egress.ErrNotConfigured) {
 		t.Fatalf("fetchTheme fail-closed err = %v, want ErrNotConfigured", err)
 	}
 	if runnerCalled.Load() {

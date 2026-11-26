@@ -26,10 +26,11 @@ const activityInterval = 5 * time.Minute
 // ViewerTimes stores observed events, rather than inferring them from grants.
 // Its activity throttle is local; the database update is monotonic across nodes.
 type ViewerTimes struct {
-	db     *sql.DB
-	now    func() time.Time
-	mu     sync.Mutex
-	recent map[int64]int64
+	db       *sql.DB
+	now      func() time.Time
+	mu       sync.Mutex
+	recent   map[int64]int64
+	inFlight chan struct{}
 }
 
 func NewViewerTimes(db *sql.DB, now func() time.Time) (*ViewerTimes, error) {
@@ -39,7 +40,7 @@ func NewViewerTimes(db *sql.DB, now func() time.Time) (*ViewerTimes, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &ViewerTimes{db: db, now: now, recent: make(map[int64]int64)}, nil
+	return &ViewerTimes{db: db, now: now, recent: make(map[int64]int64), inFlight: make(chan struct{}, 32)}, nil
 }
 
 func recordLogin(ctx context.Context, tx *sql.Tx, viewerID, at int64) error {
@@ -95,25 +96,56 @@ func (s *ViewerTimes) RecordSignIn(ctx context.Context, viewerID int64) error {
 // Observe records an authenticated request at most once per viewer per node
 // per interval. Failed writes are not cached; an older node cannot regress data.
 func (s *ViewerTimes) Observe(ctx context.Context, viewerID int64) error {
-	if viewerID <= 0 {
-		return errors.New("identity: invalid viewer")
+	at, previous, err := s.reserveObservation(viewerID)
+	if err != nil || at == 0 {
+		return err
 	}
-	at := s.now().UnixMilli()
+	return s.writeObservation(ctx, viewerID, at, previous)
+}
+
+// observeAsync coalesces activity by viewer and caps pending writes. When
+// saturated, the next authenticated request can record a fresh observation.
+func (s *ViewerTimes) observeAsync(viewerID int64) {
+	select {
+	case s.inFlight <- struct{}{}:
+	default:
+		return
+	}
+	at, previous, err := s.reserveObservation(viewerID)
+	if err != nil || at == 0 {
+		<-s.inFlight
+		return
+	}
+	go func() {
+		defer func() { <-s.inFlight }()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = s.writeObservation(ctx, viewerID, at, previous)
+	}()
+}
+
+func (s *ViewerTimes) reserveObservation(viewerID int64) (at, previous int64, err error) {
+	if viewerID <= 0 {
+		return 0, 0, errors.New("identity: invalid viewer")
+	}
+	at = s.now().UnixMilli()
 	if at <= 0 {
-		return errors.New("identity: invalid observation time")
+		return 0, 0, errors.New("identity: invalid observation time")
 	}
 	s.mu.Lock()
-	previous := s.recent[viewerID]
+	defer s.mu.Unlock()
+	previous = s.recent[viewerID]
 	if previous > 0 && (at < previous || at-previous < activityInterval.Milliseconds()) {
-		s.mu.Unlock()
-		return nil
+		return 0, 0, nil
 	}
 	if len(s.recent) >= 4096 {
 		s.recent = make(map[int64]int64)
 	}
 	s.recent[viewerID] = at
-	s.mu.Unlock()
+	return at, previous, nil
+}
 
+func (s *ViewerTimes) writeObservation(ctx context.Context, viewerID, at, previous int64) error {
 	result, err := s.db.ExecContext(ctx, `INSERT INTO identity_viewer_times(viewer_id,last_activity) VALUES(?,?)
  ON CONFLICT(viewer_id) DO UPDATE SET last_activity=excluded.last_activity
  WHERE excluded.last_activity>=identity_viewer_times.last_activity+?`, viewerID, at, activityInterval.Milliseconds())

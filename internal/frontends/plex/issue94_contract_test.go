@@ -63,7 +63,7 @@ func issue94Fixture(t *testing.T, with720 bool, profile string, opts ...func(*te
 		}
 		cfg.Quality.Profiles = []core.QualityProfile{{Name: "test", MinHeight: min, MaxHeight: 1080}}
 		cfg.Quality.Rules = nil
-		cfg.Quality.Remote = ""
+		cfg.Quality.DefaultAway = ""
 	}
 	releases := []core.Release{{ID: "hd", GUID: "hd", Indexer: "offline", Name: "Fjord.Harbor.1999.1080p.WEB-DL.H264-GRP", Size: 8000 << 20, PubDate: time.Now().Add(-24 * time.Hour), NZBURL: "offline"}}
 	if with720 {

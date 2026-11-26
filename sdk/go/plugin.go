@@ -80,6 +80,8 @@ type Routes struct {
 	Meta             func(ctx *Context, req MetaRequest) (MetaResponse, error)
 	Stream           func(ctx *Context, req StreamRequest) (StreamResponse, error)
 	OpenStream       func(ctx *Context, req OpenStreamRequest) (OpenStreamResponse, error)
+	SourceSearch     func(ctx *Context, req SourceSearchRequest) (SourceSearchResponse, error)
+	ReleaseFiles     func(ctx *Context, req ReleaseFilesRequest) (ReleaseFilesResponse, error)
 	Subtitles        func(ctx *Context, req SubtitlesRequest) (SubtitlesResponse, error)
 	SubtitleDownload func(ctx *Context, req SubtitleDownloadRequest) (SubtitleDownloadResponse, error)
 	Markers          func(ctx *Context, req MarkersRequest) (MarkersResponse, error)
@@ -593,6 +595,53 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 		return okJSON(res, http.StatusOK)
 	}
 
+	if method == http.MethodGet && strings.HasPrefix(path, "/ether/open/") {
+		if p.routes.OpenStream == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Stream open handler is not registered.")
+		}
+		streamID, _ := url.PathUnescape(strings.TrimPrefix(path, "/ether/open/"))
+		open := OpenStreamRequest{StreamID: streamID, File: query["file"]}
+		if raw, ok := query["fileIndex"]; ok {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+				open.FileIndex = &n
+			}
+		}
+		res, err := p.routes.OpenStream(pctx, open)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
+	if method == http.MethodGet && path == "/ether/search" {
+		if p.routes.SourceSearch == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Source search handler is not registered.")
+		}
+		res, err := p.routes.SourceSearch(pctx, sourceSearchRequest(query))
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Streams == nil {
+			res.Streams = []StreamItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
+	if method == http.MethodGet && strings.HasPrefix(path, "/ether/files/") {
+		if p.routes.ReleaseFiles == nil {
+			return errorJSON(http.StatusNotFound, "not_found", "Release files handler is not registered.")
+		}
+		id, _ := url.PathUnescape(strings.TrimPrefix(path, "/ether/files/"))
+		res, err := p.routes.ReleaseFiles(pctx, ReleaseFilesRequest{ID: id})
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Files == nil {
+			res.Files = []PluginReleaseFile{}
+		}
+		return okJSON(res, http.StatusOK)
+	}
+
 	if method == http.MethodGet && strings.HasPrefix(path, "/ether/markers/") && strings.HasSuffix(path, ".json") {
 		if p.routes.Markers == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Markers handler is not registered.")
@@ -964,6 +1013,26 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 	}
 
 	return errorJSON(http.StatusNotFound, "not_found", "No route matched "+method+" "+path+".")
+}
+
+// sourceSearchRequest decodes GET /ether/search: query, category (comma
+// separated Newznab ids), purpose, lookup and lookup.<field>.
+func sourceSearchRequest(query map[string]string) SourceSearchRequest {
+	req := SourceSearchRequest{Query: query["query"], Purpose: query["purpose"], Categories: []int{}}
+	for _, raw := range strings.Split(query["category"], ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			req.Categories = append(req.Categories, n)
+		}
+	}
+	if typ := query["lookup"]; typ != "" {
+		req.Lookup = &SourceLookup{Type: typ, Fields: map[string]string{}}
+		for k, v := range query {
+			if field, ok := strings.CutPrefix(k, "lookup."); ok && field != "" {
+				req.Lookup.Fields[field] = v
+			}
+		}
+	}
+	return req
 }
 
 func containsDotDot(p string) bool {

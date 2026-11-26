@@ -1,6 +1,7 @@
 package transcode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -552,5 +553,53 @@ func TestThumbnailsEnsureDuringCancellationRestartsAfterExit(t *testing.T) {
 	waitThumbFor(t, "replacement extraction", func() bool { return th.isIdle("r") && th.frameCount("r") == 1 })
 	if calls.Load() != 2 {
 		t.Fatalf("calls=%d", calls.Load())
+	}
+}
+
+func TestThumbnailsInspectorCoverageAndSeekIslands(t *testing.T) {
+	tf := &thumbFake{endAt: -1}
+	th := newTestThumbs(t, tf, nil)
+	duration := 25 * time.Second
+	fb := fakeJPEG(10, 48)
+	th.SetTrickplayFallback("seek", fb)
+
+	st, ok := th.TrickplayState("seek", duration)
+	if !ok || st.CoverageUntil != 0 || st.Revision == 0 {
+		t.Fatalf("fallback state = %+v, ok=%v", st, ok)
+	}
+	rev0 := st.Revision
+
+	// Real frames at slot 0 (0s) and slot 2 (20s) with slot 1 (10s) missing:
+	// seek island at 20s must not advance contiguous coverage past 10s.
+	th.mu.Lock()
+	e := th.entries["seek"]
+	e.frames[0] = fakeJPEG(1, 48)
+	e.frames[20*time.Second] = fakeJPEG(2, 48)
+	th.bumpRevisionLocked(e)
+	th.mu.Unlock()
+
+	snap, ok := th.TrickplaySheetSnapshot("seek", duration, 0, 3)
+	if !ok || !snap.Drawn || !snap.Fallback {
+		t.Fatalf("seek-island snapshot = %+v, ok=%v", snap, ok)
+	}
+	if snap.State.CoverageUntil != 10*time.Second || snap.State.Revision <= rev0 {
+		t.Fatalf("seek-island state = %+v (prev rev=%d)", snap.State, rev0)
+	}
+	if !bytes.Equal(snap.Cells[1], fb) || !bytes.Equal(snap.Cells[2], e.frames[20*time.Second]) {
+		t.Fatalf("expected fallback at gap slot 1 and real frame at slot 2")
+	}
+
+	// Filling slot 1 closes the gap: coverage clamps to 25s and Fallback clears.
+	th.mu.Lock()
+	e.frames[10*time.Second] = fakeJPEG(3, 48)
+	th.bumpRevisionLocked(e)
+	th.mu.Unlock()
+
+	snap2, ok := th.TrickplaySheetSnapshot("seek", duration, 0, 3)
+	if !ok || !snap2.Drawn || snap2.Fallback {
+		t.Fatalf("filled snapshot = %+v, ok=%v", snap2, ok)
+	}
+	if snap2.State.CoverageUntil != duration || snap2.State.Revision <= snap.State.Revision {
+		t.Fatalf("filled state = %+v (prev rev=%d)", snap2.State, snap.State.Revision)
 	}
 }

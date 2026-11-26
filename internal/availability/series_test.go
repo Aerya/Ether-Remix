@@ -34,7 +34,7 @@ func TestPremiereSeriesRequiresVisibleEpisode(t *testing.T) {
 	r := resolver.New(nil, nil, nil, x.c, resolver.Options{})
 	defer r.Close()
 	x.s.d.Validator = suitabilityValidator{x.v, r}
-	show := core.Title{Key: core.ShowKey(7), Type: core.TypeShow, Title: "Series", Language: "en", Released: x.now.Add(-time.Hour)}
+	show := core.Title{Key: core.ShowKey(7), Type: core.TypeShow, IDs: core.IDs{TMDB: 7}, Title: "Series", Language: "en", Released: x.now.Add(-time.Hour)}
 	x.cat.titles[show.Key] = show
 	check := func(target core.Title, want bool) {
 		t.Helper()

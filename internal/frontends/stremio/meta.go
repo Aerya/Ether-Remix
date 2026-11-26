@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
 func (i *instance) meta(w http.ResponseWriter, r *http.Request) {
@@ -28,12 +27,7 @@ func (i *instance) meta(w http.ResponseWriter, r *http.Request) {
 		i.metaPluginItem(w, r, credential, viewer, device, typ, rawID)
 		return
 	}
-	id, err := ids.ParseStremio(rawID)
-	if err != nil || id.HasEpisode {
-		http.NotFound(w, r)
-		return
-	}
-	key, err := i.resolveID(r, viewer, device, typ, id)
+	key, err := i.resolveCatalogID(r, viewer, device, typ, rawID, false)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -67,17 +61,8 @@ func (i *instance) meta(w http.ResponseWriter, r *http.Request) {
 				if string(episode.Type) != "episode" {
 					continue
 				}
-				// The displayed episode order can be virtual. Stremio identifiers
-				// must still resolve to the canonical catalogue episode key.
-				canonical := ids.StremioID{Source: "tmdb", ID: strconv.FormatInt(key.TMDB(), 10), HasEpisode: true, Season: episode.Key.Season(), Episode: episode.Key.Episode()}
-				resolved, e := ids.StremioTMDBKey("series", canonical)
-				if e != nil || resolved != episode.Key {
-					continue
-				}
-				episodeID, e := ids.FormatStremio(canonical)
-				if e != nil {
-					continue
-				}
+				// Keep the stream ID stable when the show's displayed numbers change.
+				episodeID := catalogKeyPrefix + episode.Key.String()
 				videos = append(videos, map[string]any{"id": episodeID, "title": episode.Title, "season": episode.Season, "episode": episode.Episode, "overview": episode.Summary})
 			}
 			offset += len(page.Items)

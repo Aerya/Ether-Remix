@@ -21,10 +21,10 @@ func TestSettingsSchemasValidate(t *testing.T) {
 		in     Settings
 		ok     bool
 	}{
-		"jellyfin full":        {jf, Settings{"port": 8096.0, "discovery": true, "quickConnect": true, "publicViewerPicker": false, "homeRows": true, "homeRowCount": 4.0, "homeRowKinds": []any{"trending"}}, true},
+		"jellyfin full":        {jf, Settings{"port": 8096.0, "discovery": true, "quickConnect": true, "publicViewerPicker": false, "homeRowCount": 4.0}, true},
 		"jellyfin port range":  {jf, Settings{"port": 70000.0}, false},
 		"jellyfin row count":   {jf, Settings{"homeRowCount": 13.0}, false},
-		"jellyfin row kind":    {jf, Settings{"homeRowKinds": []any{"nope"}}, false},
+		"jellyfin row kinds":   {jf, Settings{"homeRowKinds": []any{"trending"}}, false},
 		"jellyfin unknown":     {jf, Settings{"bogus": true}, false},
 		"jellyfin bool type":   {jf, Settings{"discovery": "yes"}, false},
 		"emby no quickconnect": {MediaBrowserSchema(false), Settings{"quickConnect": true}, false},

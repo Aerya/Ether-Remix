@@ -3,11 +3,13 @@ package pluginitems
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func TestPostgresCompatQueries(t *testing.T) {
@@ -442,4 +444,274 @@ func TestPostgresCompatQueries(t *testing.T) {
 			t.Fatalf("GetFacetExpansion(done) = (%+v, %v, %v)", exp, ok, err)
 		}
 	})
+}
+
+// #768: Any field value accepted by validateFieldValue (up to MaxFieldRunes =
+// 4,000 runes, including 4-byte UTF-8 and values sharing a 256-rune prefix)
+// must upsert, update, delete, and query accurately on both SQLite and
+// PostgreSQL without overflowing PostgreSQL's 2,704-byte btree tuple limit.
+func TestLongFieldValuesAndPrefixDisambiguation(t *testing.T) {
+	ctx := context.Background()
+	s, db := openTestService(t, Options{})
+
+	const libID = core.LibraryID(97)
+	const pluginID = "test.longfields"
+	const kindKey = "work"
+	decl := plugins.MediaKindMeta{
+		Key:     kindKey,
+		Label:   "Works",
+		Library: plugins.KindLibraryDecl{Name: "Works"},
+		Levels:  []plugins.KindLevel{{Key: "work", Label: "Work", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "note", Type: "string", Label: "Note", Indexed: true},
+			{Key: "tags", Type: "strings", Label: "Tags", Indexed: true},
+			{Key: "authors", Type: "people", Label: "Authors", Indexed: true},
+		},
+		Browse: plugins.KindBrowseDecl{
+			SearchFields: []string{"note", "tags"},
+			Facets:       []string{"note", "tags", "authors"},
+		},
+	}
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatalf("UpsertKind: %v", err)
+	}
+
+	sharedPrefix := strings.Repeat("sharedprefix ", 25) // 325 runes > 256-rune PG index prefix
+	rem := MaxFieldRunes - len([]rune(sharedPrefix))
+	longA := sharedPrefix + "alpha" + strings.Repeat("a", rem-5)
+	longB := sharedPrefix + "bravo" + strings.Repeat("b", rem-5)
+	longEmoji := strings.Repeat("😀", MaxFieldRunes) // 4,000 runes = 16,000 UTF-8 bytes
+	personA := sharedPrefix + "Alice " + strings.Repeat("a", rem-6)
+	personB := sharedPrefix + "Bob " + strings.Repeat("b", rem-4)
+
+	mustJSON := func(v any) json.RawMessage {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	items := []core.KindItem{
+		{
+			ID: "w1", Level: "work", Title: "Alpha Work", Year: 2024, Released: 1_700_000_100, Playable: true,
+			Fields: map[string]json.RawMessage{
+				"note":    mustJSON(longA),
+				"tags":    mustJSON([]string{longA, longEmoji}),
+				"authors": mustJSON([]map[string]string{{"name": personA}}),
+			},
+		},
+		{
+			ID: "w2", Level: "work", Title: "Bravo Work", Year: 2025, Released: 1_700_000_200, Playable: true,
+			Fields: map[string]json.RawMessage{
+				"note":    mustJSON(longB),
+				"tags":    mustJSON([]string{longB, longEmoji}),
+				"authors": mustJSON([]map[string]string{{"name": personB}}),
+			},
+		},
+	}
+	if n, err := s.UpsertItems(ctx, pluginID, kindKey, items); err != nil || n != 2 {
+		t.Fatalf("UpsertItems(4000-rune fields): n=%d err=%v", n, err)
+	}
+
+	// Browse with exact facet match must disambiguate values sharing a >256-rune prefix.
+	pageA, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: libID, Level: "work", Sort: "title:asc",
+		Facets: map[string][]string{"note": {longA}}, Limit: 10,
+	})
+	if err != nil || len(pageA.Items) != 1 || pageA.Items[0].ID != "w1" || pageA.Total != 1 {
+		t.Fatalf("Browse(note=longA) = (len=%d total=%d err=%v), want w1", len(pageA.Items), pageA.Total, err)
+	}
+	pageB, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: libID, Level: "work", Sort: "title:asc",
+		Facets: map[string][]string{"tags": {longB}}, Limit: 10,
+	})
+	if err != nil || len(pageB.Items) != 1 || pageB.Items[0].ID != "w2" || pageB.Total != 1 {
+		t.Fatalf("Browse(tags=longB) = (len=%d total=%d err=%v), want w2", len(pageB.Items), pageB.Total, err)
+	}
+	pageEmoji, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: libID, Level: "work", Sort: "released:desc",
+		Facets: map[string][]string{"tags": {longEmoji}}, Limit: 10,
+	})
+	if err != nil || len(pageEmoji.Items) != 2 || pageEmoji.Total != 2 {
+		t.Fatalf("Browse(tags=longEmoji) = (len=%d total=%d err=%v), want 2", len(pageEmoji.Items), pageEmoji.Total, err)
+	}
+	pageExcl, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: libID, Level: "work", Sort: "title:asc",
+		ExcludeFacets: map[string][]string{"note": {longA}}, Limit: 10,
+	})
+	if err != nil || len(pageExcl.Items) != 1 || pageExcl.Items[0].ID != "w2" {
+		t.Fatalf("Browse(exclude note=longA) = (len=%d err=%v), want w2", len(pageExcl.Items), err)
+	}
+
+	// BrowseBatch & Search with long facet values sharing prefix.
+	batchPages, err := s.BrowseBatch(ctx, []BrowseQuery{
+		{LibraryID: libID, Level: "work", Sort: "title:asc", Facets: map[string][]string{"note": {longA}}, Limit: 5},
+		{LibraryID: libID, Level: "work", Sort: "title:asc", Facets: map[string][]string{"note": {longB}}, Limit: 5},
+	})
+	if err != nil || len(batchPages) != 2 || len(batchPages[0].Items) != 1 || batchPages[0].Items[0].ID != "w1" || len(batchPages[1].Items) != 1 || batchPages[1].Items[0].ID != "w2" {
+		t.Fatalf("BrowseBatch(long prefix pair) = (%+v, %v)", batchPages, err)
+	}
+	searchA, err := s.Search(ctx, SearchQuery{
+		LibraryID: libID, Level: "work", Query: "Work",
+		Facets: map[string][]string{"note": {longA}}, Limit: 10,
+	})
+	if err != nil || len(searchA.Items) != 1 || searchA.Items[0].ID != "w1" {
+		t.Fatalf("Search(note=longA) = (len=%d err=%v), want w1", len(searchA.Items), err)
+	}
+
+	// Tally-backed FacetBuckets, FacetCollections, FacetPeople, FieldValues, LookupPersonFacetByName.
+	buckets, err := s.FacetBuckets(ctx, libID, "work", nil, "tags")
+	if err != nil || len(buckets) != 3 {
+		t.Fatalf("FacetBuckets(tags) = (len=%d err=%v), want 3", len(buckets), err)
+	}
+	cols, err := s.FacetCollections(ctx, FacetCollectionsQuery{LibraryID: libID, Level: "work", FieldKey: "note", Order: "name", Limit: 10})
+	if err != nil || len(cols.Items) != 2 || cols.Items[0].ID != longA || cols.Items[1].ID != longB {
+		t.Fatalf("FacetCollections(note, name) = (len=%d err=%v), want [longA, longB]", len(cols.Items), err)
+	}
+	fvals, err := s.FieldValues(ctx, FieldValuesQuery{LibraryID: libID, Level: "work", FieldKey: "note", Order: "name", Limit: 10})
+	if err != nil || len(fvals.Values) != 2 || fvals.Values[0].Value != longA || fvals.Values[1].Value != longB {
+		t.Fatalf("FieldValues(note, name) = (len=%d err=%v), want [longA, longB]", len(fvals.Values), err)
+	}
+	people, err := s.FacetPeople(ctx, FacetPeopleQuery{LibraryID: libID, Level: "work", FieldKey: "authors", Order: "name", Limit: 10})
+	if err != nil || len(people.Items) != 2 || people.Items[0].Name != personA || people.Items[1].Name != personB {
+		t.Fatalf("FacetPeople(authors, name) = (len=%d err=%v), want [personA, personB]", len(people.Items), err)
+	}
+	pid, canonical, ok, err := s.LookupPersonFacetByName(ctx, libID, "authors", personB)
+	if err != nil || !ok || pid != core.PluginPersonID(personB) || canonical != personB {
+		t.Fatalf("LookupPersonFacetByName(personB) = (%d, %q, %v, %v)", pid, canonical, ok, err)
+	}
+
+	// Recursive skip-scan must return both longA and longB despite identical 256-rune prefix.
+	skipCounts, err := s.scanFieldTextCountsLarge(ctx, "note", `i.library_id = ? AND i.level = ?`, []any{int64(libID), "work"}, 10)
+	if err != nil || len(skipCounts) != 2 {
+		t.Fatalf("scanFieldTextCountsLarge(note) = (len=%d err=%v), want 2", len(skipCounts), err)
+	}
+
+	// Update + delete long values (exercises ON CONFLICT and tally decrement/rep recompute).
+	items[0].Fields["note"] = mustJSON(longB)
+	items[0].Released = 1_700_000_300
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{items[0]}); err != nil {
+		t.Fatalf("UpsertItems(update long note): %v", err)
+	}
+	if err := s.KindDelete(ctx, pluginID, kindKey, []string{"w1"}); err != nil {
+		t.Fatalf("KindDelete(w1): %v", err)
+	}
+	afterDel, err := s.Browse(ctx, BrowseQuery{
+		LibraryID: libID, Level: "work", Sort: "title:asc",
+		Facets: map[string][]string{"note": {longB}}, Limit: 10,
+	})
+	if err != nil || len(afterDel.Items) != 1 || afterDel.Items[0].ID != "w2" {
+		t.Fatalf("Browse after delete = (len=%d err=%v), want w2", len(afterDel.Items), err)
+	}
+
+	// On PostgreSQL, verify the bounded expression indexes are present and usable by the planner.
+	if store.DialectOf(db) == store.Postgres {
+		if _, err := db.ExecContext(ctx, `ANALYZE plugin_item_fields; ANALYZE plugin_item_field_tally`); err != nil {
+			t.Fatalf("ANALYZE: %v", err)
+		}
+		for _, wantIdx := range []string{
+			"plugin_item_fields_pkey_idx",
+			"plugin_item_fields_lookup",
+			"plugin_item_fields_fold",
+			"plugin_item_field_tally_pkey_idx",
+			"plugin_item_field_tally_count",
+			"plugin_item_field_tally_name",
+			"plugin_item_person_tally_name",
+			"plugin_item_person_tally_count",
+		} {
+			var def string
+			if err := db.QueryRowContext(ctx,
+				`SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?`,
+				wantIdx).Scan(&def); err != nil {
+				t.Fatalf("missing PostgreSQL index %s: %v", wantIdx, err)
+			}
+			if !strings.Contains(def, `"left"(`) && !strings.Contains(def, "left(") && !strings.Contains(def, "md5(") {
+				t.Fatalf("PostgreSQL index %s is not bounded with left()/md5(): %s", wantIdx, def)
+			}
+		}
+	}
+}
+
+// #768: A database error during a batch upsert names the offending item (and
+// field, when applicable) instead of failing the whole batch anonymously.
+func TestUpsertBatchNamesOffendingItemOnDBError(t *testing.T) {
+	ctx := context.Background()
+	s, db := openTestService(t, Options{})
+
+	const libID = core.LibraryID(98)
+	const pluginID = "test.batcherr"
+	const kindKey = "entry"
+	decl := plugins.MediaKindMeta{
+		Key:     kindKey,
+		Label:   "Entries",
+		Library: plugins.KindLibraryDecl{Name: "Entries"},
+		Levels:  []plugins.KindLevel{{Key: "entry", Label: "Entry", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "tags", Type: "strings", Label: "Tags", Indexed: true},
+		},
+	}
+	if _, err := s.UpsertKind(ctx, pluginID, libID, decl, false); err != nil {
+		t.Fatalf("UpsertKind: %v", err)
+	}
+
+	isPG := store.DialectOf(db) == store.Postgres
+	if isPG {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE plugin_item_fields ADD CONSTRAINT test_no_boom_field CHECK (v_text <> 'boom')`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `ALTER TABLE plugin_item_fields DROP CONSTRAINT IF EXISTS test_no_boom_field`)
+		})
+	} else {
+		if _, err := db.ExecContext(ctx, `CREATE TRIGGER test_no_boom_field BEFORE INSERT ON plugin_item_fields WHEN NEW.v_text = 'boom' BEGIN SELECT RAISE(ABORT, 'simulated field failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS test_no_boom_field`)
+		})
+	}
+
+	_, err := s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{
+		{ID: "good-1", Level: "entry", Title: "Good One", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["ok"]`)}},
+		{ID: "bad-item-42", Level: "entry", Title: "Bad Item", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["boom"]`)}},
+		{ID: "good-2", Level: "entry", Title: "Good Two", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["ok"]`)}},
+	})
+	if err == nil {
+		t.Fatal("expected DB error on field write, got nil")
+	}
+	if !strings.Contains(err.Error(), `kind item "bad-item-42"`) || !strings.Contains(err.Error(), `field "tags"`) {
+		t.Fatalf("field write error did not name offending item and field: %v", err)
+	}
+	if strings.Contains(err.Error(), "good-1") || strings.Contains(err.Error(), "good-2") {
+		t.Fatalf("field write error named non-offending item: %v", err)
+	}
+
+	// Now verify tally-phase errors also name an offending item and field.
+	if isPG {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE plugin_item_field_tally ADD CONSTRAINT test_no_boom_tally CHECK (v_text <> 'tally-boom')`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `ALTER TABLE plugin_item_field_tally DROP CONSTRAINT IF EXISTS test_no_boom_tally`)
+		})
+	} else {
+		if _, err := db.ExecContext(ctx, `CREATE TRIGGER test_no_boom_tally BEFORE INSERT ON plugin_item_field_tally WHEN NEW.v_text = 'tally-boom' BEGIN SELECT RAISE(ABORT, 'simulated tally failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS test_no_boom_tally`)
+		})
+	}
+
+	_, err = s.UpsertItems(ctx, pluginID, kindKey, []core.KindItem{
+		{ID: "good-3", Level: "entry", Title: "Good Three", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["ok"]`)}},
+		{ID: "tally-bad-99", Level: "entry", Title: "Bad Tally", Playable: true, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["tally-boom"]`)}},
+	})
+	if err == nil {
+		t.Fatal("expected DB error on tally write, got nil")
+	}
+	if !strings.Contains(err.Error(), `kind item "tally-bad-99"`) || !strings.Contains(err.Error(), `field "tags"`) {
+		t.Fatalf("tally write error did not name offending item and field: %v", err)
+	}
 }

@@ -85,7 +85,7 @@ func (s *Service) hydrateAirDates(ctx context.Context, cs []*cand, mode string, 
 	}
 
 	var pending []*cand
-	if online && s.api != nil && s.api.c != nil {
+	if online && s.api.configured() {
 		for _, c := range cs {
 			r := records[c.e.key]
 			retry := int64(airFreshness.Seconds())
@@ -206,7 +206,7 @@ func (s *Service) evalAirRules(ctx context.Context, sp *core.CollectionSpec, can
 		return nil
 	}
 
-	if s.api != nil && s.api.c != nil && len(externalKeys) > 0 {
+	if s.api.configured() && len(externalKeys) > 0 {
 		nowUnix := ec.now.Unix()
 		var extShows []*cand
 		var extKeys []core.RatingKey

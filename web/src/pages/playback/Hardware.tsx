@@ -23,6 +23,7 @@ export type Hardware = {
   notice?: string;
   playbackError?: string;
   filtersProbed?: boolean;
+  videoEncoderLimit?: number;
   hardwareToneMap?: boolean;
   toneMap?: string[];
   colour?: string[];
@@ -237,6 +238,15 @@ export function HardwareStatus({ state }: { state?: AsyncState<Hardware | null> 
               </p>
             </div>
           </div>
+          {typeof data.videoEncoderLimit === "number" ? (
+            <p className="text-sm text-fg-muted">
+              {data.videoEncoderLimit > 0
+                ? t("This server can convert up to {count} video streams at once.", {
+                    count: data.videoEncoderLimit,
+                  })
+                : t("This server has no set limit on simultaneous video conversions.")}
+            </p>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-border bg-bg-subtle p-3">
               <p className="text-xs font-medium text-fg-muted">{t("Encodes")}</p>

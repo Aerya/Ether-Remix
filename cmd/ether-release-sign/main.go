@@ -17,7 +17,7 @@
 //	ether-release-sign verify -pub <b64> -in manifest.json [-sig manifest.json.sig]
 //	    Verify an embedded or detached signature.
 //
-//	ether-release-sign manifest -version 1.2.0 -channel stable -artifact file:os:arch:kind:url [-artifact ...] [-notes URL] [-rollout-hours N] [-critical] [-out manifest.json]
+//	ether-release-sign manifest -version 1.2.0 -channel stable -artifact file:os:arch:kind:url [-artifact ...] [-notes URL] [-notes-file PATH] [-rollout-hours N] [-critical] [-out manifest.json]
 //	    Build an unsigned manifest from local artifact files (hashes and
 //	    sizes are computed here, so CI cannot publish a wrong checksum).
 //	    -rollout-hours staggers automatic installs over N hours (default:
@@ -266,6 +266,7 @@ func cmdManifest(args []string) error {
 	version := fs.String("version", "", "release version (required)")
 	channel := fs.String("channel", "stable", "stable|beta")
 	notesURL := fs.String("notes", "", "release notes URL")
+	notesFile := fs.String("notes-file", "", "release notes Markdown file")
 	rollout := fs.Int("rollout-hours", -1, "stagger automatic installs over this many hours (-1: 24 for stable, 0 for beta)")
 	critical := fs.Bool("critical", false, "security fix: install at the next quiet moment, skipping rollout and maintenance window")
 	out := fs.String("out", "", "output path (default stdout)")
@@ -287,6 +288,18 @@ func cmdManifest(args []string) error {
 		Version: *version, Channel: *channel,
 		PublishedAt: time.Now().UTC(), NotesURL: *notesURL,
 		RolloutHours: *rollout, Critical: *critical,
+	}
+	if *notesFile != "" {
+		f, err := os.Open(*notesFile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, updater.MaxReleaseNotesBytes+1))
+		if err != nil {
+			return err
+		}
+		m.Notes = string(b)
 	}
 	m.RenewFreshness(time.Now())
 	for _, spec := range arts {

@@ -145,7 +145,7 @@ func (s *Service) DirectPayload(ctx context.Context, rel core.Release) ([]byte, 
 		return nil, err
 	}
 	base := Payload{AddonID: rel.IndexerID, Key: payloadKey(rel), ReleaseID: rel.ID, Kind: KindHTTP, Link: rel.StreamURL, URL: rel.StreamURL,
-		StreamProvider: rel.StreamProvider, Headers: rel.StreamHeaders, Origin: rel.StreamOrigin, Release: rel.Name, Target: rel.Target}
+		PluginStream: rel.PluginStream, StreamProvider: rel.StreamProvider, Headers: rel.StreamHeaders, Origin: rel.StreamOrigin, Release: rel.Name, Target: rel.Target}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pctx, http.MethodGet, rel.StreamURL, nil)
@@ -260,6 +260,32 @@ func (s *Service) directRequest(hc *http.Client, req *http.Request, p Payload) (
 	req = req.WithContext(egress.WithAddonStream(req.Context(), p.AddonID, p.Origin))
 	if strings.EqualFold(p.StreamProvider, "alldebrid") {
 		req = req.WithContext(egress.WithAllDebrid(req.Context()))
+	}
+	if p.PluginStream && s.opts.IsIndexerHost != nil {
+		check := func(u *url.URL) error {
+			if s.opts.IsIndexerHost(u.Hostname()) {
+				return fmt.Errorf("plugin streams must use the indexer host API (nzb_request): %w", core.ErrReleaseRejected)
+			}
+			return nil
+		}
+		if err := check(req.URL); err != nil {
+			return nil, err
+		}
+		client := *hc
+		previous := hc.CheckRedirect
+		client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			if err := check(next.URL); err != nil {
+				return err
+			}
+			if previous != nil {
+				return previous(next, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("debrid: stopped after 10 redirects")
+			}
+			return nil
+		}
+		hc = &client
 	}
 	release := func() {}
 	if p.StreamProvider != "" {

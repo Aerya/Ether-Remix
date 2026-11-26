@@ -3,17 +3,22 @@ package adapters
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/archive/archivetest"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/kindstream"
+	"github.com/braedonsaunders/ether/internal/newznab"
+	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/stream"
 )
@@ -269,5 +274,76 @@ func TestKindResolverUsenetLooseAudioAndFailFastGrabs(t *testing.T) {
 	}
 	if len(failedErrs) != 1 || strings.Contains(failedErrs[0].Error(), "video") || !strings.Contains(failedErrs[0].Error(), "no playable file in release") {
 		t.Fatalf("candidate 1 failure = %v, want single media-neutral no playable file error", failedErrs)
+	}
+}
+
+type grabRefusingIndexer struct {
+	*countingNZBIndexer
+	refusedURL string
+	refusals   atomic.Int32
+}
+
+func (i *grabRefusingIndexer) FetchNZB(ctx context.Context, rel core.Release) ([]byte, error) {
+	if rel.NZBURL == i.refusedURL {
+		i.refusals.Add(1)
+		return nil, &newznab.APIError{Code: 409, Description: "You've already grabbed this NZB within 30 minutes: " + rel.NZBURL}
+	}
+	return i.countingNZBIndexer.FetchNZB(ctx, rel)
+}
+
+func TestKindResolverGrabRefusalFallsBackAndHonorsWindow(t *testing.T) {
+	const refusedURL = "https://indexer.invalid/download?file=capability"
+	const fallbackURL = "https://indexer.invalid/fallback"
+	fetcher := &simpleMemFetcher{articles: map[string]struct {
+		data []byte
+		part core.ArticlePart
+	}{}}
+	engine := stream.New(fetcher, nil, stream.Options{}, nil)
+	t.Cleanup(func() { _ = engine.Close() })
+	idx := &grabRefusingIndexer{
+		countingNZBIndexer: &countingNZBIndexer{nzbs: map[string][]byte{
+			fallbackURL: buildSingleFileNZB(fetcher, "track.flac", append([]byte("fLaC"), make([]byte, 1024)...)),
+		}},
+		refusedURL: refusedURL,
+	}
+	now := time.Unix(1000, 0)
+	var logs bytes.Buffer
+	kr := NewKindResolver(KindResolverDeps{
+		Indexer: idx, Engine: engine, Now: func() time.Time { return now },
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	deps := kr.kindstreamDeps(t.Context(), pluginitems.KindRecord{}, core.Library{}, core.KindItem{}, nil, nil)
+	deps.MaxNonVideoReleaseGrabs = 1
+	candidate := func(link string) core.PlayableSource {
+		return core.PlayableSource{
+			ID: "nzb:" + link, Pattern: kindstream.PatternRelease, MIME: "audio/flac",
+			Release: &core.ReleaseHint{NZBURL: link},
+		}
+	}
+	refused, fallback := candidate(refusedURL), candidate(fallbackURL)
+	bs, winner, err := kindstream.OpenSources(t.Context(), []core.PlayableSource{refused, fallback}, deps)
+	if err != nil || winner.ID != fallback.ID {
+		t.Fatalf("expected fallback to play, err=%v", err)
+	}
+	_ = bs.Close()
+
+	for _, elapsed := range []time.Duration{29 * time.Minute, 30 * time.Minute} {
+		now = time.Unix(1000, 0).Add(elapsed)
+		_, _, err := kindstream.OpenSources(t.Context(), []core.PlayableSource{refused}, deps)
+		var refusal *newznab.GrabRefusal
+		if !errors.As(err, &refusal) || errors.Is(err, core.ErrSourceUnavailable) ||
+			strings.Contains(err.Error(), "capability") {
+			t.Fatal("expected redacted, release-specific refusal")
+		}
+		wantGrabs := int32(1)
+		if elapsed == 30*time.Minute {
+			wantGrabs = 2
+		}
+		if got := idx.refusals.Load(); got != wantGrabs {
+			t.Fatalf("refused grabs after %v = %d, want %d", elapsed, got, wantGrabs)
+		}
+	}
+	if strings.Contains(logs.String(), "indexer.invalid") || strings.Contains(logs.String(), "capability") {
+		t.Fatal("kind-open logs contain a source URL")
 	}
 }

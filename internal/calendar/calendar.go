@@ -592,14 +592,28 @@ func (s *Service) taste(ctx context.Context, shows, movies map[core.RatingKey]*i
 	if len(keys) > 400 {
 		keys = keys[:400]
 	}
-	titles, err := s.o.Catalog.CachedGetMany(ctx, keys)
-	if err != nil {
-		return nil, err
-	}
 	counts := map[string]float64{}
-	for _, t := range titles {
-		for _, g := range t.Genres {
-			counts[g]++
+	if gr, ok := s.o.Catalog.(interface {
+		GenresOf(context.Context, []core.RatingKey) (map[core.RatingKey][]string, error)
+	}); ok {
+		byKey, err := gr.GenresOf(ctx, keys)
+		if err != nil {
+			return nil, err
+		}
+		for _, genres := range byKey {
+			for _, g := range genres {
+				counts[g]++
+			}
+		}
+	} else {
+		titles, err := s.o.Catalog.CachedGetMany(ctx, keys)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range titles {
+			for _, g := range t.Genres {
+				counts[g]++
+			}
 		}
 	}
 	type gc struct {

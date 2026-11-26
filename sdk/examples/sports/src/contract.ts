@@ -31,9 +31,7 @@ import type {
   LiveEventStatus,
   LiveEventTable,
   LiveFeedMeta,
-  ScreenEventQuery,
   ScreenMeta,
-  ScreenSectionMeta,
 } from "../../../typescript/src/index.ts";
 
 export type {
@@ -60,9 +58,7 @@ export type {
   LiveEventStatus,
   LiveEventTable,
   LiveFeedMeta,
-  ScreenEventQuery,
   ScreenMeta,
-  ScreenSectionMeta,
 };
 
 // Short aliases used throughout the Sports plugin sources.
@@ -81,8 +77,6 @@ export type EventsResponse = LiveEventsResponse;
 export type EntitiesResponse = LiveEventEntitiesResponse;
 export type StandingsResponse = LiveEventStandingsResponse;
 export type LiveFeedContribution = LiveFeedMeta;
-export type ScreenSectionQuery = ScreenEventQuery;
-export type ScreenSection = ScreenSectionMeta;
 export type ScreenContribution = ScreenMeta;
 export type HostFetchBatchResult = HostFetchManyResult;
 

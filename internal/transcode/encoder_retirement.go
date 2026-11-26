@@ -49,6 +49,7 @@ type encoderLifetime struct {
 	everEncoded     bool
 	runs            atomic.Int32
 	multiviewGroup  string
+	viewer          string
 }
 
 type encoderWork struct {
@@ -225,6 +226,7 @@ func (l *encoderLifetime) advance() {
 		if l.m.encoderIDs[l.id] == l {
 			delete(l.m.encoderIDs, l.id)
 		}
+		l.m.notifySlotsLocked()
 		l.m.mu.Unlock()
 		<-encoderCleanup.slots
 	}

@@ -79,12 +79,12 @@ func FuzzParseGUID(f *testing.F) {
 }
 
 func TestStremio(t *testing.T) {
-	for _, s := range []string{"tmdb:123", "tmdb:123:0:1", "tt0816692", "tt0903747:1:2"} {
+	for _, s := range []string{"tmdb:123", "tmdb:123:0:1", "tt0816692", "tt0903747:1:2", "tt0903747:2026:123"} {
 		if _, err := ParseStremio(s); err != nil {
 			t.Fatalf("%s: %v", s, err)
 		}
 	}
-	for _, s := range []string{"tmdb:0", "tmdb:01", "tt", "tt1:1", "tt1:-1:2", "tt1:1000:1", "ttx"} {
+	for _, s := range []string{"tmdb:0", "tmdb:01", "tt", "tt1:1", "tt1:-1:2", "tt1:10000:1", "ttx"} {
 		if _, err := ParseStremio(s); err == nil {
 			t.Fatalf("accepted %s", s)
 		}
@@ -97,7 +97,7 @@ func FuzzStremio(f *testing.F) {
 }
 
 func TestFormatStremio(t *testing.T) {
-	for _, raw := range []string{"tmdb:123", "tmdb:123:0:1", "tt0816692", "tt0903747:1:2"} {
+	for _, raw := range []string{"tmdb:123", "tmdb:123:0:1", "tt0816692", "tt0903747:1:2", "tt0903747:2026:123"} {
 		id, err := ParseStremio(raw)
 		if err != nil {
 			t.Fatal(err)

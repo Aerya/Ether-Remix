@@ -54,12 +54,12 @@ func TestTorrentTargetRetainsReportedIdentityWithoutInventingIt(t *testing.T) {
 
 func TestSeriesSearchNeverUsesEpisodeExternalIDs(t *testing.T) {
 	title := &core.Title{Type: core.TypeEpisode, Key: core.EpisodeKey(123, 2, 2), IDs: core.IDs{TMDB: 999, IMDB: "tt0000999", TVDB: 999}}
-	if got := searchRequestFor(title).IDs; got != (core.IDs{TMDB: 123}) {
+	if got := searchRequestFor(title).IDs; got != (core.IDs{}) {
 		t.Fatalf("episode IDs became series identifiers: %+v", got)
 	}
 	title.ShowIDs = core.IDs{TVDB: 456}
-	if got := searchRequestFor(title).IDs; got != (core.IDs{TMDB: 123, TVDB: 456}) {
-		t.Fatalf("partial series identifiers lost canonical TMDB key: %+v", got)
+	if got := searchRequestFor(title).IDs; got != title.ShowIDs {
+		t.Fatalf("series identifiers were not taken from stored IDs: %+v", got)
 	}
 }
 

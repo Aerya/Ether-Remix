@@ -64,11 +64,12 @@ func TestVelaEpisodeArtwork(t *testing.T) {
 	}}
 	titles := []frontend.Title{}
 	for n := 1; n <= 5; n++ {
-		key := core.EpisodeKey(42, 1, n)
+		showID := int64(42)
 		if n == 5 {
-			key = core.EpisodeKey(43, 1, n) // Neither episode nor show has art.
+			showID = 43 // Neither episode nor show has art.
 		}
-		titles = append(titles, frontend.Title{Key: key})
+		key, _ := core.AllocatedKey(core.KindEpisode, int64(n))
+		titles = append(titles, frontend.Title{Key: key, Type: core.TypeEpisode, ShowKey: core.ShowKey(showID)})
 		if n < 5 {
 			exp.images[key] = []frontend.Image{{Kind: frontend.ImagePoster, Path: "poster"}}
 		}

@@ -13,7 +13,6 @@ import {
   Button,
   ConfirmRoot,
   DrawerTextProvider,
-  Popover,
   PromptRoot,
   Spinner,
   ThemeProvider,
@@ -65,6 +64,7 @@ import {
   useState,
   type AnchorHTMLAttributes,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   Link,
@@ -79,9 +79,8 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
-import { hasExemptDiagnostic } from "./lib/health";
 import { useMediaQuery } from "./lib/hooks";
-import { t, tn } from "./i18n";
+import { t } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
 import { BrandSplash, EtherMark } from "./components/brand";
 import { CommandSearch } from "./components/CommandSearch";
@@ -91,12 +90,14 @@ import { Drawer } from "./components/Drawer";
 import { ErrorPanel } from "./components/feedback";
 import { SaveBarHost } from "./components/SaveBar";
 import { SettingFocus } from "./components/SettingFocus";
+import { AutomaticWhatsNew } from "./components/UpdateNotesDrawer";
 import { UpdateReady } from "./components/UpdateReady";
-import { LEVEL_LABEL, LevelBadge, StatusDot } from "./components/status";
+import { HealthPill, useServerVerdict } from "./components/HealthPill";
 import { useOwnerViewerPath } from "./components/pickers";
 import { api, getToken, setToken } from "./lib/api";
 import { BUILTIN, textOf, useRegistry, type Descriptor } from "./lib/extend";
 import {
+  SYSTEM_NAV_GROUP,
   pluginNavGroup,
   pluginPageRoute,
   type NavItemMeta,
@@ -115,11 +116,12 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
 import { PseVersionLink, RemixRepositoryLinks, RemixBrand } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
+import { studioBackLink } from "./pages/collections/links";
 
-const loadDesigner = () => import("./pages/designer/Designer");
+const loadRecommendations = () => import("./pages/recommendations/Recommendations");
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
 const CollectionEditor = lazy(() => import("./pages/collections/Editor"));
-const Designer = lazy(loadDesigner);
+const Recommendations = lazy(loadRecommendations);
 const ViewersList = lazy(() => import("./pages/viewers/ViewersList"));
 const ViewerProfile = lazy(() => import("./pages/viewers/ViewerProfile"));
 const settingsPage = <K extends keyof typeof import("./pages/settings/pages")>(name: K) =>
@@ -138,7 +140,7 @@ const Calendar = lazy(() => import("./pages/calendar/Calendar"));
 const Libraries = lazy(() => import("./pages/libraries/Libraries"));
 const Metadata = lazy(() => import("./pages/metadata/Metadata"));
 
-const Quality = lazy(() => import("./pages/releases/Releases"));
+const Releases = lazy(() => import("./pages/releases/Releases"));
 const Cache = lazy(() => import("./pages/cache/Cache"));
 const Playback = lazy(() => import("./pages/playback/Playback"));
 const DeveloperReference = lazy(() => import("./pages/plugins/DeveloperReference"));
@@ -216,15 +218,18 @@ const NAV_GROUPS: { key: string; label: () => string }[] = [
   { key: "remix", label: () => "Remix" },
   { key: "library", label: () => t("Library") },
   { key: "streaming", label: () => t("Streaming") },
-  { key: "server", label: () => t("Server") },
+  { key: "connect", label: () => t("Connect") },
+  { key: "automate", label: () => t("Automate") },
+  { key: SYSTEM_NAV_GROUP, label: () => t("System") },
 ];
 
 /**
  * The sidebar, from registry descriptors (WS1d). Built-in navItems come from
- * Go; a plugin page joins its declared nav group (or Server) with the
+ * Go; a plugin page joins its declared nav group (or System) with the
  * plugin's icon, after the built-ins of the same order.
  * Grouped by the owner's questions: what's happening and who watches; what
- * viewers see in their apps; how titles reach the screen; how the server runs.
+ * viewers see in their apps; how titles reach the screen; what Ether talks
+ * to; what it does on its own; how the server runs.
  */
 export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
   type Item = {
@@ -262,7 +267,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     const group =
       d.owner === BUILTIN
         ? (d.group ?? "")
-        : ((page ? pluginNavGroup(page) : undefined) ?? d.group ?? "server");
+        : ((page ? pluginNavGroup(page) : undefined) ?? SYSTEM_NAV_GROUP);
     const href =
       d.owner !== BUILTIN && meta.pageKey ? pluginPageRoute(d.owner, meta.pageKey) : meta.route;
     items.push({
@@ -284,7 +289,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     items: items.filter((i) => i.group === g.key).map((i) => i.item),
   }));
   // A plugin may declare a group the console does not know; keep it visible
-  // under Server rather than dropping the page.
+  // under System rather than dropping the page.
   const known = new Set(NAV_GROUPS.map((g) => g.key));
   const stray = items.filter((i) => !known.has(i.group)).map((i) => i.item);
   if (stray.length) groups[groups.length - 1]!.items.push(...stray);
@@ -296,104 +301,64 @@ function closeMobileDrawer(el: HTMLElement | null) {
   el?.closest('[role="dialog"]')?.querySelector<HTMLButtonElement>("header button")?.click();
 }
 
+/** The server's health pill: the same one the Overview shows, on every page. */
 function HealthIndicator({ mobile = false }: { mobile?: boolean } = {}) {
-  const { health, overall, dashboard, dashboardError, boot } = useApp();
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  // Before setup finishes, unconfigured sources and an unclaimed server are
-  // expected, not problems: show progress instead of a red verdict.
-  const settingUp = !boot.setupComplete;
-  const setupGaps = health.filter((item) => item.setupGap);
-  const gettingStarted =
-    !settingUp && setupGaps.length > 0 && (overall === "ok" || overall === "off");
-  // "Operational" means no participating failure. It does not mean TLS was verified.
-  const label = settingUp
-    ? t("Setting up")
-    : gettingStarted
-      ? t("Getting started")
-      : overall === "ok" || overall === "off"
-        ? hasExemptDiagnostic(health)
-          ? t("Operational")
-          : t("All systems normal")
-        : overall === "unknown"
-          ? dashboard
-            ? t("Status incomplete")
-            : t("Checking…")
-          : LEVEL_LABEL[overall];
+  const { health } = useApp();
+  const verdict = useServerVerdict();
+  const ref = useRef<HTMLSpanElement>(null);
   return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-      side={mobile ? "top" : "bottom"}
-      align={mobile ? "start" : "end"}
-      trigger={
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-label={t("Server health: {status}", { status: label })}
-          className={
-            mobile
-              ? "inline-flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              : "inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          }
-        >
-          <StatusDot
-            level={settingUp || gettingStarted ? "unknown" : overall === "off" ? "ok" : overall}
-            pulse
-          />
-          <span className={mobile ? "truncate" : "hidden md:inline"}>{label}</span>
-        </button>
+    <span
+      ref={ref}
+      className={
+        mobile ? "inline-flex h-9 items-center px-2" : "inline-flex h-9 items-center px-1.5"
       }
     >
-      <div className="w-80 max-w-[calc(100vw-2rem)] p-1">
-        <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-          {t("Server health")}
-        </p>
-        {settingUp ? (
-          <p className="px-2 pb-2 text-sm text-fg-muted">
-            {t("Finish setup to bring everything online. Items below fill in as you go.")}
-          </p>
-        ) : gettingStarted ? (
-          <p className="px-2 pb-2 text-sm text-fg-muted">
-            {tn(setupGaps.length, "{count} thing to set up", "{count} things to set up")}
-          </p>
-        ) : null}
-        {dashboardError && !dashboard ? (
-          <p className="px-2 pb-2 text-sm text-danger">{t("Status is unavailable right now.")}</p>
-        ) : null}
-        <ul className="space-y-0.5">
-          {health.map((h) => (
-            <li key={h.id}>
-              <Link
-                to={h.href}
-                onClick={() => {
-                  setOpen(false);
-                  if (mobile) closeMobileDrawer(triggerRef.current);
-                }}
-                className="flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-hover"
-              >
-                <StatusDot level={h.level} className="mt-1.5" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center justify-between gap-2 text-sm font-medium text-fg">
-                    {h.label}
-                    <LevelBadge level={h.level} label={h.statusLabel} />
-                  </span>
-                  <span className="block text-pretty text-xs text-fg-muted">{h.summary}</span>
-                  {h.note ? (
-                    <span className="mt-1 block text-xs text-fg-subtle">{h.note}</span>
-                  ) : null}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Popover>
+      <HealthPill
+        items={health}
+        verdict={verdict}
+        label={(status) => t("Server health: {status}", { status })}
+        onNavigate={mobile ? () => closeMobileDrawer(ref.current) : undefined}
+      />
+    </span>
   );
 }
 
 /** "v1.2.3" for releases, the raw string ("dev") otherwise. */
+/**
+ * AppShell 0.4.2 leaves its sidebar toggle named in English: it does not pass
+ * AppSidebar's expandLabel / collapseLabel through. Until AppKit does, the
+ * button is named here, again each time the shell re-renders it.
+ */
+function useSidebarToggleName(shell: RefObject<HTMLElement | null>) {
+  const collapse = t("Collapse sidebar");
+  const expand = t("Expand sidebar");
+  useEffect(() => {
+    const root = shell.current;
+    if (!root || typeof MutationObserver === "undefined") return;
+    const name = () => {
+      for (const el of root.querySelectorAll<HTMLElement>("aside button[aria-label]")) {
+        const label = el.getAttribute("aria-label");
+        if (label === "Collapse sidebar") el.dataset.sidebarToggle = "collapse";
+        else if (label === "Expand sidebar") el.dataset.sidebarToggle = "expand";
+        const kind = el.dataset.sidebarToggle;
+        if (!kind) continue;
+        const translated = kind === "collapse" ? collapse : expand;
+        if (label !== translated) el.setAttribute("aria-label", translated);
+        if (el.title !== translated) el.title = translated;
+      }
+    };
+    name();
+    const observer = new MutationObserver(name);
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-label"],
+    });
+    return () => observer.disconnect();
+  }, [shell, collapse, expand]);
+}
+
 function versionLabel(v: string): string {
   return /^\d/.test(v) ? `v${v}` : v;
 }
@@ -428,10 +393,12 @@ function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
   const { close } = useOutletContext<{ close: () => void }>();
   const { id } = useParams();
   const [search] = useSearchParams();
+  const navigate = useNavigate();
+  const back = studioBackLink(search);
   return (
     <Drawer
       open
-      onClose={close}
+      onClose={back ? () => navigate(back) : close}
       title={fresh ? t("New collection") : t("Edit collection")}
       size="2xl"
       bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
@@ -462,7 +429,7 @@ const BUILTIN_PAGES: Record<
   overview: { element: <Home /> },
   activity: { element: <Activity />, suffix: "/:tab?" },
   viewers: { element: <ViewersList />, extra: [{ suffix: "/:id/:tab?", element: <ViewerById /> }] },
-  home: { element: <Designer /> },
+  recommendations: { element: <Recommendations /> },
   collections: {
     element: <CollectionsLayout />,
     children: (
@@ -477,7 +444,7 @@ const BUILTIN_PAGES: Record<
   libraries: { element: <Libraries />, suffix: "/*" },
   metadata: { element: <Metadata />, suffix: "/:tab?" },
   sources: { element: <RemixSourcesRedirect />, suffix: "/:tab?/:section?" },
-  releases: { element: <Quality />, suffix: "/:tab?" },
+  releases: { element: <Releases />, suffix: "/:tab?" },
   cache: { element: <Cache />, suffix: "/:tab?" },
   playback: { element: <Playback />, suffix: "/:tab?/:section?" },
   notifications: { element: <Notifications />, suffix: "/:tab?" },
@@ -507,6 +474,8 @@ function Shell() {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const wideSearch = useMediaQuery("(min-width: 640px)");
   const firstRunSetupRef = useRef(false);
+  const shellRef = useRef<HTMLDivElement>(null);
+  useSidebarToggleName(shellRef);
   if (location.pathname !== "/setup") {
     firstRunSetupRef.current = false;
   } else if (!boot.setupComplete) {
@@ -542,7 +511,10 @@ function Shell() {
       });
   };
   return (
-    <div className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}>
+    <div
+      ref={shellRef}
+      className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}
+    >
       <AppShell
         groups={hideSetupNav ? [] : filterRemixNav(buildNavigation(navDescriptors), remixExpert)}
         pathname={location.pathname}
@@ -705,7 +677,11 @@ function Shell() {
               <Route path="/plugins/:tab?/*" element={<Plugins />} />
               <Route path="/p/:plugin/:page/*" element={<PluginPage />} />
               {registryLoading && navDescriptors.length === 0 ? (
-                <Route key="home" path="/home" element={BUILTIN_PAGES.home!.element} />
+                <Route
+                  key="recommendations"
+                  path="/recommendations"
+                  element={BUILTIN_PAGES.recommendations!.element}
+                />
               ) : null}
               {navDescriptors
                 .filter(
@@ -831,6 +807,9 @@ function Gate({ onReady }: { onReady: (animation?: boolean, version?: string) =>
   return (
     <AppProvider boot={boot} reloadBoot={loadBoot}>
       <Shell />
+      {boot.setupComplete && boot.authenticated && boot.version && boot.version !== "dev" ? (
+        <AutomaticWhatsNew key={boot.version} version={boot.version} />
+      ) : null}
     </AppProvider>
   );
 }
@@ -885,8 +864,8 @@ export default function App() {
     }
   });
   useEffect(() => {
-    if (location.pathname === "/home" || location.pathname.startsWith("/home/")) {
-      void loadDesigner();
+    if (location.pathname === "/recommendations") {
+      void loadRecommendations();
     }
   }, [location.pathname]);
   const onReady = useCallback((enabled?: boolean, version?: string) => {

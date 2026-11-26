@@ -1,13 +1,14 @@
 {
   "id": "org.ether.sports",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "Sports",
   "description": "Live scores, standings and schedules across 17 leagues from ESPN.",
   "ether": {
     "protocol": 1,
     "kind": "extension",
     "capabilities": [
-      "live_events"
+      "live_events",
+      "screens"
     ],
     "summary": "$t:summary",
     "icon": "assets/icon.svg",
@@ -21,7 +22,8 @@
     "permissions": {
       "network": [
         "site.api.espn.com",
-        "site.web.api.espn.com"
+        "site.web.api.espn.com",
+        "a.espncdn.com"
       ]
     },
     "strings": {
@@ -47,67 +49,58 @@
           "id": "sports",
           "title": "$t:screen_title",
           "icon": "trophy",
-          "sections": [
-            {
-              "id": "leagues",
-              "type": "leagues",
+          "pages": {
+            "index": "screens/sports.json",
+            "game": "screens/game.json"
+          }
+        }
+      ],
+      "surfaces": [
+        {
+          "id": "scorebug",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_scorebug",
+          "anchor": "topLeft",
+          "visibility": "always",
+          "setting": {
+            "id": "scorebug",
+            "label": "$t:setting_scorebug",
+            "default": true
+          },
+          "when": {
+            "event": {
               "feed": "sports"
-            },
-            {
-              "id": "hero",
-              "type": "hero",
-              "feed": "sports"
-            },
-            {
-              "id": "live",
-              "type": "events",
-              "title": "$t:section_live_now",
-              "feed": "sports",
-              "query": {
-                "state": [
-                  "in"
-                ]
-              }
-            },
-            {
-              "id": "your-teams",
-              "type": "events",
-              "title": "$t:section_your_teams",
-              "feed": "sports",
-              "query": {
-                "favorites": true,
-                "window": "week"
-              }
-            },
-            {
-              "id": "today",
-              "type": "events",
-              "title": "$t:section_today",
-              "feed": "sports",
-              "query": {
-                "window": "today"
-              }
-            },
-            {
-              "id": "schedule",
-              "type": "schedule",
-              "title": "$t:section_schedule",
-              "feed": "sports"
-            },
-            {
-              "id": "standings",
-              "type": "table",
-              "title": "$t:section_standings",
-              "feed": "sports"
-            },
-            {
-              "id": "teams",
-              "type": "entities",
-              "title": "$t:section_teams",
-              "feed": "sports",
-              "entityKind": "team"
             }
-          ]
+          },
+          "document": "surfaces/scorebug.json"
+        },
+        {
+          "id": "ticker",
+          "presentation": "playerOverlay",
+          "title": "$t:surface_ticker",
+          "anchor": "bottom",
+          "visibility": "toggle",
+          "setting": {
+            "id": "ticker",
+            "label": "$t:setting_ticker",
+            "default": false
+          },
+          "when": {
+            "kind": "channel"
+          },
+          "document": "surfaces/ticker.json"
+        },
+        {
+          "id": "alert",
+          "presentation": "toast",
+          "title": "$t:surface_alert",
+          "document": "surfaces/alert.json"
+        },
+        {
+          "id": "tonight",
+          "presentation": "homeRow",
+          "title": "$t:surface_tonight",
+          "document": "surfaces/tonight.json"
         }
       ]
     }

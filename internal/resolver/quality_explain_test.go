@@ -14,8 +14,8 @@ func explainQuality() config.Quality {
 			{Name: "Away", MaxHeight: 1080},
 			{Name: "Small", MaxHeight: 720},
 		},
-		Default: "At home",
-		Remote:  "Away",
+		Default:     "At home",
+		DefaultAway: "Away",
 	}
 }
 
@@ -35,6 +35,17 @@ func layer(t *testing.T, a QualityAnswer, kind string) QualityLayer {
 		}
 	}
 	t.Fatalf("no %s layer in %+v", kind, a.Layers)
+	return QualityLayer{}
+}
+
+func layerByRule(t *testing.T, a QualityAnswer, kind, ruleID string) QualityLayer {
+	t.Helper()
+	for _, l := range a.Layers {
+		if l.Kind == kind && l.RuleID == ruleID {
+			return l
+		}
+	}
+	t.Fatalf("no %s layer for rule %q in %+v", kind, ruleID, a.Layers)
 	return QualityLayer{}
 }
 
@@ -60,21 +71,21 @@ func sameKinds(got []string, want ...string) bool {
 	return true
 }
 
-// questionMedia is the media scope the question asks about: the title's,
-// else the explicit hint, else unknown.
-func questionMedia(in QualityQuestion) string {
-	if media := titleMedia(in.Title); media != core.MediaAny {
-		return media
-	}
-	return normalizeMedia(in.MediaType)
-}
-
-// The checker must agree with SelectProfile, the function playback uses.
+// The checker must agree with decideProfile, the function playback uses.
 func assertMatchesPlayback(t *testing.T, in QualityQuestion, a QualityAnswer) {
 	t.Helper()
-	p := SelectProfileForMedia(in.Quality, in.Caps, in.User, questionMedia(in))
+	media := titleMedia(in.Title)
+	if media == core.MediaAny {
+		media = normalizeMedia(in.Kind)
+	}
+	target := playTarget{
+		media:  media,
+		titled: in.Title != nil || in.InLibrary != nil,
+		inLib:  in.InLibrary,
+	}
+	p := decideProfile(in.Quality, in.Caps, in.User, target).profile
 	if a.Profile != p.Name || a.MaxHeight != p.MaxHeight || a.HDR != p.AllowHDR || a.DolbyVision != p.AllowDolbyVision {
-		t.Fatalf("explain %+v disagrees with SelectProfile %s %d hdr=%v dv=%v", a, p.Name, p.MaxHeight, p.AllowHDR, p.AllowDolbyVision)
+		t.Fatalf("explain %+v disagrees with decideProfile %s %d hdr=%v dv=%v", a, p.Name, p.MaxHeight, p.AllowHDR, p.AllowDolbyVision)
 	}
 }
 
@@ -82,65 +93,54 @@ func TestExplainQualityAtHomeUsesDefaultProfile(t *testing.T) {
 	in := QualityQuestion{Quality: explainQuality(), Caps: appleTV(false), User: &core.User{ID: 7}}
 	a := ExplainQuality(in)
 	assertMatchesPlayback(t, in, a)
-	if a.Profile != "At home" || a.MaxHeight != 2160 || !a.HDR || !a.DolbyVision || a.BitrateKbps != 0 || a.Blocked {
+	if a.Profile != "At home" || a.ProfileSource != ProfileFromDefault || a.MaxHeight != 2160 || !a.HDR || !a.DolbyVision || a.BitrateKbps != 0 || a.Blocked {
 		t.Fatalf("%+v", a)
 	}
-	if p := layer(t, a, LayerProfile); p.Source != ProfileFromDefault || p.Reason != "No rule matches, so the At home profile applies." {
+	if p := layer(t, a, LayerProfile); p.Source != ProfileFromDefault || p.Reason != "No rule picks a profile, so the At home profile applies." {
 		t.Fatalf("%+v", p)
 	}
 	if !sameKinds(decisive(a), LayerProfile) {
 		t.Fatalf("decisive %v", decisive(a))
 	}
-	for _, l := range a.Layers {
-		if l.Kind == LayerRemoteCap {
-			t.Fatal("remote cap listed at home")
-		}
-	}
 }
 
-// PR #234: no server bitrate cap by default, and the Away profile decides
-// for a remote client no rule covers.
-func TestExplainQualityAwayProfileWithoutServerCap(t *testing.T) {
+func TestExplainQualityAwayProfileWithoutRuleCap(t *testing.T) {
 	in := QualityQuestion{Quality: explainQuality(), Caps: appleTV(true), User: &core.User{ID: 7}}
 	a := ExplainQuality(in)
 	assertMatchesPlayback(t, in, a)
-	if a.Profile != "Away" || a.MaxHeight != 1080 || a.HDR || a.BitrateKbps != 0 {
+	if a.Profile != "Away" || a.ProfileSource != ProfileFromDefaultAway || a.MaxHeight != 1080 || a.HDR || a.BitrateKbps != 0 {
 		t.Fatalf("%+v", a)
 	}
-	if p := layer(t, a, LayerProfile); p.Source != ProfileFromRemote || p.MaxHeight != 1080 {
+	if p := layer(t, a, LayerProfile); p.Source != ProfileFromDefaultAway || p.MaxHeight != 1080 {
 		t.Fatalf("%+v", p)
-	}
-	if r := layer(t, a, LayerRemoteCap); r.BitrateKbps != 0 || r.Decisive || r.Reason != "Away from home has no bitrate limit." {
-		t.Fatalf("%+v", r)
 	}
 	if !sameKinds(decisive(a), LayerProfile) {
 		t.Fatalf("decisive %v", decisive(a))
 	}
 }
 
-// A viewer's Max quality rule is more specific than "away from home".
 func TestExplainQualityViewerRuleBeatsAwayProfile(t *testing.T) {
 	q := explainQuality()
-	q.Rules = []config.QualityRule{{UserID: 9, Profile: "At home", MaxHeight: 720}}
+	q.Rules = []config.QualityRule{{ID: "r_v9", Viewers: []int64{9}, Profile: "At home", MaxHeight: 720}}
 	in := QualityQuestion{Quality: q, Caps: appleTV(true), User: &core.User{ID: 9}}
 	a := ExplainQuality(in)
 	assertMatchesPlayback(t, in, a)
-	if a.Profile != "At home" || a.MaxHeight != 720 || !a.HDR {
+	if a.Profile != "At home" || a.ProfileSource != ProfileFromRule || a.ProfileRuleID != "r_v9" || a.MaxHeight != 720 || !a.HDR {
 		t.Fatalf("%+v", a)
 	}
 	p := layer(t, a, LayerProfile)
-	if p.Source != ProfileFromRule || p.Rule != 1 || p.RuleUserID != 9 || !p.BeatsRemote {
+	if p.Source != ProfileFromRule || p.Rule != 1 || p.RuleID != "r_v9" {
 		t.Fatalf("%+v", p)
 	}
-	if h := layer(t, a, LayerRuleHeight); h.MaxHeight != 720 || h.Ignored || !h.Decisive {
+	if h := layerByRule(t, a, LayerRuleLimit, "r_v9"); h.MaxHeight != 720 || !h.Decisive {
 		t.Fatalf("%+v", h)
 	}
-	if !sameKinds(decisive(a), LayerRuleHeight) {
+	if !sameKinds(decisive(a), LayerRuleLimit) {
 		t.Fatalf("decisive %v", decisive(a))
 	}
-	// Another viewer on the same app still gets the Away profile.
+	// Another viewer on the same app still gets Default away.
 	other := ExplainQuality(QualityQuestion{Quality: q, Caps: appleTV(true), User: &core.User{ID: 10}})
-	if other.Profile != "Away" || other.MaxHeight != 1080 {
+	if other.Profile != "Away" || other.ProfileSource != ProfileFromDefaultAway || other.MaxHeight != 1080 {
 		t.Fatalf("%+v", other)
 	}
 }
@@ -166,7 +166,7 @@ func TestExplainQualityOwnerEditedDevice(t *testing.T) {
 	edited := appleTV(false)
 	edited.MaxHeight, edited.ExplicitMaxHeight = 1080, true
 	q := explainQuality()
-	q.Rules = []config.QualityRule{{Product: "Apple TV", Profile: "At home", MaxHeight: 2160}}
+	q.Rules = []config.QualityRule{{ID: "r_atv", Devices: []config.DeviceMatch{{Contains: "Apple TV"}}, Profile: "At home", MaxHeight: 2160}}
 	in := QualityQuestion{Quality: q, Caps: edited, Builtin: &builtin, User: &core.User{ID: 7}}
 	a := ExplainQuality(in)
 	assertMatchesPlayback(t, in, a)
@@ -176,14 +176,14 @@ func TestExplainQualityOwnerEditedDevice(t *testing.T) {
 	if d := layer(t, a, LayerDevice); !d.Edited || !d.Decisive {
 		t.Fatalf("%+v", d)
 	}
-	if h := layer(t, a, LayerRuleHeight); !h.Ignored || h.Decisive || h.MaxHeight != 2160 {
+	if h := layerByRule(t, a, LayerRuleLimit, "r_atv"); h.Decisive || h.MaxHeight != 2160 {
 		t.Fatalf("%+v", h)
 	}
 }
 
 func TestExplainQualityRuleLiftsAndroidCeiling(t *testing.T) {
 	q := explainQuality()
-	q.Rules = []config.QualityRule{{Product: "Plex for Android", Profile: "At home"}}
+	q.Rules = []config.QualityRule{{ID: "r_and", Devices: []config.DeviceMatch{{Contains: "Plex for Android"}}, Profile: "At home"}}
 	in := QualityQuestion{Quality: q, Caps: androidPhone(true), User: &core.User{ID: 7}}
 	a := ExplainQuality(in)
 	assertMatchesPlayback(t, in, a)
@@ -191,41 +191,37 @@ func TestExplainQualityRuleLiftsAndroidCeiling(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 	lift := layer(t, a, LayerAndroidLift)
-	if lift.MaxHeight != 2160 || lift.HDR == nil || !*lift.HDR {
+	if lift.MaxHeight != 2160 || lift.HDR == nil || !*lift.HDR || lift.RuleID != "r_and" {
 		t.Fatalf("%+v", lift)
 	}
-	if p := layer(t, a, LayerProfile); !p.BeatsRemote || !p.Decisive {
+	if p := layer(t, a, LayerProfile); !p.Decisive {
 		t.Fatalf("%+v", p)
 	}
 }
 
-func TestExplainQualityBitrateCaps(t *testing.T) {
+func TestExplainQualityBitrateRuleLimitsAccumulate(t *testing.T) {
 	q := explainQuality()
-	caps := appleTV(true)
-	caps.MaxBitrateKbps, caps.DefaultRemoteBitrate = 8000, true // as plex.Request.ClientCapsWith declares it
-	a := ExplainQuality(QualityQuestion{Quality: q, Caps: caps, User: &core.User{ID: 7}, RemoteMaxBitrateKbps: 8000})
-	if a.BitrateKbps != 8000 {
+	q.Rules = []config.QualityRule{
+		{ID: "r_away8", Where: config.WhereAway, MaxBitrateKbps: 8000},
+		{ID: "r_v7", Viewers: []int64{7}, MaxBitrateKbps: 4500},
+	}
+	a := ExplainQuality(QualityQuestion{Quality: q, Caps: appleTV(true), User: &core.User{ID: 7}})
+	if a.BitrateKbps != 4500 {
 		t.Fatalf("%+v", a)
 	}
-	if r := layer(t, a, LayerRemoteCap); !r.Decisive || r.Reason != "Away from home is limited to 8 Mbps." {
+	if len(a.LimitRuleIDs) != 2 || a.LimitRuleIDs[0] != "r_away8" || a.LimitRuleIDs[1] != "r_v7" {
+		t.Fatalf("limitRuleIds = %v", a.LimitRuleIDs)
+	}
+	if r := layerByRule(t, a, LayerRuleLimit, "r_away8"); r.Decisive {
+		t.Fatalf("expected stricter viewer cap to win over away cap: %+v", r)
+	}
+	if r := layerByRule(t, a, LayerRuleLimit, "r_v7"); !r.Decisive || r.BitrateKbps != 4500 {
 		t.Fatalf("%+v", r)
 	}
-	if !sameKinds(decisive(a), LayerProfile, LayerRemoteCap) {
-		t.Fatalf("decisive %v", decisive(a))
-	}
-
-	// The viewer's own cap applies when it is lower.
-	a = ExplainQuality(QualityQuestion{Quality: q, Caps: caps, User: &core.User{ID: 7}, RemoteMaxBitrateKbps: 8000, ViewerMaxBitrateKbps: 4500})
-	if a.BitrateKbps != 4500 || layer(t, a, LayerRemoteCap).Decisive || !layer(t, a, LayerViewerCap).Decisive {
-		t.Fatalf("%+v", a)
-	}
-	if r := layer(t, a, LayerViewerCap).Reason; r != "This viewer is limited to 4.5 Mbps." {
-		t.Fatal(r)
-	}
-	// At home only the viewer's cap counts.
-	a = ExplainQuality(QualityQuestion{Quality: q, Caps: appleTV(false), User: &core.User{ID: 7}, RemoteMaxBitrateKbps: 8000, ViewerMaxBitrateKbps: 20000})
-	if a.BitrateKbps != 20000 || !layer(t, a, LayerViewerCap).Decisive {
-		t.Fatalf("%+v", a)
+	// At home only the viewer's rule matches.
+	aHome := ExplainQuality(QualityQuestion{Quality: q, Caps: appleTV(false), User: &core.User{ID: 7}})
+	if aHome.BitrateKbps != 4500 || len(aHome.LimitRuleIDs) != 1 || aHome.LimitRuleIDs[0] != "r_v7" {
+		t.Fatalf("%+v", aHome)
 	}
 }
 

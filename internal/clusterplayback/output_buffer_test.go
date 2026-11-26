@@ -444,8 +444,43 @@ func TestOutputBufferCachedFailureAndAuthority(t *testing.T) {
 	}
 }
 
+// A full recovery buffer must never stop delivery (#789). The session's own
+// budget rolls: segments behind the restart watermark are released, the
+// floor advances and recovery stays available. When retention is impossible
+// anyway (here the global pool), the segment is delivered and the session
+// gives up recovery instead of withholding its last byte forever.
 func TestOutputBufferLifetimeCapacity(t *testing.T) {
 	s, data := outputFixture(t)
+	q := httptest.NewRequest("GET", "/segment", nil)
+	full := func(n int) {
+		t.Helper()
+		got := httptest.NewRecorder()
+		s.serveSegment(got, q, n, outputResponse(data))
+		if !bytes.Equal(got.Body.Bytes(), data) {
+			t.Fatalf("segment %d: %d of %d bytes delivered", n, got.Body.Len(), len(data))
+		}
+	}
+	rolling, err := playbackbuffer.New(playbackbuffer.Limits{Global: playbackbuffer.Budget{Bytes: int64(len(data)) * 64, Segments: 64, Inits: 1}, PerSession: playbackbuffer.Budget{Bytes: int64(len(data)) * 8, Segments: 64, Inits: 1}, Sessions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = rolling.OpenSession("retained", playbackbuffer.State{Generation: 1, PublishedFloor: -1}); err != nil {
+		t.Fatal(err)
+	}
+	s.r.o.OutputBuffer = rolling
+	for n := range 10 {
+		full(n)
+	}
+	snap, err := s.r.SnapshotOutput("retained")
+	if err != nil || !snap.Retaining || snap.Buffer.State.PublishedFloor != 9 || s.isUnbuffered() {
+		t.Fatal("rolling retention lost the watermark", snap, err)
+	}
+	if rolling.Has(s.key(0)) || !rolling.Has(s.key(9)) {
+		t.Fatal("released the wrong end of the published range")
+	}
+	full(0) // released behind the watermark: served straight through
+
+	s, data = outputFixture(t)
 	b, err := playbackbuffer.New(playbackbuffer.Limits{Global: playbackbuffer.Budget{Bytes: int64(len(data)) * 5, Segments: 1, Inits: 1}, PerSession: playbackbuffer.Budget{Bytes: int64(len(data)) * 5, Segments: 1, Inits: 1}, Sessions: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -454,15 +489,10 @@ func TestOutputBufferLifetimeCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.r.o.OutputBuffer = b
-	q := httptest.NewRequest("GET", "/segment", nil)
-	s.serveSegment(httptest.NewRecorder(), q, 0, outputResponse(data))
-	got := httptest.NewRecorder()
-	s.serveSegment(got, q, 1, outputResponse(data))
-	if got.Body.Len() >= len(data) {
-		t.Fatal("capacity exhaustion acknowledged unretained success")
-	}
-	snap, err := s.r.SnapshotOutput("retained")
-	if err != nil || snap.Retaining || len(snap.Buffer.Entries) != 1 || snap.Buffer.State.PublishedFloor != 0 {
+	full(0)
+	full(1)
+	snap, err = s.r.SnapshotOutput("retained")
+	if err != nil || snap.Retaining || !s.isUnbuffered() || len(snap.Buffer.Entries) != 1 || snap.Buffer.State.PublishedFloor != 0 {
 		t.Fatal(snap, err)
 	}
 	lease, err := b.Acquire(s.key(0))

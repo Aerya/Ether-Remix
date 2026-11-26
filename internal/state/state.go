@@ -131,6 +131,7 @@ type Event struct {
 	Completed bool
 	At        time.Time
 	Imported  bool // reviewed history import; never an active playback timeline
+	Offline   bool // playback observed on a downloaded copy
 	Origin    Origin
 	// Account is a manual Plex-account import. Local clients refresh from it.
 	// It is not journaled and is not a Trakt or Simkl export.
@@ -150,6 +151,11 @@ func WithOrigin(ctx context.Context, origin Origin) context.Context {
 }
 func originFrom(ctx context.Context) Origin { return frontend.WatchOriginFrom(ctx) }
 
+// Ancestry identifies an episode's season and the containing show.
+type Ancestry struct {
+	ShowKey, ParentKey core.RatingKey
+}
+
 // Options tune a State. Now is injectable for tests.
 type Options struct {
 	Logger *slog.Logger
@@ -167,6 +173,8 @@ type Options struct {
 	// persist a resume offset (for example music tracks). LastViewedAt and
 	// completion are still recorded.
 	SkipResume func(context.Context, core.RatingKey) bool
+	// Ancestry resolves a batch of stored children without loading provider data.
+	Ancestry func(context.Context, []core.RatingKey) (map[core.RatingKey]Ancestry, error)
 	// ResumeAfterSeconds sets how many seconds into a title a resume point is
 	// kept from, for every frontend. 0 keeps the default (StartedThreshold).
 	ResumeAfterSeconds int
@@ -190,6 +198,7 @@ type State struct {
 	subs        map[int]func(Event)
 	next        int
 	skipResume  func(context.Context, core.RatingKey) bool
+	ancestry    func(context.Context, []core.RatingKey) (map[core.RatingKey]Ancestry, error)
 	resumeAfter atomic.Int64
 
 	// progress holds timeline writes through a database outage (nil when
@@ -255,7 +264,7 @@ func New(db *sql.DB, opts Options) *State {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume}
+	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume, ancestry: opts.Ancestry}
 	s.SetResumeAfter(opts.ResumeAfterSeconds)
 	if opts.PendingSQLite {
 		s.pending = newPendingWrites(s)
@@ -337,6 +346,8 @@ type progressWrite struct {
 	before           *progressWrite
 	origin           Origin
 	skipResume       bool
+	offline          *frontend.OfflineProgress
+	offlineResult    *frontend.TimelinePersistenceResult
 }
 
 func (w progressWrite) completes() bool {
@@ -421,6 +432,7 @@ type row struct {
 	version  int64 // stored version when loaded
 	watchAt  time.Time
 	ratingAt time.Time
+	skipSave bool
 }
 
 // errConflict means another writer changed the row since it was loaded.
@@ -730,7 +742,9 @@ func (s *State) updateAt(ctx context.Context, userID int64, keys []core.RatingKe
 	if err != nil {
 		return err
 	}
-	s.gen.Add(1)
+	if events != nil {
+		s.gen.Add(1)
+	}
 	for _, ev := range events {
 		ev.Origin = originFrom(ctx)
 		if deferred, ok := ctx.Value(acceptedEventsKey{}).(*[]Event); ok {
@@ -771,8 +785,14 @@ func (s *State) updateTx(ctx context.Context, userID int64, keys []core.RatingKe
 			return nil, err
 		}
 		logHistory, completed, evs := fn(&cur, now)
+		if cur.skipSave {
+			continue
+		}
 		if err := saveTx(ctx, tx, userID, cur); err != nil {
 			return nil, err
+		}
+		if events == nil {
+			events = make([]Event, 0, len(evs))
 		}
 		if logHistory {
 			if err := addHistoryTx(ctx, tx, userID, key, now, completed); err != nil {
@@ -780,6 +800,9 @@ func (s *State) updateTx(ctx context.Context, userID int64, keys []core.RatingKe
 			}
 		}
 		events = append(events, evs...)
+	}
+	if events == nil {
+		return nil, nil // every update was rejected by its ordering check
 	}
 	if err := s.journalEvents(ctx, tx, events, false); err != nil {
 		return nil, err
@@ -884,6 +907,19 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 	reported, duration, state := w.offset, w.duration, w.state
 	return s.updateAt(ctx, userID, []core.RatingKey{key}, w.at, func(cur *row, now time.Time) (bool, bool, []Event) {
 		offset := reported // fn may be re-run after a conflict
+		if w.offline != nil {
+			*w.offlineResult = frontend.TimelinePersistenceResult{
+				PlaybackState: "ignore", ViewOffset: cur.ws.ViewOffset, ViewCount: cur.ws.ViewCount,
+			}
+			if !now.After(cur.ws.LastViewedAt) || !now.After(cur.watchAt) ||
+				(s.pending != nil && !now.After(s.pending.latestAt(progressKey{userID, key}))) {
+				cur.skipSave = true
+				return false, false, nil
+			}
+		} else if !w.at.IsZero() && now.Before(cur.watchAt) {
+			cur.skipSave = true
+			return false, false, nil
+		}
 		before := cur.ws.ViewOffset
 		if state == "progress" {
 			resumeAfter := s.ResumeAfter()
@@ -914,13 +950,15 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 		}
 		completed, started := false, false
 		switch {
-		case cur.ws.Duration > 0 && frac >= WatchedThreshold:
-			if !cur.counted {
+		case (w.offline != nil && w.offline.Played) || (cur.ws.Duration > 0 && frac >= WatchedThreshold):
+			if (w.offline != nil && cur.ws.ViewCount == 0) || (w.offline == nil && !cur.counted) {
 				cur.ws.ViewCount++
 				completed = true
 			}
 			cur.counted = true
 			cur.ws.ViewOffset = 0
+		case w.offline != nil && cur.ws.ViewCount > 0:
+			// A delayed partial viewing cannot undo a completed viewing.
 		case s.notStarted(offset, cur.ws.Duration):
 			// Not really started (or rewound to the beginning): no resume
 			// point. `counted` is left alone so scrubbing back and forth
@@ -939,15 +977,27 @@ func (s *State) progressAt(ctx context.Context, userID int64, key core.RatingKey
 			}
 		}
 		cur.ws.LastViewedAt = now
-		cur.ws.UpdatedAt = now
+		if w.offline == nil || now.After(cur.ws.UpdatedAt) {
+			cur.ws.UpdatedAt = now
+		}
 		cur.watchAt = now
 
+		if w.offline != nil {
+			mode := "progress"
+			if completed {
+				mode = "complete"
+			}
+			*w.offlineResult = frontend.TimelinePersistenceResult{
+				PlaybackState: mode, ViewOffset: cur.ws.ViewOffset, ViewCount: cur.ws.ViewCount,
+				Changed: true, Completed: completed,
+			}
+		}
 		evFrac := frac
 		if completed {
 			evFrac = 1
 		}
 		ev := Event{Kind: EventProgress, UserID: userID, Key: cur.ws.Key, Offset: offset, Duration: cur.ws.Duration,
-			Fraction: evFrac, State: state, Completed: completed, At: now}
+			Fraction: evFrac, State: state, Completed: completed, At: now, Offline: w.offline != nil}
 		ev.ResumeSet, ev.Resume = !completed && cur.ws.ViewOffset != before, cur.ws.ViewOffset
 		evs := []Event{ev}
 		if completed {
@@ -981,6 +1031,10 @@ func (s *State) ScrobbleMany(ctx context.Context, userID int64, keys []core.Rati
 func (s *State) scrobbleManyAt(ctx context.Context, userID int64, keys []core.RatingKey, at time.Time) error {
 	ctx = context.WithValue(ctx, historyScrobbleKey{}, true)
 	return s.updateAt(ctx, userID, keys, at, func(cur *row, now time.Time) (bool, bool, []Event) {
+		if !at.IsZero() && now.Before(cur.watchAt) {
+			cur.skipSave = true
+			return false, false, nil
+		}
 		cur.ws.ViewCount++
 		cur.ws.ViewOffset = 0
 		cur.counted = true
@@ -1012,6 +1066,10 @@ func (s *State) UnscrobbleMany(ctx context.Context, userID int64, keys []core.Ra
 }
 func (s *State) unscrobbleManyAt(ctx context.Context, userID int64, keys []core.RatingKey, at time.Time) error {
 	return s.updateAt(ctx, userID, keys, at, func(cur *row, now time.Time) (bool, bool, []Event) {
+		if !at.IsZero() && now.Before(cur.watchAt) {
+			cur.skipSave = true
+			return false, false, nil
+		}
 		cur.ws.ViewCount = 0
 		cur.ws.ViewOffset = 0
 		cur.ws.Reading = nil

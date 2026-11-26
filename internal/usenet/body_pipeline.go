@@ -23,10 +23,11 @@ type bodyFlight struct {
 	done         chan struct{}
 	waiters      int
 	shared       bool
-	retrySolo    bool // replay an unreceived tail without another predecessor
-	staleRetried bool // one free fresh dial after a dropped idle socket
-	started      bool // BODY window flushed; guarded by bodyMu
-	liveWaiters  int  // urgent callers sharing a transmitted speculative flight
+	retrySolo    bool  // replay an unreceived tail without another predecessor
+	staleRetried bool  // one free fresh dial after a dropped idle socket
+	started      bool  // BODY window flushed; guarded by bodyMu
+	liveWaiters  int   // urgent callers sharing a transmitted speculative flight
+	wire         int64 // bytes the BODY moved (worst case for an abandoned body); worker-owned until done
 	part         *yenc.Part
 	err          error
 }
@@ -37,9 +38,12 @@ type bodyFlight struct {
 // does not impose the stream layer's queued-work hedge delay on an active transfer.
 // Each waiter can cancel independently; the last waiter cancels the work.
 // Admission bounds queued metadata independently of connection count.
-func (p *pool) body(ctx context.Context, id string, groups []string, prio core.Priority) (*yenc.Part, error) {
+// wire is what the BODY moved off the socket, or the worst case for the
+// provider's largest article when that is unknown (an abandoned body, or a
+// waiter that left before the reply).
+func (p *pool) body(ctx context.Context, id string, groups []string, prio core.Priority) (part *yenc.Part, wire int64, err error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	prio = clampPriority(prio)
 	key := p.bodyKeyFor(id, groups, prio)
@@ -52,7 +56,7 @@ func (p *pool) body(ctx context.Context, id string, groups []string, prio core.P
 	}
 	p.bodyMu.Unlock()
 	if err := p.bodyAdmission.Acquire(ctx, prio); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	p.bodyMu.Lock()
 	f := p.joinBodyLocked(key)
@@ -64,7 +68,7 @@ func (p *pool) body(ctx context.Context, id string, groups []string, prio core.P
 			p.mu.Unlock()
 			p.bodyMu.Unlock()
 			p.bodyAdmission.Release(prio)
-			return nil, ErrPoolClosed
+			return nil, 0, ErrPoolClosed
 		}
 		base := context.Background()
 		if until := burstUntil(ctx); time.Now().Before(until) {
@@ -134,7 +138,7 @@ func (p *pool) findBodyLocked(key bodyKey) *bodyFlight {
 	return f
 }
 
-func (p *pool) waitBody(ctx context.Context, key bodyKey, f *bodyFlight) (*yenc.Part, error) {
+func (p *pool) waitBody(ctx context.Context, key bodyKey, f *bodyFlight) (*yenc.Part, int64, error) {
 	select {
 	case <-ctx.Done():
 		p.bodyMu.Lock()
@@ -146,19 +150,19 @@ func (p *pool) waitBody(ctx context.Context, key bodyKey, f *bodyFlight) (*yenc.
 			f.cancel()
 		}
 		p.bodyMu.Unlock()
-		return nil, ctx.Err()
+		return nil, maxEncodedBody(p.o.MaxArticleSize), ctx.Err()
 	case <-f.done:
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, f.wire, err
 		}
 		if f.shared && f.part != nil {
 			// Consumers historically own the returned bytes. Dedup must not introduce
 			// aliasing between viewers, including one mutating while another reads.
 			part := *f.part
 			part.Data = bytes.Clone(part.Data)
-			return &part, f.err
+			return &part, f.wire, f.err
 		}
-		return f.part, f.err
+		return f.part, f.wire, f.err
 	}
 }
 
@@ -297,6 +301,7 @@ func (p *pool) runBodyBatch(c *Conn, batch []*bodyFlight, prio core.Priority) {
 	var replay []*bodyFlight
 	lastReplayed := false
 	beforeWire := c.wireBytes()
+	mark := beforeWire
 	batchStart := time.Now()
 	c.bodyPipelineStarted(ctx, ids, &yenc.DecodeOptions{MaxSize: p.o.MaxArticleSize}, func() {
 		p.bodyMu.Lock()
@@ -307,6 +312,13 @@ func (p *pool) runBodyBatch(c *Conn, batch []*bodyFlight, prio core.Priority) {
 	}, func(i int, part *yenc.Part, err error) {
 		f := batch[i]
 		bodyStarted := c.bodyStarted
+		now := c.wireBytes()
+		f.wire += now - mark
+		mark = now
+		if err != nil && bodyStarted {
+			// An abandoned body's unread remainder is unknown.
+			f.wire += maxEncodedBody(p.o.MaxArticleSize)
+		}
 		if err != nil {
 			p.bodyMu.Lock()
 			f.started = false

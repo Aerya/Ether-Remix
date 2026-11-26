@@ -28,6 +28,11 @@ func newLibraryPageExclusionsFor(a *App, stepAside *experience.StepAside) func(c
 				out.Keys = append(out.Keys, keys...)
 			}
 		}
+		if a != nil && a.state != nil && viewer != nil {
+			if hidden, err := a.state.HiddenRecordingCopies(ctx, viewer.ID); err == nil {
+				out.Keys = append(out.Keys, hidden...)
+			}
+		}
 		if a != nil && a.safety != nil {
 			out.ExcludeGenres, out.ExcludeKeywords = a.safety.BrowseBlocks(viewer)
 			out.Movie = a.safety.BrowseShareFilter(viewer, core.TypeMovie)

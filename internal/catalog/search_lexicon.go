@@ -69,6 +69,11 @@ func newLexiconBuilder() *lexiconBuilder {
 // alternative names); a word counts once per title however often it recurs.
 func (b *lexiconBuilder) addTitle(names ...string) {
 	clear(b.seen)
+	b.addNames(names...)
+}
+
+// addNames adds more names to the title addTitle last added.
+func (b *lexiconBuilder) addNames(names ...string) {
 	for _, name := range names {
 		for _, w := range lexiconWords(name) {
 			e := b.words[w.key]

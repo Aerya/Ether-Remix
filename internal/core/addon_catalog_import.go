@@ -81,7 +81,7 @@ type AddonCatalogSubscription struct {
 	Refresh        string              `json:"refresh"`
 	MaxItems       int                 `json:"maxItems"`
 	Enabled        bool                `json:"enabled"`
-	Targets        CollectionTargets   `json:"targets"`
+	BrowseInApps   bool                `json:"browseInApps"`
 	CatalogCount   int                 `json:"catalogCount"`
 	ManagedCount   int                 `json:"managedCount"`
 	RemovedCount   int                 `json:"removedCount"`
@@ -149,7 +149,7 @@ type AddonCatalogImportRequest struct {
 	Refresh        string                   `json:"refresh,omitempty"`
 	MaxItems       int                      `json:"maxItems,omitempty"`
 	Enabled        bool                     `json:"enabled"`
-	Targets        CollectionTargets        `json:"targets"`
+	BrowseInApps   bool                     `json:"browseInApps"`
 	Items          []AddonCatalogImportItem `json:"items"`
 }
 

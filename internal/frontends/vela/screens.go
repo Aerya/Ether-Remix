@@ -1,8 +1,8 @@
 package vela
 
 import (
+	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -14,54 +14,35 @@ func (i *instance) screensGeneration() uint64 {
 	return 0
 }
 
-func (i *instance) screenNavigation(r *http.Request, v *frontend.Viewer) ([]frontend.NavigationScreen, error) {
-	if i.host.Screens == nil || v == nil {
-		return []frontend.NavigationScreen{}, nil
+// screenNavigation lists plugin screens for bootstrap navigation. Only
+// clients that draw documents (X-Vela-Screen-Renderer) get any.
+func (i *instance) screenNavigation(r *http.Request, v *frontend.Viewer) ([]any, error) {
+	out := []any{}
+	ps, ok := i.pluginScreens()
+	c := screenClient(r)
+	if !ok || v == nil || c.Renderer == 0 {
+		return out, nil
 	}
-	nav, err := i.host.Screens.Navigation(r.Context(), v)
+	raw, err := ps.ScreenNavigation(r.Context(), v, c)
 	if err != nil {
 		return nil, err
 	}
-	if nav == nil {
-		return []frontend.NavigationScreen{}, nil
+	var entries []map[string]any
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, err
 	}
-	return nav, nil
+	for _, e := range entries {
+		out = append(out, e)
+	}
+	return out, nil
 }
 
-// screen serves GET /vela/v0/screens/{id}?league=&date=.
-func (i *instance) screen(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
-	if err != nil {
-		fail(w, err, r)
-		return
+// screenSurfaces lists the surfaces for bootstrap.
+func (i *instance) screenSurfaces(r *http.Request, v *frontend.Viewer) (json.RawMessage, error) {
+	ps, ok := i.pluginScreens()
+	c := screenClient(r)
+	if !ok || v == nil || c.Renderer == 0 {
+		return json.RawMessage("[]"), nil
 	}
-	if i.host.Screens == nil {
-		problem(w, 404, "not-found", "not_found")
-		return
-	}
-	id := strings.TrimSpace(r.PathValue("id"))
-	if id == "" {
-		problem(w, 404, "not-found", "not_found")
-		return
-	}
-	values := r.URL.Query()
-	for name, entries := range values {
-		switch name {
-		case "league", "date":
-			if len(entries) != 1 {
-				problem(w, 400, "request", "invalid_request")
-				return
-			}
-		default:
-			problem(w, 400, "request", "invalid_request")
-			return
-		}
-	}
-	raw, err := i.host.Screens.ResolveScreen(r.Context(), v, id, values.Get("league"), values.Get("date"))
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	varyLanguage(w)
-	cache(w, r, raw)
+	return ps.ScreenSurfaces(r.Context(), v, c)
 }

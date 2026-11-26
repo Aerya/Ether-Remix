@@ -114,10 +114,14 @@ type Title struct {
 	// clients that only play leaf items can play it.
 	SelfChild bool `json:"-"`
 
+	// LyricsDeclared identifies a playable item whose kind declares lyrics.
+	LyricsDeclared bool `json:"-"`
+
 	// Media class, role, and structured non-video presentation metadata
 	// (docs/plugin-kinds.md, additive). Never serialized to catalogue caches.
 	MediaClass   MediaClass    `json:"-"`
 	MediaRole    MediaRole     `json:"-"`
+	RecordingID  string        `json:"-"` // shared by every release of one recording (KindItem.Recording)
 	IndexDisplay string        `json:"-"` // optional display string for fractional/non-integer series index (e.g. "1.5")
 	Disc         int           `json:"-"` // disc / volume number for multi-disc albums
 	MediaParents []TitleParent `json:"-"` // ancestors nearest first
@@ -126,15 +130,17 @@ type Title struct {
 	MediaFacts   []TitleFact   `json:"-"` // plain label/value detail facts
 
 	// Seasons and episodes.
-	ShowKey           RatingKey `json:"showKey,omitempty"`
-	ShowIDs           IDs       `json:"showIds,omitempty"`
-	ShowTitle         string    `json:"showTitle,omitempty"`
-	ShowOriginalTitle string    `json:"showOriginalTitle,omitempty"` // canonical original series name, distinct from episode title
-	ShowEnglishTitle  string    `json:"-"`                           // canonical en-US series name when catalogue language is non-English; release matching only
-	ShowYear          int       `json:"showYear,omitempty"`          // series premiere year, distinct from episode air year
-	SeasonTitle       string    `json:"seasonTitle,omitempty"`
-	Season            int       `json:"season,omitempty"`
-	Episode           int       `json:"episode,omitempty"`
+	EpisodeOrder      EpisodeOrder `json:"-"`
+	EpisodeAirDate    time.Time    `json:"-"`
+	ShowKey           RatingKey    `json:"showKey,omitempty"`
+	ShowIDs           IDs          `json:"showIds,omitempty"`
+	ShowTitle         string       `json:"showTitle,omitempty"`
+	ShowOriginalTitle string       `json:"showOriginalTitle,omitempty"` // canonical original series name, distinct from episode title
+	ShowEnglishTitle  string       `json:"-"`                           // canonical en-US series name when catalogue language is non-English; release matching only
+	ShowYear          int          `json:"showYear,omitempty"`          // series premiere year, distinct from episode air year
+	SeasonTitle       string       `json:"seasonTitle,omitempty"`
+	Season            int          `json:"season,omitempty"`
+	Episode           int          `json:"episode,omitempty"`
 	// AbsoluteEpisode counts an episode from the series start across its
 	// regular seasons; 0 when an earlier season's size is unknown (additive).
 	AbsoluteEpisode int `json:"absoluteEpisode,omitempty"`
@@ -362,12 +368,15 @@ func (e *PreparingError) Unwrap() error {
 
 // PreparingFromPending constructs an ErrPreparing carrying a retry delay from
 // a plugin's PendingReply.RetryInMS hint, defaulting to 5s when unspecified.
+// A sub-second hint is kept (floored at 250ms): a server-side wait polls a
+// staged resolve at the plugin's pace, while the HTTP Retry-After still
+// rounds up to whole seconds.
 func PreparingFromPending(retryInMS int64) error {
 	d := 5 * time.Second
 	if retryInMS > 0 {
 		d = time.Duration(retryInMS) * time.Millisecond
-		if d < time.Second {
-			d = time.Second
+		if d < 250*time.Millisecond {
+			d = 250 * time.Millisecond
 		} else if d > 60*time.Second {
 			d = 60 * time.Second
 		}
@@ -520,7 +529,9 @@ type User struct {
 // ClientCaps is what a Plex client can play, derived from X-Plex-* headers,
 // the client profile and its declared limits.
 type ClientCaps struct {
-	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an owner-forced empty profile set
+	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an explicit empty profile set
+	// DVProfileVariants restricts client-declared profiles to the exact input variants.
+	DVProfileVariants []string `json:"dvProfileVariants,omitempty"`
 	// DVProfilesForced records an owner-forced non-empty Dolby Vision profile list.
 	DVProfilesForced bool `json:"-"`
 	// ForcedOverrideApplied records a runtime declaration replaced by an owner edit.

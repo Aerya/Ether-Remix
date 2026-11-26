@@ -83,9 +83,7 @@ function normalizeBadgeLabel(raw: string): string {
     upper.trim().length === 0 ||
     !BADGE_LABEL_RE.test(upper)
   ) {
-    throw new Error(
-      `badge label must be 1..${MaxBadgeLabelLen} characters from [A-Z0-9 +&'./-]`,
-    );
+    throw new Error(`badge label must be 1..${MaxBadgeLabelLen} characters from [A-Z0-9 +&'./-]`);
   }
   return upper;
 }
@@ -188,6 +186,10 @@ export interface MockHostState {
   lastStreamUrlPart?: number;
   /** PlayableSource.id of the most recent source-scoped frontend.streamUrl call (#661). */
   lastStreamUrlSource?: string;
+  /** Whether the most recent frontend.streamUrl call requested an absolute URL (#772). */
+  lastStreamUrlAbsolute?: boolean;
+  /** Optional origin prepended to mock stream URLs when `{ absolute: true }` (defaults to `"http://ether.test"`). */
+  streamOrigin?: string;
 }
 
 export interface MockHostClient extends EtherHost {
@@ -234,6 +236,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       })),
     aiHandler: initial?.aiHandler,
     mediaProbeHandler: initial?.mediaProbeHandler,
+    streamOrigin: initial?.streamOrigin,
   };
 
   return {
@@ -333,15 +336,17 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     },
     http: {
       fetch: (req: HostFetchRequest) => state.httpHandler(req),
-      fetchMany: (
-        requests: HostFetchRequest[],
-        opts?: HostFetchManyOptions,
-      ) => {
+      fetchMany: (requests: HostFetchRequest[], opts?: HostFetchManyOptions) => {
         const list = requests ?? [];
         if (list.length > MaxFetchManyRequests) {
-          throw new Error(`http.fetchMany accepts at most ${MaxFetchManyRequests} requests per call`);
+          throw new Error(
+            `http.fetchMany accepts at most ${MaxFetchManyRequests} requests per call`,
+          );
         }
-        if (opts?.concurrency !== undefined && (!Number.isInteger(opts.concurrency) || opts.concurrency < 0)) {
+        if (
+          opts?.concurrency !== undefined &&
+          (!Number.isInteger(opts.concurrency) || opts.concurrency < 0)
+        ) {
           throw new Error("http.fetchMany concurrency must be a non-negative integer");
         }
         const toErr = (err: unknown): HostFetchManyResult => {
@@ -403,10 +408,18 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
     },
     folders: {
-      hashStart: () => { throw new Error("Set a folders.hashStart mock"); },
-      hashPoll: () => { throw new Error("Set a folders.hashPoll mock"); },
-      hashCancel: () => { throw new Error("Set a folders.hashCancel mock"); },
-      hash: () => { throw new Error("Set a folders.hash mock for file identification tests"); },
+      hashStart: () => {
+        throw new Error("Set a folders.hashStart mock");
+      },
+      hashPoll: () => {
+        throw new Error("Set a folders.hashPoll mock");
+      },
+      hashCancel: () => {
+        throw new Error("Set a folders.hashCancel mock");
+      },
+      hash: () => {
+        throw new Error("Set a folders.hash mock for file identification tests");
+      },
       list: (root: string, path = "") => {
         const key = path ? `${root}/${path}` : root;
         return state.folders.get(key) ?? [];
@@ -433,19 +446,25 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
       delete: (kind, externalIds) => {
         const drop = new Set(externalIds);
-        state.kinds.set(kind, (state.kinds.get(kind) ?? []).filter((it) => !drop.has(it.id)));
+        state.kinds.set(
+          kind,
+          (state.kinds.get(kind) ?? []).filter((it) => !drop.has(it.id)),
+        );
       },
       items: (kind, cursor = "", limit = 200) => {
         const all = state.kinds.get(kind) ?? [];
         const start = cursor ? all.findIndex((it) => it.id === cursor) + 1 : 0;
         const pageItems = all.slice(start, start + limit);
         const page: import("./types.ts").KindPage = { items: pageItems };
-        if (pageItems.length && start + limit < all.length) page.nextCursor = pageItems[pageItems.length - 1]?.id;
+        if (pageItems.length && start + limit < all.length)
+          page.nextCursor = pageItems[pageItems.length - 1]?.id;
         return page;
       },
       visible: (kind, ids, viewerToken) => {
         if (!viewerToken || !viewerToken.trim()) {
-          throw new Error("kinds.visible: no authenticated frontend adapter viewer token on this request");
+          throw new Error(
+            "kinds.visible: no authenticated frontend adapter viewer token on this request",
+          );
         }
         if (ids.length > MAX_KIND_VISIBLE_IDS) {
           throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
@@ -468,13 +487,21 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
       browse: (kind, query = {}, viewerToken) => {
         if (!viewerToken || !viewerToken.trim()) {
-          throw new Error("kinds.browse: no authenticated frontend adapter viewer token on this request");
+          throw new Error(
+            "kinds.browse: no authenticated frontend adapter viewer token on this request",
+          );
         }
-        if (query.total !== undefined && query.total !== "cheap" && query.total !== "none" && query.total !== "exact") {
+        if (
+          query.total !== undefined &&
+          query.total !== "cheap" &&
+          query.total !== "none" &&
+          query.total !== "exact"
+        ) {
           throw new Error(`kinds.browse: invalid total mode ${String(query.total)}`);
         }
         const hidden = state.kindHiddenIds.get(kind);
         const needle = (query.query ?? "").trim().toLowerCase();
+        const excludeNeedle = (query.excludeQuery ?? "").trim().toLowerCase();
         const limit = query.limit && query.limit > 0 ? query.limit : 200;
         let matched = (state.kinds.get(kind) ?? []).filter((it) => {
           if (hidden?.has(it.id)) return false;
@@ -484,6 +511,10 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
           if (needle) {
             const hay = `${it.title ?? ""} ${it.summary ?? ""}`.toLowerCase();
             if (!hay.includes(needle)) return false;
+          }
+          if (excludeNeedle) {
+            const hay = `${it.title ?? ""} ${it.summary ?? ""}`.toLowerCase();
+            if (hay.includes(excludeNeedle)) return false;
           }
           const facetHave = (k: string): string[] => {
             const raw = it.fields?.[k];
@@ -511,6 +542,77 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
               if (want.some((w) => facetHave(k).includes(w.toLowerCase()))) return false;
             }
           }
+          if (query.anyGroups) {
+            for (const g of query.anyGroups) {
+              const alts: Array<{ field: string; values: string[] }> = [];
+              if (g?.field?.trim() && g.values?.length) {
+                alts.push({ field: g.field.trim(), values: g.values });
+              }
+              if (g?.any?.length) {
+                for (const alt of g.any) {
+                  if (alt?.field?.trim() && alt.values?.length) {
+                    alts.push({ field: alt.field.trim(), values: alt.values });
+                  }
+                }
+              }
+              const active = alts
+                .map((a) => ({
+                  field: a.field,
+                  values: a.values.map((w) => w.trim()).filter(Boolean),
+                }))
+                .filter((a) => a.values.length > 0);
+              if (!active.length) continue;
+              if (
+                !active.some((a) =>
+                  a.values.some((w) => facetHave(a.field).includes(w.toLowerCase())),
+                )
+              ) {
+                return false;
+              }
+            }
+          }
+          if (query.empty) {
+            for (const [k, wantEmpty] of Object.entries(query.empty)) {
+              let hasVal = false;
+              const raw = it.fields?.[k];
+              if (raw !== undefined && raw !== null) {
+                if (Array.isArray(raw)) {
+                  hasVal = raw.some((v) => v !== null && v !== undefined && v !== "");
+                } else if (typeof raw === "string") {
+                  hasVal = raw !== "";
+                } else {
+                  hasVal = true;
+                }
+              } else {
+                switch (k) {
+                  case "released":
+                    hasVal = Boolean(it.released);
+                    break;
+                  case "year":
+                  case "decade":
+                    hasVal = (it.year ?? 0) > 0;
+                    break;
+                  case "rating":
+                    hasVal = (it.rating ?? 0) > 0;
+                    break;
+                  case "summary":
+                    hasVal = Boolean(it.summary);
+                    break;
+                  case "recording":
+                    hasVal = Boolean(it.recording);
+                    break;
+                  case "parentId":
+                    hasVal = Boolean(it.parentId);
+                    break;
+                  case "index":
+                    hasVal = (it.index ?? 0) > 0;
+                    break;
+                }
+              }
+              if (wantEmpty && hasVal) return false;
+              if (!wantEmpty && !hasVal) return false;
+            }
+          }
           return true;
         });
         if (query.desc) matched = [...matched].reverse();
@@ -535,7 +637,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       resolveSourcesWithResult: async (q) => {
         if (state.sourceHandler) {
           const r = await state.sourceHandler(q);
-          const out: import("./types.ts").SourceResolveResult = { candidates: [...(r?.candidates ?? [])] };
+          const out: import("./types.ts").SourceResolveResult = {
+            candidates: [...(r?.candidates ?? [])],
+          };
           if (r?.indexers !== undefined) out.indexers = [...r.indexers];
           if (r?.pending !== undefined) out.pending = [...r.pending];
           if (r?.searchId !== undefined) out.searchId = r.searchId;
@@ -550,7 +654,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     cache: {
       put: async (_libraryKey, _name, data) => {
         const digest = await globalThis.crypto.subtle.digest("SHA-256", data as BufferSource);
-        const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        const hex = [...new Uint8Array(digest)]
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
         const ref = `blob:${hex}`;
         state.blobs.set(ref, new Uint8Array(data));
         return ref;
@@ -574,21 +680,27 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
     },
     frontend: {
-      streamUrl: (viewerId: number, itemRef: string, partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions) => {
+      streamUrl: (
+        viewerId: number,
+        itemRef: string,
+        partIndexOrOpts?: number | import("./types.ts").StreamUrlOptions,
+      ) => {
         const opts = normalizeStreamUrlOptions(partIndexOrOpts);
         state.lastStreamUrl = [viewerId, itemRef];
         state.lastStreamUrlPart = opts.partIndex;
         state.lastStreamUrlSource = opts.source;
+        state.lastStreamUrlAbsolute = opts.absolute;
         const base = `/ether/v1/kind-media/mock-${viewerId}`;
-        return opts.partIndex === undefined ? base : `${base}?part=${opts.partIndex}`;
+        const rel = opts.partIndex === undefined ? base : `${base}?part=${opts.partIndex}`;
+        if (opts.absolute) {
+          const origin = (state.streamOrigin ?? "http://ether.test").replace(/\/+$/, "");
+          return `${origin}${rel}`;
+        }
+        return rel;
       },
     },
     events: {
-      publish: (
-        key: string,
-        payload?: Record<string, unknown>,
-        correlation?: EventCorrelation,
-      ) => {
+      publish: (key: string, payload?: Record<string, unknown>, correlation?: EventCorrelation) => {
         state.publishedEvents.push({
           key,
           payload: payload ? { ...payload } : {},
@@ -637,7 +749,9 @@ export function assertValidViewSpec(doc: ViewSpecDocument): void {
     throw new Error(`ViewSpecDocument specVersion must be 1 (got ${String(doc.specVersion)}).`);
   }
   if (doc.layout !== "list" && doc.layout !== "detail" && doc.layout !== "bare") {
-    throw new Error(`ViewSpecDocument layout must be list, detail, or bare (got ${String(doc.layout)}).`);
+    throw new Error(
+      `ViewSpecDocument layout must be list, detail, or bare (got ${String(doc.layout)}).`,
+    );
   }
   if (!Array.isArray(doc.header)) {
     throw new Error("ViewSpecDocument header must be an array.");
@@ -688,7 +802,8 @@ export const fixtures = {
       type: "series",
       name: "Breaking Bad",
       releaseInfo: "2008",
-      description: "A chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing drugs.",
+      description:
+        "A chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing drugs.",
       genres: ["Crime", "Drama", "Thriller"],
       imdbRating: "9.5",
       ...overrides,
@@ -741,7 +856,9 @@ export interface TestHarness<S = Record<string, unknown>> {
   requestHosted(req: RawRequest): MaybePromise<RawResponse>;
   manifest(): Promise<Manifest>;
   health(): Promise<{ status: number; body: unknown }>;
-  configure(settings: Record<string, unknown>): Promise<{ status: number; body: ConfigureResponse }>;
+  configure(
+    settings: Record<string, unknown>,
+  ): Promise<{ status: number; body: ConfigureResponse }>;
   test(): Promise<{ status: number; body: TestResponse }>;
   options(field: string): Promise<{ status: number; body: FieldOption[] }>;
   catalog(
@@ -767,9 +884,18 @@ export interface TestHarness<S = Record<string, unknown>> {
     key: string,
     req: Omit<FlowActionRequest, "key">,
   ): Promise<{ status: number; body: FlowActionResponse }>;
-  view(page?: string, query?: Record<string, string>): Promise<{ status: number; body: ViewResponse }>;
-  action(action: string, input?: Record<string, unknown>): Promise<{ status: number; body: ActionResponse }>;
-  tool(name: string, input?: Record<string, unknown>): Promise<{ status: number; body: ToolResponse }>;
+  view(
+    page?: string,
+    query?: Record<string, string>,
+  ): Promise<{ status: number; body: ViewResponse }>;
+  action(
+    action: string,
+    input?: Record<string, unknown>,
+  ): Promise<{ status: number; body: ActionResponse }>;
+  tool(
+    name: string,
+    input?: Record<string, unknown>,
+  ): Promise<{ status: number; body: ToolResponse }>;
   rankKey(candidate: CandidateFacts, config?: S): number;
   condMatch(candidate: CandidateFacts, operator: string, value: unknown): boolean;
   file(path: string, range?: string): Promise<RawResponse>;

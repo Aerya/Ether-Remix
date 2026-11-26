@@ -18,10 +18,13 @@ func catalogueSyncTimeout() time.Duration {
 }
 
 type catalogueSyncStatus struct {
-	Running  bool   `json:"running"`
-	Error    string `json:"error,omitempty"`
-	Started  int64  `json:"started"`
-	Finished int64  `json:"finished,omitempty"`
+	ItemCount int    `json:"itemCount"`
+	Listed    int    `json:"listed"`
+	Limit     int    `json:"limit"`
+	Running   bool   `json:"running"`
+	Error     string `json:"error,omitempty"`
+	Started   int64  `json:"started"`
+	Finished  int64  `json:"finished,omitempty"`
 }
 type catalogueSyncJobs struct {
 	mu     sync.Mutex

@@ -15,10 +15,10 @@ func TestConvertSurroundAudioPlexAndroidMobile(t *testing.T) {
 			c := baseConfig()
 			c.Quality = config.DefaultQuality()
 			c.Quality.Rules = []config.QualityRule{{
-				Protocol:             "plex",
-				Product:              "Plex for Android",
-				Profile:              "4K",
-				ConvertSurroundAudio: true,
+				ID:          "r_and_stereo",
+				Devices:     []config.DeviceMatch{{Contains: "Plex for Android"}},
+				Profile:     "4K",
+				StereoAudio: true,
 			}}
 			return c
 		})
@@ -68,10 +68,10 @@ func TestConvertSurroundAudioDisabledPreservesSurround(t *testing.T) {
 		setDepsConfig(d, func() config.Config {
 			c := baseConfig()
 			c.Quality.Rules = []config.QualityRule{{
-				Protocol:             "plex",
-				Product:              "Plex for Android",
-				Profile:              "4K",
-				ConvertSurroundAudio: false,
+				ID:          "r_and_keep",
+				Devices:     []config.DeviceMatch{{Contains: "Plex for Android"}},
+				Profile:     "4K",
+				StereoAudio: false,
 			}}
 			return c
 		})
@@ -139,7 +139,7 @@ func TestAndroidMDEDecisionSurroundAudio(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			q := config.DefaultQuality()
 			if tc.convert {
-				q.Rules = []config.QualityRule{{Protocol: "plex", Product: "Plex for Android", Profile: "4K", ConvertSurroundAudio: true}}
+				q.Rules = []config.QualityRule{{ID: "r_and_stereo", Devices: []config.DeviceMatch{{Contains: "Plex for Android"}}, Profile: "4K", StereoAudio: true}}
 			}
 			f := newFixture(func(d *testServerDeps) {
 				base := depsConfig(d)

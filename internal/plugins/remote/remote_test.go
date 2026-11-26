@@ -1070,6 +1070,12 @@ func (f *fakeHost) PublishEvent(_ context.Context, pluginID, key string, payload
 	return nil
 }
 
+func (f *fakeHost) ScreensInvalidate(context.Context, string) (int, error) { return 0, nil }
+
+func (f *fakeHost) ScreensPutRecords(context.Context, string, json.RawMessage) (int, error) {
+	return 0, nil
+}
+
 func (f *fakeHost) AIComplete(_ context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
 	if f.aiComplete != nil {
 		return f.aiComplete(pluginID, viewerToken, req)

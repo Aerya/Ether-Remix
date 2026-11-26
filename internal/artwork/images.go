@@ -238,6 +238,31 @@ func (im *Images) Get(ctx context.Context, path string, w int) ([]byte, string, 
 	return im.getImmutableURL(ctx, size+path, im.o.HTTPClient, im.o.ImageURL(path, size))
 }
 
+// InvalidateTMDB removes cached renditions without fetching replacement bytes.
+func (im *Images) InvalidateTMDB(paths []string) {
+	seen := make(map[string]bool)
+	sizes := []string{"original", "h632"}
+	for _, width := range tmdbWidths {
+		sizes = append(sizes, Size(width))
+	}
+	for _, path := range paths {
+		if !ValidPath(path) || seen[path] {
+			continue
+		}
+		seen[path] = true
+		for _, size := range sizes {
+			key := size + path
+			im.mu.Lock()
+			im.items.Remove(key)
+			im.negCache.Remove(key)
+			im.mu.Unlock()
+			if im.o.Dir != "" {
+				_ = os.Remove(im.diskPath(key))
+			}
+		}
+	}
+}
+
 // GetCachedURL serves an already-authorized remote image URL through the disk
 // store. Immutable TMDB image URLs share the same key as Get and are never
 // revalidated; other HTTP(S) URLs follow third-party freshness and background

@@ -229,7 +229,11 @@ func (s *Service) providerIDChildren(ctx context.Context, v *core.User, parentKe
 				continue
 			}
 		case core.KindSeason:
-			if t.ShowKey != core.ShowKey(parentKey.TMDB()) || t.Season != parentKey.Season() {
+			parent := t.ParentKey
+			if parent == 0 {
+				parent = t.Key.Parent()
+			}
+			if parent != parentKey {
 				continue
 			}
 		}

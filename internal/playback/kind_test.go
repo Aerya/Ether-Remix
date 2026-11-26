@@ -271,3 +271,31 @@ func TestPrepareKindVersionSelectionAndRememberedChoice(t *testing.T) {
 		t.Fatalf("recorded viewer choices = %+v, want kind:K1080 for %s", got, pluginKindKey)
 	}
 }
+
+func TestDisplayTitleForPluginMedia(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		title core.Title
+		want  string
+	}{
+		{"track", core.Title{
+			Type: core.TypeEpisode, MediaClass: core.MediaClassMusic, MediaRole: core.MediaRoleTrack,
+			Title: "Track", ShowTitle: "Artist", ParentTitle: "Album",
+		}, "Artist – Track"},
+		{"book", core.Title{
+			Type: core.TypeEpisode, MediaClass: core.MediaClassBook, Title: "Novel",
+			MediaCredits: []core.MediaCredit{{Role: "author", Name: "Author"}},
+		}, "Author – Novel"},
+		{"episode", core.Title{
+			Type: core.TypeEpisode, ShowTitle: "Series", Title: "Episode", Season: 0, Episode: 1,
+		}, "Series - S00E01 - Episode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := newSession("test", identity{}, &core.User{}, core.ClientCaps{}, &tc.title, "", time.Now())
+			defer session.stopCancel()
+			if got := session.snapshot(time.Now()).TitleName; got != tc.want {
+				t.Errorf("session title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

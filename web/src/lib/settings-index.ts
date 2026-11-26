@@ -72,7 +72,7 @@ export function settingsIndex(): SettingHit[] {
   const general = t("General");
   const apps = t("Apps");
   const serverAddress = `${general} › ${t("Server address")}`;
-  const quality = t("Quality");
+  const releases = t("Releases");
   const playback = t("Playback");
   const cachePreloading = `${t("Cache")} › ${t("Preloading")}`;
   const moviesSettings = t("Movies · Settings");
@@ -251,26 +251,27 @@ export function settingsIndex(): SettingHit[] {
       ],
       "site-definitions",
     ),
-    // Quality
-    ...rows("/quality/profiles", `${quality} › ${away}`, [["bitrate-limit", t("Bitrate limit")]]),
-    ...rows("/quality/profiles", quality, [["source-order", t("Source order")]]),
-    ...rows("/quality/check", quality, [["check-quality", t("Check quality")]]),
-    ...groupHits(S.PLAY_VERSIONS, "/quality/profiles", quality),
-    ...rows("/quality/searching", `${quality} › ${t("Start speed")}`, [
+    // Releases
+    ...rows("/releases/profiles", releases, [["source-order", t("Source order")]]),
+    ...rows("/releases/check", releases, [["check-quality", t("Who gets what")]]),
+    ...groupHits(S.PLAY_VERSIONS, "/releases/profiles", releases),
+    ...rows("/releases/searching", `${releases} › ${t("Start speed")}`, [
       ["start-before-the-health-check-finishes", t("Start before the health check finishes")],
     ]),
     ...rows(
-      "/quality/searching",
-      `${quality} › ${t("Start speed")}`,
+      "/releases/searching",
+      `${releases} › ${t("Start speed")}`,
       [["concurrent-checks", t("Concurrent checks")]],
       "start-speed",
     ),
-    ...groupHits(S.RELEASE_SEARCH, "/quality/searching", quality),
-    ...groupHits(S.RELEASE_BLOCKS, "/quality/blocklist", quality),
+    ...groupHits(S.RELEASE_SEARCH, "/releases/searching", releases),
+    ...groupHits(S.RELEASE_BLOCKS, "/releases/blocklist", releases),
     // Playback
-    ...rows("/playback/subtitles", `${playback} › ${t("Languages")}`, [
+    ...rows("/playback/audio", `${playback} › ${t("Audio")}`, [
       ["audio-languages", t("Audio languages")],
       ["prefer-the-original-language", t("Prefer the original language")],
+    ]),
+    ...rows("/playback/subtitles", `${playback} › ${t("Subtitles")}`, [
       ["subtitle-languages", t("Subtitle languages")],
       ["show-subtitles", t("Show subtitles")],
       ["subtitle-style", t("Subtitle style")],
@@ -287,7 +288,7 @@ export function settingsIndex(): SettingHit[] {
       "subtitle-appearance",
     ),
     ...rows(
-      "/playback/subtitles",
+      "/playback/audio",
       `${playback} › ${t("Audio processing")}`,
       [
         ["normalize-loudness", t("Normalize loudness")],
@@ -305,7 +306,7 @@ export function settingsIndex(): SettingHit[] {
     ]),
     ...groupHits(S.UP_NEXT, "/playback/extras", playback),
     // Home
-    ...groupHits(S.PERSONAL_TOUCHES, "/home", t("Home")),
+    ...groupHits(S.PERSONAL_TOUCHES, "/recommendations", t("Recommendations")),
     // Notifications
     ...rows("/notifications/report", t("Weekly report"), [
       ["email-the-weekly-report", t("Email the weekly report")],

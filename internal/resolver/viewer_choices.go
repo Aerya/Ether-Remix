@@ -85,9 +85,6 @@ func showKeyForTitle(t *core.Title) core.RatingKey {
 	if t.ShowKey.Valid() {
 		return t.ShowKey
 	}
-	if t.Key.Kind() == core.KindEpisode && t.Key.TMDB() > 0 {
-		return core.ShowKey(t.Key.TMDB())
-	}
 	return 0
 }
 

@@ -42,6 +42,11 @@ func (v *Value) UnmarshalJSON(b []byte) error {
 }
 func (v Value) Int() int64 { n, _ := strconv.ParseFloat(string(v), 64); return int64(n) }
 
+// ServerInfo is the upstream panel's server_info object.
+type ServerInfo struct {
+	Timezone Value `json:"timezone"`
+}
+
 type Category struct {
 	ID   Value  `json:"category_id"`
 	Name string `json:"category_name"`

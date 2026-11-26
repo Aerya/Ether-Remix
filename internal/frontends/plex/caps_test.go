@@ -304,7 +304,7 @@ func TestAndroidMobileClientRuleOverridesDefault1080pCap(t *testing.T) {
 	}
 
 	// Rule assigning 4K profile to Plex for Android (Mobile) lifts ceiling to 2160p + HDR10.
-	q.Rules = append(q.Rules, config.QualityRule{Product: "Plex for Android (Mobile)", Profile: "4K"})
+	q.Rules = append(q.Rules, config.QualityRule{ID: "r_and", Devices: []config.DeviceMatch{{Contains: "Plex for Android (Mobile)"}}, Profile: "4K"})
 	lifted := resolver.ApplyClientRules(q, pr.ClientCaps(0), nil)
 	if lifted.MaxHeight != 2160 || !lifted.HDR10 {
 		t.Fatalf("rule-overridden Android mobile caps = %+v, want MaxHeight=2160 HDR10=true", lifted)
@@ -316,7 +316,7 @@ func TestAndroidMobileClientRuleOverridesDefault1080pCap(t *testing.T) {
 
 	// Explicit client rule MaxHeight=1440 or 2160 on a 1080p profile is respected.
 	qCap := config.DefaultQuality()
-	qCap.Rules = []config.QualityRule{{Product: "Plex for Android (Mobile)", Profile: "4K", MaxHeight: 720}}
+	qCap.Rules = []config.QualityRule{{ID: "r_and_cap", Devices: []config.DeviceMatch{{Contains: "Plex for Android (Mobile)"}}, Profile: "4K", MaxHeight: 720}}
 	capped := resolver.ApplyClientRules(qCap, pr.ClientCaps(0), nil)
 	if capped.MaxHeight != 720 {
 		t.Fatalf("explicit rule MaxHeight caps = %+v, want 720", capped)
@@ -337,7 +337,7 @@ func TestAndroidMobileClientRuleOverridesDefault1080pCap(t *testing.T) {
 
 func TestRemote4KProfileClearsDefault8MbpsRemoteBitrateCap(t *testing.T) {
 	q := config.DefaultQuality()
-	q.Remote = "4K"
+	q.DefaultAway = "4K"
 	pr := &Request{Product: "Plex for Apple TV", Platform: "tvOS", Device: "Apple TV", Remote: true}
 	raw := pr.ClientCaps(8000)
 	if raw.MaxBitrateKbps != 8000 || !raw.DefaultRemoteBitrate {

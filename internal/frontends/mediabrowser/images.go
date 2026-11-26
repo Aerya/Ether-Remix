@@ -645,7 +645,7 @@ func (i *instance) imageTarget(r *http.Request, v *frontend.Viewer, wireID strin
 		return 0, nil, false, ids.ErrInvalid
 	}
 	if artwork, ok := i.host.Experience.(frontend.ItemArtwork); ok {
-		images, complete, e := artwork.ItemArtwork(i.identityContext(r), v, device(r), key)
+		images, complete, e := artwork.ItemArtwork(frontend.WithoutArtworkMetadata(i.identityContext(r)), v, device(r), key)
 		if e != nil {
 			return 0, nil, false, e
 		}
@@ -682,7 +682,7 @@ func (i *instance) servePublicImage(w http.ResponseWriter, r *http.Request, wire
 		mediaBrowserError(w, r, http.StatusNotFound)
 		return
 	}
-	images, _, visible, err := public.PublicArtwork(i.identityContext(r), device(r), key)
+	images, _, visible, err := public.PublicArtwork(frontend.WithoutArtworkMetadata(i.identityContext(r)), device(r), key)
 	if err != nil || !visible {
 		mediaBrowserError(w, r, http.StatusNotFound)
 		return

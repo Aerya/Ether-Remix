@@ -46,7 +46,13 @@ type KindItem struct {
 	Art         []KindArtRef               `json:"art,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Hints       json.RawMessage            `json:"hints,omitempty"` // opaque JSON object, echoed to the resolver
-	ETag        string                     `json:"etag,omitempty"`
+	// Recording: the work this item is a copy of, the same on every release
+	// that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it.
+	Recording string `json:"recording,omitempty"`
+	// Members: a list item's ordered children (external ids of other items of
+	// the kind, at most 500). Only on a level declared members: true.
+	Members []string `json:"members,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 
 // KindItemPart describes one declared or resolve-time file/part on a multi-file
@@ -77,6 +83,25 @@ type KindPage struct {
 	Total      *int       `json:"total,omitempty"`
 }
 
+// KindBrowseFacetAlt is one {field, values} alternative inside a cross-field
+// KindBrowseFacetGroup (#807).
+type KindBrowseFacetAlt struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
+// KindBrowseFacetGroup is one OR-group for KindBrowseRequest.AnyGroups (#767, #807).
+// A group either names a single {field, values} OR-list or carries a list of
+// {field, values} alternatives in Any that are ORed together across fields
+// (and ANDed with the rest). Multiple groups — including repeated groups on
+// the same field — combine with AND alongside Facets, AllFacets,
+// ExcludeFacets, Empty, and ExcludeQuery.
+type KindBrowseFacetGroup struct {
+	Field  string               `json:"field,omitempty"`
+	Values []string             `json:"values,omitempty"`
+	Any    []KindBrowseFacetAlt `json:"any,omitempty"`
+}
+
 // KindBrowseRequest is Ether's browse/search request for one kind level.
 type KindBrowseRequest struct {
 	Kind     string `json:"-"` // filled from the route, never on the wire
@@ -87,12 +112,23 @@ type KindBrowseRequest struct {
 	Sort     string `json:"sort,omitempty"`
 	Desc     bool   `json:"desc,omitempty"`
 	// Facets requires any of the listed values per field; AllFacets
-	// requires every listed value and ExcludeFacets drops items having
-	// any listed value. All three combine with AND.
-	Facets        map[string][]string `json:"facets,omitempty"`
-	AllFacets     map[string][]string `json:"allFacets,omitempty"`
-	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
-	Query         string              `json:"query,omitempty"`
+	// requires every listed value, ExcludeFacets drops items having any
+	// listed value, and AnyGroups adds one OR-group per entry — either a
+	// single {field, values} list or {any: [{field, values}, ...]} ORed
+	// across fields (#767, #807). All four combine with AND.
+	Facets        map[string][]string    `json:"facets,omitempty"`
+	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
+	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
+	// Empty tests field presence or absence per field key (#807): true
+	// keeps items with no value in the field, false keeps items with at
+	// least one. Counts toward neither value bound; unknown fields are
+	// rejected.
+	Empty map[string]bool `json:"empty,omitempty"`
+	Query string          `json:"query,omitempty"`
+	// ExcludeQuery drops items whose indexed text matches, using the same
+	// text matching as Query (#807).
+	ExcludeQuery string `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total:
 	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
 	// and "exact" computes an exact Total (cached per library generation).
@@ -141,11 +177,16 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
+	// Source plugins that declared the category answer it too.
 	Category string `json:"category,omitempty"`
+	// Lookup (indexer_search with Category) adds a typed lookup, such as an
+	// album by artist and title, for source plugins that declared its type.
+	// Other indexers search Query alone.
+	Lookup *SourceLookup `json:"lookup,omitempty"`
 	// Profile names the quality profile to score video release names against
 	// on indexer_search; empty uses the owner's default profile.
 	Profile string `json:"profile,omitempty"`
@@ -187,12 +228,13 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download or details page link when an
-	// indexer did not supply an infoHash or magnet.
+	// Deprecated: use TorrentRef for an Ether torrent descriptor reference.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
-	// full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
+	// Deprecated: use NZBRef. NZBURL also accepts legacy download links.
+	NZBURL      string       `json:"nzbUrl,omitempty"`
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	TorrentRef  string       `json:"torrentRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
@@ -378,17 +420,23 @@ type DebridServiceRef struct {
 	Name string `json:"name"`
 }
 
+// NZBIdentity identifies a release by its native configured indexer and GUID.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
+}
+
 // SourceCandidate is one Ether-found release for a resolver to rank.
-// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
-// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
-// indexer_search are stripped of indexer API keys and secrets so candidates
-// can be cached safely; Ether re-attaches credentials at fetch time on the
-// originating indexer's origin using indexerId.
+// NZBRef and TorrentRef are opaque references returned by indexer search.
 type SourceCandidate struct {
-	InfoHash   string `json:"infoHash,omitempty"`
-	Magnet     string `json:"magnet,omitempty"`
+	InfoHash string `json:"infoHash,omitempty"`
+	Magnet   string `json:"magnet,omitempty"`
+	// Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	// Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef.
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -407,13 +455,17 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query.
+	// Files is populated by release_files or nzb_request.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
 	// or release_files query.
 	FileCount int `json:"fileCount,omitempty"`
 	// UsenetCheck is populated only by a usenet_check query.
 	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
+	// PluginRelease names a release a source plugin answered for a declared
+	// category search. It has no infoHash or nzbUrl: hand the candidate back
+	// to release_files to list its files and in a release source to open it.
+	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -429,13 +481,26 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentRef != "":
+		return "torrentref:" + c.TorrentRef
+	case c.NZBRef != "":
+		return "nzbref:" + c.NZBRef
 	case c.TorrentURL != "":
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
 		return "nzb:" + c.NZBURL
+	case c.PluginRelease != nil:
+		return "plugin:" + c.PluginRelease.Plugin + ":" + c.PluginRelease.ID
 	default:
 		return c.Title
 	}
+}
+
+// PluginReleaseRef identifies a source plugin's release: the plugin and the
+// lazy stream id it answered the search with.
+type PluginReleaseRef struct {
+	Plugin string `json:"plugin"`
+	ID     string `json:"id"`
 }
 
 // KindMatchRequest asks a matcher to score candidates for one item.
@@ -543,6 +608,8 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
@@ -573,10 +640,13 @@ type KindResolveRequest struct {
 }
 
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 
 // KindResolveResponse is a resolver's ordered sources.
@@ -683,6 +753,118 @@ type ExpandProvider interface {
 	Expand(ctx *Context, req KindExpandRequest) (KindExpandResponse, error)
 }
 
+// KindLyricsRequest asks for one stored playable item's lyrics.
+type KindLyricsRequest struct {
+	Kind string   `json:"kind"`
+	Item KindItem `json:"item"`
+}
+
+// KindLyrics is a lyrics answer: timed LRC lines ("[mm:ss.xx] words"), plain
+// text, or instrumental. Source is shown for attribution.
+type KindLyrics struct {
+	SyncedLyrics string `json:"syncedLyrics,omitempty"`
+	PlainLyrics  string `json:"plainLyrics,omitempty"`
+	Instrumental bool   `json:"instrumental,omitempty"`
+	Source       string `json:"source,omitempty"`
+	// Lines are structured timed lines; when present Ether uses them instead
+	// of SyncedLyrics (word timing, translation and romanization lines).
+	Lines []KindLyricsLine `json:"lines,omitempty"`
+}
+
+// KindLyricsLine is one timed line (milliseconds), optionally with per-word
+// timing, a translation and a romanization.
+type KindLyricsLine struct {
+	StartMs      int64            `json:"startMs"`
+	EndMs        int64            `json:"endMs,omitempty"`
+	Text         string           `json:"text"`
+	Words        []KindLyricsWord `json:"words,omitempty"`
+	Translation  string           `json:"translation,omitempty"`
+	Romanization string           `json:"romanization,omitempty"`
+}
+
+// KindLyricsWord is one sung word of a line (milliseconds).
+type KindLyricsWord struct {
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs,omitempty"`
+	Text    string `json:"text"`
+}
+
+// LyricsProvider serves lyrics for kinds that declare lyrics: true. Return
+// found=false when there are none (Ether answers 404 and remembers the miss).
+type LyricsProvider interface {
+	Lyrics(ctx *Context, req KindLyricsRequest) (lyrics KindLyrics, found bool, err error)
+}
+
+// ImportTrack is one track of a playlist being imported.
+type ImportTrack struct {
+	Title       string  `json:"title"`
+	Artist      string  `json:"artist"`
+	Album       string  `json:"album,omitempty"`
+	ISRC        string  `json:"isrc,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+
+// KindImportRequest asks a kind to read a playlist link (POST
+// /ether/v1/kinds/{kind}/import); answer 404 for a link it does not read.
+type KindImportRequest struct {
+	URL string `json:"url"`
+}
+
+// KindImport is a link's playlist: name and tracks in order.
+type KindImport struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Tracks      []ImportTrack `json:"tracks"`
+	Total       int           `json:"total,omitempty"`     // the source playlist's track count, when known
+	Truncated   bool          `json:"truncated,omitempty"` // the source shared fewer tracks than it has
+}
+
+// KindIdentifyRequest asks a kind to find its items for tracks (POST
+// /ether/v1/kinds/{kind}/identify).
+type KindIdentifyRequest struct {
+	Tracks []ImportTrack `json:"tracks"`
+}
+
+// KindIdentifyMatch answers one requested track by index: the matched item's
+// id and how (isrc|title), candidates when several fit, or neither.
+type KindIdentifyMatch struct {
+	Index      int      `json:"index"`
+	ID         string   `json:"id,omitempty"`
+	By         string   `json:"by,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+}
+
+// KindIdentify carries the items the matches need (stored like live-search
+// results) and the matches; tracks left out are asked again.
+type KindIdentify struct {
+	Items   []KindItem          `json:"items"`
+	Matches []KindIdentifyMatch `json:"matches"`
+}
+
+// KindRelatedRequest asks for items related to one stored item: "similar"
+// (a detail row such as an artist's "Fans also like") or "continuation" (what
+// plays after it when a queue ends).
+type KindRelatedRequest struct {
+	Kind    string   `json:"kind"`
+	Item    KindItem `json:"item"`
+	Purpose string   `json:"purpose"`
+	Limit   int      `json:"limit"`
+}
+
+// KindRelated is a relation answer: items to store (with any parents they
+// need), Order naming the ones to show (default: same level for similar,
+// playable for continuation), and an optional row label.
+type KindRelated struct {
+	Label string     `json:"label,omitempty"`
+	Items []KindItem `json:"items"`
+	Order []string   `json:"order,omitempty"`
+}
+
+// RelatedProvider serves relations for kinds that declare related.
+type RelatedProvider interface {
+	Related(ctx *Context, req KindRelatedRequest) (KindRelated, error)
+}
+
 // KindResolver turns a playable item into ordered playable sources.
 type KindResolver interface {
 	Resolve(ctx *Context, req KindResolveRequest) (KindResolveResponse, error)
@@ -721,6 +903,9 @@ type kindHandlers struct {
 	liveFeeds map[string]LiveFeedProvider
 	frontend  map[string]FrontendAdapter
 	setup     SetupTester
+	// screen sources and actions by "<screen>/<name>" ("*" matches any screen).
+	screenSources map[string]ScreenSourceHandler
+	screenActions map[string]ScreenActionHandler
 }
 
 func (p *Plugin) kinds() *kindHandlers {
@@ -780,7 +965,8 @@ func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
 
 // StreamURLWithOptions mints a short-lived, scoped ticket for one of this
 // plugin's own kind items, optionally pinned to a zero-based part and/or a
-// specific resolver PlayableSource.ID (#576, #661).
+// specific resolver PlayableSource.ID (#576, #661) and optionally resolved to
+// an absolute URL (#772).
 func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (string, error) {
 	if c.Ether == nil {
 		return "", errors.New("stream url: no host service available")
@@ -795,17 +981,24 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 	if err != nil || viewerID <= 0 {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
+	ctx := c.Context
+	if tok := c.viewerToken(); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
+	}
 	if oh, ok := c.Ether.(StreamURLOptionsHost); ok {
-		return oh.StreamURLWithOptions(c.Context, viewerID, itemRef, opts)
+		return oh.StreamURLWithOptions(ctx, viewerID, itemRef, opts)
 	}
 	if opts.Source != "" {
 		return "", errors.New("stream url: host does not support source-scoped stream tickets")
 	}
+	if opts.Absolute {
+		return "", errors.New("stream url: host does not support absolute stream URLs")
+	}
 	if opts.PartIndex != nil {
 		if ph, ok := c.Ether.(PartStreamHost); ok {
-			return ph.StreamPartURL(c.Context, viewerID, itemRef, *opts.PartIndex)
+			return ph.StreamPartURL(ctx, viewerID, itemRef, *opts.PartIndex)
 		}
-		u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+		u, err := c.Ether.StreamURL(ctx, viewerID, itemRef)
 		if err != nil {
 			return "", err
 		}
@@ -815,7 +1008,19 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		}
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
-	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	return c.Ether.StreamURL(ctx, viewerID, itemRef)
+}
+
+// RequestNZB opens an indexer search reference and returns a file list and vault reference.
+func (c *Context) RequestNZB(ref string) (SourceCandidate, error) {
+	res, err := c.ResolveSourcesWithResult(SourceQuery{Kind: "nzb_request", NZBRef: ref})
+	if err != nil {
+		return SourceCandidate{}, err
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].NZBRef == "" {
+		return SourceCandidate{}, errors.New("nzb_request returned no vault reference")
+	}
+	return res.Candidates[0], nil
 }
 
 // ResolveSourcesWithResult runs sources.resolve and returns both the candidate
@@ -915,6 +1120,10 @@ func (p *Plugin) dispatchKinds(pctx *Context, method, path string, req RawReques
 	case len(parts) >= 3 && parts[0] == "live":
 		feed, _ := url.PathUnescape(parts[1])
 		return p.dispatchLiveFeed(pctx, method, feed, parts[2:]), true
+	case len(parts) == 4 && (parts[0] == "screens" || parts[0] == "surfaces") && (parts[2] == "sources" || parts[2] == "actions"):
+		screen, _ := url.PathUnescape(parts[1])
+		name, _ := url.PathUnescape(parts[3])
+		return p.dispatchScreen(pctx, method, screen, parts[2], name, req), true
 	case len(parts) == 3 && parts[0] == "setup" && parts[2] == "test":
 		if p.kindHandlers == nil || p.kindHandlers.setup == nil {
 			return errorJSON(http.StatusNotFound, "not_found", "Setup test handler is not registered."), true
@@ -989,6 +1198,44 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		if res.Job == "" && res.Items == nil {
 			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "related":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		rp, isRelated := prov.(RelatedProvider)
+		if prov == nil || !isRelated {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no related items.")
+		}
+		var in KindRelatedRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := rp.Related(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "lyrics":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		lp, isLyrics := prov.(LyricsProvider)
+		if prov == nil || !isLyrics {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider has no lyrics.")
+		}
+		var in KindLyricsRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, found, err := lp.Lyrics(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if !found {
+			return errorJSON(http.StatusNotFound, "not_found", "No lyrics for this item.")
 		}
 		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":

@@ -579,7 +579,7 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 		Duration:    210 * time.Second,
 		BitrateKbps: 1000,
 		Streams: []core.StreamInfo{
-			{Index: 0, Type: "audio", Codec: "flac", Channels: 2, BitrateKbps: 1000},
+			{Index: 0, Type: "audio", Codec: "flac", Channels: 2, BitrateKbps: 1000, SampleRate: 44100, BitDepth: 24},
 		},
 	}
 	pb := newFakePlayback(flacInfo)
@@ -688,13 +688,57 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 		Sessions:   sessions.BindSurface(broker, "plex"),
 	})
 
+	t.Run("Android FLAC metadata and direct play", func(t *testing.T) {
+		headers := map[string]string{
+			"Accept":                     "application/json",
+			"X-Plex-Client-Identifier":   "plex-android",
+			"X-Plex-Product":             "Plex for Android (Mobile)",
+			"X-Plex-Platform":            "Android",
+			"X-Plex-Client-Profile-Name": "Android",
+		}
+		path := "/library/metadata/" + track1Key.String()
+		detail := f.request(t, http.MethodGet, path, headers)
+		if detail.Code != http.StatusOK {
+			t.Fatalf("metadata status = %d: %s", detail.Code, detail.Body.String())
+		}
+		md := decodeJSON(t, detail)["Metadata"].([]any)[0].(map[string]any)
+		media := md["Media"].([]any)[0].(map[string]any)
+		part := media["Part"].([]any)[0].(map[string]any)
+		stream := part["Stream"].([]any)[0].(map[string]any)
+		if md["type"] != plexBaseTrack || media["container"] != "flac" || media["audioCodec"] != "flac" ||
+			media["bitrate"] != float64(1000) || media["audioChannels"] != float64(2) ||
+			part["container"] != "flac" || !strings.HasSuffix(part["key"].(string), "/file.flac") ||
+			stream["streamType"] != float64(2) || stream["codec"] != "flac" ||
+			stream["samplingRate"] != float64(44100) || stream["bitDepth"] != float64(24) {
+			t.Fatalf("unexpected FLAC metadata: %s", detail.Body.String())
+		}
+		for _, decision := range []struct {
+			params, code string
+			want         int
+		}{
+			{"directPlay=1&directStream=1", "generalDecisionCode", codeDirectPlayOK},
+			{"directPlay=0&directStream=0", "generalDecisionCode", codeConversionOK},
+			{"directPlay=1&directStream=1&hasMDE=1", "mdeDecisionCode", codeDirectPlayOK},
+		} {
+			rec := f.request(t, http.MethodGet, "/music/:/transcode/universal/decision?path="+url.QueryEscape(path)+
+				"&"+decision.params, headers)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("decision status = %d: %s", rec.Code, rec.Body.String())
+			}
+			if got := decodeJSON(t, rec)[decision.code]; got != float64(decision.want) {
+				t.Fatalf("%s: decision = %v, want %d: %s", decision.params, got, decision.want, rec.Body.String())
+			}
+		}
+	})
+
 	plexampHdrs := map[string]string{
-		"Accept":                      "application/json",
-		"X-Plex-Client-Identifier":    "plexamp-android",
-		"X-Plex-Product":              "Plexamp",
-		"X-Plex-Client-Profile-Name":  "Plexamp",
-		"X-Plex-Client-Profile-Extra": "add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=opus&audioCodec=opus)",
-		"X-Plex-Session-Identifier":   "plexamp-sess",
+		"Accept":                     "application/json",
+		"X-Plex-Client-Identifier":   "plexamp-android",
+		"X-Plex-Product":             "Plexamp",
+		"X-Plex-Client-Profile-Name": "Plexamp",
+		"X-Plex-Client-Profile-Extra": "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)+" +
+			"add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=opus&audioCodec=opus)",
+		"X-Plex-Session-Identifier": "plexamp-sess",
 	}
 
 	// 1. HEAD /audio/:/transcode/universal/decision with directPlay=0 returns 200 OK.
@@ -775,12 +819,12 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 		t.Errorf("pa-direct Decision.VideoCopy = true, want false")
 	}
 
-	// 5. Video start without prior /decision STILL returns 400 Bad Request.
+	// 5. Video start without prior /decision decides implicitly, as PMS does.
 	vidRec := f.request(t, http.MethodGet,
 		"/video/:/transcode/universal/start?path="+url.QueryEscape("/library/metadata/"+fightClub.Key.String())+"&session=vid-unarmed",
 		plexampHdrs)
-	if vidRec.Code != http.StatusBadRequest {
-		t.Fatalf("unarmed /video/:/transcode/universal/start status = %d, want 400", vidRec.Code)
+	if vidRec.Code != http.StatusOK {
+		t.Fatalf("unarmed /video/:/transcode/universal/start status = %d, want 200: %s", vidRec.Code, vidRec.Body.String())
 	}
 
 	// 6. Explicit URL audioCodec=mp3 overrides musicProfile container=opus&audioCodec=opus without mixing.
@@ -808,6 +852,31 @@ func TestPlexampAudioDecisionAndDirectStart(t *testing.T) {
 	}
 	if ac, _ := mp3M0["audioCodec"].(string); ac != "mp3" {
 		t.Errorf("pa-mp3 Media[0].audioCodec = %q, want mp3", ac)
+	}
+}
+
+func TestMusicDirectPlayProfile(t *testing.T) {
+	pr := &Request{Product: "Plex for Android (Mobile)", Platform: "Android"}
+	for _, tc := range []struct {
+		name, container, codec, extra string
+		direct                        bool
+	}{
+		{"raw FLAC", "flac", "flac", "", true},
+		{"raw MP3", "mp3", "mp3", "", true},
+		{"Ogg Opus", "ogg", "opus", "", true},
+		{"ALAC declaration", "mp4", "alac", "add-direct-play-profile(type=musicProfile&container=m4a&audioCodec=alac)", true},
+		{"ALAC without declaration", "mp4", "alac", "", false},
+		{"different container", "mp4", "alac", "add-direct-play-profile(type=musicProfile&container=ogg&audioCodec=alac)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := core.MediaInfo{Container: tc.container, Streams: []core.StreamInfo{{Type: "audio", Codec: tc.codec, Channels: 2}}}
+			caps := pr.ClientCaps(0)
+			applyMusicDirectPlay(&caps, tc.extra, info, 0)
+			got := frontend.DecideTranscode(info, caps, core.DecideOptions{DirectPlay: true, Protocol: core.ProtocolHTTP}, frontend.TranscodePolicy{})
+			if (got.Kind == core.DecisionDirectPlay) != tc.direct {
+				t.Fatalf("decision = %s (%s), want direct play = %v", got.Kind, got.Reason, tc.direct)
+			}
+		})
 	}
 }
 

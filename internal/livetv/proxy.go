@@ -145,7 +145,16 @@ func (s *Service) ServeResource(w http.ResponseWriter, r *http.Request, id, key 
 	ss.mu.Lock()
 	shared := ss.broadcast != nil
 	lease := ss.owned
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		if n, ok := transcode.ParseSegmentName(key); ok {
+			s.serveCatchUp(w, r, ss, archive, &n)
+			return
+		}
+		writeStreamError(w, core.ErrNotFound)
+		return
+	}
 	if shared {
 		if key == transcode.InitSegmentName {
 			s.serveBroadcastInit(w, r, ss)

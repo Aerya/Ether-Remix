@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var ErrImageBatchLimit = errors.New("frontend: invalid artwork batch")
@@ -257,6 +258,99 @@ const LibraryLiveThumbPrefix = "library-live/"
 // viewID and returns the verified upstream URL for Ether's image proxy to fetch.
 type LibraryLiveThumbAuthorizer interface {
 	AuthorizeLibraryLiveThumb(ctx context.Context, viewer *Viewer, viewID string, path string) (string, error)
+}
+
+// PluginImagePrefix marks an image a plugin named by URL (a team crest, a
+// league logo). The remainder is the upstream URL; Image.Subject is the
+// plugin ID. The URL travels only inside sealed, encrypted grants, so clients
+// never see it, and every read re-checks the plugin and its network
+// permission before Ether fetches the bytes.
+const PluginImagePrefix = "plugin-image/"
+
+// MaxPluginImageURL bounds a plugin image URL so its grant stays a sane size.
+const MaxPluginImageURL = 1000
+
+// PluginImage returns the descriptor for a plugin-named image URL, or false
+// when raw is not an absolute http(s) URL Ether may proxy.
+func PluginImage(pluginID, raw string) (Image, bool) {
+	pluginID = strings.TrimSpace(pluginID)
+	raw = strings.TrimSpace(raw)
+	if pluginID == "" || len(pluginID) > 256 || raw == "" || len(raw) > MaxPluginImageURL {
+		return Image{}, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return Image{}, false
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return Image{Kind: ImageLogo, Path: PluginImagePrefix + raw, Tag: hex.EncodeToString(sum[:16]), Subject: pluginID}, true
+}
+
+// PluginImageAuthorizer checks that viewer may still see images named by
+// pluginID and returns the upstream URL Ether may fetch for path.
+type PluginImageAuthorizer interface {
+	AuthorizePluginImage(ctx context.Context, viewer *Viewer, pluginID string, path string) (string, error)
+}
+
+// PluginImageMemo remembers, for one response or stream, whether a viewer may
+// see a plugin's images from a host, so signing every crest on a page costs
+// one access decision per plugin and host rather than one per image.
+// Decisions last pluginImageMemoTTL; fetching an image always checks again.
+type PluginImageMemo struct {
+	mu        sync.Mutex
+	decisions map[pluginImageMemoKey]pluginImageDecision
+}
+
+type pluginImageMemoKey struct {
+	viewer       int64
+	plugin, host string
+}
+
+type pluginImageDecision struct {
+	err error
+	at  time.Time
+}
+
+const pluginImageMemoTTL = 30 * time.Second
+
+type pluginImageMemoCtx struct{}
+
+// WithPluginImageMemo gives ctx a fresh memo for plugin image decisions.
+func WithPluginImageMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pluginImageMemoCtx{}, &PluginImageMemo{decisions: map[pluginImageMemoKey]pluginImageDecision{}})
+}
+
+// PluginImageMemoFrom returns ctx's memo, or nil.
+func PluginImageMemoFrom(ctx context.Context) *PluginImageMemo {
+	m, _ := ctx.Value(pluginImageMemoCtx{}).(*PluginImageMemo)
+	return m
+}
+
+// Decide returns the remembered decision for (viewer, plugin, host) or runs
+// decide and remembers it. A nil memo always decides.
+func (m *PluginImageMemo) Decide(viewer int64, plugin, host string, decide func() error) error {
+	if m == nil {
+		return decide()
+	}
+	key := pluginImageMemoKey{viewer: viewer, plugin: plugin, host: host}
+	m.mu.Lock()
+	d, ok := m.decisions[key]
+	m.mu.Unlock()
+	if ok && time.Since(d.at) < pluginImageMemoTTL {
+		return d.err
+	}
+	err := decide()
+	m.mu.Lock()
+	m.decisions[key] = pluginImageDecision{err: err, at: time.Now()}
+	m.mu.Unlock()
+	return err
+}
+
+// ChannelLogoIssuer issues a grant for one channel's own logo (the channel
+// artwork descriptor), so a payload that names a channel never carries the
+// channel's raw logo URL.
+type ChannelLogoIssuer interface {
+	IssueChannelLogo(ctx context.Context, credential string, device core.Device, channelID string) (string, error)
 }
 
 // ViewerAvatarPrefix marks a viewer's Plex account or Plex Home profile avatar.

@@ -1,6 +1,7 @@
 package silo
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -51,15 +52,34 @@ func (i *instance) sourceVersions(r *http.Request, scope frontend.VersionScope, 
 			return nil, nil, frontend.ErrSourceGone
 		}
 		handles, err := batch.IssueBatch(r.Context(), scope, detail.Title.Key, releases)
+		if errors.Is(err, frontend.ErrNotFound) {
+			// The batch refuses every version when one is not in the
+			// authorization listing, and that listing is built from this
+			// surface's play caps while the detail's comes from the device
+			// floor. A played title's resume choice is caps dependent, so its
+			// menus can differ by a version. Like the Jellyfin and Vela
+			// version lists, issue each version on its own and leave out the
+			// ones the viewer cannot be issued, instead of failing the page
+			// ("Failed to load details" on every already-played title).
+			handles, err = map[string]string{}, nil
+			for _, release := range releases {
+				if handle, e := i.host.VersionHandles.Issue(r.Context(), scope, detail.Title.Key, release); e == nil && handle != "" {
+					handles[release] = handle
+				}
+			}
+		}
 		if err != nil {
 			return nil, nil, err
 		}
+		kept := versions[:0]
 		for _, version := range versions {
 			if handles[version.ID] == "" {
-				return nil, nil, frontend.ErrSourceGone
+				continue
 			}
+			kept = append(kept, version)
 			targets = append(targets, frontend.SourceOfferTarget{Item: detail.Title.Key, VersionHandle: handles[version.ID]})
 		}
+		versions = kept
 	}
 	if len(targets) == 0 {
 		return i.probedVersion(r, scope, detail)
@@ -139,6 +159,9 @@ func (i *instance) pluginVersions(r *http.Request, scope frontend.VersionScope, 
 		variants, err = slots.VersionSlots(vctx, req, frontend.MaxVariants, true)
 	} else {
 		variants, err = i.host.Editions.Variants(vctx, req, frontend.MaxVariants)
+	}
+	if errors.As(err, new(*frontend.IndexersPausedError)) {
+		return nil, nil, err
 	}
 	if err != nil || len(variants) == 0 {
 		return nil, nil, nil

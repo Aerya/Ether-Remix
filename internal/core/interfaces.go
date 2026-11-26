@@ -399,17 +399,18 @@ type ImageURLFunc func(path, size string) string
 
 // Hub is a Home row or a section row.
 type Hub struct {
-	RankedTop10    bool      `json:"rankedTop10,omitempty"`
-	ID             string    `json:"id"` // stable identifier, e.g. "trending.week.movie"
-	Title          string    `json:"title"`
-	Type           MediaType `json:"type"`            // item type in the row ("mixed" allowed via "")
-	Context        string    `json:"context"`         // Plex hub context, e.g. "hub.movie.recentlyreleased"
-	Style          string    `json:"style,omitempty"` // "shelf", "hero", "clip"
-	PreviewOnFocus bool      `json:"previewOnFocus,omitempty"`
-	Promoted       bool      `json:"promoted"` // show on Home
-	Items          []Title   `json:"items"`
-	More           bool      `json:"more"`
-	Key            RatingKey `json:"key,omitempty"` // backing collection, if any
+	RankedTop10    bool         `json:"rankedTop10,omitempty"`
+	ID             string       `json:"id"` // stable identifier, e.g. "trending.week.movie"
+	Title          string       `json:"title"`
+	Type           MediaType    `json:"type"`            // item type in the row ("mixed" allowed via "")
+	Context        string       `json:"context"`         // Plex hub context, e.g. "hub.movie.recentlyreleased"
+	Style          string       `json:"style,omitempty"` // "shelf", "hero", "clip"
+	PreviewOnFocus bool         `json:"previewOnFocus,omitempty"`
+	Promoted       bool         `json:"promoted"` // show on Home
+	Items          []Title      `json:"items"`
+	Collections    []Collection `json:"collections,omitempty"`
+	More           bool         `json:"more"`
+	Key            RatingKey    `json:"key,omitempty"` // backing collection, if any
 	// ItemCount carries rendered availability when a front end retains the
 	// actual metadata and asks only for row placement.
 	ItemCount int `json:"itemCount,omitempty"`
@@ -538,6 +539,15 @@ type HistoryTopStore interface {
 	HistoryTop(context.Context, HistoryQuery, KeyKind) ([]HistoryCount, error)
 	LifetimeUsers(context.Context, RatingKey, HistoryQuery) ([]HistoryCount, error)
 }
+
+// CompletedHistoryStore lists the distinct keys a viewer completed in
+// [from, to), latest completion first, one entry per key, only of kinds when
+// any are given, a page at a time (limit <= 0 is every entry), and counts the distinct films and shows among
+// them (Year in Review).
+type CompletedHistoryStore interface {
+	CompletedBetween(ctx context.Context, userID int64, from, to time.Time, kinds []KeyKind, offset, limit int) ([]HistoryEntry, error)
+	CompletedCounts(ctx context.Context, userID int64, from, to time.Time) (movies, shows int, err error)
+}
 type HistoryStore interface {
 	QueryHistory(context.Context, HistoryQuery) ([]HistoryEntry, error)
 	HistoryByID(context.Context, int64, int64) (HistoryEntry, error)
@@ -561,17 +571,19 @@ type State interface {
 
 // Playlists are user-created lists.
 type Playlist struct {
-	Key       RatingKey   `json:"key"`
-	UserID    int64       `json:"userId"`
-	Title     string      `json:"title"`
-	Smart     bool        `json:"smart"`
-	SmartURI  string      `json:"-"`
-	GUID      string      `json:"-"`
-	Summary   string      `json:"summary,omitempty"`
-	AddedAt   time.Time   `json:"addedAt"`
-	ItemIDs   []int64     `json:"-"`
-	Items     []RatingKey `json:"items"`
-	UpdatedAt time.Time   `json:"updatedAt"`
+	Key      RatingKey `json:"key"`
+	UserID   int64     `json:"userId"`
+	Title    string    `json:"title"`
+	Smart    bool      `json:"smart"`
+	SmartURI string    `json:"-"`
+	GUID     string    `json:"-"`
+	Summary  string    `json:"summary,omitempty"`
+	AddedAt  time.Time `json:"addedAt"`
+	ItemIDs  []int64   `json:"-"`
+	// ItemAddedAt is when each item was added (zero for entries older than the record).
+	ItemAddedAt []time.Time `json:"-"`
+	Items       []RatingKey `json:"items"`
+	UpdatedAt   time.Time   `json:"updatedAt"`
 }
 
 // PlaylistEdit updates only explicitly supplied fields.
@@ -626,9 +638,13 @@ type Auth interface {
 
 type SearchRequest struct {
 	// Category is an explicit Newznab category list for a generic plugin search.
-	Category      string
-	Type          MediaType // movie or episode
-	IDs           IDs       // movie ids, or the show's ids for episodes
+	Category string
+	// Lookup is an optional typed lookup on a category search; only plugin
+	// sources that declared its type read it (additive).
+	Lookup        *SourceLookup
+	Type          MediaType        // movie or episode
+	IDs           IDs              // movie ids, or the show's ids for episodes
+	EpisodeSource MetadataSourceID // provider whose coordinates this episode search uses
 	Title         string
 	OriginalTitle string // optional original-language or canonical title (additive)
 	// EnglishTitle is TMDB's primary en-US title when the catalogue language
@@ -797,6 +813,22 @@ type ArticlePart struct {
 	End      int64  `json:"end"`
 }
 
+// ArticlePartValidator checks whether a decoded article belongs to the requested
+// slot. It must be side-effect free: provider attempts (including hedges) can
+// call it concurrently, and only the winning result may update the index.
+type ArticlePartValidator func([]byte, ArticlePart) error
+
+type articlePartValidatorKey struct{}
+
+func WithArticlePartValidator(ctx context.Context, validate ArticlePartValidator) context.Context {
+	return context.WithValue(ctx, articlePartValidatorKey{}, validate)
+}
+
+func ArticleValidator(ctx context.Context) ArticlePartValidator {
+	validate, _ := ctx.Value(articlePartValidatorKey{}).(ArticlePartValidator)
+	return validate
+}
+
 // ---------------------------------------------------------------------------
 // Stream engine (internal/stream)
 
@@ -948,6 +980,12 @@ type StreamInfo struct {
 	ColorTransfer string   `json:"colorTransfer,omitempty"` // smpte2084 = HDR10, arib-std-b67 = HLG
 	// HEVCParameterSets reports a complete VPS/SPS/PPS hvcC record, safe for mp4toannexb.
 	HEVCParameterSets bool `json:"hevcParameterSets,omitempty"`
+	// InBandParameterSets reports an ISO decoder configuration record (avcC
+	// or hvcC) that lacks its parameter sets: they travel only in-band, as in
+	// remuxes of DASH avc3/hev1 streams. An MP4 copy of such a stream needs
+	// the record rebuilt, or the avc1/hvc1 sample entry promises parameter
+	// sets it does not carry. Annex B records (MPEG-TS) never set it.
+	InBandParameterSets bool `json:"inBandParameterSets,omitempty"`
 	// Signalled picture format, in ffprobe's names; empty when the stream
 	// and container leave it unspecified (decoders then assume square
 	// pixels and limited range).
@@ -1005,9 +1043,10 @@ type Chapter struct {
 
 // ProbeFactsVersion is the generation of facts a probe is expected to carry,
 // including reference frames, descriptive audio handler titles, HEVC decoder-
-// configuration completeness, AAC channels, scan and rotation facts.
+// configuration completeness, in-band-only parameter sets, AAC channels,
+// scan and rotation facts.
 // Persisted probes from an older generation are cache misses.
-const ProbeFactsVersion = 9
+const ProbeFactsVersion = 10
 
 type MediaInfo struct {
 	Has64bitOffsets       *bool         `json:"has64bitOffsets,omitempty"`

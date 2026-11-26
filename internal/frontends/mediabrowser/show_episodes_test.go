@@ -18,7 +18,12 @@ func TestShowListsUseSeasonIDAndDoNotCapAtFifty(t *testing.T) {
 	show := core.ShowKey(42)
 	seasonKey := core.SeasonKey(42, 2)
 	var got frontend.ItemQuery
-	exp := frontendtest.Experience{ChildrenFunc: func(_ context.Context, v *frontend.Viewer, _ frontend.Device, key frontend.RatingKey, q frontend.ItemQuery) (core.Page, error) {
+	exp := frontendtest.Experience{ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+		if req.Key != seasonKey {
+			return frontend.ItemDetail{}, frontend.ErrNotFound
+		}
+		return frontend.ItemDetail{Title: frontend.Title{Key: seasonKey, Type: frontend.TypeSeason, ShowKey: show, Season: 2}}, nil
+	}, ChildrenFunc: func(_ context.Context, v *frontend.Viewer, _ frontend.Device, key frontend.RatingKey, q frontend.ItemQuery) (core.Page, error) {
 		if v != viewer {
 			t.Fatal(v)
 		}

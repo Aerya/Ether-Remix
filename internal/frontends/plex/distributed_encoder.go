@@ -49,6 +49,10 @@ func (s *Server) startPlexHLS(ctx context.Context, viewer *frontend.User, playID
 	if s.transcoder() == nil {
 		return nil, frontend.ErrNotAvailable
 	}
+	req.WaitForEncoder = true
+	if viewer != nil {
+		req.EncoderViewer = viewer.Username
+	}
 	return s.transcoder().StartHLS(ctx, req)
 }
 func (s *Server) plexHLSSession(id string) (frontend.HLSSession, bool) {

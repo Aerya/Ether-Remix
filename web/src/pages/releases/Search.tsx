@@ -18,7 +18,7 @@ import { Field } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { TitleSearch } from "../../components/pickers";
 import { t, tn, tx } from "../../i18n";
-import { api, errorMessage } from "../../lib/api";
+import { errorMessage } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
 import { formatBytes, formatNanos, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
@@ -28,7 +28,6 @@ import {
   PROFILE_DOWNLOAD,
   PROFILE_NONE,
   ageDays,
-  mediaLabel,
   qualityLabel,
   rangeLabel,
   releaseConsole,
@@ -240,18 +239,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
   const media = kind === MEDIA_MOVIE || kind === MEDIA_TV ? kind : "";
   const [profile, setProfile] = useState("");
   const profiles = useAsync(() => releaseConsole.profiles(media || undefined), [media]);
-  const config = useAsync(() => api.getConfig(), []);
-  // The server lists each name once, for the title's media when known. A
-  // movie and a TV profile may share a name.
   const listed = profiles.data?.profiles ?? [];
-  const nameMedia = (name: string) => {
-    const scopes = new Set(
-      (config.data?.quality.profiles ?? [])
-        .filter((p) => p.name === name)
-        .map((p) => p.mediaType ?? ""),
-    );
-    return scopes.size === 1 ? [...scopes][0] : "";
-  };
   const result = useAsync<ConsoleSearch | null>(
     (signal) => (key ? releaseConsole.search(key, { profile }, signal) : Promise.resolve(null)),
     [key, profile],
@@ -380,10 +368,10 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
           }}
         />
         <div className="flex flex-wrap items-end gap-3">
-          <Field label={t("Quality profile")} htmlFor={`${id}-profile`} className="w-64">
+          <Field label={t("Release profile")} htmlFor={`${id}-profile`} className="w-64">
             <Select
               id={`${id}-profile`}
-              aria-label={t("Quality profile")}
+              aria-label={t("Release profile")}
               value={profile}
               onChange={(e) => setProfile(e.target.value)}
             >
@@ -392,7 +380,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
               </option>
               {listed.map((p) => (
                 <option key={p} value={p}>
-                  {media ? p : `${p} · ${mediaLabel(nameMedia(p))}`}
+                  {p}
                 </option>
               ))}
               <option value={PROFILE_NONE}>{t("No profile limits")}</option>
@@ -469,7 +457,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
                   : t("No release is acceptable for this profile.")}{" "}
                 <Link
                   className="text-primary underline"
-                  to={`/quality/history?key=${encodeURIComponent(key)}&title=${encodeURIComponent(name)}`}
+                  to={`/releases/history?key=${encodeURIComponent(key)}&title=${encodeURIComponent(name)}`}
                 >
                   {t("Past decisions")}
                 </Link>
@@ -487,9 +475,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
                   <EmptyState
                     icon={<SearchX />}
                     title={t("No releases found")}
-                    description={t(
-                      "Nothing came back. A TMDB key fills the catalogue, and a debrid account or a Usenet provider is what makes a result playable.",
-                    )}
+                    description={t("Try a different title or check your release sources.")}
                   />
                 }
                 defaultSort={{ key: "rank", dir: "asc" }}

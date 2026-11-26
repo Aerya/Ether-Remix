@@ -506,9 +506,16 @@ var _ frontend.SurfaceIdentity = surfaceIdentity{}
 
 var _ frontend.DeviceIdentity = surfaceIdentity{}
 
+// appLoginSurface reports whether the surface authenticates with dedicated
+// app logins: Xtream, and plugin frontend adapters (only adapters declaring
+// query credentials are ever issued one; grant lookups are surface-scoped).
+func appLoginSurface(surface frontend.Protocol) bool {
+	return surface == "xtream" || strings.HasPrefix(string(surface), "plugin:")
+}
+
 // AuthenticateAppPassword never accepts a household password or issues a new grant.
 func (s surfaceIdentity) AuthenticateAppPassword(ctx context.Context, username, password string) (*core.Viewer, error) {
-	if s.surface != "xtream" || s.login == nil {
+	if !appLoginSurface(s.surface) || s.login == nil {
 		return nil, core.ErrUnauthorized
 	}
 	if ip, ok := frontend.ClientIP(ctx); !ok || ip.IsUnspecified() || ip.IsMulticast() {
@@ -516,21 +523,45 @@ func (s surfaceIdentity) AuthenticateAppPassword(ctx context.Context, username, 
 	}
 	// Valid app passwords authenticate each API/Range request. Charging those
 	// against the interactive sign-in budget would lock out a normal startup.
-	credential, short := frontend.XtreamGrantCredential(username, password)
+	credential, short := frontend.AppLoginCredential(username, password)
 	if !short {
 		credential = password
 	}
-	if short || len(username) <= 128 && len(password) <= 128 && core.IsGrantCredential(password) && username == frontend.XtreamUsername(password) {
+	if short || s.surface == "xtream" && len(username) <= 128 && len(password) <= 128 && core.IsGrantCredential(password) && username == frontend.XtreamUsername(password) {
 		viewer, err := s.Resolve(ctx, credential)
 		if err == nil && viewer != nil {
 			return viewer, nil
 		}
 	}
-	if err := s.allow(ctx, s.login, "xtream"); err != nil {
+	if err := s.allow(ctx, s.login, string(s.surface)); err != nil {
 		return nil, err
 	}
 	return nil, core.ErrUnauthorized
 }
+
+// AuthenticateAppToken verifies an app login proven by md5(password + salt).
+// Like AuthenticateAppPassword it never accepts a household password, and only
+// failed proofs charge the login limiter.
+func (s surfaceIdentity) AuthenticateAppToken(ctx context.Context, username, token, salt string) (*core.Viewer, error) {
+	if !appLoginSurface(s.surface) || s.login == nil || s.grants == nil {
+		return nil, core.ErrUnauthorized
+	}
+	if ip, ok := frontend.ClientIP(ctx); !ok || ip.IsUnspecified() || ip.IsMulticast() {
+		return nil, core.ErrUnauthorized
+	}
+	if credential, ok := s.grants.AppLoginTokenCredential(ctx, string(s.surface), username, token, salt); ok {
+		viewer, err := s.Resolve(ctx, credential)
+		if err == nil && viewer != nil {
+			return viewer, nil
+		}
+	}
+	if err := s.allow(ctx, s.login, string(s.surface)); err != nil {
+		return nil, err
+	}
+	return nil, core.ErrUnauthorized
+}
+
+var _ frontend.AppLoginTokenIdentity = surfaceIdentity{}
 
 // RedeemWebCode is available only on the Jellyfin surface and shares its normal
 // sign-in rate limits and device grant lifecycle.

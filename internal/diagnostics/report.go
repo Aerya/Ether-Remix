@@ -169,6 +169,7 @@ func reportMarkdown(rows []reportRow, findings []Finding, extra []archived) []by
 		}
 		b.WriteByte('\n')
 	}
+	writeReleaseSearch(&b, extra)
 	b.WriteString("\n## Request timeline\n\n| Time (UTC) | Client | Request | Status | Duration | Response |\n| --- | --- | --- | --- | --- | --- |\n")
 	count := 0
 	for _, row := range rows {

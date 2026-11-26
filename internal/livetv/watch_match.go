@@ -78,6 +78,7 @@ type WatchQuery struct {
 // (or a matched channel without guide data) returned by a bounded indexed
 // lookup for A5/A6 live-event matching.
 type WatchGuideEntry struct {
+	ArchiveDays   int
 	ChannelID     string
 	ChannelName   string
 	ChannelNumber string
@@ -707,6 +708,7 @@ func (s *Service) WatchCandidatesQuery(ctx context.Context, u *core.User, q Watc
 			WatchedAt:     recentWatched[c.ID],
 			Unhealthy:     unhealthyByID[c.ID],
 			Programme:     cp,
+			ArchiveDays:   c.ArchiveDays(),
 			Live:          !now.Before(cp.Start) && now.Before(cp.End),
 		})
 	}
@@ -1165,6 +1167,7 @@ func (s *Service) CurrentProgrammeForWatch(ctx context.Context, u *core.User, ch
 		Favorite:      isFav,
 		WatchedAt:     recentWatched[c.ID],
 		Programme:     p,
+		ArchiveDays:   c.ArchiveDays(),
 		Live:          true,
 	}
 	progKey := fmt.Sprintf("%s|%d|%d|%s", c.ID, p.Start.UnixMilli(), p.End.UnixMilli(), p.Item.Title)

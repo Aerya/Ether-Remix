@@ -239,7 +239,7 @@ func seed(ctx context.Context, dir string) error {
 		}
 	}
 
-	engine, err := personalize.New(personalize.Options{DB: db, Catalog: cat, State: st, Events: st, Users: users, Playlists: st.Playlists(), Now: now, Location: time.UTC, RefreshEvery: -1, RebuildDebounce: time.Hour, Dependencies: func(sc core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
+	engine, err := personalize.New(personalize.Options{DB: db, Catalog: cat, State: st, Events: st, Users: users, Playlists: st.Playlists(), Now: now, Location: time.UTC, RefreshEvery: -1, RebuildDebounce: time.Hour, Dependencies: func(sc core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error) {
 		c, err := collections.New(db, cat, nil, collections.WithNow(now), collections.WithState(st), collections.WithAuth(users), collections.WithScorer(sc))
 		if err != nil {
 			return nil, nil, err
@@ -259,7 +259,7 @@ func seed(ctx context.Context, dir string) error {
 			return err
 		}
 	}
-	if _, err = engine.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "home", MaxRows: 16}}}); err != nil {
+	if _, err = engine.SavePage(ctx, core.RowPage{Key: core.PageHome, Mode: core.PagePersonalized, Picks: true, Length: core.PageLength{Rows: 16}}); err != nil {
 		return err
 	}
 	for _, u := range list {

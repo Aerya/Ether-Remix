@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/adapters"
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
 func TestKindResolverMultiPartSequenceAndOpenKindPart(t *testing.T) {
@@ -540,5 +541,324 @@ func TestKindResolverDeadlinePendingAndSpeculativeNotNegativeCached(t *testing.T
 	}
 	if _, ok, rerr := h.items.GetPartResolution(ctx, deadlineItem.Ref, nil); !ok || !errors.Is(rerr, core.ErrNotAvailable) {
 		t.Fatalf("genuine empty Play negative cache = (ok=%v, err=%v), want (true, ErrNotAvailable)", ok, rerr)
+	}
+}
+
+type blockingUsenetCheckIndexer struct {
+	mu      sync.Mutex
+	fetches int
+	nzbs    map[string][]byte
+}
+
+func (i *blockingUsenetCheckIndexer) Name() string { return "blocking-usenet-idx" }
+func (i *blockingUsenetCheckIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	return nil, nil
+}
+func (i *blockingUsenetCheckIndexer) FetchNZB(_ context.Context, rel core.Release) ([]byte, error) {
+	i.mu.Lock()
+	i.fetches++
+	data := i.nzbs[rel.NZBURL]
+	i.mu.Unlock()
+	if len(data) == 0 {
+		return nil, core.ErrNotFound
+	}
+	return data, nil
+}
+func (i *blockingUsenetCheckIndexer) fetchCount() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.fetches
+}
+
+type blockingUsenetCheckEngine struct {
+	mu           sync.Mutex
+	checks       int
+	started      chan struct{}
+	release      chan struct{}
+	finished     chan struct{}
+	ctxCanceled  atomic.Bool
+	checkVerdict core.UsenetCheckResult
+}
+
+func (e *blockingUsenetCheckEngine) Open(_ context.Context, _ string, _ []byte) (core.MediaSource, error) {
+	return nil, core.ErrNotAvailable
+}
+func (e *blockingUsenetCheckEngine) Prefetch(_ context.Context, _ string, _ []byte, _, _ int64) error {
+	return nil
+}
+func (e *blockingUsenetCheckEngine) CheckArticles(ctx context.Context, _ string, _ []byte) (core.UsenetCheckResult, error) {
+	e.mu.Lock()
+	e.checks++
+	e.mu.Unlock()
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-e.release:
+		select {
+		case e.finished <- struct{}{}:
+		default:
+		}
+		return e.checkVerdict, nil
+	case <-ctx.Done():
+		e.ctxCanceled.Store(true)
+		return core.UsenetCheckResult{}, ctx.Err()
+	}
+}
+func (e *blockingUsenetCheckEngine) checkCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.checks
+}
+
+func TestKindResolverGuestTimeoutDuringUsenetCheckPreparesAndCaches(t *testing.T) {
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/flac")
+		http.ServeContent(w, r, "track01.flac", time.Unix(1_700_000_000, 0), bytes.NewReader([]byte("flac-track-bytes")))
+	}))
+	defer mediaSrv.Close()
+
+	httpClient := &http.Client{
+		Transport: hostRewriteTransport{target: mediaSrv.URL, base: mediaSrv.Client().Transport},
+	}
+	h := newKindTestHarness(t, 0, httpClient)
+	ctx := context.Background()
+
+	const nzbURL = "https://idx.example/joshua-tree.nzb"
+	nzbXML := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p" date="1700000000" subject="track01.flac (1/1)">
+    <groups><group>alt.binaries.music</group></groups>
+    <segments><segment bytes="1024" number="1">seg-1@test</segment></segments>
+  </file>
+</nzb>`)
+
+	idx := &blockingUsenetCheckIndexer{
+		nzbs: map[string][]byte{
+			nzbURL: nzbXML,
+		},
+	}
+	eng := &blockingUsenetCheckEngine{
+		started:      make(chan struct{}, 1),
+		release:      make(chan struct{}),
+		finished:     make(chan struct{}, 1),
+		checkVerdict: core.UsenetCheckResult{Available: true, Checked: 32, Missing: 0},
+	}
+
+	var nowMu sync.Mutex
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
+	advanceClock := func(d time.Duration) {
+		nowMu.Lock()
+		now = now.Add(d)
+		nowMu.Unlock()
+	}
+
+	kr := adapters.NewKindResolver(adapters.KindResolverDeps{
+		Manager:   h.mgr,
+		Libraries: h.libs,
+		Items:     h.items,
+		Blobs:     h.blobs,
+		Catalog:   h.catalog,
+		Indexer:   idx,
+		Engine:    eng,
+		HTTP:      httpClient,
+		Now:       clock,
+	})
+	defer kr.Close()
+
+	var (
+		mode          atomic.Int32 // 0 = guest timeout mid-usenet_check, 1 = next slice reads cached verdict, 2 = timeout with no source work, 3 = timeout repeating cached check, 4 = timeout with fresh check key
+		slice2Verdict core.UsenetCheckResult
+		slice2Mu      sync.Mutex
+		freshCheckSeq atomic.Int32
+	)
+	const pluginID = "community.example.usenettimeout"
+	timeoutErr := &wasm.Error{
+		Status:  wasm.StatusTimeout,
+		Message: "call exceeded its 5 s deadline for /ether/v1/kinds/recordings/resolve",
+		Trap:    true,
+	}
+
+	h.rt.callContext = func(callCtx context.Context, req plugins.Request) (plugins.Response, error) {
+		switch req.Path {
+		case "/ether/health":
+			return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+		case "/ether/v1/kinds/recordings/resolve":
+			switch mode.Load() {
+			case 0:
+				// Simulate a WASM guest whose 5 s deadline expires while
+				// usenet_check is in flight: cancel only the slice context,
+				// then return wasm.StatusTimeout.
+				sliceCtx, sliceCancel := context.WithCancel(callCtx)
+				errCh := make(chan error, 1)
+				go func() {
+					_, err := kr.ResolveSources(sliceCtx, pluginID, core.SourceQuery{
+						Kind:   "usenet_check",
+						NZBURL: nzbURL,
+					})
+					errCh <- err
+				}()
+				<-eng.started
+				sliceCancel()
+				<-errCh
+				return plugins.Response{}, timeoutErr
+
+			case 1:
+				cands, err := kr.ResolveSources(callCtx, pluginID, core.SourceQuery{
+					Kind:   "usenet_check",
+					NZBURL: nzbURL,
+				})
+				if err != nil {
+					return plugins.Response{}, err
+				}
+				if len(cands) != 1 || cands[0].UsenetCheck == nil {
+					return plugins.Response{}, fmt.Errorf("unexpected usenet_check result: %+v", cands)
+				}
+				slice2Mu.Lock()
+				slice2Verdict = *cands[0].UsenetCheck
+				slice2Mu.Unlock()
+				return plugins.Response{
+					Status: 200,
+					Body:   json.RawMessage(`{"sources":[{"id":"track-1","pattern":"range","mime":"audio/flac","size":16,"url":"https://media.example/track01.flac"}]}`),
+				}, nil
+
+			case 2:
+				// Guest timed out without making any host source call.
+				return plugins.Response{}, timeoutErr
+
+			case 3:
+				// Guest hits only the already-cached usenet_check and times out.
+				if _, err := kr.ResolveSources(callCtx, pluginID, core.SourceQuery{
+					Kind:   "usenet_check",
+					NZBURL: nzbURL,
+				}); err != nil {
+					return plugins.Response{}, err
+				}
+				return plugins.Response{}, timeoutErr
+
+			case 4:
+				// Guest starts distinct uncached source work and times out.
+				seq := freshCheckSeq.Add(1)
+				_, _ = kr.ResolveSourcesWithResult(callCtx, pluginID, core.SourceQuery{
+					Kind:  "indexer_search",
+					Query: fmt.Sprintf("fresh-budget-query-%d", seq),
+				})
+				return plugins.Response{}, timeoutErr
+			}
+		}
+		return plugins.Response{Status: 200, Body: json.RawMessage(`{"items":[]}`)}, nil
+	}
+
+	decl := recordingsKindDecl(true)
+	decl["sync"] = map[string]any{"mode": "push"}
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Usenet Timeout Music",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Guest timeout during usenet_check test",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"permissions":  map[string]any{"network": []string{"media.example"}, "sources": "search"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes":  map[string]any{"mediaKinds": []map[string]any{decl}},
+		},
+	}, map[string][]byte{"i18n/en.json": []byte(`{"lib_name":"Music"}`)})
+
+	host := h.mgr.HostFor(pluginID)
+	if _, err := host.KindUpsert(ctx, "recordings", []core.KindItem{
+		{ID: "alb-jt", Level: "album", Title: "The Joshua Tree"},
+		{ID: "trk-1", Level: "track", ParentID: "alb-jt", Index: 1, Title: "Where the Streets Have No Name", Playable: true},
+		{ID: "trk-idle", Level: "track", ParentID: "alb-jt", Index: 2, Title: "Hung Track", Playable: true},
+		{ID: "trk-stall", Level: "track", ParentID: "alb-jt", Index: 3, Title: "Stalled Track", Playable: true},
+		{ID: "trk-budget", Level: "track", ParentID: "alb-jt", Index: 4, Title: "Budget Track", Playable: true},
+	}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+	trk1, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "trk-1")
+	trkIdle, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "trk-idle")
+	trkStall, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "trk-stall")
+	trkBudget, _, _ := h.items.GetByExternal(ctx, pluginID, "recordings", "trk-budget")
+
+	// 1. Slice 1 times out during an in-flight usenet_check -> PreparingError
+	// (never ErrSourceUnavailable), and does not poison negative cache.
+	mode.Store(0)
+	_, err := kr.OpenKind(ctx, viewer, trk1.Key, nil)
+	var prepErr *core.PreparingError
+	if !errors.Is(err, core.ErrPreparing) || !errors.As(err, &prepErr) || prepErr.RetryAfter <= 0 {
+		t.Fatalf("slice 1 OpenKind err = %v, want *core.PreparingError", err)
+	}
+	if errors.Is(err, core.ErrSourceUnavailable) {
+		t.Fatalf("slice 1 OpenKind surfaced ErrSourceUnavailable: %v", err)
+	}
+	if eng.ctxCanceled.Load() {
+		t.Fatal("in-flight usenet_check context was canceled by the guest deadline; expected background survival")
+	}
+
+	// Let the surviving background usenet_check finish and cache its verdict.
+	close(eng.release)
+	<-eng.finished
+
+	// 2. Next slice immediately receives the cached verdict without re-fetching
+	// the NZB or re-checking articles, and opens the track.
+	mode.Store(1)
+	media, err := kr.OpenKind(ctx, viewer, trk1.Key, nil)
+	if err != nil {
+		t.Fatalf("slice 2 OpenKind: %v", err)
+	}
+	_ = media.Closer.Close()
+
+	slice2Mu.Lock()
+	gotVerdict := slice2Verdict
+	slice2Mu.Unlock()
+	if !gotVerdict.Cached || !gotVerdict.Available || gotVerdict.Checked != 32 || gotVerdict.Missing != 0 {
+		t.Fatalf("slice 2 verdict = %+v, want cached available verdict (checked=32, missing=0)", gotVerdict)
+	}
+	if idx.fetchCount() != 1 || eng.checkCount() != 1 {
+		t.Fatalf("fetches=%d checks=%d, want 1, 1 (next slice must reuse background probe result)", idx.fetchCount(), eng.checkCount())
+	}
+
+	// 3. Bounds: a guest timeout with no host source activity fails immediately.
+	mode.Store(2)
+	_, err = kr.OpenKind(ctx, viewer, trkIdle.Key, nil)
+	if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrPreparing) {
+		t.Fatalf("idle guest timeout err = %v, want core.ErrSourceUnavailable", err)
+	}
+
+	// 4. Bounds: repeated timeouts without new work (only repeating a cached
+	// check) stop returning PreparingError and fail honestly after the stall cap.
+	mode.Store(3)
+	for i := range 2 {
+		_, err = kr.OpenKind(ctx, viewer, trkStall.Key, nil)
+		if !errors.Is(err, core.ErrPreparing) {
+			t.Fatalf("stall slice %d err = %v, want core.ErrPreparing before cap", i+1, err)
+		}
+	}
+	_, err = kr.OpenKind(ctx, viewer, trkStall.Key, nil)
+	if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrPreparing) {
+		t.Fatalf("stalled resolve after cap err = %v, want core.ErrSourceUnavailable", err)
+	}
+
+	// 5. Bounds: exceeding the overall prepare budget fails honestly even when
+	// each slice starts new source work.
+	mode.Store(4)
+	_, err = kr.OpenKind(ctx, viewer, trkBudget.Key, nil)
+	if !errors.Is(err, core.ErrPreparing) {
+		t.Fatalf("budget slice 1 err = %v, want core.ErrPreparing", err)
+	}
+	advanceClock(91 * time.Second)
+	_, err = kr.OpenKind(ctx, viewer, trkBudget.Key, nil)
+	if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrPreparing) {
+		t.Fatalf("over-budget resolve err = %v, want core.ErrSourceUnavailable", err)
 	}
 }

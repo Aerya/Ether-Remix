@@ -174,6 +174,15 @@ func TestContinuousVAAPIArgsAndLowLatencySegment(t *testing.T) {
 	if !strings.Contains(dashArgs, "aac_adtstoasc") {
 		t.Fatalf("DASH fMP4 MPEG-TS AAC copy missing aac_adtstoasc:\n%s", dashArgs)
 	}
+	// A live HLS input (MPEG-TS underneath) relayed to fMP4 HLS needs it too,
+	// or the init has no AudioSpecificConfig and browsers refuse the stream.
+	hlsSpec := dashSpec
+	hlsSpec.Input, hlsSpec.Protocol = "http://127.0.0.1/live.m3u8", core.ProtocolHLS
+	hlsSpec.Info.Container = "hls"
+	hlsSpec.Dir = t.TempDir()
+	if hlsArgs := strings.Join(buildArgs(hlsSpec), " "); !strings.Contains(hlsArgs, "aac_adtstoasc") {
+		t.Fatalf("HLS fMP4 relay of a live HLS input missing aac_adtstoasc:\n%s", hlsArgs)
+	}
 }
 
 type continuousHardwareRunner struct {

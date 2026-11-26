@@ -118,7 +118,7 @@ func TestImportConcurrentPreservesEditsAndNoSecrets(t *testing.T) {
 		t.Fatal("duplicated libraries")
 	}
 	for i, sp := range cols.specs {
-		if sp.Refresh != "daily" || sp.Sort != "source" || sp.Rotate != nil || !sp.Enabled || !sp.Targets.HomeRow || sp.Sources[0].MaxItems != 500 {
+		if sp.Refresh != "daily" || sp.Sort != "source" || sp.Rotate != nil || !sp.Enabled || !sp.BrowseInApps || sp.Sources[0].MaxItems != 500 {
 			t.Fatalf("defaults %+v", sp)
 		}
 		if all[i+2].Present.Plex == nil || all[i+2].Present.MediaBrowser == nil {
@@ -178,7 +178,7 @@ func TestRetryModesAndChangedSource(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	for _, sp := range cols2.specs {
-		if sp.Targets.HomeRow || sp.Targets.CollectionsTab || sp.Targets.SectionRow {
+		if sp.BrowseInApps {
 			t.Fatal("backing collection published")
 		}
 	}

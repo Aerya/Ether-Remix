@@ -7,7 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
-func nextUpSeries(r *http.Request) frontend.RatingKey {
+func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) frontend.RatingKey {
 	raw := firstQuery(r, "seriesId")
 	if raw == "" {
 		raw = firstQuery(r, "parentId")
@@ -23,10 +23,18 @@ func nextUpSeries(r *http.Request) frontend.RatingKey {
 	case frontend.KindShow:
 		return key
 	case frontend.KindSeason, frontend.KindEpisode:
-		return frontend.ShowKey(key.TMDB())
+		return i.seriesForItem(r, viewer, key)
 	default:
 		return 0
 	}
+}
+
+func (i *instance) seriesForItem(r *http.Request, viewer *frontend.Viewer, key frontend.RatingKey) frontend.RatingKey {
+	title, ok := i.storedListTitle(r, viewer, key)
+	if !ok {
+		return 0
+	}
+	return parentShowKey(title)
 }
 
 func (i *instance) seriesNextUp(r *http.Request, v *frontend.Viewer, series frontend.RatingKey) ([]frontend.Title, error) {

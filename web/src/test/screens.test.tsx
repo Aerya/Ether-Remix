@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { calls, renderApp } from "./harness";
 
@@ -151,6 +151,37 @@ describe("Overview", () => {
     expect(activitySection.querySelector(".max-h-56")).toBeNull();
   });
 
+  it("computes Overview 30-day hours from exact watchedMs and passes browser timezone", async () => {
+    const requestedUrls: string[] = [];
+    renderApp("/", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/insights/activity")) {
+          requestedUrls.push(url);
+          // 10 days of 150,000 ms each (2.5 min): each day rounds to 0.0 h,
+          // while summed watchedMs = 1,500,000 ms -> 0.4 h (matching Activity › Viewing).
+          const days = Array.from({ length: 10 }, (_, i) => ({
+            date: `2026-11-${String(i + 15).padStart(2, "0")}`,
+            plays: 2,
+            hours: 0,
+            watchedMs: 150_000,
+            uniqueViewers: i === 9 ? 3 : 1,
+          }));
+          return new Response(JSON.stringify({ days }), { status: 200 });
+        }
+        return original(input, init);
+      };
+    });
+    const activitySection = (
+      await screen.findByRole("heading", { name: "Activity · last 30 days" }, WAIT)
+    ).closest("section")!;
+    expect(await within(activitySection).findByText("0.4", {}, WAIT)).toBeInTheDocument();
+    expect(within(activitySection).getByText("20")).toBeInTheDocument();
+    expect(within(activitySection).getByText("3 viewers")).toBeInTheDocument();
+    expect(requestedUrls.some((u) => /[?&]tz=-?\d+/.test(u))).toBe(true);
+  });
+
   it("shows live server instruments: CPU, memory, network, GPU and Ether itself", async () => {
     const { fake } = renderApp("/");
     const server = (await screen.findByRole("heading", { name: "Server" }, WAIT)).closest(
@@ -216,13 +247,31 @@ describe("Overview", () => {
 describe("Updates settings", () => {
   it("shows update status and asks the server to install", async () => {
     const { fake } = renderApp("/maintenance/updates");
-    expect(await screen.findByText(/Version 0\.3\.0/, {}, WAIT)).toBeInTheDocument();
+    expect(await screen.findByText(/Version 0\.9\.1/, {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText(/03:00–06:00 local time/)).toBeInTheDocument();
+    expect(screen.getByText(/Last checked /)).toBeInTheDocument();
+    expect(screen.getByText(/Next check/)).toBeInTheDocument();
+    expect(calls(fake, "POST", "/updates/check")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(calls(fake, "POST", "/updates/check")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update now" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
     expect(
       await screen.findByRole("button", { name: "Install now anyway" }, WAIT),
     ).toBeInTheDocument();
     expect(calls(fake, "POST", "/updates/apply").length).toBe(1);
+  });
+
+  it("opens the available release notes and reopens the installed release notes", async () => {
+    renderApp("/maintenance/updates");
+    fireEvent.click(await screen.findByRole("button", { name: "Release notes" }, WAIT));
+    const available = await screen.findByRole("dialog", { name: "Release notes for v0.9.1" });
+    expect(await within(available).findByText(/Library scans/)).toBeInTheDocument();
+    expect(within(available).getByRole("link", { name: "Release notes on GitHub" })).toBeVisible();
+    fireEvent.keyDown(available, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "What's new in v0.9.0-mock" }));
+    expect(await screen.findByText(/Release notes open in Ether/)).toBeInTheDocument();
   });
 
   it("keeps the channel up front and tucks the window, feed and wait behind more options", async () => {
@@ -274,7 +323,7 @@ describe("Updates settings", () => {
     const toggle = await screen.findByRole("switch", { name: "Check for updates" }, WAIT);
     expect(toggle).toBeDisabled();
     expect(toggle).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check now" })).toBeDisabled();
   });
 });
 
@@ -301,7 +350,7 @@ describe("Getting started", () => {
           const body = await response.json();
           body.sections.sessions = [];
           body.setupSteps = [
-            { id: "catalog", title: "TMDB API key", complete: false, required: true },
+            { id: "catalog", title: "Metadata sources", complete: false, required: false },
           ];
           return new Response(JSON.stringify(body), { status: 200 });
         }
@@ -316,10 +365,7 @@ describe("Getting started", () => {
       };
     });
     const steps = await screen.findByRole("region", { name: "Next steps" }, WAIT);
-    expect(within(steps).getByRole("link", { name: "Add a TMDB key" })).toHaveAttribute(
-      "href",
-      "/services/tmdb",
-    );
+    expect(within(steps).queryByRole("link", { name: "Add a metadata source" })).toBeNull();
     expect(within(steps).getByRole("link", { name: "Add a source" })).toHaveAttribute(
       "href",
       "/sources",
@@ -328,7 +374,7 @@ describe("Getting started", () => {
     expect(screen.getByRole("link", { name: "Add viewers" })).toHaveAttribute("href", "/viewers");
     expect(
       screen.getByRole("link", { name: "Playback quality: 1080p at home · change" }),
-    ).toHaveAttribute("href", "/quality/profiles");
+    ).toHaveAttribute("href", "/releases/profiles");
     expect(within(steps).queryByRole("link", { name: "Connect Plex" })).toBeNull(); // Plex is off
     fireEvent.click(within(steps).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("region", { name: "Next steps" })).not.toBeInTheDocument();
@@ -355,6 +401,6 @@ describe("Getting started", () => {
     const steps = await screen.findByRole("region", { name: "Next steps" }, WAIT);
     expect(
       within(steps).getByRole("link", { name: "Playback quality: 4K at home · change" }),
-    ).toHaveAttribute("href", "/quality/profiles");
+    ).toHaveAttribute("href", "/releases/profiles");
   });
 });

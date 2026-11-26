@@ -61,6 +61,23 @@ func (s *Service) allowedPluginPeopleLibraries(ctx context.Context, v *core.User
 	return allowed, ppl, nil
 }
 
+// searchablePluginPeopleLibraries is allowedPluginPeopleLibraries for an
+// unscoped people search: opted-in private libraries (PluginOptInLibraries)
+// are reached only by a search scoped to them.
+func (s *Service) searchablePluginPeopleLibraries(ctx context.Context, v *core.User) ([]core.Library, PluginPeopleLibraries, error) {
+	libs, ppl, err := s.allowedPluginPeopleLibraries(ctx, v)
+	if err != nil || len(libs) == 0 {
+		return libs, ppl, err
+	}
+	kept := libs[:0]
+	for _, lib := range libs {
+		if !s.optInLibrary(ctx, lib) {
+			kept = append(kept, lib)
+		}
+	}
+	return kept, ppl, nil
+}
+
 func rolesFromCounts(counts map[string]int) []string {
 	return sortPersonRoleCounts(counts)
 }
@@ -95,7 +112,7 @@ func (s *Service) searchPluginPeopleForUser(ctx context.Context, v *core.User, q
 	if query == "" {
 		return nil, nil, nil
 	}
-	libs, ppl, err := s.allowedPluginPeopleLibraries(ctx, v)
+	libs, ppl, err := s.searchablePluginPeopleLibraries(ctx, v)
 	if err != nil || len(libs) == 0 || ppl == nil {
 		return nil, nil, err
 	}
@@ -221,7 +238,7 @@ func (s *Service) pluginPeopleForScope(ctx context.Context, viewer *core.Viewer,
 	if err != nil {
 		return nil, err
 	}
-	libs, ppl, err := s.allowedPluginPeopleLibraries(ctx, v)
+	libs, ppl, err := s.searchablePluginPeopleLibraries(ctx, v)
 	if err != nil || len(libs) == 0 || ppl == nil {
 		return nil, err
 	}

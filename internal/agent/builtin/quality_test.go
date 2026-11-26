@@ -15,20 +15,20 @@ import (
 type qualityProfiles struct {
 	*fakeEnv
 	order []core.QualityItem
-	media string
+	name  string
 }
 
 func (f *qualityProfiles) Profiles(context.Context) ([]builtin.ProfileInfo, error) {
 	return []builtin.ProfileInfo{
-		{Name: "4K", Media: "movie", Scores: map[string]int{"ether:viewer-language": 20000}},
-		{Name: "4K", Media: "tv", Scores: map[string]int{"ether:viewer-language": 20000},
+		{Name: "1080p", Scores: map[string]int{"ether:viewer-language": 20000}},
+		{Name: "4K", Scores: map[string]int{"ether:viewer-language": 20000},
 			QualityOrder: []core.QualityItem{{Name: "UHD", Qualities: []string{"webdl-2160"}}}, Language: "original", PreferredLanguages: []string{"es"}, MaxHeight: 2160, MinHeight: 720, AllowedQualities: []string{"webdl-2160", "webdl-1080"}},
 	}, nil
 }
 
-func (f *qualityProfiles) SetQualityOrder(_ context.Context, name, media string, order []core.QualityItem) error {
+func (f *qualityProfiles) SetQualityOrder(_ context.Context, name string, order []core.QualityItem) error {
 	f.writes++
-	f.order, f.media = order, media
+	f.order, f.name = order, name
 	return nil
 }
 
@@ -53,18 +53,18 @@ func TestQualityProfilesRead(t *testing.T) {
 	b, _ := json.Marshal(res.Data)
 	var data struct {
 		Profiles []struct {
-			Name, Media, Language string
-			Scores                map[string]int
-			QualityOrder          []core.QualityItem
-			PreferredLanguages    []string
-			MaxHeight, MinHeight  int
-			AllowedQualities      []string
+			Name, Language       string
+			Scores               map[string]int
+			QualityOrder         []core.QualityItem
+			PreferredLanguages   []string
+			MaxHeight, MinHeight int
+			AllowedQualities     []string
 		}
 	}
 	if err := json.Unmarshal(b, &data); err != nil {
 		t.Fatal(err)
 	}
-	if len(data.Profiles) != 2 || data.Profiles[1].Media != "tv" || data.Profiles[1].Scores["ether:viewer-language"] != 20000 {
+	if len(data.Profiles) != 2 || data.Profiles[1].Name != "4K" || data.Profiles[1].Scores["ether:viewer-language"] != 20000 {
 		t.Fatalf("profiles: %s", b)
 	}
 	row := data.Profiles[1]
@@ -78,7 +78,7 @@ func TestQualityProfilesRead(t *testing.T) {
 
 func TestQualityOrderSetApprovalAndReplay(t *testing.T) {
 	f, cat, p := qualityTools(t)
-	input := map[string]any{"profile": "4K", "media": "tv", "qualityOrder": []any{map[string]any{"name": "HD and UHD", "qualities": []any{"webdl-2160", "webdl-1080"}}}}
+	input := map[string]any{"profile": "4K", "qualityOrder": []any{map[string]any{"name": "HD and UHD", "qualities": []any{"webdl-2160", "webdl-1080"}}}}
 	res, err := callTool(t, cat, context.Background(), p, "quality_order_set", input)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestQualityOrderSetApprovalAndReplay(t *testing.T) {
 	if res.Proposal == nil || f.writes != 0 {
 		t.Fatal("must propose without writing")
 	}
-	// Approval persistence replays JSON, including the exact media target.
+	// Approval persistence replays JSON, including the exact profile.
 	b, _ := json.Marshal(res.Proposal.Input)
 	var replay map[string]any
 	if err := json.Unmarshal(b, &replay); err != nil {
@@ -100,7 +100,7 @@ func TestQualityOrderSetApprovalAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []core.QualityItem{{Name: "HD and UHD", Qualities: []string{"webdl-2160", "webdl-1080"}}}
-	if f.writes != 1 || f.media != "tv" || !reflect.DeepEqual(f.order, want) {
+	if f.writes != 1 || f.name != "4K" || !reflect.DeepEqual(f.order, want) {
 		t.Fatalf("applied: %+v", f)
 	}
 }
@@ -109,19 +109,17 @@ func TestQualityOrderSetRejectsInvalidInput(t *testing.T) {
 	cases := []struct {
 		name  string
 		order any
-		media string
 		want  string
 	}{
-		{"missing", nil, "tv", "qualityOrder"},
-		{"null", nil, "tv", "qualityOrder"},
-		{"empty group", []any{map[string]any{"qualities": []any{}}}, "tv", "qualities"},
-		{"unknown", []any{map[string]any{"qualities": []any{"vhs-1080"}}}, "tv", "not a quality"},
-		{"too many groups", make([]any, 65), "tv", "64 quality entries"},
-		{"wrong type", "webdl-1080", "tv", "qualityOrder"},
-		{"unknown field", []any{map[string]any{"qualities": []any{"webdl-1080"}, "extra": true}}, "tv", "qualityOrder"},
-		{"long name", []any{map[string]any{"name": strings.Repeat("x", 81), "qualities": []any{"webdl-1080"}}}, "tv", "too long"},
-		{"duplicate", []any{map[string]any{"qualities": []any{"webdl-1080", "webdl-1080"}}}, "tv", "twice"},
-		{"ambiguous", []any{}, "", "movies and for TV"},
+		{"missing", nil, "qualityOrder"},
+		{"null", nil, "qualityOrder"},
+		{"empty group", []any{map[string]any{"qualities": []any{}}}, "qualities"},
+		{"unknown", []any{map[string]any{"qualities": []any{"vhs-1080"}}}, "not a quality"},
+		{"too many groups", make([]any, 65), "64 quality entries"},
+		{"wrong type", "webdl-1080", "qualityOrder"},
+		{"unknown field", []any{map[string]any{"qualities": []any{"webdl-1080"}, "extra": true}}, "qualityOrder"},
+		{"long name", []any{map[string]any{"name": strings.Repeat("x", 81), "qualities": []any{"webdl-1080"}}}, "too long"},
+		{"duplicate", []any{map[string]any{"qualities": []any{"webdl-1080", "webdl-1080"}}}, "twice"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,9 +127,6 @@ func TestQualityOrderSetRejectsInvalidInput(t *testing.T) {
 			in := map[string]any{"profile": "4K", "qualityOrder": tc.order}
 			if tc.name == "missing" {
 				delete(in, "qualityOrder")
-			}
-			if tc.media != "" {
-				in["media"] = tc.media
 			}
 			res, err := callTool(t, cat, context.Background(), p, "quality_order_set", in)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || res.Proposal != nil || f.writes != 0 {
@@ -143,7 +138,7 @@ func TestQualityOrderSetRejectsInvalidInput(t *testing.T) {
 
 func TestQualityOrderSetEmptyOrder(t *testing.T) {
 	f, cat, p := qualityTools(t)
-	res, err := callTool(t, cat, context.Background(), p, "quality_order_set", map[string]any{"profile": "4K", "media": "tv", "qualityOrder": []any{}})
+	res, err := callTool(t, cat, context.Background(), p, "quality_order_set", map[string]any{"profile": "4K", "qualityOrder": []any{}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // Owner-facing API (internal/admin: viewers, Home Designer, insights).
@@ -58,6 +56,9 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		limit = 12
 	}
 	if section == "" {
+		for _, hub := range e.CollectionCardHubs(wctx, user, hc, limit) {
+			p.Rows = append(p.Rows, core.HomeRow{HubID: hub.ID, Title: hub.Title, Kind: SourceCollectionCards, Source: core.RowSourceOwner, Hub: hub})
+		}
 		// The front end puts Continue Watching first when the engine did
 		// not place it, and appends Recent Playlists.
 		hasCW := false
@@ -156,10 +157,9 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 	if section != "" {
 		def = e.opts.MaxSectionRows
 	}
-	layoutDoc := e.layoutForContext(ctx)
-	target := layoutTargetForContext(section, hc)
-	p.Rows = arrangeLayoutFor(p.Rows, layoutDoc, user.ID, hc, target, def)
-	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, target, emptiedByRestrictions)
+	pl := e.planFor(ctx, user.ID, e.sectionFor(section, hc))
+	p.Rows = arrangePage(p.Rows, pl, user.ID, hc, pl.maxRows(hc.Device, def))
+	p.Rows = e.appendAbsentPageRows(ctx, p.Rows, pl, user, hc, section, emptiedByRestrictions)
 	if section == "" && e.opts.PreviewContinue != nil {
 		// Plex folds On Deck into Continue Watching when both contain the
 		// same episodes. Keep it visible when Continue is disabled.
@@ -203,28 +203,41 @@ func isPersonalKind(kind string) bool {
 	return false
 }
 
-func (e *Engine) resolvePolicyIdentity(ctx context.Context, raw string, user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout) (hubID, kind, title, source string) {
-	if strings.HasPrefix(raw, "plugin:") {
-		kind = raw
-		hubID = raw
-		source = core.RowSourceOwner
-		title = raw
-		if rk, ok := e.RowKindRegistry().Lookup(raw); ok {
-			if lbl := strings.TrimSpace(rk.Descriptor().Title); lbl != "" {
-				title = lbl
-			}
+// personalBadge reports a row whose titles differ per viewer, for the
+// Personal/Shared badge: the personal kinds, plus rows Ether fits to the
+// viewer's habits or taste that still serve cold viewers (so they aren't
+// gated like isPersonalKind).
+func personalBadge(kind string) bool {
+	switch kind {
+	case KindShortOnTime, KindBinge, KindLimited:
+		return true
+	}
+	return isPersonalKind(kind)
+}
+
+// pageRowIdentity names a page row that isn't on the page, for the
+// "Not shown right now" list: its hub id, kind, title and source.
+func (e *Engine) pageRowIdentity(ctx context.Context, r *rule, user *core.User, hc core.HubContext, section core.MediaType, pl *pagePlan) (hubID, kind, title, source string) {
+	if r.Derived {
+		hubID = sectionPrefix(section) + "." + r.Row
+		kind = planRowKind(r.row.Source)
+		title = r.Name
+		if title == "" {
+			title = e.sourceTitle(r.Source)
 		}
-		if cr, ok := e.cachedOwnerCollection(user, hc, section, d, raw); ok && cr.Hub.Title != "" {
+		return hubID, kind, title, core.RowSourceEngine
+	}
+	switch {
+	case strings.HasPrefix(r.Source, "plugin:"):
+		kind, hubID, source, title = r.Source, r.Source, core.RowSourceOwner, e.sourceTitle(r.Source)
+		if cr, ok := e.cachedOwnerCollection(user, hc, pl, r.Source); ok && cr.Hub.Title != "" {
 			title = cr.Hub.Title
 		}
 		return hubID, kind, title, source
-	}
-	if collID := collectionRowID(raw); collID != "" {
-		kind = KindCollectionPrefix + collID
-		hubID = "collection." + collID
-		source = core.RowSourceOwner
-		title = collID
-		if cr, ok := e.cachedOwnerCollection(user, hc, section, d, collID); ok {
+	case r.Source == SourceCollection:
+		collID := r.row.Source.Param("collection", "")
+		kind, hubID, source, title = KindCollectionPrefix+collID, "collection."+collID, core.RowSourceOwner, collID
+		if cr, ok := e.cachedOwnerCollection(user, hc, pl, collID); ok {
 			if cr.Hub.Title != "" {
 				title = cr.Hub.Title
 			}
@@ -241,27 +254,19 @@ func (e *Engine) resolvePolicyIdentity(ctx context.Context, raw string, user *co
 		}
 		return hubID, kind, title, source
 	}
-	if _, ok := kindByName[raw]; ok {
-		kind = raw
-	} else if k := hubKind(raw); k != raw {
-		kind = k
-	} else if k := parseHubKind("home." + raw); k != "other" {
-		kind = k
-	} else {
-		kind = raw
-	}
+	kind = r.Source
 	info := infoFor(kind)
-	source = info.source
-	title = info.title
+	source, title = info.source, e.sourceTitle(kind)
 	switch {
-	case strings.HasPrefix(raw, "home."), strings.HasPrefix(raw, "movie."), strings.HasPrefix(raw, "tv."), strings.HasPrefix(raw, "live."):
-		hubID = raw
 	case kind == KindPlaylists:
 		hubID = "home.playlists"
 	case kind == KindContinue && section == "":
 		hubID = "home.continue"
 	default:
 		hubID = sectionPrefix(section) + "." + info.slug
+	}
+	if r.Name != "" {
+		title = r.Name
 	}
 	return hubID, kind, title, source
 }
@@ -279,38 +284,18 @@ func (e *Engine) collectionSpecs(ctx context.Context) []core.CollectionSpec {
 	return specs
 }
 
-func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow, d core.HomeLayout, user *core.User, hc core.HubContext, section core.MediaType, target string, emptied map[string]bool) []core.HomeRow {
-	if user == nil {
+// appendAbsentPageRows adds the page's rows that aren't on the page for
+// this viewer and moment, hidden, with the strongest reason ("Not shown
+// right now" in the designer).
+func (e *Engine) appendAbsentPageRows(ctx context.Context, rows []core.HomeRow, pl *pagePlan, user *core.User, hc core.HubContext, section core.MediaType, emptied map[string]bool) []core.HomeRow {
+	if user == nil || pl == nil {
 		return rows
 	}
-	type activePol struct {
-		pol   core.RowPolicy
-		layer string
-	}
-	var policies []activePol
-	gPage, vPage := pagesForTarget(d, user.ID, target)
-	if vPage != nil {
-		for _, pol := range vPage.Rows {
-			if pol.Status == "always" && !strings.ContainsAny(pol.Row, "*?[") {
-				policies = append(policies, activePol{pol: pol, layer: "override"})
-			}
+	present := map[string]bool{}
+	for _, r := range rows {
+		if p := pl.match(r); p != nil {
+			present[p.RowID] = true
 		}
-	}
-	if gPage != nil {
-		for _, pol := range gPage.Rows {
-			if pol.Status != "always" || strings.ContainsAny(pol.Row, "*?[") {
-				continue
-			}
-			hubID, kind, _, _ := e.resolvePolicyIdentity(ctx, pol.Row, user, hc, section, d)
-			eff, effLayer := effectiveHomePolicy(d, user.ID, target, core.HomeRow{HubID: hubID, Kind: kind})
-			if eff == nil || eff.Status != "always" || effLayer != "global" || eff.Row != pol.Row {
-				continue
-			}
-			policies = append(policies, activePol{pol: pol, layer: "global"})
-		}
-	}
-	if len(policies) == 0 {
-		return rows
 	}
 	var model *userModel
 	modelLoaded := false
@@ -321,56 +306,29 @@ func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow
 		}
 		return model
 	}
-	for _, ap := range policies {
-		pol := ap.pol
-		matched := false
-		for _, r := range rows {
-			if matchRank(pol.Row, r.HubID, hubStem(r.HubID), r.Kind) > 0 {
-				matched = true
-				break
-			}
-		}
-		if matched {
+	for _, r := range pl.rules {
+		if present[r.RowID] || r.Source == SourceSurface {
 			continue
 		}
-		hubID, kind, title, source := e.resolvePolicyIdentity(ctx, pol.Row, user, hc, section, d)
-		code, reason := e.absentAlwaysReason(ctx, pol, ap.layer, hubID, kind, user, hc, section, d, emptied, getModel)
-		polCopy := pol
-		placement := "Always included by " + ap.layer
-		if ap.layer == "override" {
-			placement = "Viewer override"
-		}
-		if pol.Slot > 0 {
-			placement = fmt.Sprintf("%s anchor at slot %d", ap.layer, pol.Slot)
-		}
+		hubID, kind, title, source := e.pageRowIdentity(ctx, r, user, hc, section, pl)
+		code, reason := e.absentReason(ctx, r, hubID, kind, user, hc, section, pl, emptied, getModel)
 		rows = append(rows, core.HomeRow{
-			HubID:        hubID,
-			Title:        title,
-			Kind:         kind,
-			Source:       source,
-			Items:        []core.Title{},
-			Hub:          core.Hub{ID: hubID, Title: title},
-			Hidden:       true,
-			HiddenCode:   code,
-			HiddenReason: reason,
-			Layer:        ap.layer,
-			Policy:       &polCopy,
-			PolicyLayer:  ap.layer,
-			AnchorSlot:   pol.Slot,
-			Pinned:       pol.Slot > 0,
-			Placement:    placement,
+			HubID: hubID, RowID: r.RowID, Title: title, Kind: kind, Source: source,
+			Items: []core.Title{}, Hub: core.Hub{ID: hubID, Title: title},
+			Hidden: true, HiddenCode: code, HiddenReason: reason,
+			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Personal: personalBadge(kind), Why: r.why(r.Slot),
 		})
 	}
 	return rows
 }
 
-func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, layer, hubID, kind string, user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout, emptied map[string]bool, getModel func() *userModel) (code, reason string) {
-	if c, why := policyHiddenReason(&pol, layer, user.ID, hc); why != "" {
+func (e *Engine) absentReason(ctx context.Context, pol *rule, hubID, kind string, user *core.User, hc core.HubContext, section core.MediaType, pl *pagePlan, emptied map[string]bool, getModel func() *userModel) (code, reason string) {
+	if c, why := pol.hiddenReason(user.ID, hc); why != "" {
 		return c, why
 	}
 	surf := sectionName(section)
-	if collID := collectionRowID(pol.Row); collID != "" {
-		cr, hasCR := e.cachedOwnerCollection(user, hc, section, d, collID)
+	if collID := strings.TrimPrefix(kind, KindCollectionPrefix); collID != kind && collID != "" {
+		cr, hasCR := e.cachedOwnerCollection(user, hc, pl, collID)
 		var spec *core.CollectionSpec
 		for _, sp := range e.collectionSpecs(ctx) {
 			if sp.ID == collID {
@@ -390,26 +348,8 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 			if spec.OwnerUserID != 0 && (targetUser == nil || targetUser.ID != spec.OwnerUserID) {
 				return "collection_not_shared", "Collection is not shared with this viewer"
 			}
-			if (spec.Targets.Users.All || spec.Targets.Users.IDs != nil) && !spec.Targets.Users.Includes(targetUser) {
-				return "collection_not_shared", "Collection is not shared with this viewer"
-			}
-			if !slices.Contains(collectionSections(spec.MediaType), surf) {
-				return "wrong_surface", "Not available on this page"
-			}
-			if !hasCR && !(layer == "override" && pol.When != nil) {
-				sc := spec.Targets.Schedule
-				if draft, ok := d.CollectionSchedules[collID]; ok {
-					sc = draft
-				}
-				if !sc.Allows(hc.Device, hc.Now) {
-					return "outside_collection_schedule", "Outside collection schedule"
-				}
-			}
 		}
 		if hasCR {
-			if !collectionScheduleAllows(d, user.ID, section, hc, cr) {
-				return "outside_collection_schedule", "Outside collection schedule"
-			}
 			if len(cr.Hub.Items) > 0 {
 				typed := cr.Hub.Items
 				if section != "" {
@@ -468,7 +408,7 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 				}
 			}
 		}
-		if emptied[kind] || emptied[hubID] || emptied[pol.Row] {
+		if emptied[kind] || emptied[hubID] {
 			return "filtered_by_restrictions", "No titles allowed for this viewer"
 		}
 		if !hasCR && spec != nil {
@@ -487,15 +427,14 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 	if _, knownKind := kindByName[kind]; knownKind && !fitsSurface(kind, surf) {
 		return "wrong_surface", "Not available on this page"
 	}
-	if emptied[kind] || emptied[hubID] || emptied[pol.Row] {
+	if emptied[kind] || emptied[hubID] {
 		return "filtered_by_restrictions", "No titles allowed for this viewer"
 	}
 	m := getModel()
 	if m != nil && e.opts.FilterAvailable != nil {
-		prefix := sectionPrefix(section)
 		allowed := e.allowedFor(user)
 		for _, c := range m.rows {
-			if matchRank(pol.Row, prefix+"."+c.id, c.id, c.kind) == 0 {
+			if c.kind != kind {
 				continue
 			}
 			var raw []core.Title
@@ -556,9 +495,18 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 		return "needs_watch_history", "Needs more watch history for this viewer"
 	case isPersonalKind(kind) && conf < minPersonalConfidence:
 		return "needs_watch_history", "Needs more watch history for this viewer"
-	default:
-		return "no_matching_titles", "No matching titles for this viewer"
 	}
+	if m != nil {
+		for _, c := range m.rows {
+			if c.kind != kind {
+				continue
+			}
+			if code, reason, ok := filteredRowReason(c, section, pol.Slot > 0); ok {
+				return code, reason
+			}
+		}
+	}
+	return "no_matching_titles", "No matching titles for this viewer"
 }
 
 func hasRemoteCollectionSource(sources []core.CollectionSource) bool {
@@ -775,106 +723,6 @@ func (e *Engine) SetTasteOverrides(ctx context.Context, user *core.User, os []co
 
 type lightCollectionSpecSource interface {
 	ListSpecsLight(ctx context.Context) ([]core.CollectionSpec, error)
-}
-
-// AvailableRows lists the row kinds layout policies can target, plus owner
-// collection rows recently served, each with the pages it can appear on
-// (Sections) and its designer group.
-func (e *Engine) AvailableRows(ctx context.Context) ([]core.RowDescriptor, error) {
-	e.rec.flush(ctx)
-	shows, err := e.store.rowShowsSince(ctx, e.now().AddDate(0, 0, -30))
-	if err != nil {
-		return nil, err
-	}
-	var extra []core.RowDescriptor
-	for kind, st := range shows {
-		if strings.HasPrefix(kind, KindCollectionPrefix) {
-			extra = append(extra, core.RowDescriptor{HubID: kind, Title: st.title, Kind: kind,
-				Description: "Owner collection row (" + st.hubID + ").", Sections: append([]string(nil), allSurfaces...), Group: groupCollections})
-		}
-	}
-	if source, ok := e.opts.Collections.(core.CollectionSpecSource); ok {
-		var specs []core.CollectionSpec
-		if light, ok := e.opts.Collections.(lightCollectionSpecSource); ok {
-			specs, err = light.ListSpecsLight(ctx)
-		} else {
-			specs, err = source.ListSpecs(ctx)
-		}
-		if err != nil {
-			return nil, err
-		}
-		// History is analytics, not the authority for collection existence or names.
-		live := map[string]core.CollectionSpec{}
-		for _, sp := range specs {
-			if sp.Enabled {
-				live[KindCollectionPrefix+sp.ID] = sp
-			}
-		}
-		kept := extra[:0]
-		for _, d := range extra {
-			if sp, exists := live[d.HubID]; exists {
-				d.Title = sp.Name
-				kept = append(kept, d)
-			}
-		}
-		extra = kept
-		index := map[string]int{}
-		for i, d := range extra {
-			index[d.HubID] = i
-		}
-		for _, sp := range specs {
-			key := KindCollectionPrefix + sp.ID
-			if !sp.Enabled {
-				continue
-			}
-			secs := collectionSections(sp.MediaType)
-			if i, ok := index[key]; ok {
-				extra[i].Sections = secs
-				continue
-			}
-			index[key] = len(extra)
-			extra = append(extra, core.RowDescriptor{HubID: key, Title: sp.Name, Kind: key,
-				Description: "Owner collection; choose Always or Eligible to add it to this page.", Sections: secs, Group: groupCollections})
-		}
-	}
-	if e.extraHomeRows != nil {
-		index := map[string]int{}
-		for i, d := range extra {
-			index[d.HubID] = i
-		}
-		hc := core.NewHubContext(e.now(), "", "", "")
-		hc.Device = core.DeviceTV
-		mctx := reqmemo.With(ctx)
-		for _, section := range allSurfaces {
-			for _, hub := range e.extraHomeRows(mctx, &core.User{IsOwner: true}, hc, section, 1) {
-				if i, ok := index[hub.ID]; ok {
-					if !slices.Contains(extra[i].Sections, section) {
-						extra[i].Sections = append(extra[i].Sections, section)
-					}
-					continue
-				}
-				index[hub.ID] = len(extra)
-				group := groupPicks
-				if strings.HasPrefix(hub.ID, "live.") {
-					group = groupPlex
-				}
-				extra = append(extra, core.RowDescriptor{HubID: hub.ID, Kind: hubKind(hub.ID), Title: hub.Title,
-					Description: "Additional Plex row.", Sections: []string{section}, Group: group})
-			}
-		}
-	}
-	return e.rowKindRegistry().RowDescriptors(extra), nil
-}
-
-// collectionSections is where a collection of a media type can appear.
-func collectionSections(mediaType string) []string {
-	switch mediaType {
-	case "movie":
-		return []string{surfHome, surfMovies}
-	case "show":
-		return []string{surfHome, surfShows}
-	}
-	return append([]string(nil), allSurfaces...)
 }
 
 // insightTitle returns an owner-friendly label for a row insight without

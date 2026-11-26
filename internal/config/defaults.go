@@ -16,6 +16,9 @@ func randomID(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// DefaultCacheBudgetBytes is the default segment cache capacity per node.
+const DefaultCacheBudgetBytes = 50 << 30
+
 // Defaults returns a fresh config for a new install.
 func Defaults(dataDir string) Config {
 	return Config{
@@ -49,7 +52,7 @@ func Defaults(dataDir string) Config {
 		},
 		Cache: Cache{
 			Dir:                  filepath.Join(dataDir, "cache"),
-			BudgetBytes:          50 << 30,
+			BudgetBytes:          DefaultCacheBudgetBytes,
 			PrefetchNextEpisode:  true,
 			PrefetchBytes:        64 << 20,
 			KeepInProgressWarm:   true,
@@ -111,20 +114,6 @@ func Defaults(dataDir string) Config {
 // it is taken, the server moves to a fallback port and saves it.
 const DefaultPort = 32400
 
-// freshInstallQuality names the movie and the TV At home default
-// explicitly on a brand-new install. It is not part of DefaultQuality
-// because stored settings merge over the defaults key by key: a saved
-// quality section without these keys must keep resolving through its own
-// media-neutral default.
-func freshInstallQuality(q *Quality) {
-	if q.DefaultMovie == "" {
-		q.DefaultMovie = q.Default
-	}
-	if q.DefaultTV == "" {
-		q.DefaultTV = q.Default
-	}
-}
-
 // DefaultQuality applies no server cap at home or away: every client gets
 // the 4K profile, held to what the device itself can play (a phone stays
 // at 1080p, a TV goes to 4K). The owner caps quality with a device or
@@ -139,7 +128,7 @@ func freshInstallQuality(q *Quality) {
 func DefaultQuality() Quality {
 	q := Quality{
 		Default: "4K",
-		Remote:  "",
+		Rules:   []QualityRule{},
 		Profiles: []core.QualityProfile{
 			{
 				Name:              "4K",
@@ -192,17 +181,6 @@ func DefaultQuality() Quality {
 				}),
 			},
 		},
-	}
-	// Each tier is offered for movies, then the same tiers for TV shows.
-	tiers := q.Profiles
-	q.Profiles = make([]core.QualityProfile, 0, len(core.ProfileMediaTypes)*len(tiers))
-	for _, media := range core.ProfileMediaTypes {
-		for _, p := range tiers {
-			c := cloneProfile(p)
-			c.MediaType = media
-			c.CustomFormatScores = core.ScoresForMedia(c.CustomFormatScores, media)
-			q.Profiles = append(q.Profiles, c)
-		}
 	}
 	return q
 }

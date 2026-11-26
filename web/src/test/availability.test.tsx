@@ -104,7 +104,7 @@ describe("New release modes", () => {
     expect(screen.getAllByText("Recommended")[0]).toBeVisible();
     expect(
       screen.getByText(
-        "A new movie appears once Ether finds a release you can play with your quality settings. Ether checks for you automatically.",
+        "A new movie appears once Ether finds a release you can play with your release settings. Ether checks for you automatically.",
       ),
     ).toBeVisible();
     expect(
@@ -157,7 +157,7 @@ describe("New release modes", () => {
     expect(screen.getAllByRole("radio", { name: /On digital release/ })).toHaveLength(1);
     expect(
       screen.getByText(
-        "A new episode or show appears once Ether finds a release you can play with your quality settings. Ether checks for you automatically.",
+        "A new episode or show appears once Ether finds a release you can play with your release settings. Ether checks for you automatically.",
       ),
     ).toBeVisible();
     fireEvent.click(screen.getAllByRole("radio", { name: /Right away/ })[1]!);

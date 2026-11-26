@@ -15,6 +15,9 @@ import (
 func init() {
 	store.Register("libraries", 11, `ALTER TABLE libraries ADD COLUMN tabs TEXT NOT NULL DEFAULT '';`)
 	store.RegisterDialect("libraries", 11, store.Postgres, `ALTER TABLE libraries ADD COLUMN tabs TEXT NOT NULL DEFAULT '';`)
+	// The rows tab is "Recommendations" now: rename stored tabs still on the
+	// old default label (owner-renamed tabs keep their name).
+	store.Register("libraries", 15, `UPDATE libraries SET tabs = REPLACE(tabs, '"label":"Recommended","kind":"recommended"', '"label":"Recommendations","kind":"recommended"') WHERE tabs LIKE '%"label":"Recommended","kind":"recommended"%';`)
 }
 
 // MaxLibraryTabs bounds how many tabs an owner may configure on a single library.

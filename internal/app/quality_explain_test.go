@@ -12,7 +12,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/resolver"
-	"github.com/braedonsaunders/ether/internal/safety"
 )
 
 func postQualityExplain(t *testing.T, a *App, body string) (int, resolver.QualityAnswer) {
@@ -50,16 +49,17 @@ func TestQualityExplainHandler(t *testing.T) {
 	off := false
 	if err := a.cfg.Update(func(c *config.Config) error {
 		c.Quality = config.Quality{
-			Profiles: []core.QualityProfile{{Name: "At home", MaxHeight: 2160, AllowHDR: true, AllowDolbyVision: true}, {Name: "Away", MaxHeight: 1080}},
-			Default:  "At home", Remote: "Away",
+			Profiles:    []core.QualityProfile{{Name: "At home", MaxHeight: 2160, AllowHDR: true, AllowDolbyVision: true}, {Name: "Away", MaxHeight: 1080}},
+			Default:     "At home",
+			DefaultAway: "Away",
+			Rules: []config.QualityRule{
+				{ID: "r_away_cap", Where: config.WhereAway, MaxBitrateKbps: 12000},
+				{ID: "r_viewer_cap", Viewers: []int64{viewer}, MaxBitrateKbps: 6000},
+			},
 		}
-		c.Transcode.RemoteMaxBitrateKbps = 12000
 		c.Clients.Overrides = []core.ClientCapabilityOverride{{ID: "roku", DolbyVision: &off, HDR10: &off}}
 		return nil
 	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.safety.Put(ctx, viewer, safety.Policy{MaxBitrateKbps: 6000}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,7 +113,7 @@ func TestQualityExplainHandler(t *testing.T) {
 		}
 	}
 
-	for _, bad := range []string{`{"userId":` + strconv.FormatInt(viewer, 10) + `}`, `{"userId":` + strconv.FormatInt(viewer, 10) + `,"clientId":"nope"}`, `nope`} {
+	for _, bad := range []string{`{"userId":` + strconv.FormatInt(viewer, 10) + `,"client":{}}`, `{"userId":` + strconv.FormatInt(viewer, 10) + `,"clientId":"nope"}`, `nope`} {
 		if code, _ := postQualityExplain(t, a, bad); code != 400 {
 			t.Fatalf("%s: %d", bad, code)
 		}

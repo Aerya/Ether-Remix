@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -53,6 +54,8 @@ type channelSnapshot struct {
 	mu         sync.Mutex
 	generation int64
 	list       []Channel // sorted by number; never mutated once published
+	archived   []Channel
+	archiveIDs map[uint64]string
 	bySource   map[string][]int
 	byID       map[string]int
 }
@@ -95,7 +98,18 @@ func (s *Service) channelSnapshot(ctx context.Context) ([]Channel, *channelSnaps
 		c.generation, c.list = gen, loaded
 		c.byID = make(map[string]int, len(loaded))
 		c.bySource = map[string][]int{}
+		c.archived = nil
+		c.archiveIDs = make(map[uint64]string)
 		for i, ch := range loaded {
+			if ch.ArchiveDays() > 0 && ch.Kind == "iptv" {
+				c.archived = append(c.archived, ch)
+				key := frontend.CatchUpChannelKey(ch.ID)
+				if _, collision := c.archiveIDs[key]; collision {
+					c.archiveIDs[key] = ""
+				} else {
+					c.archiveIDs[key] = ch.ID
+				}
+			}
 			c.byID[ch.ID] = i
 			c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
 		}
@@ -176,4 +190,114 @@ func decodeChannelRows(rows *sql.Rows) ([]Channel, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// importSnapshot is every stored channel as a source import reads and
+// decodes it before taking the writer, with the channel epoch it was read
+// at. Every write to livetv_channels advances that epoch (triggers, from any
+// writer or node), so inside the import's write transaction an unchanged
+// epoch proves the rows are still these and nothing is read or decoded
+// there; a changed epoch reads them again in the transaction. The decoded
+// list is the import's own, never a shared snapshot.
+type importSnapshot struct {
+	gen  int64
+	list []Channel // as channels() returns them
+	// raw is the stored row of every IPTV channel and of every channel of
+	// the importing source: what the import diffs against and what
+	// duplicate-backup matching decodes afresh.
+	raw map[string][]byte
+}
+
+func readImportSnapshot(ctx context.Context, db *sql.DB, sourceID string) (*importSnapshot, error) {
+	p := &importSnapshot{raw: map[string][]byte{}}
+	// The epoch is read before the rows: a write in between leaves an older
+	// epoch on newer rows, which the transaction then reads again.
+	if err := db.QueryRowContext(ctx, `SELECT generation FROM livetv_channel_epoch WHERE id=1`).Scan(&p.gen); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT data FROM livetv_channels ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	p.list = []Channel{}
+	for rows.Next() {
+		var b []byte
+		var c Channel
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(b, &c); err != nil {
+			return nil, err
+		}
+		if c.Kind == "iptv" || c.SourceID == sourceID {
+			p.raw[c.ID] = b
+		}
+		p.list = append(p.list, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sortChannels(p.list)
+	return p, nil
+}
+
+// current returns every channel as tx sees it, and whether that is the
+// snapshot (so its rows may stand in for reads in tx).
+func (p *importSnapshot) current(ctx context.Context, tx *sql.Tx) ([]Channel, bool, error) {
+	var gen int64
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM livetv_channel_epoch WHERE id=1`).Scan(&gen); err != nil {
+		return nil, false, err
+	}
+	if p != nil && gen == p.gen {
+		return p.list, true, nil
+	}
+	list, err := channels(ctx, tx)
+	return list, false, err
+}
+
+// sourceRows is the stored row of every channel of sourceID, as
+// writeSourceChannels would read them.
+func (p *importSnapshot) sourceRows(sourceID string) map[string][]byte {
+	out := map[string][]byte{}
+	for _, c := range p.list {
+		if c.SourceID == sourceID {
+			out[c.ID] = p.raw[c.ID]
+		}
+	}
+	return out
+}
+
+// iptvAfter is every IPTV channel, freshly decoded and in channels() order,
+// as livetv_channels holds them once an import of sourceID has written
+// written (id to stored row) and deleted its other channels. channels()
+// orders ids bytewise only on SQLite (BINARY collation), so only SQLite
+// callers use it.
+func (p *importSnapshot) iptvAfter(sourceID string, written map[string][]byte) ([]Channel, error) {
+	byID := make(map[string][]byte, len(p.raw)+len(written))
+	for _, c := range p.list {
+		if c.Kind == "iptv" && c.SourceID != sourceID {
+			byID[c.ID] = p.raw[c.ID]
+		}
+	}
+	for id, b := range written {
+		byID[id] = b
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	out := make([]Channel, 0, len(ids))
+	for _, id := range ids {
+		var c Channel
+		if err := json.Unmarshal(byID[id], &c); err != nil {
+			return nil, err
+		}
+		if c.Kind == "iptv" {
+			out = append(out, c)
+		}
+	}
+	sortChannels(out)
+	return out, nil
 }
