@@ -133,8 +133,10 @@ func TestConnectAppsGrantScopeAndAuthorization(t *testing.T) {
 	}
 	res = do("POST", "/ether/api/me/apps/stremio", portal)
 	var created struct {
-		URL string `json:"url"`
-		QR  string `json:"qr"`
+		URL      string `json:"url"`
+		QR       string `json:"qr"`
+		FilesURL string `json:"filesUrl"`
+		FilesQR  string `json:"filesQr"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&created)
 	res.Body.Close()
@@ -142,6 +144,9 @@ func TestConnectAppsGrantScopeAndAuthorization(t *testing.T) {
 		t.Fatalf("create: %d %q", res.StatusCode, created.URL)
 	}
 	secret := strings.TrimSuffix(strings.TrimPrefix(created.URL, "https://ether.example/prefix/stremio/"), "/manifest.json")
+	if created.FilesURL != "https://ether.example/prefix/stremio/"+secret+"/fichiers/manifest.json" || !strings.HasPrefix(created.FilesQR, "data:image/png;base64,") {
+		t.Fatalf("files link: %q", created.FilesURL)
+	}
 	viewer, err := grants.Resolve(ctx, "stremio", secret)
 	if err != nil || viewer.ID != viewerID {
 		t.Fatalf("grant: %+v %v", viewer, err)

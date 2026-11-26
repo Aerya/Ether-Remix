@@ -76,6 +76,9 @@ func (i *instance) registerRoutes() error {
 	if err := i.router.Handle(http.MethodGet, "/{credential}/stream/{type}/{id}", http.HandlerFunc(i.stream)); err != nil {
 		return err
 	}
+	if err := i.registerPSEFilesOnlyRoutes(); err != nil { // PSE-HOOK: lien Stremio fichiers seuls — voir docs/pse/FORK.fr.md
+		return err
+	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		if err := i.router.Handle(method, "/sessions/lazy/{rest...}", http.HandlerFunc(i.serveLazy)); err != nil {
 			return err
@@ -202,6 +205,7 @@ func (i *instance) manifest(w http.ResponseWriter, r *http.Request) {
 	// Stremio type (spec §6.4). The library's catalog id is ether-lib-<id>;
 	// plugin items are addressed as pk: ItemRefs.
 	catalogs = append(catalogs, i.libraryCatalogs(r, viewer)...)
+	catalogs = append(catalogs, i.pseThemeCatalogs(r, viewer)...) // PSE-HOOK: catalogues des bibliothèques Remix — voir docs/pse/FORK.fr.md
 	writeJSON(w, map[string]any{
 		"id": "org.ether.viewer", "version": "1.0.0", "name": "Ether",
 		"types": []string{"movie", "series", "channel", "tv"}, "resources": []string{"catalog", "meta", "stream"},

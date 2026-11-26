@@ -11,6 +11,7 @@ import {
 } from "../../components/integration-brands";
 import { StremioMark } from "../sources/marks";
 import { t } from "../../i18n";
+import { StremioLinkChoice, chosenStremioLink } from "../../pse/StremioLinkChoice"; // PSE-HOOK: lien Stremio fichiers seuls
 
 type AdapterMeta = {
   name: string;
@@ -26,6 +27,8 @@ type Connection = {
   password?: string;
   token?: string;
   qr: string;
+  filesUrl?: string; // PSE-HOOK: lien Stremio fichiers seuls
+  filesQr?: string;
 };
 const names: Record<string, string> = {
   plex: "Plex",
@@ -52,6 +55,8 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
   const [apps, setApps] = useState<string[]>([]);
   const [adapters, setAdapters] = useState<Record<string, AdapterMeta>>({});
   const [connection, setConnection] = useState<Connection>();
+  const [filesOnly, setFilesOnly] = useState(false); // PSE-HOOK: lien Stremio fichiers seuls
+  const shown = connection && chosenStremioLink(connection, filesOnly);
 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -205,7 +210,10 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
         {connection && (
           <div className="min-w-0 max-h-[calc(100dvh-14rem)] space-y-5 overflow-y-auto">
             <p className="text-sm text-fg-muted">{t("This secret is shown only once.")}</p>
-            <ConnectionField label={t("Server URL")} value={connection.url} />
+            {shown && (
+              <StremioLinkChoice connection={shown} filesOnly={filesOnly} onChange={setFilesOnly} />
+            )}
+            <ConnectionField label={t("Server URL")} value={shown?.url ?? connection.url} />
             {connection.username && (
               <ConnectionField label={t("Username")} value={connection.username} />
             )}
@@ -213,10 +221,10 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
               <ConnectionField label={t("Password")} value={connection.password} />
             )}
             {connection.token && <ConnectionField label={t("Token")} value={connection.token} />}
-            {connection.qr && (
+            {(shown?.qr ?? connection.qr) && (
               <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-white p-4">
                 <img
-                  src={connection.qr}
+                  src={shown?.qr ?? connection.qr}
                   alt={t("QR code for the server address")}
                   width={192}
                   height={192}
@@ -227,7 +235,7 @@ function ConnectAppsSession({ base, token }: { base: string; token: string }) {
             {connection.surface === "stremio" && (
               <a
                 className={buttonVariants({ variant: "outline" })}
-                href={connection.url.replace(/^https?:\/\//, "stremio://")}
+                href={(shown?.url ?? connection.url).replace(/^https?:\/\//, "stremio://")}
               >
                 {t("Open in Stremio")}
               </a>

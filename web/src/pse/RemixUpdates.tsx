@@ -32,6 +32,10 @@ export const REMIX_UPDATES = [
     title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
     items: [
       [
+        "Stremio : deux liens au choix par profil. « Avec les catalogues du profil » publie aussi une rangée par collection des bibliothèques Remix accordées (contrôle parental et langue respectés) ; « Uniquement les fichiers » ne publie aucun catalogue et ne sert qu’à lire. Les liens déjà installés gagnent les catalogues Remix.",
+        "Stremio: two links per profile. “With the profile's catalogues” also publishes one row per collection of the granted Remix libraries (parental controls and language respected); “Files only” publishes no catalogue and only serves playback. Already installed links gain the Remix catalogues.",
+      ],
+      [
         "Lecture : un profil limité aux bibliothèques Remix (ex. enfants) peut lire leurs titres dans Stremio, Nuvio et Jellyfin ; ils étaient visibles mais refusés (erreur 503).",
         "Playback: a viewer limited to Remix libraries (e.g. kids) can play their titles in Stremio, Nuvio and Jellyfin; they were visible but refused (503 error).",
       ],
