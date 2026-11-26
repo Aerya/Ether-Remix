@@ -105,6 +105,10 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	i.observeClient(r, credential, viewer)
 	typ, id := r.PathValue("type"), r.PathValue("id")
 	catalogID := strings.TrimSuffix(id, ".json")
+	if row := pseRowFromCatalog(catalogID); row != "" { // PSE-HOOK: catalogues des bibliothèques Remix — voir docs/pse/FORK.fr.md
+		i.pseCatalog(w, r, credential, viewer, typ, row)
+		return
+	}
 	purpose := map[string]frontend.RowPurpose{"ether-continue": frontend.RowContinue, "ether-recent": frontend.RowRecentlyReleased, "ether-recommendations": frontend.RowRecommendation}[catalogID]
 	libID := libraryIDFromCatalog(catalogID)
 	if (typ != "movie" && typ != "series") || (purpose == "" && libID == "" && !((typ == "movie" && catalogID == "ether-movies") || (typ == "series" && catalogID == "ether-series"))) {

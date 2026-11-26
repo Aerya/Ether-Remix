@@ -216,6 +216,7 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	case surface == "stremio":
 		u.Path = basePath + "/" + secret + "/manifest.json"
 		result["url"] = u.String()
+		pseStremioFiles(result, u, basePath, secret) // PSE-HOOK: lien Stremio fichiers seuls — voir docs/pse/FORK.fr.md
 	case surface == "xtream":
 		u.Path = basePath
 		result["url"] = strings.TrimRight(u.String(), "/")

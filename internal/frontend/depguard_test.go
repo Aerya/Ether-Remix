@@ -73,7 +73,7 @@ func TestCheapSurfaceSize(t *testing.T) {
 		}
 		lines := 0
 		for _, path := range files {
-			if strings.HasSuffix(path, "_test.go") {
+			if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(filepath.Base(path), "pse_") { // PSE-HOOK: les fichiers pse_* du fork ne comptent pas — voir docs/pse/FORK.fr.md
 				continue
 			}
 			data, err := os.ReadFile(path)
