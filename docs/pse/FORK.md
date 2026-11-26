@@ -60,6 +60,7 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/frontends/mediabrowser/release_versions.go` (`mediaSourceName`) | cut in the Jellyfin/Emby version name (Plezy, Jellyfin) |
 | `internal/frontends/mediabrowser/browse.go` (item detail) | starts the release search when the Jellyfin detail only has provisional versions, then rebuilds it (`internal/frontends/mediabrowser/pse_detail_refill.go`) |
 | `internal/frontends/mediabrowser/library_activity.go` (`libraryActivity`: requested size and latest filter) | exclusion rules for Jellyfin Movies and Shows latest additions (`PSE_JELLYFIN_LATEST_FILTERS`, `internal/pse/latestfilter`, `internal/frontends/mediabrowser/pse_latest_filter.go`, alias `internal/frontend/pse_latest_filter.go`) |
+| `internal/app/session_broker.go` (`librarySessionTitle`) | playback of a title from a Remix library granted to a viewer restricted to Remix libraries (`frontend.PSEThemeGrant`, test `internal/app/pse_session_theme_grant_test.go`) |
 | `.github/workflows/pr-image-build.yml` (`paths-ignore`) | no preview image for a PR that only touches documentation (`*.md`, `docs/`, `LICENSE`); `pr-image-publish.yml` only runs after a successful build, so it is skipped too |
 
 Every PSE setting goes through `internal/pse/pseenv`: the value saved in the console (`pse_settings` table) wins over the environment variable. A new addition reads its settings with `pseenv.Get` and declares them in `internal/pse/console/fields.go`.

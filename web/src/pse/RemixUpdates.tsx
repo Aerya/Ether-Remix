@@ -32,6 +32,10 @@ export const REMIX_UPDATES = [
     title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
     items: [
       [
+        "Lecture : un profil limité aux bibliothèques Remix (ex. enfants) peut lire leurs titres dans Stremio, Nuvio et Jellyfin ; ils étaient visibles mais refusés (erreur 503).",
+        "Playback: a viewer limited to Remix libraries (e.g. kids) can play their titles in Stremio, Nuvio and Jellyfin; they were visible but refused (503 error).",
+      ],
+      [
         "L’accueil et les rangées des bibliothèques se règlent dans Recommandations. Les anciens placements, modèles de disposition et droits d’accès sont conservés.",
         "Home and library rows are edited in Recommendations. Existing placements, layout templates and access restrictions are retained.",
       ],

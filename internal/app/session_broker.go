@@ -355,6 +355,9 @@ func (a *App) librarySessionTitle(ctx context.Context, v *core.Viewer, key core.
 			return title, nil
 		}
 	}
+	if frontend.PSEThemeGrant(v, title) { // PSE-HOOK: lecture d'un titre d'une bibliothèque Remix accordée — voir docs/pse/FORK.fr.md
+		return title, nil
+	}
 	return nil, core.ErrNotFound
 }
 
