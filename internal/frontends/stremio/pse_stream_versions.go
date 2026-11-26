@@ -115,6 +115,16 @@ func pseHeightBucket(height int) int {
 // releases classées, en gardant leur ordre.
 func pseSelect(opts pseLinkOptions, ranked []frontend.ReleaseVariant) []frontend.ReleaseVariant {
 	var out []frontend.ReleaseVariant
+	seen := map[string]bool{}
+	uniq := ranked[:0:0]
+	for _, v := range ranked {
+		k := strings.ToLower(v.Release.Name) + "|" + strings.ToLower(v.Release.FileName)
+		if !seen[k] {
+			seen[k] = true
+			uniq = append(uniq, v)
+		}
+	}
+	ranked = uniq
 	if opts.Quotas == nil {
 		for _, v := range ranked {
 			if len(out) >= opts.Legacy-1 {
