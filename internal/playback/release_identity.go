@@ -192,7 +192,7 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 		(rel.Target.Episode != episode || rel.Target.Season != season) {
 		return false
 	}
-	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
+	year := pseSeriesYear(rel, title) // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	// A dated TVDB release can identify itself with a series name and
 	// broadcast date even when its filename omits an episode title.
 	daily := title.EpisodeOrder.Source == core.MetadataTVDB && info.AirDate != "" &&

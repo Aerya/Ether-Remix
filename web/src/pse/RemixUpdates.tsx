@@ -40,6 +40,10 @@ export const REMIX_UPDATES = [
         "Stremio and Nuvio: version list set per link. Under Connect, pick the display (Direct, Compact or Detailed) and the number of versions per quality (4K, 1080p, 720p): Ether offers the Auto stream then the best ranked releases of each quality, with debrid service, languages, size, bitrate and indexer. Ether runs the search before answering. Already installed links do not change.",
       ],
       [
+        "Lecture : les épisodes d'une série dont le titre finit par un nombre (ex. Blade Runner 2099) s'ouvrent ; le fichier n'est plus refusé comme « autre contenu ».",
+        "Playback: episodes of a show whose title ends with a number (e.g. Blade Runner 2099) open; the file is no longer refused as “different content”.",
+      ],
+      [
         "Recherche : un titre qui finit par un nombre à quatre chiffres (ex. Blade Runner 2099) trouve de nouveau ses releases ; ce nombre n'est plus pris pour une année de sortie.",
         "Search: a title ending with a four-digit number (e.g. Blade Runner 2099) finds its releases again; that number is no longer taken for a release year.",
       ],
