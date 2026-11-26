@@ -32,6 +32,10 @@ export const REMIX_UPDATES = [
     title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
     items: [
       [
+        "Nuvio : chaque spectateur peut relier son profil Nuvio (Profil › Connexion et appareils › Nuvio). La reprise et l'historique se synchronisent dans les deux sens (toutes les 5 minutes, réglable), et le lien Stremio du spectateur s'installe dans Nuvio en un clic. L'addon Ether déclare aussi les ressources Stremio « player » et « library » : Nuvio TV (1.2.0-beta.2 ou plus) y signale la lecture, la liste de suivi et les titres vus.",
+        "Nuvio: each viewer can link their Nuvio profile (Profile › Sign-in & devices › Nuvio). Resume points and history sync both ways (every 5 minutes, adjustable), and the viewer's Stremio link installs into Nuvio in one click. The Ether addon also declares the Stremio “player” and “library” resources: Nuvio TV (1.2.0-beta.2 or later) reports playback, watchlist and watched titles through them.",
+      ],
+      [
         "Stremio : deux liens au choix par profil. « Avec les catalogues du profil » publie aussi une rangée par collection des bibliothèques Remix accordées (contrôle parental et langue respectés) ; « Uniquement les fichiers » ne publie aucun catalogue et ne sert qu’à lire. Les liens déjà installés gagnent les catalogues Remix.",
         "Stremio: two links per profile. “With the profile's catalogues” also publishes one row per collection of the granted Remix libraries (parental controls and language respected); “Files only” publishes no catalogue and only serves playback. Already installed links gain the Remix catalogues.",
       ],

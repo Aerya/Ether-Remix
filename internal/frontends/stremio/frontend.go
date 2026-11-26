@@ -208,7 +208,7 @@ func (i *instance) manifest(w http.ResponseWriter, r *http.Request) {
 	catalogs = append(catalogs, i.pseThemeCatalogs(r, viewer)...) // PSE-HOOK: catalogues des bibliothèques Remix — voir docs/pse/FORK.fr.md
 	writeJSON(w, map[string]any{
 		"id": "org.ether.viewer", "version": "1.0.0", "name": "Ether",
-		"types": []string{"movie", "series", "channel", "tv"}, "resources": []string{"catalog", "meta", "stream"},
+		"types": []string{"movie", "series", "channel", "tv"}, "resources": pseManifestResources([]string{"catalog", "meta", "stream"}), // PSE-HOOK: ressources player et library pour Nuvio — voir docs/pse/FORK.fr.md
 		"idPrefixes": []string{"tmdb:", "tt", "pk:", catalogKeyPrefix},
 		"catalogs":   catalogs,
 	})

@@ -40,7 +40,7 @@ export const REMIX_TABS = [
     features: ["music", "librarysort", "jellyfinlatest"],
   },
   { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },
-  { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
+  { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob", "nuvio"] },
 ] as const;
 
 /**

@@ -26,6 +26,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
+	"github.com/braedonsaunders/ether/internal/pse/nuvio"
 	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/pse/scrobpush"
@@ -69,13 +70,15 @@ type pseRuntime struct {
 	// exemptKick relance la mise à jour des exceptions de langue.
 	exemptKick chan struct{}
 	// seerrSig résume les derniers titres SeerrCatalog rangés.
-	seerrSig atomic.Value
-	lfmOnce  sync.Once
-	lastfm   *music.Scrobbler
-	torrent  pseTorrentState // client BitTorrent (PSE_TORRENT)
-	peers    psePeerState
-	xdcc     pseXdccState // source XDCC (PSE_XDCC)
-	ftp      pseFTPState  // source FTP / SFTP (PSE_FTP)
+	seerrSig  atomic.Value
+	lfmOnce   sync.Once
+	lastfm    *music.Scrobbler
+	torrent   pseTorrentState // client BitTorrent (PSE_TORRENT)
+	peers     psePeerState
+	xdcc      pseXdccState // source XDCC (PSE_XDCC)
+	ftp       pseFTPState  // source FTP / SFTP (PSE_FTP)
+	nuvioOnce sync.Once
+	nuvio     *nuvio.Service // liaison Nuvio par spectateur
 }
 
 // scrobbler prépare l'envoi des écoutes à Last.fm.
@@ -392,6 +395,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		}
 		if r.URL.Path == "/themes" || strings.HasPrefix(r.URL.Path, "/themes/") {
 			http.StripPrefix("/themes", themeAPI).ServeHTTP(w, r)
+			return
+		}
+		if pseIsNuvioPath(r.URL.Path) {
+			a.pseNuvioAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/scrob" || strings.HasPrefix(r.URL.Path, "/scrob/") {

@@ -88,7 +88,7 @@ func TestFilesOnlyManifestHasNoCatalogNorMeta(t *testing.T) {
 	h := mountThemes(t, themeExperience{catalogs: []frontend.PSEThemeCatalog{{ID: "row1", Name: "x", Type: "movie"}}})
 	rec := get(h, "/stremio/valid/fichiers/manifest.json")
 	body := rec.Body.String()
-	if rec.Code != 200 || !strings.Contains(body, `"catalogs":[]`) || !strings.Contains(body, `"resources":["stream"]`) ||
+	if rec.Code != 200 || !strings.Contains(body, `"catalogs":[]`) || !strings.Contains(body, `"resources":["stream",{`) || !strings.Contains(body, `"name":"player"`) || !strings.Contains(body, `"name":"library"`) ||
 		!strings.Contains(body, `"id":"org.ether.viewer.files"`) || strings.Contains(body, "meta") {
 		t.Fatalf("files manifest: %d %s", rec.Code, body)
 	}
