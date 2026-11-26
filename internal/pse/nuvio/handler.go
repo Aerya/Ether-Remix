@@ -33,7 +33,7 @@ func (s *Service) Handler(exists func(ctx context.Context, id int64) bool) http.
 		case errors.Is(err, ErrUnauthorized):
 			code, msg = http.StatusUnauthorized, "Reconnexion à Nuvio nécessaire"
 		case isUserError(err):
-			code, msg = http.StatusUnprocessableEntity, err.Error()
+			code, msg = http.StatusBadRequest, err.Error()
 		}
 		writeJSON(w, code, map[string]any{"error": msg})
 	}
@@ -93,7 +93,7 @@ func (s *Service) Handler(exists func(ctx context.Context, id int64) bool) http.
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Requête invalide"})
 			return
 		}
-		if err := s.InstallAddon(r.Context(), id, body.URL); err != nil {
+		if err := s.InstallAddon(r.Context(), id, body.URL, r.Host); err != nil {
 			fail(w, err)
 			return
 		}

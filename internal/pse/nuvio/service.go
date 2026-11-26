@@ -23,10 +23,16 @@ type Catalog interface {
 	TargetOf(ctx context.Context, key core.RatingKey) (t Target, title string, ok bool)
 }
 
-// Applier écrit une progression ou un vu dans l'état d'Ether.
+// Applier écrit une progression ou un vu pour le spectateur, par le même
+// chemin que les lecteurs : droits sur le titre et contrôle parental compris.
+// Une erreur (titre interdit, inconnu) n'écrit rien.
 type Applier interface {
-	ApplyOfflineProgress(ctx context.Context, user int64, key core.RatingKey, p frontend.OfflineProgress) (frontend.TimelinePersistenceResult, error)
+	Apply(ctx context.Context, user int64, key core.RatingKey, p frontend.OfflineProgress) error
 }
+
+// Verifier contrôle un lien de manifeste Stremio : il doit porter un jeton
+// valide et être publié sur un hôte d'Ether ; il renvoie le spectateur du jeton.
+type Verifier func(ctx context.Context, u *url.URL, requestHost string) (viewer int64, err error)
 
 // Summary résume un cycle.
 type Summary struct {
@@ -42,6 +48,7 @@ type Service struct {
 	Client  *Client
 	Catalog Catalog
 	Applier Applier
+	Verify  Verifier
 	Log     *slog.Logger
 	Now     func() time.Time
 
@@ -305,11 +312,20 @@ func ValidateAddonURL(raw string) (*url.URL, error) {
 }
 
 // InstallAddon installe (ou met à jour) l'addon Ether dans le profil Nuvio
-// relié, repéré par l'hôte du serveur ; les autres addons restent tels quels.
-func (s *Service) InstallAddon(ctx context.Context, user int64, manifest string) error {
+// relié. Le lien doit être celui de CE spectateur, sur un hôte d'Ether. Seules
+// sont remplacées les entrées de ce spectateur (même jeton valide) ou ses
+// anciennes installations « Ether Remix » dont le jeton n'ouvre plus rien ;
+// les autres addons restent tels quels.
+func (s *Service) InstallAddon(ctx context.Context, user int64, manifest, requestHost string) error {
 	u, err := ValidateAddonURL(manifest)
 	if err != nil {
 		return err
+	}
+	if s.Verify == nil {
+		return userError{"Installation indisponible"}
+	}
+	if owner, err := s.Verify(ctx, u, requestHost); err != nil || owner != user {
+		return userError{"Ce lien n'est pas celui de ce spectateur sur ce serveur"}
 	}
 	l, ok, err := s.Store.Get(ctx, user)
 	if err != nil {
@@ -328,9 +344,9 @@ func (s *Service) InstallAddon(ctx context.Context, user int64, manifest string)
 			if n, ok := a["sort_order"].(float64); ok && int(n) > order {
 				order = int(n)
 			}
-			if au, _ := a["url"].(string); sameHost(au, u) {
+			if s.ownEntry(ctx, a, u, user, requestHost) {
 				if replaced {
-					continue // un seul addon Ether par profil
+					continue // une seule entrée Ether par spectateur et profil
 				}
 				a["url"], a["name"], a["enabled"] = u.String(), addonName, true
 				replaced = true
@@ -344,7 +360,17 @@ func (s *Service) InstallAddon(ctx context.Context, user int64, manifest string)
 	})
 }
 
-func sameHost(raw string, u *url.URL) bool {
+func (s *Service) ownEntry(ctx context.Context, a map[string]any, u *url.URL, user int64, reqHost string) bool {
+	raw, _ := a["url"].(string)
 	p, err := url.Parse(raw)
-	return err == nil && strings.EqualFold(p.Host, u.Host)
+	if err != nil || !strings.EqualFold(p.Host, u.Host) {
+		return false
+	}
+	owner, err := s.Verify(ctx, p, reqHost)
+	if err == nil {
+		return owner == user
+	}
+	// jeton révoqué ou illisible : ancienne installation d'Ether de ce serveur
+	name, _ := a["name"].(string)
+	return name == addonName
 }

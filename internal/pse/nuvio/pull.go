@@ -36,9 +36,16 @@ func (s *Service) Sync(ctx context.Context, user int64) (Summary, error) {
 	return s.pull(ctx, l), nil
 }
 
+const (
+	cycleTimeout = 2 * time.Minute
+	watchedFull  = 24 * time.Hour
+)
+
 func (s *Service) pull(ctx context.Context, l Link) Summary {
+	ctx, cancel := context.WithTimeout(ctx, cycleTimeout)
+	defer cancel()
 	var sum Summary
-	cursor, watchedAt := l.cursor, l.watchedAt
+	cur := cursors{progress: l.cursor, watchedAt: l.watchedAt, watchedCur: l.watchedCur, watchedFull: l.watchedFull}
 	var errText string
 	fail := func(err error) {
 		if errors.Is(err, ErrUnauthorized) {
@@ -51,51 +58,55 @@ func (s *Service) pull(ctx context.Context, l Link) Summary {
 	}
 	ctx = frontend.WithWatchOrigin(ctx, frontend.WatchOrigin{Surface: OriginSurface, ClientID: "ether-remix-pull"})
 	now := s.now()
+	// apply passe par le chemin des lecteurs (droits, contrôle parental) : un
+	// titre interdit ou inconnu compte comme « non reconnu ».
+	apply := func(t Target, p frontend.OfflineProgress) {
+		key, ok := s.Catalog.KeyFor(ctx, t)
+		if !ok {
+			sum.Unknown++
+			return
+		}
+		if err := s.Applier.Apply(ctx, l.UserID, key, p); err != nil {
+			sum.Unknown++
+			return
+		}
+		sum.Imported++
+	}
 
+	// Curseur moins 1 ms : rien n'est perdu à la frontière, l'idempotence
+	// de l'état absorbe le doublon.
+	since := l.cursor
+	if since > 0 {
+		since--
+	}
 	var prog []ProgressEntry
 	err := s.call(ctx, l.UserID, func(tok string) (e error) {
-		prog, e = s.Client.PullProgress(ctx, tok, l.ProfileIndex, l.cursor)
+		prog, e = s.Client.PullProgress(ctx, tok, l.ProfileIndex, since)
 		return
 	})
 	if err != nil {
 		fail(err)
-		s.Store.report(ctx, l.UserID, sum, cursor, watchedAt, errText)
+		s.Store.report(ctx, l.UserID, sum, cur, errText)
 		return sum
 	}
 	for _, e := range prog {
-		if e.LastWatched > cursor {
-			cursor = e.LastWatched
+		if e.LastWatched > cur.progress {
+			cur.progress = e.LastWatched
 		}
 		t, ok := targetOf(e.ContentID, e.ContentType, e.VideoID, e.Season, e.Episode)
-		if !ok {
+		if !ok || e.LastWatched <= 0 || e.Position < 0 {
 			sum.Skipped++
 			continue
 		}
-		if e.LastWatched <= 0 || e.Position < 0 {
-			sum.Skipped++
-			continue
-		}
-		key, ok := s.Catalog.KeyFor(ctx, t)
-		if !ok {
-			sum.Unknown++
-			continue
-		}
-		res, err := s.Applier.ApplyOfflineProgress(ctx, l.UserID, key, frontend.OfflineProgress{
+		apply(t, frontend.OfflineProgress{
 			Position:   time.Duration(e.Position) * time.Millisecond,
 			Duration:   time.Duration(e.Duration) * time.Millisecond,
 			ObservedAt: time.UnixMilli(e.LastWatched),
 			ReceivedAt: now,
 		})
-		if err != nil {
-			sum.Skipped++
-			continue
-		}
-		if res.Changed {
-			sum.Imported++
-		}
 	}
 
-	if watchedAt == 0 || now.Sub(time.Unix(watchedAt, 0)) >= watchedEvery {
+	if cur.watchedAt == 0 || now.Sub(time.Unix(cur.watchedAt, 0)) >= watchedEvery {
 		var watched []WatchedEntry
 		err := s.call(ctx, l.UserID, func(tok string) (e error) {
 			watched, e = s.Client.PullWatched(ctx, tok, l.ProfileIndex)
@@ -104,32 +115,34 @@ func (s *Service) pull(ctx context.Context, l Link) Summary {
 		if err != nil {
 			fail(err)
 		} else {
+			// Relecture complète au premier cycle puis une fois par jour ;
+			// sinon seuls les vus plus récents que le dernier appliqué.
+			full := cur.watchedFull == 0 || now.Sub(time.Unix(cur.watchedFull, 0)) >= watchedFull
+			floor := cur.watchedCur
+			if full {
+				floor = 0
+			}
 			for _, e := range watched {
+				if e.WatchedAt > cur.watchedCur {
+					cur.watchedCur = e.WatchedAt
+				}
 				t, ok := targetOf(e.ContentID, e.ContentType, "", e.Season, e.Episode)
 				if !ok || e.WatchedAt <= 0 || (e.ContentType == "series" && !t.Series) {
 					sum.Skipped++
 					continue
 				}
-				key, ok := s.Catalog.KeyFor(ctx, t)
-				if !ok {
-					sum.Unknown++
+				if e.WatchedAt <= floor {
 					continue
 				}
-				res, err := s.Applier.ApplyOfflineProgress(ctx, l.UserID, key, frontend.OfflineProgress{
-					ObservedAt: time.UnixMilli(e.WatchedAt), ReceivedAt: now, Played: true,
-				})
-				if err != nil {
-					sum.Skipped++
-					continue
-				}
-				if res.Changed {
-					sum.Imported++
-				}
+				apply(t, frontend.OfflineProgress{ObservedAt: time.UnixMilli(e.WatchedAt), ReceivedAt: now, Played: true})
 			}
-			watchedAt = now.Unix()
+			cur.watchedAt = now.Unix()
+			if full {
+				cur.watchedFull = now.Unix()
+			}
 		}
 	}
-	s.Store.report(ctx, l.UserID, sum, cursor, watchedAt, errText)
+	s.Store.report(ctx, l.UserID, sum, cur, errText)
 	return sum
 }
 

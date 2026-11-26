@@ -190,6 +190,11 @@ func TestNuvioLibraryActions(t *testing.T) {
 	if len(e.played) != 2 || e.played[0] != core.EpisodeKey(2, 1, 1) || e.played[1] != core.EpisodeKey(2, 1, 2) {
 		t.Fatalf("vus : %v", e.played)
 	}
+	// série sans videoId : ignorée ; film sans videoId : marqué
+	nuvioCall(h, http.MethodGet, "/stremio/grant/library/series/tt0000002/action=watched.json")
+	if len(e.played) != 2 {
+		t.Fatalf("série entière marquée : %v", e.played)
+	}
 	nuvioCall(h, http.MethodGet, "/stremio/grant/library/movie/tt0000001/action=unwatched.json")
 	if len(e.unplayed) != 1 || e.unplayed[0] != core.MovieKey(1) {
 		t.Fatalf("non vu : %v", e.unplayed)

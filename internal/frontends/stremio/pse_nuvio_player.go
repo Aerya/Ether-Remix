@@ -213,16 +213,17 @@ func (i *instance) pseNuvioLibrary(w http.ResponseWriter, r *http.Request) {
 			_ = i.host.Experience.SetWatchlist(ctx, viewer, key, action == "libraryAdd")
 		}
 	case "watched", "unwatched":
-		videoIDs := []string{raw}
+		videoIDs, explicit := []string{raw}, false
 		if v := strings.TrimSpace(extra.Get("videoId")); v != "" {
-			videoIDs = strings.Split(v, ",")
+			videoIDs, explicit = strings.Split(v, ","), true
 		}
 		if len(videoIDs) > 200 {
 			videoIDs = videoIDs[:200]
 		}
 		for _, vid := range videoIDs {
 			key, ok := i.pseNuvioKey(r, viewer, device, typ, strings.TrimSpace(vid))
-			if !ok {
+			// Sans videoId, seul un film se marque : une série entière ne l'est pas.
+			if !ok || (!explicit && key.Kind() != frontend.KindMovie) {
 				continue
 			}
 			frontend.PSENuvioIncoming(viewer.ID, key)

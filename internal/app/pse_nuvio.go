@@ -2,12 +2,18 @@ package app
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/pse/nuvio"
+	"github.com/braedonsaunders/ether/internal/remote"
 )
 
 // Liaison Nuvio par spectateur (internal/pse/nuvio). Voir docs/pse/FORK.fr.md.
@@ -71,7 +77,8 @@ func (a *App) pseNuvio() *nuvio.Service {
 			Store:   &nuvio.Store{DB: a.db, Sealer: a.cfg},
 			Client:  nuvio.NewClient(nil),
 			Catalog: nuvioCatalog{a},
-			Applier: a.state,
+			Applier: nuvioWriter{a},
+			Verify:  a.nuvioVerify,
 			Log:     a.log.With("component", "pse-nuvio"),
 		}
 	})
@@ -115,4 +122,77 @@ func (a *App) pseNuvioAPI(w http.ResponseWriter, r *http.Request) {
 
 func pseIsNuvioPath(p string) bool {
 	return strings.HasPrefix(p, "/viewers/") && strings.Contains(p, "/nuvio")
+}
+
+// nuvioWriter écrit comme un lecteur Stremio : droits sur le titre, contrôle
+// parental et visibilité du spectateur sont vérifiés par le service d'expérience.
+type nuvioWriter struct{ a *App }
+
+func (w nuvioWriter) Apply(ctx context.Context, user int64, key core.RatingKey, p frontend.OfflineProgress) error {
+	if w.a.users == nil {
+		return core.ErrNotAvailable
+	}
+	exp, err := w.a.newSurfaceExperience("stremio")
+	if err != nil {
+		return err
+	}
+	writer, ok := exp.(frontend.OfflineProgressWriter)
+	if !ok {
+		return core.ErrNotAvailable
+	}
+	viewer, err := w.a.users.ActiveUser(ctx, user)
+	if err != nil {
+		return err
+	}
+	return writer.SetOfflineProgress(ctx, viewer, key, p)
+}
+
+func hostOnly(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.ToLower(strings.Trim(h, "[]"))
+}
+
+// nuvioVerify accepte un lien …/stremio/<jeton>[/fichiers][/o/<options>]/manifest.json
+// publié sur un hôte d'Ether (celui de la requête de la console ou une adresse
+// publiée de Stremio) et renvoie le spectateur du jeton.
+func (a *App) nuvioVerify(ctx context.Context, u *url.URL, requestHost string) (int64, error) {
+	allowed := map[string]bool{}
+	if requestHost != "" {
+		allowed[hostOnly(requestHost)] = true
+	}
+	for _, raw := range a.cfg.Get().Frontends["stremio"].EffectivePublishedAddresses() {
+		if p, err := remote.ParsePublishedAddress(raw); err == nil {
+			allowed[strings.ToLower(p.Host)] = true
+		}
+	}
+	if !allowed[hostOnly(u.Host)] {
+		return 0, errors.New("hôte étranger")
+	}
+	seg := strings.Split(strings.Trim(u.Path, "/"), "/")
+	at := -1
+	for i, s := range seg {
+		if core.IsGrantCredential(s) {
+			at = i
+			break
+		}
+	}
+	if at < 1 || seg[at-1] != "stremio" {
+		return 0, errors.New("lien Stremio d'Ether attendu")
+	}
+	rest := strings.Join(seg[at+1:], "/")
+	if rest != "manifest.json" && rest != "fichiers/manifest.json" &&
+		!(len(seg[at+1:]) >= 3 && (seg[at+1] == "o" || seg[at+1] == "fichiers") && seg[len(seg)-1] == "manifest.json" && len(seg[at+1:]) <= 5) {
+		return 0, errors.New("lien Stremio d'Ether attendu")
+	}
+	grants, err := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil, a.cfg)
+	if err != nil {
+		return 0, err
+	}
+	viewer, err := grants.Resolve(ctx, "stremio", seg[at])
+	if err != nil || viewer == nil {
+		return 0, errors.New("jeton refusé")
+	}
+	return viewer.ID, nil
 }

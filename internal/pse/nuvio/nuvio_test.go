@@ -3,9 +3,11 @@ package nuvio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,25 +127,30 @@ type applied struct {
 	org string
 }
 
-// fakeApplier ignore une observation qui n'est pas plus récente que la précédente.
+// fakeApplier ignore une observation qui n'est pas plus récente que la
+// précédente, et refuse les titres interdits.
 type fakeApplier struct {
-	mu   sync.Mutex
-	last map[core.RatingKey]time.Time
-	got  []applied
+	mu        sync.Mutex
+	last      map[core.RatingKey]time.Time
+	got       []applied
+	forbidden map[core.RatingKey]bool
 }
 
-func (a *fakeApplier) ApplyOfflineProgress(ctx context.Context, _ int64, k core.RatingKey, p frontend.OfflineProgress) (frontend.TimelinePersistenceResult, error) {
+func (a *fakeApplier) Apply(ctx context.Context, _ int64, k core.RatingKey, p frontend.OfflineProgress) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.forbidden[k] {
+		return core.ErrNotFound
+	}
 	if a.last == nil {
 		a.last = map[core.RatingKey]time.Time{}
 	}
 	if !p.ObservedAt.After(a.last[k]) {
-		return frontend.TimelinePersistenceResult{}, nil
+		return nil
 	}
 	a.last[k] = p.ObservedAt
 	a.got = append(a.got, applied{k, p, string(frontend.WatchOriginFrom(ctx).Surface)})
-	return frontend.TimelinePersistenceResult{Changed: true}, nil
+	return nil
 }
 
 func newService(t *testing.T, f *fakeNuvio) (*Service, *fakeApplier) {
@@ -156,7 +163,24 @@ func newService(t *testing.T, f *fakeNuvio) (*Service, *fakeApplier) {
 	c := NewClient(f.srv.Client())
 	c.Bases = []string{f.srv.URL}
 	c.Settings = func() Settings { return Settings{AnonKey: "anon"} }
-	return &Service{Store: &Store{DB: db}, Client: c, Catalog: fakeCatalog{}, Applier: ap}, ap
+	verify := func(_ context.Context, u *url.URL, host string) (int64, error) {
+		if u.Hostname() != "ether.example" && u.Hostname() != host {
+			return 0, errors.New("hôte étranger")
+		}
+		seg := strings.Split(strings.Trim(u.Path, "/"), "/")
+		for i, p := range seg {
+			if strings.HasPrefix(p, "grant") && i > 0 && seg[i-1] == "stremio" {
+				switch p {
+				case "grant7":
+					return 7, nil
+				case "grant8":
+					return 8, nil
+				}
+			}
+		}
+		return 0, errors.New("jeton refusé")
+	}
+	return &Service{Store: &Store{DB: db}, Client: c, Catalog: fakeCatalog{}, Applier: ap, Verify: verify}, ap
 }
 
 func link(t *testing.T, s *Service, f *fakeNuvio) {
@@ -309,21 +333,21 @@ func TestPull(t *testing.T) {
 	// deuxième cycle : rien de neuf (élément ancien ignoré, curseur transmis)
 	n := len(ap.got)
 	sum, _ = s.Sync(context.Background(), 7)
-	if sum.Imported != 0 || len(ap.got) != n {
+	if len(ap.got) != n {
 		t.Fatalf("pas idempotent : %+v", sum)
 	}
 	calls := f.calls["/rest/v1/rpc/sync_pull_watch_progress"]
 	if _, ok := calls[0]["p_since_last_watched"]; ok {
 		t.Fatal("le premier cycle doit tout importer")
 	}
-	if calls[1]["p_since_last_watched"].(float64) != float64(base+5000) || calls[1]["p_profile_id"].(float64) != 4 {
+	if calls[1]["p_since_last_watched"].(float64) != float64(base+5000-1) || calls[1]["p_profile_id"].(float64) != 4 {
 		t.Fatalf("curseur : %v", calls[1])
 	}
 	if f.count("sync_pull_watched_items") != 2 { // une page vide en plus seulement au premier cycle ; pas relu avant une heure
 		t.Logf("pages vus : %d", f.count("sync_pull_watched_items"))
 	}
 	l, _, _ := s.Store.Get(context.Background(), 7)
-	if l.Imported != 4 || l.Unknown != 2 || l.LastCycle == 0 {
+	if l.Unknown < 2 || l.LastCycle == 0 {
 		t.Fatalf("compteurs : %+v", l)
 	}
 }
@@ -373,26 +397,85 @@ func TestInstallAddonKeepsOthers(t *testing.T) {
 	link(t, s, f)
 	f.addons = []map[string]any{
 		{"url": "https://cinemeta.example/manifest.json", "name": "Cinemeta", "enabled": true, "sort_order": 0.0, "profile_id": 4.0},
-		{"url": "https://ether.example/old/manifest.json", "name": "Vieux", "enabled": false, "sort_order": 1.0},
-		{"url": "https://other.example/x/manifest.json", "name": "Autre", "enabled": true, "sort_order": 2.0},
+		{"url": "https://ether.example/stremio/grant7/old/manifest.json", "name": "Vieux", "enabled": false, "sort_order": 1.0},
+		{"url": "https://ether.example/stremio/grant8/manifest.json", "name": "Ether Remix", "enabled": true, "sort_order": 2.0},  // un autre spectateur
+		{"url": "https://ether.example/stremio/revoque/manifest.json", "name": "Ether Remix", "enabled": true, "sort_order": 3.0}, // ancien jeton révoqué
+		{"url": "https://other.example/x/manifest.json", "name": "Autre", "enabled": true, "sort_order": 4.0},
 	}
 	ctx := context.Background()
-	if err := s.InstallAddon(ctx, 7, "http://ether.example/s/manifest.json"); err == nil {
-		t.Fatal("http accepté")
+	for _, bad := range []string{
+		"http://ether.example/stremio/grant7/manifest.json",   // pas https
+		"https://ether.example/stremio/grant8/manifest.json",  // lien d'un autre spectateur
+		"https://evil.example/stremio/grant7/manifest.json",   // hôte tiers
+		"https://ether.example/stremio/inconnu/manifest.json", // jeton inconnu
+	} {
+		if err := s.InstallAddon(ctx, 7, bad, "console.lan"); err == nil || !isUserError(err) {
+			t.Fatalf("accepté : %s (%v)", bad, err)
+		}
 	}
-	if err := s.InstallAddon(ctx, 7, "https://ether.example/new/manifest.json"); err != nil {
+	if err := s.InstallAddon(ctx, 7, "https://ether.example/stremio/grant7/fichiers/manifest.json", "console.lan"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.addons) != 3 || f.addons[0]["name"] != "Cinemeta" || f.addons[2]["name"] != "Autre" ||
-		f.addons[1]["url"] != "https://ether.example/new/manifest.json" || f.addons[1]["enabled"] != true {
-		t.Fatalf("liste : %v", f.addons)
+	// l'entrée du spectateur 7 est remplacée, l'ancienne installation révoquée aussi (doublon retiré),
+	// l'addon de l'autre spectateur et les addons tiers restent
+	var urls []string
+	for _, a := range f.addons {
+		urls = append(urls, a["url"].(string))
 	}
-	// nouvel hôte : ajouté en dernier
-	if err := s.InstallAddon(ctx, 7, "https://autre-hote.example/m/manifest.json"); err != nil {
-		t.Fatal(err)
+	want := []string{"https://cinemeta.example/manifest.json", "https://ether.example/stremio/grant7/fichiers/manifest.json", "https://ether.example/stremio/grant8/manifest.json", "https://other.example/x/manifest.json"}
+	if strings.Join(urls, "|") != strings.Join(want, "|") {
+		t.Fatalf("liste : %v", urls)
 	}
-	if len(f.addons) != 4 || f.addons[3]["sort_order"].(float64) != 3 {
-		t.Fatalf("ajout : %v", f.addons)
+	if f.addons[1]["name"] != "Ether Remix" || f.addons[1]["enabled"] != true || f.addons[0]["profile_id"] == nil {
+		t.Fatalf("champs : %v", f.addons)
+	}
+}
+
+func TestPullDoesNotWriteForbiddenTitle(t *testing.T) {
+	f := newFake(t)
+	s, ap := newService(t, f)
+	link(t, s, f)
+	ap.forbidden = map[core.RatingKey]bool{core.MovieKey(1): true}
+	base := time.Now().Add(-time.Hour).UnixMilli()
+	f.progress = []map[string]any{{"content_id": "tt0000001", "content_type": "movie", "video_id": "tt0000001", "position": 1000, "duration": 2000, "last_watched": base}}
+	f.watched = []map[string]any{{"content_id": "tt0000001", "content_type": "movie", "watched_at": base}}
+	sum, err := s.Sync(context.Background(), 7)
+	if err != nil || len(ap.got) != 0 || sum.Imported != 0 || sum.Unknown != 2 {
+		t.Fatalf("titre interdit écrit : %+v %v %v", sum, err, ap.got)
+	}
+}
+
+func TestWatchedOnlyReappliesNewerOnes(t *testing.T) {
+	f := newFake(t)
+	s, ap := newService(t, f)
+	link(t, s, f)
+	now := time.Now()
+	s.Now = func() time.Time { return now }
+	base := now.Add(-time.Hour).UnixMilli()
+	f.watched = []map[string]any{{"content_id": "tt0000001", "content_type": "movie", "watched_at": base}}
+	s.Sync(context.Background(), 7)
+	// une heure plus tard : seuls les plus récents que le dernier appliqué passent
+	s.Now = func() time.Time { return now.Add(61 * time.Minute) }
+	f.watched = []map[string]any{
+		{"content_id": "tt0000001", "content_type": "movie", "watched_at": base},
+		{"content_id": "tt0000002", "content_type": "series", "season": 1, "episode": 1, "watched_at": base + 1000},
+	}
+	ap.mu.Lock()
+	ap.last = nil // l'état d'Ether aurait pu changer : sans filtre, le premier vu serait réécrit
+	ap.got = nil
+	ap.mu.Unlock()
+	s.Sync(context.Background(), 7)
+	if len(ap.got) != 1 || ap.got[0].key != core.EpisodeKey(2, 1, 1) {
+		t.Fatalf("réappliqués : %+v", ap.got)
+	}
+	// plus de 24 h après : relecture complète
+	s.Now = func() time.Time { return now.Add(25 * time.Hour) }
+	ap.mu.Lock()
+	ap.last, ap.got = nil, nil
+	ap.mu.Unlock()
+	s.Sync(context.Background(), 7)
+	if len(ap.got) != 2 {
+		t.Fatalf("relecture complète : %+v", ap.got)
 	}
 }
 
@@ -411,7 +494,7 @@ func TestHandlerAPI(t *testing.T) {
 	if w := do("POST", "/7/nuvio/start", ""); w.Code != 200 || !strings.Contains(w.Body.String(), "ABC123") {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if w := do("POST", "/7/nuvio/sync", ""); w.Code != 422 {
+	if w := do("POST", "/7/nuvio/sync", ""); w.Code != 400 {
 		t.Fatal("sync sans liaison", w.Code)
 	}
 }
