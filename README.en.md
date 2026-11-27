@@ -41,7 +41,7 @@ You supply the required sources and accounts. For debrid and Usenet, Remix finds
 | **Libraries and home** | Themed collections, JukeBox setup, Xperience imports, layout templates, posters and custom navigation cards. |
 | **Sources and playback** | Configurable priorities, background searches and a shared release index; media identity, language and quality checks. |
 | **Viewers and tracking** | Private or shared access, parental controls and stream limits; cross-app resume, new episodes in Continue Watching, Scrob, Last.fm and statistics. |
-| **Console** | French interface, setup wizard, Simple/Expert modes, diagnostics and appearance settings. |
+| **Console** | French interface, eight-step setup assistant with a preview before applying, Simple/Expert modes, diagnostics and appearance settings. |
 
 Use **Recommendations** to arrange home and library rows for your viewers. Templates save and reapply layouts. Sharing also applies to Remix libraries in Plex, Stremio and Jellyfin; Jellyfin offers exclusion rules for latest additions. [Detailed features](docs/pse/FEATURES.en.md).
 
@@ -111,7 +111,7 @@ To migrate from Ether, back up `/config`, stop the old server and reuse its volu
 
 | Need | Guides |
 | --- | --- |
-| Installation, console and local media | [User guide](docs/pse/GUIDE.en.md) · [Folders and iBroadcast](docs/pse/GUIDE.en.md#local-media-and-ibroadcast) |
+| Installation, console and local media | [User guide](docs/pse/GUIDE.en.md) · [Setup assistant](docs/pse/SETUP.en.md) · [Folders and iBroadcast](docs/pse/GUIDE.en.md#local-media-and-ibroadcast) |
 | Features, libraries, sharing and clients | [Detailed features](docs/pse/FEATURES.en.md) |
 | Catalogue, search and priorities | [Catalogue](docs/pse/CATALOGUE.en.md) · [Release index](docs/pse/RELEASE_LIBRARY.en.md) · [Priorities](docs/pse/QUICK_SOURCES.en.md) |
 | Catalogue enrichment | [StreamFusion (FR)](docs/pse/STREAMFUSION.fr.md) · [SeerrCatalog](docs/pse/SEERRCATALOG.en.md) · [Pre](docs/pse/PRE.en.md) |

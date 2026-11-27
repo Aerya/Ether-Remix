@@ -58,5 +58,7 @@ __pycache__/
 !/docs/pse/FEATURES.fr.md
 !/docs/pse/FEATURES.en.md
 
+!/docs/pse/SETUP.fr.md
+!/docs/pse/SETUP.en.md
 !/docs/pse/DOCKER-MIGRATION.fr.md
 !/docs/pse/DOCKER-MIGRATION.en.md

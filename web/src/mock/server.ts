@@ -4020,7 +4020,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     }
 
     // Static routes
-    const remix = remixMock(route);
+    const remix = remixMock(route, body);
     if (remix) return remix;
     switch (route) {
       case "GET /availability/titles":

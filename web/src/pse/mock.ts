@@ -1,3 +1,4 @@
+import { setupMock } from "./setupMock";
 import type { Descriptor } from "../lib/extend";
 import { REMIX_NAV, remixHref } from "./navigation";
 const text = (fr: string, en = fr) => ({ fr, en });
@@ -199,7 +200,9 @@ const demoFeatures = [
   },
 ];
 /** Réponses minimales du fork pour le serveur de démonstration Ether. */
-export function remixMock(route: string): Response | undefined {
+export function remixMock(route: string, body?: unknown): Response | undefined {
+  const setup = setupMock(route, body);
+  if (setup) return setup;
   if (route === "POST /pse/predb/test")
     return Response.json({
       ok: true,

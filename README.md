@@ -41,7 +41,7 @@ Vous fournissez les sources et comptes nécessaires. Pour le debrid et Usenet, R
 | **Bibliothèques et accueil** | Collections à thème, configuration JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. |
 | **Sources et lecture** | Priorités configurables, recherche anticipée et index commun des releases ; contrôle de l’identité du média, des langues et de la qualité. |
 | **Spectateurs et suivi** | Accès privés ou partagés, contrôle parental et limites de flux ; reprise entre applications, nouveaux épisodes dans « Continuer à regarder », Scrob, Last.fm et statistiques. |
-| **Console** | Interface française, assistant de démarrage, modes Simple/Expert, diagnostics et réglages d’apparence. |
+| **Console** | Interface française, assistant de configuration en huit étapes avec aperçu avant application, modes Simple/Expert, diagnostics et réglages d’apparence. |
 
 Dans **Recommandations**, composez l’accueil et les rangées des bibliothèques pour vos spectateurs. Les modèles permettent de sauvegarder et réappliquer une disposition. Le partage s’applique aussi aux bibliothèques Remix dans Plex, Stremio et Jellyfin ; Jellyfin propose des exclusions pour ses derniers ajouts. [Fonctionnalités détaillées](docs/pse/FEATURES.fr.md).
 
@@ -111,7 +111,7 @@ Pour migrer depuis Ether, sauvegardez `/config`, arrêtez l’ancien serveur et 
 
 | Besoin | Guides |
 | --- | --- |
-| Installation, console et médias locaux | [Guide utilisateur](docs/pse/GUIDE.fr.md) · [Dossiers et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
+| Installation, console et médias locaux | [Guide utilisateur](docs/pse/GUIDE.fr.md) · [Assistant de configuration](docs/pse/SETUP.fr.md) · [Dossiers et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
 | Fonctions, bibliothèques, partage et clients | [Fonctionnalités détaillées](docs/pse/FEATURES.fr.md) |
 | Catalogue, recherche et priorités | [Catalogue](docs/pse/CATALOGUE.fr.md) · [Index des releases](docs/pse/RELEASE_LIBRARY.fr.md) · [Priorités](docs/pse/QUICK_SOURCES.fr.md) |
 | Enrichissement du catalogue | [StreamFusion](docs/pse/STREAMFUSION.fr.md) · [SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) · [Pre](docs/pse/PRE.fr.md) |
