@@ -1,3 +1,4 @@
+import { MusicDigarr } from "./MusicDigarr";
 import { MusicFlows } from "./MusicFlows";
 import { PlaylistBrowser } from "./PlaylistBrowser";
 import { Badge, Button, Input, toast } from "@braedonsaunders/appkit-ui";
@@ -66,7 +67,9 @@ export function deezerLinks(account: string) {
 const ENDPOINT = "/pse/music/playlists/";
 
 export function MusicPlaylists() {
-  const [tab, setTab] = useState<"discover" | "accounts" | "import" | "flows">("discover");
+  const [tab, setTab] = useState<"discover" | "accounts" | "import" | "flows" | "digarr">(
+    "discover",
+  );
   const doc = useAsync(() => apiFetch<PlaylistData>(ENDPOINT), []);
   const [data, setData] = useState<PlaylistData | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -166,7 +169,7 @@ export function MusicPlaylists() {
         role="group"
         aria-label={L("Gestion des playlists", "Playlist management")}
       >
-        {(["discover", "accounts", "import", "flows"] as const).map((id) => (
+        {(["discover", "accounts", "import", "flows", "digarr"] as const).map((id) => (
           <Button
             key={id}
             size="sm"
@@ -174,18 +177,21 @@ export function MusicPlaylists() {
             aria-pressed={tab === id}
             onClick={() => setTab(id)}
           >
-            {id === "discover"
-              ? L("Découvrir", "Discover")
-              : id === "accounts"
-                ? L("Mes comptes", "My accounts")
-                : id === "flows"
-                  ? L("Programmées", "Scheduled")
-                  : L("Importer", "Import")}
+            {id === "digarr"
+              ? "Digarr"
+              : id === "discover"
+                ? L("Découvrir", "Discover")
+                : id === "accounts"
+                  ? L("Mes comptes", "My accounts")
+                  : id === "flows"
+                    ? L("Programmées", "Scheduled")
+                    : L("Importer", "Import")}
           </Button>
         ))}
       </div>
+      {tab === "digarr" && <MusicDigarr viewers={current.viewers} />}
       {tab === "flows" && <MusicFlows viewers={current.viewers} />}
-      <div hidden={tab === "accounts" || tab === "flows"}>
+      <div hidden={tab === "accounts" || tab === "flows" || tab === "digarr"}>
         <PlaylistBrowser
           viewers={current.viewers}
           mode={tab === "import" ? "import" : "discover"}
