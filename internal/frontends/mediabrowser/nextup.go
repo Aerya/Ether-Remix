@@ -7,25 +7,35 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
-func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) frontend.RatingKey {
+func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) (frontend.RatingKey, bool) {
 	raw := firstQuery(r, "seriesId")
-	if raw == "" {
+	explicit := raw != ""
+	if !explicit {
 		raw = firstQuery(r, "parentId")
-	}
-	if raw == "" {
-		return 0
 	}
 	key, err := ids.ParseRatingKeyGUID(raw)
 	if err != nil {
-		return 0
+		return 0, explicit
+	}
+	if key.IsPluginKey() {
+		title, ok := i.storedListTitle(r, viewer, key)
+		if ok {
+			switch title.Type {
+			case frontend.TypeShow:
+				return key, true
+			case frontend.TypeSeason, frontend.TypeEpisode:
+				return title.ShowKey, true
+			}
+		}
+		return 0, true
 	}
 	switch key.Kind() {
 	case frontend.KindShow:
-		return key
+		return key, true
 	case frontend.KindSeason, frontend.KindEpisode:
-		return i.seriesForItem(r, viewer, key)
+		return i.seriesForItem(r, viewer, key), true
 	default:
-		return 0
+		return 0, explicit
 	}
 }
 

@@ -8592,6 +8592,7 @@
   },
   "m_1896095e6f5bf2": "Se vuelve a comprobar su estado la próxima vez que sea candidato.",
   "m_18969be245c683": "¿Dejar de fijar {title}?",
+  "m_1897e9736cf4c7": "Reconstruir e instalar",
   "m_189a21208e55a9": "Los eventos en directo aparecerán aquí cuando la fuente se recupere.",
   "m_189a38f201f485": "Cancelar reinicio",
   "m_189a59134a29dd": {
@@ -8681,6 +8682,7 @@
   "m_18cb5aae13b5b6": "En espera",
   "m_18cc2c92567fa5": "Ningún campo coincide.",
   "m_18cce9c74cc9f4": "Piloto",
+  "m_18cd6d66255241": "¿Reconstruir la biblioteca modificada?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Reclama este servidor para activarlo.",
   "m_18cf943a2b12c6": "Cuánto del siguiente episodio se adelanta.",
@@ -9212,6 +9214,7 @@
   "m_1a44ace02fcbe8": "Opciones adicionales que admite este servidor.",
   "m_1a44b93c65889f": "Cuántos segundos debe avanzar un espectador en un título antes de que Ether guarde un punto de reanudación, en todas las apps. 0 mantiene el valor predeterminado: 5 % del título.",
   "m_1a45134f2ae116": "Una fila mezclando las bibliotecas.",
+  "m_1a45e671c5598f": "En la próxima sincronización, Ether elimina los elementos de las bibliotecas afectadas y sus datos en caché y vuelve a crear las bibliotecas a partir del complemento. El progreso de reproducción, los favoritos y la pertenencia a colecciones se conservan para los elementos que el complemento restaure con el mismo ID.",
   "m_1a463369546cbe": "Buscar en {name}",
   "m_1a463f39cec097": "Estudio",
   "m_1a46a61e987645": "Cuentas que pueden iniciar sesión como este espectador.",

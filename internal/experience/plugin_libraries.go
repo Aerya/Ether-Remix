@@ -1284,6 +1284,21 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 		return core.Page{Items: page.Items, Total: page.Total}, nil
 	}
 
+	if q.ChildScanLimit > 0 {
+		if !hasQueryChildren {
+			return core.Page{}, nil
+		}
+		page, err := fetchChildren("", q.ChildScanLimit)
+		if err != nil || page.NextCursor != "" {
+			return core.Page{}, err
+		}
+		items, err := s.filterPluginTitles(ctx, v, page.Items, q)
+		if err != nil {
+			return core.Page{}, err
+		}
+		return slicePluginTitles(items, q)
+	}
+
 	var all []core.Title
 	cursor := ""
 	filterQ := q

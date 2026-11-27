@@ -101,6 +101,42 @@ func TestShowsNextUpHonoursSeriesId(t *testing.T) {
 	}
 }
 
+func TestShowsNextUpForAPluginSeriesIsEmpty(t *testing.T) {
+	league := core.PluginKey(7)
+	lupin := frontend.Title{Key: core.EpisodeKey(99, 1, 2), Type: "episode", Title: "Chapter 2", ShowKey: core.ShowKey(99), Season: 1, Episode: 2, ShowTitle: "Lupin"}
+	for _, dialect := range []string{"jellyfin", "emby"} {
+		for _, param := range []string{"seriesId", "parentId"} {
+			t.Run(dialect+"/"+param, func(t *testing.T) {
+				var rowsCalled bool
+				exp := frontendtest.Experience{
+					RowsFunc: func(context.Context, frontend.RowRequest) ([]frontend.Row, error) {
+						rowsCalled = true
+						return []frontend.Row{{Purpose: frontend.RowNextUp, Items: []frontend.Title{lupin}}}, nil
+					},
+				}
+				inst := mountDialect(t, dialect, exp)
+				w := httptest.NewRecorder()
+				r := httptest.NewRequest(http.MethodGet, "/Shows/NextUp?"+param+"="+ids.RatingKeyGUID(league)+"&limit=20", nil)
+				r.Header.Set("X-Emby-Token", "grant")
+				inst.Handler().ServeHTTP(w, r)
+				var body struct {
+					Items            []map[string]any
+					TotalRecordCount int
+				}
+				if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+					t.Fatalf("%d %s", w.Code, w.Body.String())
+				}
+				if len(body.Items) != 0 || body.TotalRecordCount != 0 {
+					t.Fatalf("a plugin series page listed Next Up from other shows: %s", w.Body.String())
+				}
+				if rowsCalled {
+					t.Fatal("global next-up row used for a plugin series request")
+				}
+			})
+		}
+	}
+}
+
 func mountDialect(t *testing.T, protocol string, exp frontendtest.Experience) frontend.Instance {
 	t.Helper()
 	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) {

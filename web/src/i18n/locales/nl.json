@@ -8380,6 +8380,7 @@
   },
   "m_1896095e6f5bf2": "Hij wordt opnieuw op gezondheid gecontroleerd zodra hij weer een kandidaat is.",
   "m_18969be245c683": "Pin van {title} verwijderen?",
+  "m_1897e9736cf4c7": "Opnieuw opbouwen en installeren",
   "m_189a21208e55a9": "Live-evenementen verschijnen hier zodra de feed is hersteld.",
   "m_189a38f201f485": "Herstart annuleren",
   "m_189a59134a29dd": {
@@ -8464,6 +8465,7 @@
   "m_18cb5aae13b5b6": "Afkoelen",
   "m_18cc2c92567fa5": "Geen passende velden.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Gewijzigde bibliotheek opnieuw opbouwen?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Claim deze server om dit in te schakelen.",
   "m_18cf943a2b12c6": "Hoeveel van de volgende aflevering vooraf wordt opgehaald.",
@@ -8987,6 +8989,7 @@
   "m_1a44ace02fcbe8": "Extra opties die deze server ondersteunt.",
   "m_1a44b93c65889f": "Hoeveel seconden een kijker in een titel moet zijn voordat Ether een hervatpunt bewaart, in elke app. 0 behoudt de standaard: 5% van de titel.",
   "m_1a45134f2ae116": "Eén rij met titels uit meerdere bibliotheken.",
+  "m_1a45e671c5598f": "Bij de volgende synchronisatie wist Ether de items en hun gecachte gegevens uit de betrokken bibliotheken en bouwt het de bibliotheken opnieuw op vanuit de plug-in. Kijkvoortgang, favorieten en collectielidmaatschap blijven behouden voor items die de plug-in met dezelfde ID terugzet.",
   "m_1a463369546cbe": "Zoek in {name}",
   "m_1a463f39cec097": "Studio",
   "m_1a46a61e987645": "Accounts die kunnen inloggen als deze kijker.",

@@ -75,6 +75,20 @@ func (s *Service) SaveParts(ctx context.Context, itemRef core.ItemRef, parts []c
 	}
 	defer tx.Rollback()
 
+	// A resolver can finish while a rebuild is purging this item. Keep
+	// late part writes from creating orphaned rows or consuming saved keys.
+	itemQuery := `SELECT 1 FROM plugin_items WHERE item_ref = ?`
+	if store.DialectOf(s.db) == store.Postgres {
+		itemQuery += " FOR KEY SHARE"
+	}
+	var exists int
+	if err := tx.QueryRowContext(ctx, itemQuery, string(itemRef)).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, core.ErrNotFound
+		}
+		return nil, err
+	}
+
 	existing := make(map[int]int64)
 	rows, err := tx.QueryContext(ctx, `SELECT part_index, seq FROM plugin_item_parts WHERE item_ref = ? ORDER BY part_index`, string(itemRef))
 	if err != nil {
@@ -105,6 +119,29 @@ func (s *Service) SaveParts(ctx context.Context, itemRef core.ItemRef, parts []c
 		s.partsState.Store(0)
 		return nil, nil
 	}
+
+	rows, err = tx.QueryContext(ctx, `
+DELETE FROM plugin_rebuild_keys WHERE item_ref = ? AND part_index >= 0 AND part_index < ?
+RETURNING part_index, seq`, string(itemRef), len(parts))
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var idx int
+		var seq int64
+		if err := rows.Scan(&idx, &seq); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if _, ok := existing[idx]; !ok {
+			existing[idx] = seq
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
 
 	var newCount int64
 	for i := range parts {

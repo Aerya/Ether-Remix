@@ -466,6 +466,9 @@ type ItemQuery struct {
 	// SuppressExpand disables on-demand background plugin facet/person expansion
 	// for internal shelf probes and search fan-out.
 	SuppressExpand bool
+	// ChildScanLimit bounds work for a stored plugin subtree probe. If the
+	// subtree cannot be read within this window, the probe returns no items.
+	ChildScanLimit int
 }
 
 // Continuation distinguishes a known next page from exhaustion and a

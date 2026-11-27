@@ -1556,3 +1556,10 @@ func (m *Manager) Prune(ctx context.Context) (int64, error) {
 	}
 	return m.store.pruneJournal(ctx)
 }
+
+// CompleteLibraryRebuildApproval clears the install approval after each kind
+// has durably queued its own rebuild. A newer install owns its own approval.
+func (m *Manager) CompleteLibraryRebuildApproval(ctx context.Context, r Record) error {
+	_, err := m.store.db.ExecContext(ctx, `UPDATE plugins_installed SET replace_libraries = 0 WHERE id = ? AND manifest = ?`, r.ID, string(r.ManifestRaw))
+	return err
+}

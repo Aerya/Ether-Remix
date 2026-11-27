@@ -664,7 +664,41 @@ type InstallOptions struct {
 	AcceptAddedPermissions bool
 	// ReplaceLibraries confirms a non-additive media-kind upgrade that
 	// replaces the plugin's library contents (spec §2.5).
-	ReplaceLibraries bool
+	ReplaceLibraries           bool
+	rebuildConfirmation        string
+	requireRebuildConfirmation bool
+}
+
+type libraryLevelChangeError struct {
+	*ValidationError
+	confirmation string
+}
+
+func (e *libraryLevelChangeError) Unwrap() error { return e.ValidationError }
+
+func isLibraryLevelChange(e *ValidationError) bool {
+	for _, field := range e.Fields {
+		if !strings.Contains(field.Field, ".levels[") {
+			return false
+		}
+	}
+	return len(e.Fields) > 0
+}
+
+func canRebuildChangedKinds(prev, next []MediaKindMeta) bool {
+	for _, old := range prev {
+		found := false
+		for _, candidate := range next {
+			if candidate.Key == old.Key && (!old.HasLibrary() || candidate.HasLibrary()) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func mediaKindsOf(m Manifest) []MediaKindMeta {
@@ -701,7 +735,11 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 		return Record{}, fmt.Errorf("plugins: no signed catalogue is configured")
 	}
 	cur, curErr := m.store.record(ctx, man.ID)
+	if curErr != nil && !errors.Is(curErr, ErrNotFound) {
+		return Record{}, curErr
+	}
 	existing := curErr == nil
+	replaceLibraries := false
 	if existing {
 		if CompareSemVer(man.Version, cur.Version) <= 0 && man.Version != cur.Version {
 			// Same-version reinstall is allowed (Studio); older is not.
@@ -709,14 +747,25 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 				return Record{}, fmt.Errorf("plugins: version %s is older than the installed %s; use rollback", man.Version, cur.Version)
 			}
 		}
-		if !opts.ReplaceLibraries {
-			if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
-				return Record{}, err
-			}
-		}
 		added := PermissionDiff(cur.Manifest, man)
 		if len(added) > 0 && !opts.AcceptAddedPermissions {
 			return Record{}, &PermissionIncreaseError{Added: added}
+		}
+		prevKinds, nextKinds := mediaKindsOf(cur.Manifest), mediaKindsOf(man)
+		if err := ValidateMediaKindsUpgrade(prevKinds, nextKinds); err != nil {
+			canRebuild := canRebuildChangedKinds(prevKinds, nextKinds)
+			confirmation := digestOf(append(append(bytes.Clone(cur.ManifestRaw), 0), p.manifestRaw...))
+			if !opts.ReplaceLibraries || !canRebuild || (opts.requireRebuildConfirmation && opts.rebuildConfirmation != confirmation) {
+				var validation *ValidationError
+				if canRebuild && errors.As(err, &validation) && isLibraryLevelChange(validation) {
+					return Record{}, &libraryLevelChangeError{ValidationError: validation, confirmation: confirmation}
+				}
+				return Record{}, err
+			}
+			replaceLibraries = true
+		}
+		if cur.ReplaceLibraries && bytes.Equal(cur.ManifestRaw, p.manifestRaw) {
+			replaceLibraries = true
 		}
 	}
 	if man.Ether != nil && man.Ether.Runtime.Kind == "data" {
@@ -733,7 +782,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	r := Record{
 		ID: man.ID, Name: man.Name, Version: man.Version, Manifest: man, ManifestRaw: p.manifestRaw,
 		SourceKind: sourceKindOf(p.source), SourceURL: p.source.URL, Enabled: true,
-		Verified: p.source.Verified, AutoUpdate: opts.AutoUpdate, Shadow: opts.Shadow,
+		Verified: p.source.Verified, AutoUpdate: opts.AutoUpdate, Shadow: opts.Shadow, ReplaceLibraries: replaceLibraries,
 	}
 	if man.Ether != nil {
 		r.Kind = string(man.Ether.Kind)
@@ -745,16 +794,6 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			r.PrevVersion = cur.Version
 		} else {
 			r.PrevVersion = cur.PrevVersion
-		}
-	}
-	if err := m.store.upsert(ctx, r); err != nil {
-		return Record{}, err
-	}
-	if existing {
-		// Only the current and previous bundles are ever read again
-		// (runtime, rollback); older ones are dead blobs.
-		if err := m.store.dropOtherVersions(ctx, man.ID, r.Version, r.PrevVersion); err != nil {
-			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
 		}
 	}
 	// Grants: keep existing picks on update unless new ones were given;
@@ -806,6 +845,16 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	row.Schema = p.resolvedSettings
 	if err := m.store.putSettings(ctx, man.ID, row); err != nil {
 		return Record{}, err
+	}
+	if err := m.store.upsert(ctx, r); err != nil {
+		return Record{}, err
+	}
+	if existing {
+		// Only the current and previous bundles are ever read again
+		// (runtime, rollback); older ones are dead blobs.
+		if err := m.store.dropOtherVersions(ctx, man.ID, r.Version, r.PrevVersion); err != nil {
+			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
+		}
 	}
 	if h, err := m.store.health(ctx, man.ID); err == nil && h.Status == "" {
 		_ = m.store.putHealth(ctx, man.ID, Health{Status: "ok", Observed: map[string]int{}})
@@ -919,26 +968,37 @@ func (m *Manager) CheckUpdate(ctx context.Context, id string) (*Preview, bool, e
 	}
 	added := PermissionDiff(r.Manifest, p.Manifest)
 	if r.AutoUpdate && r.Verified && len(added) == 0 {
-		if _, err := m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow}); err != nil {
-			return p, true, err
+		if _, err := m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow}); err == nil {
+			return p, true, nil
+		} else {
+			var shape *libraryLevelChangeError
+			if !errors.As(err, &shape) {
+				return p, true, err
+			}
 		}
-		return p, true, nil
 	}
-	r.UpdateVersion = p.Manifest.Version
-	r.updateManifest = string(p.manifestRaw)
 	filesRaw, err := json.Marshal(p.files)
 	if err != nil {
 		return nil, false, err
 	}
-	r.updateFiles = string(filesRaw)
-	if err := m.store.upsert(ctx, r); err != nil {
+	res, err := m.store.db.ExecContext(ctx, `
+UPDATE plugins_installed SET update_version = ?, update_manifest = ?, update_files = ?
+WHERE id = ? AND manifest = ?`, p.Manifest.Version, string(p.manifestRaw), string(filesRaw), id, string(r.ManifestRaw))
+	if err != nil {
 		return nil, false, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return p, false, err
 	}
 	return p, true, nil
 }
 
 // ApplyUpdate installs a pending update previously stored by CheckUpdate.
 func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) (Record, error) {
+	return m.applyUpdate(ctx, id, InstallOptions{AcceptAddedPermissions: acceptAdded})
+}
+
+func (m *Manager) applyUpdate(ctx context.Context, id string, opts InstallOptions) (Record, error) {
 	r, err := m.store.record(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -946,13 +1006,14 @@ func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) 
 	if r.UpdateVersion == "" || r.updateManifest == "" {
 		return Record{}, fmt.Errorf("plugins: no update is waiting for %s", id)
 	}
+	opts.AutoUpdate, opts.Shadow = r.AutoUpdate, r.Shadow
 	if r.SourceKind == "catalogue" {
 		g, _ := m.store.grants(ctx, id)
 		p, err := m.PreviewInstall(ctx, Source{Kind: "catalogue", ID: id, Version: r.UpdateVersion, LAN: g.LAN})
 		if err != nil {
 			return Record{}, err
 		}
-		return m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow, AcceptAddedPermissions: acceptAdded})
+		return m.Install(ctx, p, opts)
 	}
 	man, err := ParseManifest([]byte(r.updateManifest))
 	if err != nil {
@@ -968,13 +1029,7 @@ func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) 
 	if err := p.resolve(); err != nil {
 		return Record{}, err
 	}
-	saved, err := m.Install(ctx, p, InstallOptions{AcceptAddedPermissions: acceptAdded, AutoUpdate: r.AutoUpdate, Shadow: r.Shadow})
-	if err != nil {
-		return Record{}, err
-	}
-	saved.UpdateVersion, saved.updateManifest, saved.updateFiles = "", "", ""
-	_ = m.store.upsert(ctx, saved)
-	return saved, nil
+	return m.Install(ctx, p, opts)
 }
 
 // Rollback returns a plugin to its previous version (one step).

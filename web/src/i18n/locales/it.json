@@ -8592,6 +8592,7 @@
   },
   "m_1896095e6f5bf2": "Verrà controllata di nuovo la prossima volta che sarà una candidata.",
   "m_18969be245c683": "Rimuovere il blocco su {title}?",
+  "m_1897e9736cf4c7": "Ricostruisci e installa",
   "m_189a21208e55a9": "Gli eventi dal vivo appariranno qui quando il feed tornerà operativo.",
   "m_189a38f201f485": "Annulla il riavvio",
   "m_189a59134a29dd": {
@@ -8681,6 +8682,7 @@
   "m_18cb5aae13b5b6": "In attesa di riprovare",
   "m_18cc2c92567fa5": "Nessun campo corrisponde.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Ricostruire la libreria modificata?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Rivendica questo server per attivarlo.",
   "m_18cf943a2b12c6": "Quanto dell'episodio successivo anticipare.",
@@ -9216,6 +9218,7 @@
   "m_1a44ace02fcbe8": "Opzioni aggiuntive supportate da questo server.",
   "m_1a44b93c65889f": "Quanti secondi di riproduzione di un titolo servono prima che Ether salvi un punto di ripresa, in ogni app. 0 mantiene il valore predefinito: 5% del titolo.",
   "m_1a45134f2ae116": "Una fila che mescola le biblioteche.",
+  "m_1a45e671c5598f": "Alla prossima sincronizzazione, Ether elimina gli elementi delle librerie interessate e i relativi dettagli in cache, poi ricostruisce le librerie dal plugin. Avanzamento della visione, preferiti e appartenenza alle raccolte vengono conservati per gli elementi che il plugin ripristina con lo stesso ID.",
   "m_1a463369546cbe": "Cerca in {name}",
   "m_1a463f39cec097": "Studio",
   "m_1a46a61e987645": "Account che possono accedere come questo spettatore.",

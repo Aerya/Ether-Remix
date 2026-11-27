@@ -501,11 +501,18 @@ func (s *Service) applyUpsertChunk(ctx context.Context, tx *sql.Tx, kind KindRec
 	}
 
 	var nextSeq int64
+	var restored map[core.ItemRef]rebuildKey
 	if plan.result.added > 0 {
 		var err error
-		nextSeq, err = allocateSeqRangeTx(ctx, tx, int64(plan.result.added))
+		restored, err = takeRebuildItemKeys(ctx, tx, chunk, existing)
 		if err != nil {
 			return 0, err
+		}
+		if fresh := plan.result.added - len(restored); fresh > 0 {
+			nextSeq, err = allocateSeqRangeTx(ctx, tx, int64(fresh))
+			if err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -563,9 +570,13 @@ func (s *Service) applyUpsertChunk(ctx context.Context, tx *sql.Tx, kind KindRec
 				tallyDelta[it.Level]++
 			}
 		} else {
-			seq = nextSeq
-			nextSeq++
-			addedAt = nowUnix
+			if key, ok := restored[it.Ref]; ok {
+				seq, addedAt = key.seq, key.addedAt
+			} else {
+				seq = nextSeq
+				nextSeq++
+				addedAt = nowUnix
+			}
 			tallyDelta[it.Level]++
 		}
 		it.Key = core.PluginKey(seq)

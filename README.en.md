@@ -9,6 +9,8 @@ The repository now lives in **[Remix-Media](https://github.com/Remix-Media/Ether
 
 # Ether-Remix
 
+Plugin libraries can be rebuilt after explicit confirmation. Ether sync preserves Remix plugin refresh settings, quotas and scheduling.
+
 **Movies, shows, anime and music in the applications you already use.**
 
 Ether-Remix is an on-demand media server based on [Ether](https://github.com/braedonsaunders/ether). It brings together remote sources and local files, with a French-oriented catalogue, custom libraries and per-viewer tracking. You provide the sources and accounts required for playback.

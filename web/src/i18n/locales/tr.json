@@ -8368,6 +8368,7 @@
   },
   "m_1896095e6f5bf2": "Bir sonraki aday olduğunda sağlığı yeniden denetlenir.",
   "m_18969be245c683": "{title} sabitlemesi kaldırılsın mı?",
+  "m_1897e9736cf4c7": "Yeniden oluştur ve yükle",
   "m_189a21208e55a9": "Akış düzeldiğinde canlı etkinlikler burada görünecektir.",
   "m_189a38f201f485": "Yeniden başlatmayı iptal et",
   "m_189a59134a29dd": {
@@ -8452,6 +8453,7 @@
   "m_18cb5aae13b5b6": "Bekleme süresinde",
   "m_18cc2c92567fa5": "Eşleşen alan yok.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Değişen kitaplık yeniden oluşturulsun mu?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Bunu açmak için bu sunucuyu sahiplenin.",
   "m_18cf943a2b12c6": "Sonraki bölümün ne kadarının önceden çekileceği.",
@@ -8975,6 +8977,7 @@
   "m_1a44ace02fcbe8": "Bu sunucunun desteklediği ek seçenekler.",
   "m_1a44b93c65889f": "Ether’ın tüm uygulamalarda kaldığı yeri kaydetmesi için izleyicinin bir içerikte kaç saniye ilerlemesi gerektiği. 0 varsayılanı korur: içeriğin %5’i.",
   "m_1a45134f2ae116": "Birden fazla kitaplığın içeriği tek satırda.",
+  "m_1a45e671c5598f": "Bir sonraki eşitlemede Ether, etkilenen kitaplıklardaki öğeleri ve önbelleğe alınmış ayrıntılarını siler, ardından kitaplıkları eklentiden yeniden oluşturur. Eklentinin aynı kimlikle geri getirdiği öğelerin izleme ilerlemesi, favorileri ve koleksiyon üyelikleri korunur.",
   "m_1a463369546cbe": "{name} içinde ara",
   "m_1a463f39cec097": "Stüdyo",
   "m_1a46a61e987645": "Bu izleyici olarak oturum açabilen hesaplar.",

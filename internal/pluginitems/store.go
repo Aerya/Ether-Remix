@@ -18,12 +18,13 @@ import (
 
 // KindRecord is one installed (plugin, kind) row in plugin_kinds (spec §2.3).
 type KindRecord struct {
-	PluginID      string
-	KindKey       string
-	LibraryID     core.LibraryID
-	Decl          plugins.MediaKindMeta
-	DeclHash      string
-	SchemaVersion int64
+	PluginID       string
+	KindKey        string
+	LibraryID      core.LibraryID
+	Decl           plugins.MediaKindMeta
+	DeclHash       string
+	SchemaVersion  int64
+	rebuildPending bool
 }
 
 // SyncOutcome summarizes the most recent completed sync or keep action in memory.
@@ -197,7 +198,7 @@ func (s *Service) hydrateArtSlice(ctx context.Context, items []core.KindItem) er
 // plugin_kinds (spec §2.3, §2.5). On upgrade, decl_hash is compared against
 // the stored declaration: additive changes bump schema_version; non-additive
 // changes are refused with a ValidationError unless replaceContents is true,
-// in which case existing items for that kind are purged and sync state reset.
+// in which case the next sync rebuilds that kind.
 func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID core.LibraryID, decl plugins.MediaKindMeta, replaceContents bool) (KindRecord, error) {
 	if strings.TrimSpace(pluginID) == "" || strings.TrimSpace(decl.Key) == "" || libraryID <= 0 {
 		return KindRecord{}, errors.New("pluginitems: pluginID, kindKey and libraryID are required")
@@ -206,6 +207,10 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	mu.Lock()
 	defer mu.Unlock()
 
+	return s.upsertKindLocked(ctx, pluginID, libraryID, decl, replaceContents, false)
+}
+
+func (s *Service) upsertKindLocked(ctx context.Context, pluginID string, libraryID core.LibraryID, decl plugins.MediaKindMeta, replaceContents, rebuilt bool) (KindRecord, error) {
 	declJSON, err := json.Marshal(decl)
 	if err != nil {
 		return KindRecord{}, err
@@ -222,13 +227,28 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		oldLibID        int64
 		oldDeclJSON     string
 		oldHash         string
+		pending         string
 		schemaVer       int64
-		purged          bool
 		scheduleReindex bool
 	)
-	err = tx.QueryRowContext(ctx,
-		`SELECT library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
-		pluginID, decl.Key).Scan(&oldLibID, &oldDeclJSON, &oldHash, &schemaVer)
+	kindQuery := `SELECT library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`
+	if store.DialectOf(s.db) == store.Postgres {
+		kindQuery += " FOR UPDATE"
+	}
+	err = tx.QueryRowContext(ctx, kindQuery, pluginID, decl.Key).Scan(&oldLibID, &oldDeclJSON, &oldHash, &schemaVer)
+	if err == nil {
+		// Read consent after locking the registration so PostgreSQL sees
+		// the latest queue entry even if it had to wait for another node.
+		pending, err = readKindRebuild(ctx, tx, pluginID, decl.Key)
+	}
+	if rebuilt {
+		if err != nil {
+			return KindRecord{}, err
+		}
+		if pending != string(declJSON) {
+			return KindRecord{}, ErrKindRebuildPending
+		}
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
@@ -258,6 +278,24 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	case err != nil:
 		return KindRecord{}, err
 	default:
+		if pending != "" && !rebuilt {
+			if pending != string(declJSON) {
+				var queued plugins.MediaKindMeta
+				if err := json.Unmarshal([]byte(pending), &queued); err != nil {
+					return KindRecord{}, err
+				}
+				// An additive follow-up can use the rebuild already scheduled
+				// for this kind. A new non-additive shape needs new consent.
+				if err := plugins.ValidateMediaKindsUpgrade([]plugins.MediaKindMeta{queued}, []plugins.MediaKindMeta{decl}); err != nil && !replaceContents {
+					return KindRecord{}, ErrKindRebuildPending
+				}
+				if err := queueKindRebuild(ctx, tx, pluginID, decl.Key, string(declJSON)); err != nil {
+					return KindRecord{}, err
+				}
+			}
+			s.invalidateKindCache(pluginID, decl.Key, core.LibraryID(oldLibID))
+			return kindRecordFromDecl(pluginID, decl.Key, oldLibID, oldDeclJSON, oldHash, schemaVer)
+		}
 		needReindex := false
 		needParentTallyRebuild := false
 		if oldHash != declHash {
@@ -266,13 +304,16 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 				return KindRecord{}, err
 			}
 			if upgErr := plugins.ValidateMediaKindsUpgrade([]plugins.MediaKindMeta{oldDecl}, []plugins.MediaKindMeta{decl}); upgErr != nil {
-				if !replaceContents {
-					return KindRecord{}, upgErr
+				if !rebuilt {
+					if !replaceContents {
+						return KindRecord{}, upgErr
+					}
+					if err := queueKindRebuild(ctx, tx, pluginID, decl.Key, string(declJSON)); err != nil {
+						return KindRecord{}, err
+					}
+					s.invalidateKindCache(pluginID, decl.Key, core.LibraryID(oldLibID))
+					return kindRecordFromDecl(pluginID, decl.Key, oldLibID, oldDeclJSON, oldHash, schemaVer)
 				}
-				if err := s.purgeKindTx(ctx, tx, pluginID, decl.Key, libraryID, false); err != nil {
-					return KindRecord{}, err
-				}
-				purged = true
 			} else {
 				// Only the declared fields and search fields shape the
 				// per-item index. A change to tabs, shelves, card shape or
@@ -298,7 +339,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			int64(libraryID), string(declJSON), declHash, schemaVer, ftsVer, pluginID, decl.Key); err != nil {
 			return KindRecord{}, err
 		}
-		if needParentTallyRebuild && !purged && !scheduleReindex && hasTableTx(ctx, tx, store.DialectOf(s.db), "plugin_item_parent_tally") {
+		if needParentTallyRebuild && !rebuilt && !scheduleReindex && hasTableTx(ctx, tx, store.DialectOf(s.db), "plugin_item_parent_tally") {
 			if err := rebuildKindParentTallyForKindTx(ctx, tx, pluginID, decl.Key, libraryID, decl); err != nil {
 				return KindRecord{}, err
 			}
@@ -307,6 +348,14 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
 			pluginID, decl.Key); err != nil {
 			return KindRecord{}, err
+		}
+		if rebuilt {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_kind_rebuilds WHERE plugin_id = ? AND kind_key = ?`, pluginID, decl.Key); err != nil {
+				return KindRecord{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE plugin_sync_state SET cursor = '', last_started = 0, last_ok = 0, last_error = '', guard_json = '', items = 0, generation = ? WHERE plugin_id = ? AND kind_key = ?`, s.syncGen.Add(1), pluginID, decl.Key); err != nil {
+				return KindRecord{}, err
+			}
 		}
 	}
 
@@ -325,14 +374,14 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		s.invalidateKindCache(pluginID, decl.Key, core.LibraryID(oldLibID))
 	}
 	s.cacheKindRecord(rec)
-	if purged {
+	if rebuilt {
 		s.partsState.Store(0)
 		s.noteWrite()
 		s.forgetLibraryStats(libraryID)
 	}
 	if scheduleReindex {
 		s.startKindReindex(pluginID, decl.Key, libraryID, decl)
-	} else if !purged && s.kindHasUnindexedArtistStrings(ctx, libraryID, decl) {
+	} else if !rebuilt && s.kindHasUnindexedArtistStrings(ctx, libraryID, decl) {
 		s.startKindReindex(pluginID, decl.Key, libraryID, decl)
 	}
 	return rec, nil
@@ -396,6 +445,9 @@ func (s *Service) checkRestoreCaches() {
 }
 
 func (s *Service) cacheKindRecord(rec KindRecord) {
+	if rec.rebuildPending {
+		return
+	}
 	s.checkRestoreCaches()
 	s.kindCacheMu.Lock()
 	if s.kindByLib == nil {
@@ -444,6 +496,10 @@ func (s *Service) invalidatePluginKindCache(pluginID string) {
 	s.kindCacheMu.Unlock()
 }
 
+const kindRecordSelect = `SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version,
+	EXISTS(SELECT 1 FROM plugin_kind_rebuilds r WHERE r.plugin_id = k.plugin_id AND r.kind_key = k.kind_key)
+	FROM plugin_kinds k`
+
 // GetKind returns the installed KindRecord for (pluginID, kindKey).
 func (s *Service) GetKind(ctx context.Context, pluginID, kindKey string) (KindRecord, error) {
 	s.checkRestoreCaches()
@@ -455,7 +511,7 @@ func (s *Service) GetKind(ctx context.Context, pluginID, kindKey string) (KindRe
 		return rec, nil
 	}
 	rec, err := s.scanKind(s.db.QueryRowContext(ctx,
-		`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
+		kindRecordSelect+` WHERE plugin_id = ? AND kind_key = ?`,
 		pluginID, kindKey))
 	if err != nil {
 		return KindRecord{}, err
@@ -474,7 +530,7 @@ func (s *Service) GetKindByLibrary(ctx context.Context, libraryID core.LibraryID
 		return rec, nil
 	}
 	rec, err := s.scanKind(s.db.QueryRowContext(ctx,
-		`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE library_id = ?`,
+		kindRecordSelect+` WHERE library_id = ?`,
 		int64(libraryID)))
 	if err != nil {
 		return KindRecord{}, err
@@ -491,10 +547,10 @@ func (s *Service) ListKinds(ctx context.Context, pluginID string) ([]KindRecord,
 	)
 	if pluginID == "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds ORDER BY plugin_id, kind_key`)
+			kindRecordSelect+` ORDER BY plugin_id, kind_key`)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT plugin_id, kind_key, library_id, decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? ORDER BY kind_key`,
+			kindRecordSelect+` WHERE plugin_id = ? ORDER BY kind_key`,
 			pluginID)
 	}
 	if err != nil {
@@ -518,7 +574,7 @@ func (s *Service) scanKind(sc rowScanner) (KindRecord, error) {
 		libID    int64
 		declJSON string
 	)
-	if err := sc.Scan(&rec.PluginID, &rec.KindKey, &libID, &declJSON, &rec.DeclHash, &rec.SchemaVersion); err != nil {
+	if err := sc.Scan(&rec.PluginID, &rec.KindKey, &libID, &declJSON, &rec.DeclHash, &rec.SchemaVersion, &rec.rebuildPending); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return KindRecord{}, core.ErrNotFound
 		}
@@ -642,6 +698,16 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
 		return UpsertStats{}, upsertUndoCapture{}, err
+	}
+	if pending, err := s.pendingKindRebuild(ctx, pluginID, kindKey); err != nil {
+		return UpsertStats{}, upsertUndoCapture{}, err
+	} else if pending != "" {
+		// Push plugins have no scheduled pull worker. The first attempted
+		// write starts the requested rebuild, then the plugin can retry.
+		if markOK && !pin {
+			s.StartManualSync(pluginID, kindKey, SyncOptions{rebuildOnly: true})
+		}
+		return UpsertStats{}, upsertUndoCapture{}, ErrKindRebuildPending
 	}
 	if len(items) == 0 {
 		return UpsertStats{}, upsertUndoCapture{}, nil
@@ -2672,6 +2738,12 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	if err != nil {
 		return err
 	}
+	if pending, err := s.pendingKindRebuild(ctx, pluginID, kindKey); err != nil {
+		return err
+	} else if pending != "" {
+		s.StartManualSync(pluginID, kindKey, SyncOptions{rebuildOnly: true})
+		return ErrKindRebuildPending
+	}
 	if len(externalIDs) == 0 {
 		return nil
 	}
@@ -2717,42 +2789,14 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	now := s.now().Unix()
 	isSQLite := store.DialectOf(s.db) == store.SQLite
 	write := func(start, end int) (time.Duration, error) {
-		chunk := ordered[start:end]
-		var plan *deleteChunkPlan
-		if isSQLite && len(chunk) > 0 {
-			var err error
-			plan, err = prepareDeleteChunk(ctx, s.db, kind, chunk, leafLevels)
-			if err != nil {
-				return 0, err
-			}
-			if err := prepareTallyRepairs(ctx, s.db, kind.LibraryID, kind.Decl, plan.fieldTally, plan.personTally); err != nil {
-				return 0, err
-			}
-		}
-		held, err := s.runWriteChunk(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			if len(chunk) > 0 {
-				if plan == nil {
-					var err error
-					plan, err = prepareDeleteChunk(ctx, tx, kind, chunk, leafLevels)
-					if err != nil {
-						return err
-					}
-				}
-				if err := deleteTargetsTx(ctx, tx, kind, isSQLite, chunk, plan); err != nil {
-					return err
-				}
-			}
-			if bumpGen && end == len(ordered) {
+		var finish func(context.Context, *sql.Tx) error
+		if bumpGen && end == len(ordered) {
+			finish = func(ctx context.Context, tx *sql.Tx) error {
 				_, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, now, true)
 				return err
 			}
-			return nil
-		})
-		if err == nil {
-			s.forgetPinnedRefs(refsFromDeleteTargets(chunk))
-			s.noteWrite()
 		}
-		return held, err
+		return s.writeDeleteChunk(ctx, kind, ordered[start:end], isSQLite, leafLevels, false, finish)
 	}
 	if len(ordered) == 0 {
 		if bumpGen {
@@ -2766,6 +2810,50 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 	}
 	s.forgetPinnedRefs(refs)
 	return nil
+}
+
+// writeDeleteChunk shares the normal deletion plan and writer budget with a
+// rebuild. A rebuild saves the item and part keys in the same transaction.
+func (s *Service) writeDeleteChunk(ctx context.Context, kind KindRecord, chunk []deleteTarget, isSQLite bool, leafLevels map[string]bool, rebuild bool, finish func(context.Context, *sql.Tx) error) (time.Duration, error) {
+	var plan *deleteChunkPlan
+	if isSQLite && len(chunk) > 0 {
+		var err error
+		plan, err = prepareDeleteChunk(ctx, s.db, kind, chunk, leafLevels)
+		if err != nil {
+			return 0, err
+		}
+		if err := prepareTallyRepairs(ctx, s.db, kind.LibraryID, kind.Decl, plan.fieldTally, plan.personTally); err != nil {
+			return 0, err
+		}
+	}
+	held, err := s.runWriteChunk(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if len(chunk) > 0 {
+			if plan == nil {
+				var err error
+				plan, err = prepareDeleteChunk(ctx, tx, kind, chunk, leafLevels)
+				if err != nil {
+					return err
+				}
+			}
+			if rebuild {
+				if err := saveRebuildKeys(ctx, tx, kind.LibraryID, isSQLite, chunk); err != nil {
+					return err
+				}
+			}
+			if err := deleteTargetsTx(ctx, tx, kind, isSQLite, chunk, plan); err != nil {
+				return err
+			}
+		}
+		if finish != nil {
+			return finish(ctx, tx)
+		}
+		return nil
+	})
+	if err == nil {
+		s.forgetPinnedRefs(refsFromDeleteTargets(chunk))
+		s.noteWrite()
+	}
+	return held, err
 }
 
 type deleteTarget struct {
@@ -3296,7 +3384,7 @@ func (s *Service) PurgeKind(ctx context.Context, pluginID, kindKey string) error
 	}
 	defer tx.Rollback()
 
-	if err := s.purgeKindTx(ctx, tx, pluginID, kindKey, core.LibraryID(libID), true); err != nil {
+	if err := s.purgeKindTx(ctx, tx, pluginID, kindKey, core.LibraryID(libID)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -3337,12 +3425,12 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 	defer tx.Rollback()
 
 	for _, k := range kinds {
-		if err := s.purgeKindTx(ctx, tx, pluginID, k.KindKey, k.LibraryID, true); err != nil {
+		if err := s.purgeKindTx(ctx, tx, pluginID, k.KindKey, k.LibraryID); err != nil {
 			return err
 		}
 	}
 	// Catch any orphan rows for pluginID even if plugin_kinds was already empty.
-	if err := s.purgeKindTx(ctx, tx, pluginID, "", 0, true); err != nil {
+	if err := s.purgeKindTx(ctx, tx, pluginID, "", 0); err != nil {
 		return err
 	}
 
@@ -3362,7 +3450,7 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 	return nil
 }
 
-func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, libraryID core.LibraryID, dropKindRow bool) error {
+func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, libraryID core.LibraryID) error {
 	whereItems := `plugin_id = ? AND kind_key = ?`
 	args := []any{pluginID, kindKey}
 	if kindKey == "" {
@@ -3471,19 +3559,25 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_facet_expansions WHERE `+whereItems, args...); err != nil {
 		return err
 	}
-	if dropKindRow {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_sync_state WHERE `+whereItems, args...); err != nil {
+	if libraryID > 0 {
+		if hasTableTx(ctx, tx, store.DialectOf(s.db), "state_watch") {
+			offset := int64(core.PluginKey(1)) - 1
+			if _, err := tx.ExecContext(ctx, `DELETE FROM state_watch WHERE rating_key IN (SELECT ? + seq FROM plugin_rebuild_keys WHERE library_id = ?)`, offset, int64(libraryID)); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_rebuild_keys WHERE library_id = ?`, int64(libraryID)); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_kinds WHERE `+whereItems, args...); err != nil {
-			return err
-		}
-	} else if kindKey != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE plugin_sync_state SET cursor = '', last_started = 0, last_ok = 0, last_error = '', guard_json = '', items = 0 WHERE plugin_id = ? AND kind_key = ?`,
-			pluginID, kindKey); err != nil {
-			return err
-		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_sync_state WHERE `+whereItems, args...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_kind_rebuilds WHERE `+whereItems, args...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_kinds WHERE `+whereItems, args...); err != nil {
+		return err
 	}
 	return nil
 }

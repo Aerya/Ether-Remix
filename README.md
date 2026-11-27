@@ -9,6 +9,8 @@ Le dépôt est désormais hébergé dans **[Remix-Media](https://github.com/Remi
 
 # Ether-Remix
 
+Les bibliothèques de plugins peuvent être reconstruites après confirmation explicite. La synchronisation Ether conserve les réglages de rafraîchissement, les quotas et la cadence des plugins Remix.
+
 **Films, séries, animés et musique dans vos applications habituelles.**
 
 Ether-Remix est un serveur multimédia à la demande, basé sur [Ether](https://github.com/braedonsaunders/ether). Il réunit vos sources distantes et vos fichiers locaux, avec un catalogue orienté français, des bibliothèques personnalisées et un suivi par spectateur. Vous fournissez les sources et les comptes nécessaires à la lecture.
