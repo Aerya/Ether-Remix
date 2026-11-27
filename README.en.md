@@ -60,7 +60,7 @@ Catalogue sources describe content; playback sources provide access to it. Choos
 | Source or service | Purpose and requirements |
 | --- | --- |
 | **Debrid / Usenet** | On-demand playback with your accounts and providers; configurable priorities, quotas and fallbacks. |
-| **Prowlarr, Jackett, NZBHydra2 / Stremio addons** | Release searches and, depending on the addon, stream access. A compatible playback route is still required. |
+| **Prowlarr, Jackett, NZBHydra2 / Stremio addons** | Release searches and, depending on the addon, stream access. A compatible playback route is still required. One proxy per addon covers requests and playback. |
 | **StreamFusion Reborn / SeerrCatalog / Pre** | Catalogue and reference imports or enrichment. SeerrCatalog requires its external service; Pre, in beta, supplies announcements, not playback links. |
 | **Torrent client / Seedstrem / XDCC Grabscher** | Downloads to disk; Seedstrem and Grabscher require their external services. Optional sources. |
 | **FTP / SFTP** | Remote playback without a full copy is possible, with caching; requires a server and credentials. Optional. |

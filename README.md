@@ -60,7 +60,7 @@ Les sources de catalogue décrivent les contenus ; une source de lecture fournit
 | Source ou service | Rôle et prérequis |
 | --- | --- |
 | **Debrid / Usenet** | Lecture à la demande avec vos comptes et fournisseurs ; priorités, quotas et solutions de repli configurables. |
-| **Prowlarr, Jackett, NZBHydra2 / addons Stremio** | Recherche de releases et, selon l’addon, accès aux flux. Une voie de lecture compatible reste nécessaire. |
+| **Prowlarr, Jackett, NZBHydra2 / addons Stremio** | Recherche de releases et, selon l’addon, accès aux flux. Une voie de lecture compatible reste nécessaire. Un seul proxy par addon couvre requêtes et lecture. |
 | **StreamFusion Reborn / SeerrCatalog / Pre** | Import ou enrichissement du catalogue et des références. SeerrCatalog nécessite son service externe ; Pre, en bêta, fournit des annonces, pas des liens de lecture. |
 | **Client torrent / Seedstrem / XDCC Grabscher** | Téléchargement sur disque ; Seedstrem et Grabscher nécessitent leurs services externes. Sources facultatives. |
 | **FTP / SFTP** | Lecture distante possible sans copie complète, avec cache ; serveur et accès requis. Facultatif. |
