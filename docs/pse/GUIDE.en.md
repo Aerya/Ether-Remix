@@ -59,7 +59,7 @@ The Docker image is public. No GHCR login or GitHub token is needed to download 
 # compose.yaml — deploy through Dockge-Enhanced
 services:
   pse:
-    image: ghcr.io/aerya/ether-remix:latest
+    image: ghcr.io/remix-media/ether-remix:latest
     container_name: accent
     restart: unless-stopped
     network_mode: host            # Plex LAN discovery (GDM) and UPnP

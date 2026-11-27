@@ -67,3 +67,16 @@ Le nettoyage des anciens liens démarre après actualisation des profils et exce
 
 
 La [configuration rapide](QUICK_SOURCES.fr.md) conserve les recherches et les références dans les mécanismes existants. Une référence déjà indexée ne passe jamais devant une source sélectionnée plus haut ; l’ordre est appliqué avant validation à la lecture.
+
+## Recherche automatique et lecture
+
+Les recherches et imports conservent dans un index commun les références conformes aux critères Remix actifs. Les liens hors critères sont refusés ; les anciens liens sont nettoyés après actualisation des profils et exceptions. À la lecture, Remix propose les références encore utilisables, applique les critères de langue et de qualité, puis recherche d’autres sources si nécessaire. L’identité du film ou de l’épisode reste vérifiée ; une référence enregistrée ne garantit pas sa disponibilité.
+
+Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquement des releases**, prépare les contenus du catalogue en arrière-plan. Les sources se choisissent sur la même page ; cadence et budgets sont dans les réglages avancés. Désactiver cette recherche conserve l’index, sa consultation et son utilisation à la lecture.
+
+La recherche de fond ne télécharge ni ne débride les fichiers. Un addon distant peut néanmoins effectuer ses propres appels. Pour les séries, le passage initial couvre **S01E01** : les autres épisodes sont enregistrés au fil des recherches, sans garantie de saison complète. [Fonctionnement de l’index](RELEASE_LIBRARY.fr.md).
+
+Les fichiers AllDebrid vérifiés peuvent être prioritaires lorsqu’ils respectent le profil. Les quotas suspendent les comptes concernés, les tentatives de secours sont limitées et le renouvellement des liens peut être réglé pour éviter des appels inutiles. [AllDebrid et proxys](../alldebrid-mediaflow.md).
+
+Quand aucune source n’est disponible à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche au lieu de rester bloqués.
+Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique son nom et l’heure de reprise, et précise si aucune autre source n’a de release. Sans `Retry-After`, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min dès qu’une requête réussit. La limite journalière réglée dans Ether a son propre message. Après un redémarrage, la pause en cours est conservée, mais le palier repart de 15 min.

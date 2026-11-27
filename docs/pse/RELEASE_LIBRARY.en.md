@@ -56,3 +56,16 @@ Old links are cleaned up after profiles and exceptions are refreshed, on startup
 
 
 [Quick setup](QUICK_SOURCES.en.md) retains the existing search and reference mechanisms. An indexed reference never jumps ahead of a higher selected source; source order applies before playback validation.
+
+## Background search and playback
+
+Searches and imports retain references meeting active Remix criteria in a shared index. Rejected links are not stored; old links are cleaned up after profiles and exceptions are refreshed. At playback, Remix offers references that are still usable, applies language and quality rules, then searches other sources when necessary. Movie or episode identity is still verified; a stored reference does not guarantee availability.
+
+Under **Remix → Indexing**, a single switch, **Automatically search for releases**, prepares catalogue titles in the background. Choose sources on the same page; pace and budgets live in advanced settings. Disabling automatic search preserves the index, browsing and playback reuse.
+
+Background search does not download or unlock files. A remote addon may still make its own calls. For shows, the initial pass covers **S01E01**: other episodes are retained as they are searched, without implying a complete season. [How the index works](RELEASE_LIBRARY.en.md).
+
+Verified AllDebrid files can take priority when they meet the profile. Quotas pause affected accounts, fallback attempts are capped, and link renewal can be configured to avoid unnecessary calls. [AllDebrid and proxies](../alldebrid-mediaflow.md).
+
+When no source is available because of an indexer limit or a debrid quota, players such as Plezy show "file unavailable" and return to the title page instead of staying stuck.
+When an indexer throttles Ether (HTTP 429), playback names it and shows when it resumes, and says if no other source has a release. Without `Retry-After`, the pause grows from 15 min to 30 min, 1 h, 2 h… up to 24 h, and returns to 15 min after the next success. The daily limit set in Ether has its own message. After a restart the current pause is kept, but the step starts again at 15 min.
