@@ -43,10 +43,15 @@ type BrowseQuery struct {
 	Desc       bool                // false = default direction for Sort; true = reverse
 	Facets     map[string][]string // field key -> values, any of (OR within key, AND across keys)
 	// AllFacets requires every listed value per field; ExcludeFacets
-	// drops items having any listed value. Both combine with Facets
-	// using AND and the same per-type value handling.
+	// drops items having any listed value; AnyGroups adds one OR-group
+	// per entry (a single {field, values} list or {any: [...]} across
+	// fields, #767, #807); Empty tests field presence/absence per key;
+	// ExcludeQuery drops items matching the same text search as Search.
 	AllFacets     map[string][]string
 	ExcludeFacets map[string][]string
+	AnyGroups     []core.KindBrowseFacetGroup
+	Empty         map[string]bool
+	ExcludeQuery  string
 	// Watched filters on the viewer's watch state in SQL (ViewerID):
 	// true keeps items with a state_watch view_count > 0, false keeps
 	// items without one. Nil applies no watched predicate.
@@ -157,6 +162,108 @@ func parseBrowseSort(q BrowseQuery) (col, kind string, desc, defaultDesc bool) {
 	return col, kind, desc, defaultDesc
 }
 
+// browseDriver describes a positive plugin_item_fields subquery that drives a
+// Browse query (both the page statement and its paired COUNT(*)) from the most
+// selective positive facet, with every remaining facet / exclusion probed via
+// correlated EXISTS / NOT EXISTS on (item_ref, field, ...).
+type browseDriver struct {
+	cteSQL     string
+	cteArgs    []any
+	existsSQL  string // correlated EXISTS predicate on alias `i`, for last_viewed Phase 0 and legacy callers
+	existsArgs []any
+}
+
+type browseQueryPlan struct {
+	driver    *browseDriver
+	baseWhere string
+	baseArgs  []any
+	viewerID  int64
+	empty     bool
+}
+
+func (p browseQueryPlan) pageSQLAndArgs(isPG bool, cols, pageWhere string, pageArgs []any, orderBy string, limitPlusOne int) (string, []any) {
+	if p.driver == nil {
+		args := make([]any, 0, len(pageArgs)+1)
+		args = append(args, pageArgs...)
+		args = append(args, limitPlusOne)
+		return `SELECT ` + cols + `
+FROM plugin_items i
+WHERE ` + pageWhere + `
+ORDER BY ` + orderBy + `
+LIMIT ?`, args
+	}
+	args := make([]any, 0, len(p.driver.cteArgs)+len(pageArgs)+1)
+	args = append(args, p.driver.cteArgs...)
+	args = append(args, pageArgs...)
+	args = append(args, limitPlusOne)
+	if isPG {
+		// Materializing the narrow driver CTE and joining through a LIMIT 1
+		// LATERAL probe fences PostgreSQL against planner cardinality skew
+		// (e.g. walking the sort index or hash-joining broad facets).
+		return `WITH _drv AS MATERIALIZED (
+	` + p.driver.cteSQL + `
+)
+SELECT ` + cols + `
+FROM _drv _d
+CROSS JOIN LATERAL (
+	SELECT ` + cols + `
+	FROM plugin_items i
+	WHERE i.item_ref = _d.item_ref AND ` + pageWhere + `
+	LIMIT 1
+) i
+ORDER BY ` + orderBy + `
+LIMIT ?`, args
+	}
+	return `WITH _drv(item_ref) AS (
+	` + p.driver.cteSQL + `
+)
+SELECT ` + cols + `
+FROM _drv _d
+CROSS JOIN plugin_items i
+WHERE i.item_ref = _d.item_ref AND ` + pageWhere + `
+ORDER BY ` + orderBy + `
+LIMIT ?`, args
+}
+
+func (p browseQueryPlan) countSQLAndArgs(isPG bool) (string, []any) {
+	if p.driver == nil {
+		return `SELECT COUNT(*) FROM plugin_items i WHERE ` + p.baseWhere, p.baseArgs
+	}
+	args := make([]any, 0, len(p.driver.cteArgs)+len(p.baseArgs))
+	args = append(args, p.driver.cteArgs...)
+	args = append(args, p.baseArgs...)
+	if isPG {
+		return `WITH _drv AS MATERIALIZED (
+	` + p.driver.cteSQL + `
+)
+SELECT COUNT(*)
+FROM _drv _d
+CROSS JOIN LATERAL (
+	SELECT 1
+	FROM plugin_items i
+	WHERE i.item_ref = _d.item_ref AND ` + p.baseWhere + `
+	LIMIT 1
+) _m`, args
+	}
+	return `WITH _drv(item_ref) AS (
+	` + p.driver.cteSQL + `
+)
+SELECT COUNT(*)
+FROM _drv _d
+CROSS JOIN plugin_items i
+WHERE i.item_ref = _d.item_ref AND ` + p.baseWhere, args
+}
+
+func (p browseQueryPlan) fullWhereAndArgs() (string, []any) {
+	if p.driver == nil || p.driver.existsSQL == "" {
+		return p.baseWhere, p.baseArgs
+	}
+	args := make([]any, 0, len(p.baseArgs)+len(p.driver.existsArgs))
+	args = append(args, p.baseArgs...)
+	args = append(args, p.driver.existsArgs...)
+	return p.baseWhere + p.driver.existsSQL, args
+}
+
 func (s *Service) buildBrowsePredicates(
 	ctx context.Context,
 	q BrowseQuery,
@@ -165,69 +272,109 @@ func (s *Service) buildBrowsePredicates(
 	limit int,
 	tally browseTallyInfo,
 ) (baseWhere string, baseArgs []any, viewerID int64, empty bool, err error) {
+	plan, err := s.buildBrowsePlan(ctx, q, parentRef, level, col, kind, desc, defaultDesc, limit, tally)
+	if err != nil || plan.empty {
+		return "", nil, plan.viewerID, plan.empty, err
+	}
+	w, a := plan.fullWhereAndArgs()
+	return w, a, plan.viewerID, false, nil
+}
+
+func (s *Service) buildBrowsePlan(
+	ctx context.Context,
+	q BrowseQuery,
+	parentRef, level, col, kind string,
+	desc, defaultDesc bool,
+	limit int,
+	tally browseTallyInfo,
+) (browseQueryPlan, error) {
 	driveFacetFromSort := shouldDriveFacetFromSortIndex(tally, col, kind, desc, defaultDesc, level, q.Levels, q.AnyLevel, limit)
 
-	// Build person + facet predicates first so we know whether to drive the
-	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
-	var filterWhere strings.Builder
-	var filterArgs []any
-	driveFromFields := false
+	var (
+		filterWhere     strings.Builder
+		filterArgs      []any
+		driver          *browseDriver
+		driveFromFields bool
+	)
 
+	if err := s.appendBrowseEmptyFields(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Empty); err != nil {
+		return browseQueryPlan{}, err
+	}
+
+	isPG := store.DialectOf(s.db) == store.Postgres
 	if driveFacetFromSort {
-		// Probe the covering PK (item_ref, field, v_text, v_int) via correlated
-		// EXISTS so SQLite/PostgreSQL walks the sort index and stops after
-		// limit+1 matches instead of sorting all matching rows (#682).
-		placeholders := make([]string, len(tally.positiveTextValues))
-		filterArgs = append(filterArgs, tally.positiveTextField)
-		for idx, v := range tally.positiveTextValues {
-			placeholders[idx] = "?"
-			filterArgs = append(filterArgs, v)
-		}
-		filterWhere.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
+		// Probe the covering PK (item_ref, field, v_text, v_int) (or
+		// plugin_item_fields_pkey_idx on PostgreSQL) via correlated EXISTS so
+		// SQLite/PostgreSQL walks the sort index and stops after limit+1
+		// matches instead of sorting all matching rows (#682).
+		appendCorrelatedTextClause(&filterWhere, &filterArgs, tally.positiveTextField, tally.positiveTextValues, false, isPG)
 	} else {
-		if q.PersonID > 0 {
-			ok, err := s.appendBrowsePersonFilter(ctx, q.LibraryID, &filterWhere, &filterArgs, q.PersonID)
+		hasAnyFacet := q.PersonID > 0 || hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups)
+		if hasAnyFacet {
+			if q.PersonID > 0 && !core.IsPluginPersonID(q.PersonID) {
+				return browseQueryPlan{empty: true}, nil
+			}
+			rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
 			if err != nil {
-				return "", nil, 0, false, err
+				return browseQueryPlan{}, err
 			}
-			if !ok {
-				return "", nil, 0, true, nil
+			types := make(map[string]string, len(rec.Decl.Fields))
+			for _, field := range rec.Decl.Fields {
+				types[field.Key] = field.Type
 			}
-			driveFromFields = true
-		}
-		usedFacetIndex, err := s.appendBrowseFacets(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Facets)
-		if err != nil {
-			return "", nil, 0, false, err
-		}
-		if usedFacetIndex {
-			driveFromFields = true
-		}
-		usedAllFacetIndex, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.AllFacets, facetAll)
-		if err != nil {
-			return "", nil, 0, false, err
-		}
-		if usedAllFacetIndex {
-			driveFromFields = true
-		}
-		// Exclusion predicates are NOT IN subqueries over the same indexed
-		// field rows; they filter the item scan and never drive it.
-		if _, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.ExcludeFacets, facetNone); err != nil {
-			return "", nil, 0, false, err
+			var peopleFields []string
+			if q.PersonID > 0 {
+				peopleFields = declaredPeopleFields(rec.Decl)
+			}
+
+			clauses, impossible := collectBrowseFieldClauses(q, types, peopleFields)
+			if impossible {
+				return browseQueryPlan{empty: true}, nil
+			}
+
+			driverIdx := -1
+			if parentRef == "" {
+				var tallyEmpty bool
+				driverIdx, tallyEmpty = pickBrowseDriver(clauses, tally)
+				if tallyEmpty {
+					return browseQueryPlan{empty: true}, nil
+				}
+			}
+			if driverIdx >= 0 {
+				dc := clauses[driverIdx]
+				cteSQL, cteArgs := buildClauseDriverSQL(dc, isPG)
+				var exBuf strings.Builder
+				var exArgs []any
+				appendClauseExistsSQL(&exBuf, &exArgs, dc, isPG)
+				driver = &browseDriver{
+					cteSQL:     cteSQL,
+					cteArgs:    cteArgs,
+					existsSQL:  exBuf.String(),
+					existsArgs: exArgs,
+				}
+				driveFromFields = true
+			}
+			for idx, c := range clauses {
+				if idx == driverIdx {
+					continue
+				}
+				appendBrowseClauseSQL(&filterWhere, &filterArgs, c, types, isPG)
+			}
 		}
 		if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
 			driveFromFields = true
 		}
 	}
 
-	viewerID = q.ViewerID
+	viewerID := q.ViewerID
 	if viewerID <= 0 {
 		viewerID = core.CatalogViewerID(ctx)
 	}
 
 	// Base filter predicate.
 	var bw strings.Builder
-	baseArgs = []any{int64(q.LibraryID)}
-	if driveFromFields && parentRef == "" && store.DialectOf(s.db) != store.Postgres {
+	baseArgs := []any{int64(q.LibraryID)}
+	if driveFromFields && parentRef == "" && !isPG {
 		bw.WriteString(`i.library_id + 0 = ?`)
 	} else {
 		bw.WriteString(`i.library_id = ?`)
@@ -239,7 +386,7 @@ func (s *Service) buildBrowsePredicates(
 	// level, omit the redundant level/parent_ref check so SQLite can scan the
 	// sort index as a covering index until EXISTS matches.
 	omitSingleLevel := tally.singleLevel && parentRef == "" && col != "sort_title"
-	sqliteSortIndexHint := driveFacetFromSort && col != "sort_title" && store.DialectOf(s.db) != store.Postgres
+	sqliteSortIndexHint := driveFacetFromSort && col != "sort_title" && !isPG
 	if parentRef != "" {
 		bw.WriteString(` AND i.parent_ref = ?`)
 		baseArgs = append(baseArgs, parentRef)
@@ -320,13 +467,19 @@ func (s *Service) buildBrowsePredicates(
 			baseArgs = append(baseArgs, viewerID)
 		}
 	}
+	appendBrowseExcludeQuery(&bw, &baseArgs, q.ExcludeQuery, isPG)
 	if err := s.appendVisibilityForViewer(ctx, &bw, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
-		return "", nil, 0, false, err
+		return browseQueryPlan{}, err
 	}
 	if err := s.appendVisibilityForViewer(ctx, &bw, &baseArgs, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
-		return "", nil, 0, false, err
+		return browseQueryPlan{}, err
 	}
-	return bw.String(), baseArgs, viewerID, false, nil
+	return browseQueryPlan{
+		driver:    driver,
+		baseWhere: bw.String(),
+		baseArgs:  baseArgs,
+		viewerID:  viewerID,
+	}, nil
 }
 
 // Browse returns a keyset-paged slice of items in a library (spec §2.3, §3.4).
@@ -352,7 +505,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
-	if err := checkFacetValueBound(q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+	if err := checkFacetValueBound(q.AnyGroups, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
 		return BrowsePage{}, err
 	}
 	var parsedCursor browseCursor
@@ -364,7 +517,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 			return BrowsePage{}, err
 		}
 	}
-	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0
+	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups) || len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0
 
 	// Probe O(1) item/field tallies before building the page query so single
 	// tallied facets answer totals without COUNT(*), empty buckets return
@@ -373,18 +526,18 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if err != nil {
 		return BrowsePage{}, err
 	}
-	if tally.totalExact && tally.total == 0 {
+	if (tally.totalExact && tally.total == 0) || tally.knownEmpty {
 		if q.NoTotal && !q.CheapTotal {
 			return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: false}, nil
 		}
 		return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: true}, nil
 	}
 
-	baseWhere, baseArgs, viewerID, empty, err := s.buildBrowsePredicates(ctx, q, parentRef, level, col, kind, desc, defaultDesc, limit, tally)
+	plan, err := s.buildBrowsePlan(ctx, q, parentRef, level, col, kind, desc, defaultDesc, limit, tally)
 	if err != nil {
 		return BrowsePage{}, err
 	}
-	if empty {
+	if plan.empty {
 		if q.NoTotal && !q.CheapTotal {
 			return BrowsePage{Items: []core.KindItem{}, Total: 0, TotalExact: false}, nil
 		}
@@ -392,11 +545,11 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	}
 
 	if kind == "last_viewed" {
-		return s.browseLastViewed(ctx, q, viewerID, baseWhere, baseArgs, hasFacets, parentRef, level, tally, desc, limit)
+		return s.browseLastViewed(ctx, q, plan, hasFacets, parentRef, level, tally, desc, limit)
 	}
 
-	pageWhere := baseWhere
-	pageArgs := append([]any(nil), baseArgs...)
+	pageWhere := plan.baseWhere
+	pageArgs := append([]any(nil), plan.baseArgs...)
 
 	if hasCursor {
 		cur := parsedCursor
@@ -426,15 +579,10 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		dir = "DESC"
 	}
 	orderBy := fmt.Sprintf("i.%s %s, i.item_ref ASC", col, dir)
-	pageArgs = append(pageArgs, limit+1)
+	isPG := store.DialectOf(s.db) == store.Postgres
+	querySQL, queryArgs := plan.pageSQLAndArgs(isPG, prefixedItemCols("i."), pageWhere, pageArgs, orderBy, limit+1)
 
-	querySQL := `SELECT ` + prefixedItemCols("i.") + `
-FROM plugin_items i
-WHERE ` + pageWhere + `
-ORDER BY ` + orderBy + `
-LIMIT ?`
-
-	items, err := s.queryItems(ctx, querySQL, pageArgs, false)
+	items, err := s.queryItems(ctx, querySQL, queryArgs, false)
 	if err != nil {
 		return BrowsePage{}, err
 	}
@@ -471,7 +619,7 @@ LIMIT ?`
 		}
 	}
 
-	total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
+	total, totalExact, err := s.resolveBrowseTotal(ctx, q, plan, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
 	if err != nil {
 		return BrowsePage{}, err
 	}
@@ -488,14 +636,50 @@ LIMIT ?`
 // sorting every matching item row (#682). Package var for unit tests.
 var largeFacetMinMatches = 1000
 
+type browseTextTallyKey struct {
+	field string
+	val   string
+}
+
+type browsePersonTallyKey struct {
+	field string
+	pid   int64
+}
+
 type browseTallyInfo struct {
 	totalExact         bool
 	total              int
+	knownEmpty         bool
 	lowerBound         int
 	libTotal           int
 	singleLevel        bool
 	positiveTextField  string
 	positiveTextValues []string
+
+	// Positive facet cardinality maps populated when libTally.active &&
+	// parentRef == "" (including multi-facet and filtered queries) so
+	// buildBrowsePlan picks the narrowest positive facet as driver in O(1).
+	talliesActive bool
+	textCounts    map[browseTextTallyKey]int
+	personCounts  map[browsePersonTallyKey]int
+}
+
+func isTalliedTextType(ftype string) bool {
+	switch ftype {
+	case "string", "enum", "bool", "strings":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSingleValuedTextType(ftype string) bool {
+	switch ftype {
+	case "string", "enum", "bool":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldDriveFacetFromSortIndex(tally browseTallyInfo, col, kind string, desc, defaultDesc bool, level string, levels []string, anyLevel bool, limit int) bool {
@@ -563,12 +747,172 @@ func dedupCleanValues(vals []string) []string {
 	return out
 }
 
+type activeBrowseFacet struct {
+	mode facetMode
+	key  string
+	vals []string
+}
+
+func collectActiveBrowseFacets(q BrowseQuery) (active []activeBrowseFacet, hasDisjunction bool) {
+	collect := func(m map[string][]string, mode facetMode) {
+		for _, k := range sortedFacetKeys(m) {
+			vals := dedupCleanValues(m[k])
+			if len(vals) == 0 {
+				continue
+			}
+			active = append(active, activeBrowseFacet{mode: mode, key: k, vals: vals})
+		}
+	}
+	collect(q.Facets, facetAny)
+	collect(q.AllFacets, facetAll)
+	collect(q.ExcludeFacets, facetNone)
+	for _, g := range q.AnyGroups {
+		alts := activeAnyGroupAlts(g)
+		switch len(alts) {
+		case 0:
+		case 1:
+			active = append(active, activeBrowseFacet{mode: facetAny, key: alts[0].Field, vals: dedupCleanValues(alts[0].Values)})
+		default:
+			hasDisjunction = true
+		}
+	}
+	return active, hasDisjunction
+}
+
+func (s *Service) queryFieldTallyCounts(ctx context.Context, libraryID core.LibraryID, tallyLevels []string, fieldVals map[string][]string) (map[browseTextTallyKey]int, error) {
+	if len(fieldVals) == 0 {
+		return nil, nil
+	}
+	out := make(map[browseTextTallyKey]int)
+	fields := make([]string, 0, len(fieldVals))
+	for fk := range fieldVals {
+		fields = append(fields, fk)
+	}
+	sort.Strings(fields)
+	isPG := store.DialectOf(s.db) == store.Postgres
+	for _, fk := range fields {
+		vals := dedupCleanValues(fieldVals[fk])
+		if len(vals) == 0 {
+			continue
+		}
+		var sqlBuf strings.Builder
+		args := make([]any, 0, 3+len(tallyLevels)+2*len(vals))
+		if len(tallyLevels) == 1 {
+			sqlBuf.WriteString(`SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ?`)
+			args = append(args, int64(libraryID), tallyLevels[0], fk)
+		} else {
+			lvPh := make([]string, len(tallyLevels))
+			args = append(args, int64(libraryID))
+			for i, lv := range tallyLevels {
+				lvPh[i] = "?"
+				args = append(args, lv)
+			}
+			args = append(args, fk)
+			sqlBuf.WriteString(`SELECT v_text, SUM(cnt) FROM plugin_item_field_tally WHERE library_id = ? AND level IN (` + strings.Join(lvPh, ",") + `) AND field = ?`)
+		}
+		if isPG {
+			appendPGMD5In(&sqlBuf, &args, "v_text", vals)
+		} else {
+			vPh := make([]string, len(vals))
+			for i, v := range vals {
+				vPh[i] = "?"
+				args = append(args, v)
+			}
+			sqlBuf.WriteString(` AND v_text IN (` + strings.Join(vPh, ",") + `)`)
+		}
+		if len(tallyLevels) > 1 {
+			sqlBuf.WriteString(` GROUP BY v_text`)
+		}
+		rows, err := s.db.QueryContext(ctx, sqlBuf.String(), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var v string
+			var cnt int
+			if err := rows.Scan(&v, &cnt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[browseTextTallyKey{field: fk, val: v}] = cnt
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+func (s *Service) queryPersonTallyCounts(ctx context.Context, libraryID core.LibraryID, tallyLevels []string, fieldPIDs map[string][]int64) (map[browsePersonTallyKey]int, error) {
+	if len(fieldPIDs) == 0 {
+		return nil, nil
+	}
+	out := make(map[browsePersonTallyKey]int)
+	fields := make([]string, 0, len(fieldPIDs))
+	for fk := range fieldPIDs {
+		fields = append(fields, fk)
+	}
+	sort.Strings(fields)
+	for _, fk := range fields {
+		pids := fieldPIDs[fk]
+		if len(pids) == 0 {
+			continue
+		}
+		var sqlBuf strings.Builder
+		args := make([]any, 0, 3+len(tallyLevels)+len(pids))
+		if len(tallyLevels) == 1 {
+			sqlBuf.WriteString(`SELECT v_int, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ?`)
+			args = append(args, int64(libraryID), tallyLevels[0], fk)
+		} else {
+			lvPh := make([]string, len(tallyLevels))
+			args = append(args, int64(libraryID))
+			for i, lv := range tallyLevels {
+				lvPh[i] = "?"
+				args = append(args, lv)
+			}
+			args = append(args, fk)
+			sqlBuf.WriteString(`SELECT v_int, SUM(cnt) FROM plugin_item_person_tally WHERE library_id = ? AND level IN (` + strings.Join(lvPh, ",") + `) AND field = ?`)
+		}
+		pPh := make([]string, len(pids))
+		for i, pid := range pids {
+			pPh[i] = "?"
+			args = append(args, pid)
+		}
+		sqlBuf.WriteString(` AND v_int IN (` + strings.Join(pPh, ",") + `)`)
+		if len(tallyLevels) > 1 {
+			sqlBuf.WriteString(` GROUP BY v_int`)
+		}
+		rows, err := s.db.QueryContext(ctx, sqlBuf.String(), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var pid int64
+			var cnt int
+			if err := rows.Scan(&pid, &cnt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[browsePersonTallyKey{field: fk, pid: pid}] = cnt
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef, level string) (browseTallyInfo, error) {
-	if !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0 {
+	if len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) {
 		return browseTallyInfo{}, nil
 	}
+	noExtraFilters := q.Policy.Passive() && q.TabPolicy.Passive() && !q.Hidden && q.PersonID <= 0 && q.Watched == nil && q.MaxContentRating == "" && len(q.ExcludeKeys) == 0
 	if parentRef != "" {
-		if hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) {
+		if !noExtraFilters || hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups) {
 			return browseTallyInfo{}, nil
 		}
 		var pLevels []string
@@ -647,7 +991,7 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		}
 	case level != "":
 		levels = []string{level}
-	case q.AnyLevel:
+	case q.AnyLevel || q.PersonID > 0:
 		anyLevel = true
 	default:
 		rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
@@ -678,43 +1022,15 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	}
 	singleLevel := libTotal > 0 && levelTotal == libTotal && (!defaultedRoot || len(kindRec.Decl.Levels) == 1)
 
-	type activeFacet struct {
-		mode facetMode
-		key  string
-		vals []string
-	}
-	var active []activeFacet
-	collect := func(m map[string][]string, mode facetMode) {
-		for _, k := range sortedFacetKeys(m) {
-			vals := dedupCleanValues(m[k])
-			if len(vals) == 0 {
-				continue
-			}
-			active = append(active, activeFacet{mode: mode, key: k, vals: vals})
-			if len(active) > 1 {
-				return
-			}
+	active, hasDisjunction := collectActiveBrowseFacets(q)
+	noExtraFilters = noExtraFilters && !hasDisjunction
+	if len(active) == 0 && q.PersonID <= 0 {
+		if noExtraFilters {
+			return browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}, nil
 		}
-	}
-	collect(q.Facets, facetAny)
-	if len(active) <= 1 {
-		collect(q.AllFacets, facetAll)
-	}
-	if len(active) <= 1 {
-		collect(q.ExcludeFacets, facetNone)
-	}
-
-	if len(active) == 0 {
-		return browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}, nil
-	}
-	if len(active) > 1 {
 		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 	}
 
-	f := active[0]
-	if envelopeFacet(f.key) {
-		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
-	}
 	if !hasKind {
 		rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
 		if err != nil {
@@ -722,112 +1038,161 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 		}
 		kindRec = rec
 	}
-	var ftype string
+	fieldTypes := make(map[string]string, len(kindRec.Decl.Fields))
 	for _, fd := range kindRec.Decl.Fields {
-		if fd.Key == f.key {
-			ftype = fd.Type
-			break
-		}
-	}
-	var singleValued bool
-	switch ftype {
-	case "string", "enum", "bool":
-		singleValued = true
-	case "strings":
-		singleValued = false
-	default:
-		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
-	}
-	if !singleValued && len(f.vals) > 1 && f.mode != facetAny {
-		return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
-	}
-	if singleValued && f.mode == facetAll && len(f.vals) > 1 {
-		// Single-valued fields have at most one value per item, so requiring
-		// two distinct values is guaranteed empty.
-		return browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		fieldTypes[fd.Key] = fd.Type
 	}
 
-	// Query plugin_item_field_tally (O(1) PK seeks on library_id, level, field, v_text).
-	valPlaceholders := make([]string, len(f.vals))
-	for i := range f.vals {
-		valPlaceholders[i] = "?"
-	}
-	var (
-		sqlBuf strings.Builder
-		args   []any
-	)
-	multiOrMultiVal := !singleValued && len(f.vals) > 1 && f.mode == facetAny
-	if multiOrMultiVal {
-		sqlBuf.WriteString(`SELECT COALESCE(MAX(cnt), 0), COALESCE(SUM(cnt), 0) FROM plugin_item_field_tally WHERE library_id = ?`)
-	} else {
-		sqlBuf.WriteString(`SELECT COALESCE(SUM(cnt), 0) FROM plugin_item_field_tally WHERE library_id = ?`)
-	}
-	args = append(args, int64(q.LibraryID))
-	switch {
-	case anyLevel:
-		sqlBuf.WriteString(` AND level = ''`)
-	case len(levels) == 1:
-		sqlBuf.WriteString(` AND level = ?`)
-		args = append(args, levels[0])
-	default:
-		lvPlaceholders := make([]string, len(levels))
-		for i, lv := range levels {
-			lvPlaceholders[i] = "?"
-			args = append(args, lv)
-		}
-		sqlBuf.WriteString(` AND level IN (` + strings.Join(lvPlaceholders, ",") + `)`)
-	}
-	sqlBuf.WriteString(` AND field = ? AND v_text IN (` + strings.Join(valPlaceholders, ",") + `)`)
-	args = append(args, f.key)
-	for _, v := range f.vals {
-		args = append(args, v)
+	tallyLevels := levels
+	if anyLevel {
+		tallyLevels = []string{""}
 	}
 
-	if multiOrMultiVal {
-		var maxCount, sumCount int
-		if err := s.db.QueryRowContext(ctx, sqlBuf.String(), args...).Scan(&maxCount, &sumCount); err != nil {
-			return browseTallyInfo{}, err
+	// Single-facet exact-total + #682 sort-index fast path when no extra
+	// filters apply.
+	if noExtraFilters && len(active) == 1 {
+		f := active[0]
+		if !envelopeFacet(f.key) && isTalliedTextType(fieldTypes[f.key]) {
+			singleValued := isSingleValuedTextType(fieldTypes[f.key])
+			if singleValued && f.mode == facetAll && len(f.vals) > 1 {
+				return browseTallyInfo{totalExact: true, total: 0, knownEmpty: true, libTotal: libTotal, singleLevel: singleLevel}, nil
+			}
+			if singleValued || len(f.vals) == 1 || f.mode == facetAny {
+				counts, err := s.queryFieldTallyCounts(ctx, q.LibraryID, tallyLevels, map[string][]string{f.key: f.vals})
+				if err != nil {
+					return browseTallyInfo{}, err
+				}
+				var sumCnt, maxCnt int
+				for _, v := range f.vals {
+					c := counts[browseTextTallyKey{field: f.key, val: v}]
+					sumCnt += c
+					if c > maxCnt {
+						maxCnt = c
+					}
+				}
+				multiOrMultiVal := !singleValued && len(f.vals) > 1 && f.mode == facetAny
+				if multiOrMultiVal {
+					if sumCnt == 0 {
+						return browseTallyInfo{totalExact: true, total: 0, knownEmpty: true, libTotal: libTotal, singleLevel: singleLevel}, nil
+					}
+					return browseTallyInfo{
+						lowerBound:         maxCnt,
+						libTotal:           libTotal,
+						singleLevel:        singleLevel,
+						positiveTextField:  f.key,
+						positiveTextValues: f.vals,
+						talliesActive:      true,
+						textCounts:         counts,
+					}, nil
+				}
+				if f.mode == facetNone {
+					return browseTallyInfo{
+						totalExact:    true,
+						total:         max(0, levelTotal-sumCnt),
+						libTotal:      libTotal,
+						singleLevel:   singleLevel,
+						talliesActive: true,
+						textCounts:    counts,
+					}, nil
+				}
+				return browseTallyInfo{
+					totalExact:         true,
+					total:              sumCnt,
+					knownEmpty:         sumCnt == 0,
+					libTotal:           libTotal,
+					singleLevel:        singleLevel,
+					positiveTextField:  f.key,
+					positiveTextValues: f.vals,
+					talliesActive:      true,
+					textCounts:         counts,
+				}, nil
+			}
 		}
-		if sumCount == 0 {
-			return browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
-		}
-		return browseTallyInfo{
-			lowerBound:         maxCount,
-			libTotal:           libTotal,
-			singleLevel:        singleLevel,
-			positiveTextField:  f.key,
-			positiveTextValues: f.vals,
-		}, nil
 	}
 
-	var matchCount int
-	if err := s.db.QueryRowContext(ctx, sqlBuf.String(), args...).Scan(&matchCount); err != nil {
+	// Multi-facet, multi-value AllFacets, people, or extra-filtered queries:
+	// fetch O(1) positive facet tallies so buildBrowsePlan chooses the
+	// narrowest positive facet as the driver and probes the rest via EXISTS.
+	textFields := map[string][]string{}
+	peopleFields := map[string][]int64{}
+	for _, a := range active {
+		if a.mode == facetNone || envelopeFacet(a.key) {
+			continue
+		}
+		ft := fieldTypes[a.key]
+		if isSingleValuedTextType(ft) && a.mode == facetAll && len(a.vals) > 1 {
+			return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		}
+		if isTalliedTextType(ft) {
+			textFields[a.key] = append(textFields[a.key], a.vals...)
+			continue
+		}
+		if ft == "people" {
+			pids := parsePeopleFacetIDs(a.vals)
+			if len(pids) == 0 {
+				return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+			}
+			peopleFields[a.key] = appendUniqueInt64s(peopleFields[a.key], pids)
+		}
+	}
+	if q.PersonID > 0 {
+		if !core.IsPluginPersonID(q.PersonID) {
+			return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		}
+		pFields := declaredPeopleFields(kindRec.Decl)
+		if len(pFields) == 0 {
+			return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		}
+		for _, fk := range pFields {
+			peopleFields[fk] = appendUniqueInt64s(peopleFields[fk], []int64{q.PersonID})
+		}
+	}
+
+	textCounts, err := s.queryFieldTallyCounts(ctx, q.LibraryID, tallyLevels, textFields)
+	if err != nil {
+		return browseTallyInfo{}, err
+	}
+	personCounts, err := s.queryPersonTallyCounts(ctx, q.LibraryID, tallyLevels, peopleFields)
+	if err != nil {
 		return browseTallyInfo{}, err
 	}
 
-	if f.mode == facetNone {
-		return browseTallyInfo{
-			totalExact:  true,
-			total:       max(0, levelTotal-matchCount),
-			libTotal:    libTotal,
-			singleLevel: singleLevel,
-		}, nil
+	// If any positive tallied text clause has zero items in this library/level,
+	// the intersection is guaranteed empty without scanning plugin_items.
+	for _, a := range active {
+		if a.mode == facetNone || envelopeFacet(a.key) || !isTalliedTextType(fieldTypes[a.key]) {
+			continue
+		}
+		if a.mode == facetAll {
+			for _, v := range a.vals {
+				if textCounts[browseTextTallyKey{field: a.key, val: v}] == 0 {
+					return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+				}
+			}
+			continue
+		}
+		sumCnt := 0
+		for _, v := range a.vals {
+			sumCnt += textCounts[browseTextTallyKey{field: a.key, val: v}]
+		}
+		if sumCnt == 0 {
+			return browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}, nil
+		}
 	}
+
 	return browseTallyInfo{
-		totalExact:         true,
-		total:              matchCount,
-		libTotal:           libTotal,
-		singleLevel:        singleLevel,
-		positiveTextField:  f.key,
-		positiveTextValues: f.vals,
+		libTotal:      libTotal,
+		singleLevel:   singleLevel,
+		talliesActive: true,
+		textCounts:    textCounts,
+		personCounts:  personCounts,
 	}, nil
 }
 
 func (s *Service) resolveBrowseTotal(
 	ctx context.Context,
 	q BrowseQuery,
-	baseWhere string,
-	baseArgs []any,
+	plan browseQueryPlan,
 	hasFacets bool,
 	parentRef string,
 	tally browseTallyInfo,
@@ -844,7 +1209,10 @@ func (s *Service) resolveBrowseTotal(
 		return itemCount, true, nil
 	}
 
-	cacheable := q.Watched == nil && !strings.Contains(baseWhere, "state_watch")
+	isPG := store.DialectOf(s.db) == store.Postgres
+	countSQL, countArgs := plan.countSQLAndArgs(isPG)
+
+	cacheable := q.Watched == nil && !strings.Contains(plan.baseWhere, "state_watch")
 	var (
 		ckey   string
 		gen    uint64
@@ -853,7 +1221,7 @@ func (s *Service) resolveBrowseTotal(
 	if cacheable {
 		gen = s.writeGen.Load()
 		minute = s.countMinuteBucket()
-		ckey = browseCountCacheKey("browse", baseWhere, baseArgs)
+		ckey = browseCountCacheKey("browse", countSQL, countArgs)
 		if cached, ok := s.countCacheGet(ckey, gen, minute); ok {
 			return cached, true, nil
 		}
@@ -868,9 +1236,7 @@ func (s *Service) resolveBrowseTotal(
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
-		baseArgs...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countSQL, countArgs...).Scan(&total); err != nil {
 		return 0, false, err
 	}
 	if cacheable {
@@ -1097,7 +1463,11 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 			if libTally.countFor(targetLevel) == 0 {
 				return []FacetBucket{}, nil
 			}
-			qSQL := `SELECT label, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			orderBy := `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			if store.DialectOf(s.db) == store.Postgres {
+				orderBy = `cnt DESC, left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
+			qSQL := `SELECT label, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY ` + orderBy
 			qArgs := []any{int64(libraryID), targetLevel, fieldKey}
 			if !smallLib {
 				qSQL += ` LIMIT 400`
@@ -1161,7 +1531,11 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 			if libTally.countFor(targetLevel) == 0 {
 				return []FacetBucket{}, nil
 			}
-			qSQL := `SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY cnt DESC, v_lower ASC, v_text ASC`
+			orderBy := `cnt DESC, v_lower ASC, v_text ASC`
+			if store.DialectOf(s.db) == store.Postgres {
+				orderBy = `cnt DESC, left(v_lower, 256) ASC, v_lower ASC, v_text ASC`
+			}
+			qSQL := `SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? ORDER BY ` + orderBy
 			qArgs := []any{int64(libraryID), targetLevel, fieldKey}
 			if !smallLib {
 				qSQL += ` LIMIT 400`
@@ -1589,7 +1963,7 @@ func (s *Service) scanFieldTextCountsLarge(ctx context.Context, fieldKey, fieldD
 	qArgs = append(qArgs, fieldKey, fieldKey, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
 	qArgs = append(qArgs, countCap)
-	rows, err := s.db.QueryContext(ctx, `
+	querySQL := `
 WITH RECURSIVE distinct_vals(val, n) AS (
 	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND f.v_text > '' ORDER BY f.v_text ASC LIMIT 1), 1
 	UNION ALL
@@ -1601,12 +1975,41 @@ SELECT val, (
 	SELECT COUNT(*) FROM (
 		SELECT 1 FROM plugin_item_fields f
 		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_text = distinct_vals.val AND `+fieldDrivenWhere+`
+		WHERE f.field = ? AND f.v_text = distinct_vals.val AND ` + fieldDrivenWhere + `
 		LIMIT ?
 	) s
 )
 FROM distinct_vals
-WHERE val IS NOT NULL`, qArgs...)
+WHERE val IS NOT NULL`
+	if store.DialectOf(s.db) == store.Postgres {
+		querySQL = `
+WITH RECURSIVE distinct_vals(val, n) AS (
+	SELECT (SELECT f.v_text FROM plugin_item_fields f WHERE f.field = ? AND left(f.v_text, 256) > '' ORDER BY left(f.v_text, 256) ASC, f.v_text ASC LIMIT 1), 1
+	UNION ALL
+	SELECT (
+		SELECT f.v_text
+		FROM plugin_item_fields f
+		WHERE f.field = ?
+		  AND left(f.v_text, 256) >= left(distinct_vals.val, 256)
+		  AND (left(f.v_text, 256) > left(distinct_vals.val, 256) OR (left(f.v_text, 256) = left(distinct_vals.val, 256) AND f.v_text > distinct_vals.val))
+		ORDER BY left(f.v_text, 256) ASC, f.v_text ASC
+		LIMIT 1
+	), distinct_vals.n + 1
+	FROM distinct_vals
+	WHERE distinct_vals.val IS NOT NULL AND distinct_vals.n < 400
+)
+SELECT val, (
+	SELECT COUNT(*) FROM (
+		SELECT 1 FROM plugin_item_fields f
+		JOIN plugin_items i ON i.item_ref = f.item_ref
+		WHERE f.field = ? AND left(f.v_text, 256) = left(distinct_vals.val, 256) AND f.v_text = distinct_vals.val AND ` + fieldDrivenWhere + `
+		LIMIT ?
+	) s
+)
+FROM distinct_vals
+WHERE val IS NOT NULL`
+	}
+	rows, err := s.db.QueryContext(ctx, querySQL, qArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -2042,6 +2445,15 @@ func hasActiveFacets(facets map[string][]string) bool {
 	return false
 }
 
+func hasActiveAnyGroups(groups []core.KindBrowseFacetGroup) bool {
+	for _, g := range groups {
+		if len(activeAnyGroupAlts(g)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // facetMode selects how one facet map's values combine within a field:
 // any of them (OR), all of them (one predicate per value), or none of
 // them (negated). Fields always combine with AND.
@@ -2053,7 +2465,10 @@ const (
 	facetNone
 )
 
-func checkFacetValueBound(maps ...map[string][]string) error {
+func checkFacetValueBound(anyGroups []core.KindBrowseFacetGroup, maps ...map[string][]string) error {
+	if len(anyGroups) > MaxBrowseAnyGroups {
+		return fmt.Errorf("pluginitems: facet anyGroups exceed %d per query", MaxBrowseAnyGroups)
+	}
 	total := 0
 	for _, facets := range maps {
 		for _, vals := range facets {
@@ -2061,6 +2476,20 @@ func checkFacetValueBound(maps ...map[string][]string) error {
 			if total > MaxBrowseFacetValues {
 				return fmt.Errorf("pluginitems: facet values exceed %d per query", MaxBrowseFacetValues)
 			}
+		}
+	}
+	alts := 0
+	for _, g := range anyGroups {
+		total += len(g.Values)
+		alts += len(g.Any)
+		if alts > MaxBrowseFacetValues {
+			return fmt.Errorf("pluginitems: facet anyGroups alternatives exceed %d per query", MaxBrowseFacetValues)
+		}
+		for _, alt := range g.Any {
+			total += len(alt.Values)
+		}
+		if total > MaxBrowseFacetValues {
+			return fmt.Errorf("pluginitems: facet values exceed %d per query", MaxBrowseFacetValues)
 		}
 	}
 	return nil
@@ -2089,8 +2518,50 @@ func sortedFacetKeys(facets map[string][]string) []string {
 
 // appendLibraryFacetMode emits libraryfilter facet predicates for one
 // mode: any uses the map directly, all repeats the predicate per value,
-// and none negates each field's predicate.
-func appendLibraryFacetMode(where *strings.Builder, args *[]any, facets map[string][]string, types map[string]string, mode facetMode) {
+// and none negates each field's predicate. When isPG is true, text facets
+// include md5(f.v_text) so PostgreSQL seeks plugin_item_fields_pkey_idx
+// directly while f.v_text IN (...) keeps equality exact.
+func appendLibraryFacetMode(where *strings.Builder, args *[]any, facets map[string][]string, types map[string]string, mode facetMode, isPG bool) {
+	if isPG {
+		emitPGText := func(key string, cleanVals []string, negate bool) {
+			op := "EXISTS"
+			if negate {
+				op = "NOT EXISTS"
+			}
+			where.WriteString(` AND ` + op + ` (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ?`)
+			*args = append(*args, key)
+			appendPGMD5In(where, args, "f.v_text", cleanVals)
+			where.WriteString(`)`)
+		}
+		for _, key := range sortedFacetKeys(facets) {
+			cleanVals := cleanFacetValues(facets[key])
+			if len(cleanVals) == 0 {
+				continue
+			}
+			ftype := types[key]
+			base, isDateDecade := libraryfilter.SplitDateDecadeFacet(key)
+			isTextFacet := !(key == "decade" && types["decade"] == "") &&
+				!(isDateDecade && types[base] == "date") &&
+				!envelopeFacet(key) &&
+				ftype != "int" && ftype != "date" && ftype != "duration" && ftype != "float" && ftype != "people" &&
+				!(ftype == "" && browseAllIntRanges(cleanVals))
+			if isTextFacet {
+				switch mode {
+				case facetAny:
+					emitPGText(key, cleanVals, false)
+				case facetAll:
+					for _, v := range cleanVals {
+						emitPGText(key, []string{v}, false)
+					}
+				case facetNone:
+					emitPGText(key, cleanVals, true)
+				}
+				continue
+			}
+			appendLibraryFacetMode(where, args, map[string][]string{key: cleanVals}, types, mode, false)
+		}
+		return
+	}
 	switch mode {
 	case facetAny:
 		libraryfilter.AppendPluginFacetClauses(where, args, facets, types)
@@ -2120,12 +2591,12 @@ func appendLibraryFacetMode(where *strings.Builder, args *[]any, facets map[stri
 }
 
 // appendFacets resolves field types only when a browse/search uses facets.
-func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets, allFacets, excludeFacets map[string][]string) error {
-	if !hasActiveFacets(facets) && !hasActiveFacets(allFacets) && !hasActiveFacets(excludeFacets) {
-		return nil
-	}
-	if err := checkFacetValueBound(facets, allFacets, excludeFacets); err != nil {
+func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets, allFacets, excludeFacets map[string][]string, anyGroups []core.KindBrowseFacetGroup) error {
+	if err := checkFacetValueBound(anyGroups, facets, allFacets, excludeFacets); err != nil {
 		return err
+	}
+	if !hasActiveFacets(facets) && !hasActiveFacets(allFacets) && !hasActiveFacets(excludeFacets) && !hasActiveAnyGroups(anyGroups) {
+		return nil
 	}
 	rec, err := s.GetKindByLibrary(ctx, lib)
 	if err != nil {
@@ -2135,98 +2606,602 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 	for _, field := range rec.Decl.Fields {
 		types[field.Key] = field.Type
 	}
-	appendLibraryFacetMode(where, args, facets, types, facetAny)
-	appendLibraryFacetMode(where, args, allFacets, types, facetAll)
-	appendLibraryFacetMode(where, args, excludeFacets, types, facetNone)
+	isPG := store.DialectOf(s.db) == store.Postgres
+	appendLibraryFacetMode(where, args, facets, types, facetAny, isPG)
+	appendLibraryFacetMode(where, args, allFacets, types, facetAll, isPG)
+	appendLibraryFacetMode(where, args, excludeFacets, types, facetNone, isPG)
+	for _, g := range anyGroups {
+		appendAnyGroupClause(where, args, types, g, isPG)
+	}
 	return nil
 }
 
-// appendBrowseFacets emits IN-subquery predicates on plugin_item_fields for
-// positive Browse queries so SQLite/PostgreSQL drive execution from
-// plugin_item_fields_lookup / plugin_item_fields_lookup_int /
-// plugin_item_fields_lookup_real instead of scanning all library items with
-// correlated EXISTS checks.
-func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string) (bool, error) {
-	return s.appendBrowseFacetsMode(ctx, lib, where, args, facets, facetAny)
+type browseClauseKind uint8
+
+const (
+	clauseText browseClauseKind = iota
+	clauseInt
+	clauseFloat
+	clauseDateDecade
+	clausePeople
+	clausePersonID
+	clauseEnvelope
+	clauseDisjunction
+)
+
+type browseFacetClause struct {
+	kind         browseClauseKind
+	key          string
+	ftype        string
+	vals         []string
+	pids         []int64
+	peopleFields []string
+	disjuncts    []fieldDisjunct
+	alternatives []browseFacetClause
+	defaultPart  string
+	negate       bool
+	singleValued bool
+	isRange      bool
+	estCount     int
 }
 
-// appendBrowseFacetsMode is appendBrowseFacets for one facet mode. All
-// repeats the indexed predicate once per value so every value must be
-// present; none emits the same indexed subquery under NOT IN so items
-// having any listed value are dropped. The returned flag reports whether
-// a positive field-index predicate can drive the query.
-func (s *Service) appendBrowseFacetsMode(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string, mode facetMode) (bool, error) {
-	if !hasActiveFacets(facets) {
-		return false, nil
+func appendUniqueInt64s(dst, src []int64) []int64 {
+	if len(src) == 0 {
+		return dst
 	}
-	rec, err := s.GetKindByLibrary(ctx, lib)
-	if err != nil {
-		return false, err
+	var seen map[int64]struct{}
+	if len(dst) > 0 {
+		seen = make(map[int64]struct{}, len(dst)+len(src))
+		for _, v := range dst {
+			seen[v] = struct{}{}
+		}
 	}
-	types := map[string]string{}
-	for _, field := range rec.Decl.Fields {
-		types[field.Key] = field.Type
-	}
-	negate := mode == facetNone
-	usedFieldIndex := false
-
-	emit := func(key string, cleanVals []string) {
-		if key == "decade" && types["decade"] == "" {
-			appendLibraryFacetMode(where, args, map[string][]string{key: cleanVals}, types, mode)
-			return
-		}
-		if base, ok := libraryfilter.SplitDateDecadeFacet(key); ok && types[base] == "date" {
-			appendBrowseDateDecadeClause(where, args, base, cleanVals, &usedFieldIndex, negate)
-			return
-		}
-		ftype := types[key]
-		if envelopeFacet(key) {
-			appendLibraryFacetMode(where, args, map[string][]string{key: cleanVals}, types, mode)
-			return
-		}
-		switch ftype {
-		case "int", "date", "duration":
-			appendBrowseIntFieldClause(where, args, key, ftype, cleanVals, &usedFieldIndex, negate)
-		case "float":
-			appendBrowseFloatFieldClause(where, args, key, cleanVals, &usedFieldIndex, negate)
-		case "people":
-			appendBrowsePeopleFieldClause(where, args, key, cleanVals, &usedFieldIndex, negate)
-		default:
-			if ftype == "" && browseAllIntRanges(cleanVals) {
-				appendBrowseIntFieldClause(where, args, key, "int", cleanVals, &usedFieldIndex, negate)
-				return
+	for _, v := range src {
+		if seen != nil {
+			if _, dup := seen[v]; dup {
+				continue
 			}
-			placeholders := make([]string, len(cleanVals))
-			*args = append(*args, key)
-			for idx, v := range cleanVals {
-				placeholders[idx] = "?"
+			seen[v] = struct{}{}
+		} else if len(src) > 1 {
+			seen = make(map[int64]struct{}, len(src))
+			seen[v] = struct{}{}
+		}
+		dst = append(dst, v)
+	}
+	return dst
+}
+
+func parsePeopleFacetIDs(vals []string) []int64 {
+	var pids []int64
+	for _, v := range vals {
+		var pid int64
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && core.IsPluginPersonID(n) {
+			pid = n
+		} else if p := core.PluginPersonID(v); p > 0 {
+			pid = p
+		}
+		if pid > 0 {
+			pids = appendUniqueInt64s(pids, []int64{pid})
+		}
+	}
+	return pids
+}
+
+func collectBrowseFieldClauses(q BrowseQuery, types map[string]string, peopleFields []string) ([]browseFacetClause, bool) {
+	var clauses []browseFacetClause
+	if q.PersonID > 0 {
+		if !core.IsPluginPersonID(q.PersonID) || len(peopleFields) == 0 {
+			return nil, true
+		}
+		clauses = append(clauses, browseFacetClause{
+			kind:         clausePersonID,
+			pids:         []int64{q.PersonID},
+			peopleFields: peopleFields,
+			estCount:     -1,
+		})
+	}
+
+	addOne := func(key string, vals []string, negate bool) bool {
+		c, skip, impossible := buildBrowseFacetClause(types, key, vals, negate)
+		if impossible {
+			return false
+		}
+		if !skip {
+			clauses = append(clauses, c)
+		}
+		return true
+	}
+
+	for _, key := range sortedFacetKeys(q.Facets) {
+		vals := dedupCleanValues(q.Facets[key])
+		if len(vals) == 0 {
+			continue
+		}
+		if !addOne(key, vals, false) {
+			return nil, true
+		}
+	}
+	for _, key := range sortedFacetKeys(q.AllFacets) {
+		vals := dedupCleanValues(q.AllFacets[key])
+		if len(vals) == 0 {
+			continue
+		}
+		if isSingleValuedTextType(types[key]) && len(vals) > 1 {
+			return nil, true
+		}
+		for _, v := range vals {
+			if !addOne(key, []string{v}, false) {
+				return nil, true
+			}
+		}
+	}
+	for _, g := range q.AnyGroups {
+		alts := activeAnyGroupAlts(g)
+		switch len(alts) {
+		case 0:
+			continue
+		case 1:
+			if !addOne(alts[0].Field, dedupCleanValues(alts[0].Values), false) {
+				return nil, true
+			}
+		default:
+			group := browseFacetClause{kind: clauseDisjunction, estCount: -1}
+			for _, alt := range alts {
+				c, skip, impossible := buildBrowseFacetClause(types, alt.Field, dedupCleanValues(alt.Values), false)
+				if !skip && !impossible {
+					group.alternatives = append(group.alternatives, c)
+				}
+			}
+			if len(group.alternatives) == 0 {
+				return nil, true
+			}
+			clauses = append(clauses, group)
+		}
+	}
+	for _, key := range sortedFacetKeys(q.ExcludeFacets) {
+		vals := dedupCleanValues(q.ExcludeFacets[key])
+		if len(vals) == 0 {
+			continue
+		}
+		if !addOne(key, vals, true) {
+			return nil, true
+		}
+	}
+	return clauses, false
+}
+
+func buildBrowseFacetClause(types map[string]string, key string, vals []string, negate bool) (browseFacetClause, bool, bool) {
+	if (key == "decade" && types["decade"] == "") || envelopeFacet(key) {
+		return browseFacetClause{
+			kind:     clauseEnvelope,
+			key:      key,
+			ftype:    types[key],
+			vals:     vals,
+			negate:   negate,
+			estCount: -1,
+		}, false, false
+	}
+	if base, ok := libraryfilter.SplitDateDecadeFacet(key); ok && types[base] == "date" {
+		disjuncts := buildDateDecadeDisjuncts(vals)
+		if len(disjuncts) == 0 {
+			return browseFacetClause{}, true, !negate
+		}
+		return browseFacetClause{
+			kind:        clauseDateDecade,
+			key:         base,
+			ftype:       "date",
+			vals:        vals,
+			disjuncts:   disjuncts,
+			defaultPart: `(f.v_text = '' OR f.v_int <> 0)`,
+			negate:      negate,
+			isRange:     true,
+			estCount:    -1,
+		}, false, false
+	}
+	ftype := types[key]
+	switch ftype {
+	case "int", "date", "duration":
+		disjuncts, isRange := buildIntFieldDisjuncts(ftype, vals)
+		if len(disjuncts) == 0 {
+			return browseFacetClause{}, true, !negate
+		}
+		return browseFacetClause{
+			kind:        clauseInt,
+			key:         key,
+			ftype:       ftype,
+			vals:        vals,
+			disjuncts:   disjuncts,
+			defaultPart: `(f.v_text = '' OR f.v_int <> 0)`,
+			negate:      negate,
+			isRange:     isRange,
+			estCount:    -1,
+		}, false, false
+	case "float":
+		disjuncts, isRange := buildFloatFieldDisjuncts(vals)
+		if len(disjuncts) == 0 {
+			return browseFacetClause{}, true, !negate
+		}
+		return browseFacetClause{
+			kind:        clauseFloat,
+			key:         key,
+			ftype:       ftype,
+			vals:        vals,
+			disjuncts:   disjuncts,
+			defaultPart: `f.v_text = ''`,
+			negate:      negate,
+			isRange:     isRange,
+			estCount:    -1,
+		}, false, false
+	case "people":
+		pids := parsePeopleFacetIDs(vals)
+		if len(pids) == 0 {
+			return browseFacetClause{}, true, !negate
+		}
+		return browseFacetClause{
+			kind:     clausePeople,
+			key:      key,
+			ftype:    ftype,
+			vals:     vals,
+			pids:     pids,
+			negate:   negate,
+			estCount: -1,
+		}, false, false
+	default:
+		if ftype == "" && browseAllIntRanges(vals) {
+			disjuncts, isRange := buildIntFieldDisjuncts("int", vals)
+			if len(disjuncts) == 0 {
+				return browseFacetClause{}, true, !negate
+			}
+			return browseFacetClause{
+				kind:        clauseInt,
+				key:         key,
+				ftype:       "int",
+				vals:        vals,
+				disjuncts:   disjuncts,
+				defaultPart: `(f.v_text = '' OR f.v_int <> 0)`,
+				negate:      negate,
+				isRange:     isRange,
+				estCount:    -1,
+			}, false, false
+		}
+		return browseFacetClause{
+			kind:         clauseText,
+			key:          key,
+			ftype:        ftype,
+			vals:         vals,
+			negate:       negate,
+			singleValued: isSingleValuedTextType(ftype),
+			estCount:     -1,
+		}, false, false
+	}
+}
+
+func clauseValCount(c browseFacetClause) int {
+	switch c.kind {
+	case clausePeople:
+		return len(c.pids)
+	case clausePersonID:
+		return len(c.peopleFields)
+	default:
+		return len(c.vals)
+	}
+}
+
+// pickBrowseDriver chooses the narrowest positive plugin_item_fields clause
+// to drive both the page and count queries, using O(1) stored tallies when
+// available and falling back to shape heuristics (single-value exact equality
+// before multi-value or range filters) when tallies are absent or untallied.
+func pickBrowseDriver(clauses []browseFacetClause, tally browseTallyInfo) (bestIdx int, empty bool) {
+	bestIdx = -1
+	for i := range clauses {
+		c := &clauses[i]
+		// A disjunction has no estimate for the union of its alternatives.
+		if c.negate || c.kind == clauseEnvelope || c.kind == clauseDisjunction {
+			continue
+		}
+		if tally.talliesActive {
+			switch c.kind {
+			case clauseText:
+				if isTalliedTextType(c.ftype) {
+					sum := 0
+					for _, v := range c.vals {
+						sum += tally.textCounts[browseTextTallyKey{field: c.key, val: v}]
+					}
+					if sum == 0 {
+						return -1, true
+					}
+					c.estCount = sum
+				}
+			case clausePeople:
+				if tally.personCounts != nil {
+					sum := 0
+					for _, pid := range c.pids {
+						sum += tally.personCounts[browsePersonTallyKey{field: c.key, pid: pid}]
+					}
+					c.estCount = sum
+				}
+			case clausePersonID:
+				if tally.personCounts != nil {
+					sum := 0
+					for _, fk := range c.peopleFields {
+						sum += tally.personCounts[browsePersonTallyKey{field: fk, pid: c.pids[0]}]
+					}
+					c.estCount = sum
+				}
+			}
+		}
+		if bestIdx < 0 || betterBrowseDriver(*c, clauses[bestIdx], tally.libTotal) {
+			bestIdx = i
+		}
+	}
+	return bestIdx, false
+}
+
+// betterBrowseDriver reports whether candidate a is strictly preferable to b
+// as the driving positive facet.
+func betterBrowseDriver(a, b browseFacetClause, libTotal int) bool {
+	const narrowTallyCeiling = 20_000
+	isBroadTallied := func(est int) bool {
+		return est > narrowTallyCeiling && (libTotal <= 0 || est*10 > libTotal)
+	}
+	isSingleExact := func(c browseFacetClause) bool {
+		return !c.isRange && clauseValCount(c) == 1
+	}
+
+	aTallied := a.estCount >= 0
+	bTallied := b.estCount >= 0
+	switch {
+	case aTallied && bTallied:
+		if a.estCount != b.estCount {
+			return a.estCount < b.estCount
+		}
+		if aSingle, bSingle := isSingleExact(a), isSingleExact(b); aSingle != bSingle {
+			return aSingle
+		}
+		if a.singleValued != b.singleValued {
+			return a.singleValued
+		}
+		return false
+	case aTallied && !bTallied:
+		// A known-narrow tallied facet always beats an untallied filter. If the
+		// tallied facet is very broad (>20k and >10% of the library), prefer an
+		// untallied single-value exact equality (e.g. episodes = 42), while
+		// still beating untallied ranges.
+		if isBroadTallied(a.estCount) && isSingleExact(b) {
+			return false
+		}
+		return true
+	case !aTallied && bTallied:
+		return isBroadTallied(b.estCount) && isSingleExact(a)
+	default:
+		if a.isRange != b.isRange {
+			return !a.isRange
+		}
+		aN, bN := clauseValCount(a), clauseValCount(b)
+		if aN != bN {
+			return aN < bN
+		}
+		if a.singleValued != b.singleValued {
+			return a.singleValued
+		}
+		return false
+	}
+}
+
+func buildClauseDriverSQL(c browseFacetClause, isPG bool) (string, []any) {
+	var sqlBuf strings.Builder
+	var args []any
+	switch c.kind {
+	case clauseText:
+		args = append(args, c.key)
+		if isPG {
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ?`)
+			appendPGPrefixIn(&sqlBuf, &args, "f.v_text", c.vals)
+		} else if len(c.vals) == 1 {
+			args = append(args, c.vals[0])
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = ?`)
+		} else {
+			ph := make([]string, len(c.vals))
+			for i, v := range c.vals {
+				ph[i] = "?"
+				args = append(args, v)
+			}
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text IN (` + strings.Join(ph, ", ") + `)`)
+		}
+	case clausePeople:
+		args = append(args, c.key)
+		if len(c.pids) == 1 {
+			args = append(args, c.pids[0])
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ?`)
+		} else {
+			ph := make([]string, len(c.pids))
+			for i, pid := range c.pids {
+				ph[i] = "?"
+				args = append(args, pid)
+			}
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(ph, ", ") + `)`)
+		}
+	case clausePersonID:
+		if len(c.peopleFields) == 1 {
+			args = append(args, c.peopleFields[0], c.pids[0])
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ?`)
+		} else {
+			ph := make([]string, len(c.peopleFields))
+			for i, fk := range c.peopleFields {
+				ph[i] = "?"
+				args = append(args, fk)
+			}
+			args = append(args, c.pids[0])
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field IN (` + strings.Join(ph, ", ") + `) AND f.v_int <> 0 AND f.v_int = ?`)
+		}
+	case clauseInt, clauseFloat, clauseDateDecade:
+		predFor := func(d fieldDisjunct) string {
+			if d.partialPred != "" {
+				return d.partialPred
+			}
+			return c.defaultPart
+		}
+		if len(c.disjuncts) == 1 {
+			args = append(args, c.key)
+			args = append(args, c.disjuncts[0].args...)
+			sqlBuf.WriteString(`SELECT DISTINCT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(c.disjuncts[0]) + ` AND ` + c.disjuncts[0].sql)
+		} else {
+			for i, d := range c.disjuncts {
+				if i > 0 {
+					sqlBuf.WriteString(` UNION `)
+				}
+				args = append(args, c.key)
+				args = append(args, d.args...)
+				sqlBuf.WriteString(`SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(d) + ` AND ` + d.sql)
+			}
+		}
+	}
+	return sqlBuf.String(), args
+}
+
+// appendCorrelatedTextClause emits a correlated EXISTS or NOT EXISTS probe on
+// plugin_item_fields(item_ref, field, ...) for text facets.
+//   - On PostgreSQL, the LIMIT 1 subquery fence keeps the planner from
+//     decorrelating the probe into a Parallel Seq Scan / Hash Semi Join under
+//     cardinality skew; single-value probes use md5(v_text) to seek the 3rd
+//     column of plugin_item_fields_pkey_idx, while multi-value IN lists match
+//     (item_ref, field) directly to avoid hashing every value per item.
+//   - On SQLite, multi-value IN lists prefix unary `+` onto f.v_text so SQLite
+//     probes the covering PK (item_ref, field) once per item instead of probing
+//     plugin_item_fields_lookup len(vals) times per item.
+func appendCorrelatedTextClause(where *strings.Builder, args *[]any, fieldKey string, vals []string, negate, isPG bool) {
+	if negate {
+		where.WriteString(` AND NOT EXISTS (`)
+	} else {
+		where.WriteString(` AND EXISTS (`)
+	}
+	*args = append(*args, fieldKey)
+	if isPG {
+		where.WriteString(`SELECT 1 FROM (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ?`)
+		if len(vals) == 1 {
+			appendPGMD5In(where, args, "f.v_text", vals)
+		} else {
+			ph := make([]string, len(vals))
+			for i, v := range vals {
+				ph[i] = "?"
 				*args = append(*args, v)
 			}
-			op := "IN"
-			if negate {
-				op = "NOT IN"
-			}
-			where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
-			if !negate {
-				usedFieldIndex = true
-			}
+			where.WriteString(` AND f.v_text IN (` + strings.Join(ph, ", ") + `)`)
 		}
+		where.WriteString(` LIMIT 1) _s)`)
+		return
+	}
+	if len(vals) == 1 {
+		*args = append(*args, vals[0])
+		where.WriteString(`SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?)`)
+		return
+	}
+	ph := make([]string, len(vals))
+	for i, v := range vals {
+		ph[i] = "?"
+		*args = append(*args, v)
+	}
+	where.WriteString(`SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND +f.v_text IN (` + strings.Join(ph, ", ") + `))`)
+}
+
+func appendBrowseClauseSQL(where *strings.Builder, args *[]any, c browseFacetClause, types map[string]string, isPG bool) {
+	switch c.kind {
+	case clauseEnvelope:
+		mode := facetAny
+		if c.negate {
+			mode = facetNone
+		}
+		appendLibraryFacetMode(where, args, map[string][]string{c.key: c.vals}, types, mode, isPG)
+	case clauseDisjunction:
+		where.WriteString(" AND (")
+		for i, alt := range c.alternatives {
+			if i > 0 {
+				where.WriteString(" OR ")
+			}
+			var predicate strings.Builder
+			appendBrowseClauseSQL(&predicate, args, alt, types, isPG)
+			where.WriteString("(" + strings.TrimPrefix(predicate.String(), " AND ") + ")")
+		}
+		where.WriteString(")")
+	default:
+		appendClauseExistsSQL(where, args, c, isPG)
+	}
+}
+
+func appendClauseExistsSQL(where *strings.Builder, args *[]any, c browseFacetClause, isPG bool) {
+	if c.kind == clauseText {
+		appendCorrelatedTextClause(where, args, c.key, c.vals, c.negate, isPG)
+		return
+	}
+	if c.negate {
+		where.WriteString(` AND NOT EXISTS (`)
+	} else {
+		where.WriteString(` AND EXISTS (`)
+	}
+	if isPG {
+		where.WriteString(`SELECT 1 FROM (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND `)
+	} else {
+		where.WriteString(`SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND `)
 	}
 
-	for _, key := range sortedFacetKeys(facets) {
-		cleanVals := cleanFacetValues(facets[key])
-		if len(cleanVals) == 0 {
-			continue
-		}
-		if mode == facetAll {
-			for _, v := range cleanVals {
-				emit(key, []string{v})
+	switch c.kind {
+	case clausePeople:
+		*args = append(*args, c.key)
+		if len(c.pids) == 1 {
+			*args = append(*args, c.pids[0])
+			where.WriteString(`f.field = ? AND f.v_int <> 0 AND f.v_int = ?`)
+		} else {
+			ph := make([]string, len(c.pids))
+			for i, pid := range c.pids {
+				ph[i] = "?"
+				*args = append(*args, pid)
 			}
-			continue
+			if isPG {
+				where.WriteString(`f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(ph, ", ") + `)`)
+			} else {
+				// Every pid is positive (> 0), so +f.v_int IN (...) implies
+				// v_int <> 0 while steering SQLite onto the covering PK
+				// (item_ref, field) instead of probing lookup_int N times.
+				where.WriteString(`f.field = ? AND +f.v_int IN (` + strings.Join(ph, ", ") + `)`)
+			}
 		}
-		emit(key, cleanVals)
+	case clausePersonID:
+		if len(c.peopleFields) == 1 {
+			*args = append(*args, c.peopleFields[0], c.pids[0])
+			where.WriteString(`f.field = ? AND f.v_int <> 0 AND f.v_int = ?`)
+		} else {
+			ph := make([]string, len(c.peopleFields))
+			for i, fk := range c.peopleFields {
+				ph[i] = "?"
+				*args = append(*args, fk)
+			}
+			*args = append(*args, c.pids[0])
+			where.WriteString(`f.field IN (` + strings.Join(ph, ", ") + `) AND f.v_int <> 0 AND f.v_int = ?`)
+		}
+	case clauseInt, clauseFloat, clauseDateDecade:
+		*args = append(*args, c.key)
+		predFor := func(d fieldDisjunct) string {
+			if d.partialPred != "" {
+				return d.partialPred
+			}
+			return c.defaultPart
+		}
+		where.WriteString(`f.field = ? AND (`)
+		for i, d := range c.disjuncts {
+			if i > 0 {
+				where.WriteString(` OR `)
+			}
+			where.WriteString(`(` + predFor(d) + ` AND ` + d.sql + `)`)
+			*args = append(*args, d.args...)
+		}
+		where.WriteString(`)`)
 	}
-	return usedFieldIndex, nil
+
+	if isPG {
+		where.WriteString(` LIMIT 1) _s)`)
+	} else {
+		where.WriteString(`)`)
+	}
 }
 
 type fieldDisjunct struct {
@@ -2242,41 +3217,7 @@ func intRangePartialPred(lo, hi int64) string {
 	return `(f.v_text = '' OR f.v_int <> 0)`
 }
 
-// appendBrowseFieldDisjuncts emits an item_ref IN (...) filter carrying
-// partialPred verbatim so SQLite and PostgreSQL prove the partial numeric
-// index applies. Multiple disjuncts use UNION ALL instead of a single OR so
-// SQLite seeks the partial index on every branch rather than falling back to a
-// full field scan.
-func appendBrowseFieldDisjuncts(where *strings.Builder, args *[]any, fieldKey, defaultPartialPred string, disjuncts []fieldDisjunct, negate bool) {
-	predFor := func(d fieldDisjunct) string {
-		if d.partialPred != "" {
-			return d.partialPred
-		}
-		return defaultPartialPred
-	}
-	op := "IN"
-	if negate {
-		op = "NOT IN"
-	}
-	if len(disjuncts) == 1 {
-		*args = append(*args, fieldKey)
-		*args = append(*args, disjuncts[0].args...)
-		where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(disjuncts[0]) + ` AND ` + disjuncts[0].sql + `)`)
-		return
-	}
-	where.WriteString(` AND i.item_ref ` + op + ` (`)
-	for idx, d := range disjuncts {
-		if idx > 0 {
-			where.WriteString(` UNION ALL `)
-		}
-		*args = append(*args, fieldKey)
-		*args = append(*args, d.args...)
-		where.WriteString(`SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(d) + ` AND ` + d.sql)
-	}
-	where.WriteString(`)`)
-}
-
-func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField string, vals []string, used *bool, negate bool) {
+func buildDateDecadeDisjuncts(vals []string) []fieldDisjunct {
 	var disjuncts []fieldDisjunct
 	for _, v := range vals {
 		if lo, hi, ok := libraryfilter.ParseDateDecadeBucket(v); ok {
@@ -2287,22 +3228,14 @@ func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField
 			})
 		}
 	}
-	if len(disjuncts) == 0 {
-		if !negate {
-			where.WriteString(` AND 0=1`)
-		}
-		return
-	}
-	appendBrowseFieldDisjuncts(where, args, baseField, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts, negate)
-	if !negate {
-		*used = true
-	}
+	return disjuncts
 }
 
-func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool, negate bool) {
+func buildFloatFieldDisjuncts(vals []string) ([]fieldDisjunct, bool) {
 	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
+	hasRange := false
 	for _, v := range vals {
 		if r, ok := libraryfilter.ParseFloatRange(v); ok {
 			q, rargs := r.SQL(`f.v_real`)
@@ -2310,6 +3243,7 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 				sql:  q,
 				args: rargs,
 			})
+			hasRange = true
 			continue
 		}
 		n, err := strconv.ParseFloat(v, 64)
@@ -2325,16 +3259,7 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 			args: exactArgs,
 		})
 	}
-	if len(disjuncts) == 0 {
-		if !negate {
-			where.WriteString(` AND 0=1`)
-		}
-		return
-	}
-	appendBrowseFieldDisjuncts(where, args, key, `f.v_text = ''`, disjuncts, negate)
-	if !negate {
-		*used = true
-	}
+	return disjuncts, hasRange
 }
 
 func browseAllIntRanges(vals []string) bool {
@@ -2349,11 +3274,12 @@ func browseAllIntRanges(vals []string) bool {
 	return true
 }
 
-func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype string, vals []string, used *bool, negate bool) {
+func buildIntFieldDisjuncts(ftype string, vals []string) ([]fieldDisjunct, bool) {
 	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
 	exactHasZero := false
+	hasRange := false
 	for _, v := range vals {
 		if ftype == "duration" {
 			if lo, hi, ok := libraryfilter.ParseDurationBucket(v); ok {
@@ -2370,6 +3296,7 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 						partialPred: intRangePartialPred(lo, hi),
 					})
 				}
+				hasRange = true
 				continue
 			}
 		}
@@ -2380,6 +3307,7 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 					args:        []any{lo, hi},
 					partialPred: intRangePartialPred(lo, hi),
 				})
+				hasRange = true
 				continue
 			}
 		}
@@ -2394,6 +3322,7 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 				args:        rargs,
 				partialPred: pred,
 			})
+			hasRange = true
 			continue
 		}
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -2417,71 +3346,7 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 			partialPred: pred,
 		})
 	}
-	if len(disjuncts) == 0 {
-		if !negate {
-			where.WriteString(` AND 0=1`)
-		}
-		return
-	}
-	appendBrowseFieldDisjuncts(where, args, key, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts, negate)
-	if !negate {
-		*used = true
-	}
-}
-
-func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool, negate bool) {
-	var pids []int64
-	for _, v := range vals {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && core.IsPluginPersonID(n) {
-			pids = append(pids, n)
-			continue
-		}
-		if pid := core.PluginPersonID(v); pid > 0 {
-			pids = append(pids, pid)
-		}
-	}
-	if len(pids) == 0 {
-		if !negate {
-			where.WriteString(` AND 0=1`)
-		}
-		return
-	}
-	placeholders := make([]string, len(pids))
-	*args = append(*args, key)
-	for idx, pid := range pids {
-		placeholders[idx] = "?"
-		*args = append(*args, pid)
-	}
-	op := "IN"
-	if negate {
-		op = "NOT IN"
-	}
-	where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
-	if !negate {
-		*used = true
-	}
-}
-
-func (s *Service) appendBrowsePersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {
-	if !core.IsPluginPersonID(personID) {
-		return false, nil
-	}
-	rec, err := s.GetKindByLibrary(ctx, lib)
-	if err != nil {
-		return false, err
-	}
-	pFields := declaredPeopleFields(rec.Decl)
-	if len(pFields) == 0 {
-		return false, nil
-	}
-	placeholders := make([]string, len(pFields))
-	for i, fk := range pFields {
-		placeholders[i] = "?"
-		*args = append(*args, fk)
-	}
-	*args = append(*args, personID)
-	where.WriteString(` AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
-	return true, nil
+	return disjuncts, hasRange
 }
 
 func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {
@@ -2608,6 +3473,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	var pageRepRefs []string
 	more := false
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	switch {
 	case !isEnv && !isDateDecade && fieldType == "people":
 		if q.Policy.Passive() && libTally.active {
@@ -2619,8 +3485,14 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			tallyArgs := []any{int64(q.LibraryID), targetLevel, fieldKey}
 			appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "label_fold", terms)
 			orderClause := `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			if isPG {
+				orderClause = `cnt DESC, left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
 			if orderByName {
 				orderClause = `label_lower ASC, label ASC, v_int ASC`
+				if isPG {
+					orderClause = `left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+				}
 			}
 			tallyArgs = append(tallyArgs, limit+1, offset)
 			rows, err := s.db.QueryContext(ctx,
@@ -2698,13 +3570,13 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if len(terms) > 0 {
 			var subWhere strings.Builder
 			var subArgs []any
-			if store.DialectOf(s.db) == store.Postgres {
+			if isPG {
 				subWhere.WriteString(`f.field = ? AND f.v_int > 0 AND f.v_text <> ''`)
 			} else {
 				subWhere.WriteString(`f.field = ? AND f.v_int + 0 > 0 AND f.v_text <> ''`)
 			}
 			subArgs = append(subArgs, fieldKey)
-			appendFoldedWordPrefix(&subWhere, &subArgs, terms)
+			appendFoldedWordPrefixDialect(&subWhere, &subArgs, isPG, terms)
 			subArgs = append(subArgs, 50000)
 			qArgs := append(subArgs, itemArgs...)
 			qArgs = append(qArgs, limit+1, offset)
@@ -2765,8 +3637,14 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			tallyArgs := []any{int64(q.LibraryID), targetLevel, fieldKey}
 			appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "v_fold", terms)
 			orderClause := `cnt DESC, v_lower ASC, v_text ASC`
+			if isPG {
+				orderClause = `cnt DESC, left(v_lower, 256) ASC, v_lower ASC, v_text ASC`
+			}
 			if orderByName {
 				orderClause = `v_lower ASC, v_text ASC`
+				if isPG {
+					orderClause = `left(v_lower, 256) ASC, v_lower ASC, v_text ASC`
+				}
 			}
 			tallyArgs = append(tallyArgs, limit+1, offset)
 			rows, err := s.db.QueryContext(ctx,
@@ -2842,6 +3720,10 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 					}
 					rArgs = append(rArgs, fieldKey)
 					rArgs = append(rArgs, itemArgs...)
+					refineTextCond := `f.v_text = refine.val`
+					if isPG {
+						refineTextCond = `left(f.v_text, 256) = left(refine.val, 256) AND f.v_text = refine.val`
+					}
 					if rRows, rErr := s.db.QueryContext(ctx, `
 WITH refine(idx, val) AS (
 	`+strings.Join(arms, "\n\tUNION ALL\n\t")+`
@@ -2850,7 +3732,7 @@ SELECT idx, (
 	SELECT COUNT(*) FROM (
 		SELECT 1 FROM plugin_item_fields f
 		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_text = refine.val AND `+fieldDrivenWhere+`
+		WHERE f.field = ? AND `+refineTextCond+` AND `+fieldDrivenWhere+`
 		LIMIT 25001
 	) s
 ) FROM refine`, rArgs...); rErr == nil {
@@ -2877,7 +3759,7 @@ SELECT idx, (
 			var subArgs []any
 			subWhere.WriteString(`f.field = ? AND f.v_text <> ''`)
 			subArgs = append(subArgs, fieldKey)
-			appendFoldedWordPrefix(&subWhere, &subArgs, terms)
+			appendFoldedWordPrefixDialect(&subWhere, &subArgs, isPG, terms)
 			subArgs = append(subArgs, 50000)
 			qArgs := append(subArgs, itemArgs...)
 			qArgs = append(qArgs, limit+1, offset)

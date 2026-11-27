@@ -1190,17 +1190,17 @@ var (
 		Popularity: 100, PosterPath: "/bb.jpg", BackdropPath: "/bbart.jpg", UpdatedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
 	}
 	bbS1 = core.Title{
-		Key: core.SeasonKey(1396, 1), Type: core.TypeSeason, ShowKey: core.ShowKey(1396), ShowTitle: "Boundary Bay",
+		Key: core.SeasonKey(1396, 1), Type: core.TypeSeason, ShowKey: core.ShowKey(1396), ShowIDs: breakingBad.IDs, ShowTitle: "Boundary Bay",
 		AddedAt: time.Date(2008, 1, 27, 0, 0, 0, 0, time.UTC),
 		Season:  1, Title: "Season 1", ChildCount: 2, PosterPath: "/bbs1.jpg", UpdatedAt: breakingBad.UpdatedAt,
 	}
 	bbE1 = core.Title{
-		Key: core.EpisodeKey(1396, 1, 1), Type: core.TypeEpisode, ShowKey: core.ShowKey(1396), ShowTitle: "Boundary Bay",
+		Key: core.EpisodeKey(1396, 1, 1), Type: core.TypeEpisode, ShowKey: core.ShowKey(1396), ShowIDs: breakingBad.IDs, ShowTitle: "Boundary Bay",
 		Season: 1, Episode: 1, Title: "Pilot", Runtime: 58 * time.Minute, StillPath: "/pilot.jpg",
 		Released: time.Date(2008, 1, 20, 0, 0, 0, 0, time.UTC), UpdatedAt: breakingBad.UpdatedAt,
 	}
 	bbE2 = core.Title{
-		Key: core.EpisodeKey(1396, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(1396), ShowTitle: "Boundary Bay",
+		Key: core.EpisodeKey(1396, 1, 2), Type: core.TypeEpisode, ShowKey: core.ShowKey(1396), ShowIDs: breakingBad.IDs, ShowTitle: "Boundary Bay",
 		Season: 1, Episode: 2, Title: "Second Watch...", Runtime: 48 * time.Minute,
 		Released: time.Date(2008, 1, 27, 0, 0, 0, 0, time.UTC), UpdatedAt: breakingBad.UpdatedAt,
 	}

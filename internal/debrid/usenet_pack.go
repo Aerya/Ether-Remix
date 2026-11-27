@@ -405,7 +405,7 @@ func pickPackUnit(units []packUnit, t *core.ReleaseTarget) *packUnit {
 	}
 	sizeGate := releaseparse.NewPackEpisodeSizeGate(sized, t.Season, t.Cour)
 
-	var best *packUnit
+	var best, seasonCounted *packUnit
 	for i := range units {
 		u := &units[i]
 		if !fileCourMatchesTarget(u.name+".mkv", t) || !sizeGate.Accept(u.name+".mkv", u.bytes) {
@@ -425,12 +425,27 @@ func pickPackUnit(units []packUnit, t *core.ReleaseTarget) *packUnit {
 			}
 		}
 		if info.Cour > 0 && t.Cour == info.Cour && t.CourEpisode > 0 {
-			ok = releaseparse.EpisodeMatches(info, t.Season, t.CourEpisode) ||
-				releaseparse.EpisodeMatchesAbsolute(info, t.CourEpisode)
+			if releaseparse.EpisodeMatches(info, t.Season, t.CourEpisode) ||
+				releaseparse.EpisodeMatchesAbsolute(info, t.CourEpisode) {
+				if best == nil || u.bytes > best.bytes {
+					best = u
+				}
+				continue
+			}
+			// A unit numbered within the season ("S04.Part.2.S04E17")
+			// stands in only when none carries the cour-relative number.
+			if ok && !info.CourRelative && releaseparse.EpisodeMatches(info, t.Season, t.Episode) &&
+				(seasonCounted == nil || u.bytes > seasonCounted.bytes) {
+				seasonCounted = u
+			}
+			continue
 		}
 		if ok && (best == nil || u.bytes > best.bytes) {
 			best = u
 		}
+	}
+	if best == nil {
+		return seasonCounted
 	}
 	return best
 }

@@ -158,8 +158,11 @@ func (i *instance) playlistItems(w http.ResponseWriter, r *http.Request) {
 	idsFor := playlistItemIDs(detail.Playlist.Items)
 	cursor := 0
 	items := make([]any, 0, len(page.Items))
+	i.primeTitleLibraries(r, viewer, page.Items)
 	for _, title := range page.Items {
 		item := i.itemDTO(title, states[title.Key])
+		i.setVideoCanDownload(viewer, item, title)
+		i.attachTitleLibrary(r, viewer, item, title)
 		for cursor < len(detail.Playlist.Items) && detail.Playlist.Items[cursor] != title.Key {
 			cursor++
 		}

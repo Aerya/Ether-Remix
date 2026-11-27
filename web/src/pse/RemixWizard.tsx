@@ -7,12 +7,13 @@ import { setSetupFlag } from "./remixMode";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { ThemeLibraries } from "./ThemeLibraries";
 import {
+  clientOptions,
   contentOptions,
-  discoveryOptions,
   initialChoices,
   restoreChoices,
   setupSources,
   usageOptions,
+  visibleDiscoveryOptions,
   visibleSetupSources,
   type Copy,
 } from "./setupModel";
@@ -284,6 +285,7 @@ export function RemixWizard() {
       ))}
     </ul>
   );
+  const activeDiscovery = visibleDiscoveryOptions(choices);
   const activeSources = visibleSetupSources(choices);
   const selectedSources = setupSources.filter((s) => choices.sources.includes(s.id));
   const outOfScope = selectedSources.filter((s) => !activeSources.some((a) => a.id === s.id));
@@ -295,7 +297,7 @@ export function RemixWizard() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">
-            {L("Configurer Remix selon vos envies · BETA", "Configure Remix around your needs")}
+            {L("Configurer Remix selon vos envies", "Configure Remix around your needs")}
           </h2>
           <p className="text-sm text-fg-muted">
             {L(
@@ -505,9 +507,9 @@ export function RemixWizard() {
               )}
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
-              {discoveryOptions.map((o) => option("discovery", o.id, text(o.label), text(o.help)))}
+              {activeDiscovery.map((o) => option("discovery", o.id, text(o.label), text(o.help)))}
             </div>
-            {discoveryOptions
+            {activeDiscovery
               .filter((o) => choices.discovery.includes(o.id))
               .map((o) => (
                 <SettingsLink key={o.id} to={o.href}>
@@ -579,6 +581,12 @@ export function RemixWizard() {
                 "Select services to configure or reuse. Selection does not enable them. Their editors save connections separately and allow testing.",
               )}
             </p>
+            <p className="text-sm text-fg-muted">
+              {L(
+                "Certains réglages (StreamFusion, SeerrCatalog, priorités avancées) demandent le mode Expert du menu Remix.",
+                "Some settings (StreamFusion, SeerrCatalog, advanced priorities) require Expert mode in the Remix menu.",
+              )}
+            </p>
             <div className="grid gap-3 sm:grid-cols-2">
               {activeSources.map((s) => (
                 <div key={s.id} className="space-y-2">
@@ -615,24 +623,7 @@ export function RemixWizard() {
               {L("Composez vos bibliothèques et votre accueil", "Build your libraries and home")}
             </h3>
             <div className="grid gap-3 sm:grid-cols-2">
-              {option(
-                "clients",
-                "plex",
-                "Plex",
-                L(
-                  "Accueil à prévisualiser par spectateur et appareil.",
-                  "Preview home by viewer and device.",
-                ),
-              )}
-              {option(
-                "clients",
-                "jellyfin",
-                "Jellyfin",
-                L(
-                  "Bibliothèques compatibles ; certaines dispositions et tris restent propres au client.",
-                  "Compatible libraries; some layouts and sorting remain client-specific.",
-                ),
-              )}
+              {clientOptions.map((o) => option("clients", o.id, text(o.label), text(o.help)))}
             </div>
             <p className="text-sm">
               {L(
@@ -644,17 +635,59 @@ export function RemixWizard() {
               {L("Activer et connecter les clients", "Enable and connect clients")}
             </SettingsLink>
             {choices.clients.includes("plex") ? (
-              <SettingsLink to="/home">
-                {L("Organiser et prévisualiser l’accueil Plex", "Arrange and preview Plex home")}
+              <SettingsLink to="/recommendations">
+                {L(
+                  "Organiser l’accueil et les recommandations",
+                  "Arrange home and recommendations",
+                )}
               </SettingsLink>
             ) : null}
-            {choices.clients.includes("jellyfin") ? (
-              <p>
-                {L(
-                  "Dans Jellyfin, vérifiez ensuite les bibliothèques et le tri dans l’application utilisée.",
-                  "In Jellyfin, then check libraries and sorting in your chosen app.",
-                )}
-              </p>
+            {choices.clients.includes("stremio") || choices.clients.includes("nuvio") ? (
+              <div className="space-y-2">
+                <p>
+                  {L(
+                    "Dans Se connecter, choisissez le lien personnel avec catalogues ou fichiers seuls, son affichage et le nombre de versions par qualité. HTTPS et des sources de lecture sont nécessaires. Les liens déjà installés restent inchangés.",
+                    "Under Connect, choose the personal link with catalogues or files only, its display and versions per quality. HTTPS and playback sources are required. Existing installed links stay unchanged.",
+                  )}
+                </p>
+                <SettingsLink to="/apps/stremio">
+                  {L("Configurer l’accès Stremio", "Configure Stremio access")}
+                </SettingsLink>
+              </div>
+            ) : null}
+            {choices.clients.includes("nuvio") ? (
+              <div className="space-y-2">
+                <p>
+                  {L(
+                    "Dans le profil du spectateur, Connexion et appareils → Nuvio, liez son compte et installez son lien Stremio dans Nuvio. La reprise et l’historique se synchronisent dans les deux sens ; cette liaison est distincte des addons utilisés comme sources.",
+                    "In the viewer profile, Sign-in & devices → Nuvio, link their account and install their Stremio link in Nuvio. Resume and history sync both ways; this link is separate from add-ons used as sources.",
+                  )}
+                </p>
+                <SettingsLink to="/viewers">
+                  {L("Lier Nuvio par spectateur", "Link Nuvio per viewer")}
+                </SettingsLink>
+              </div>
+            ) : null}
+            {choices.clients.includes("subsonic") ? (
+              <SettingsLink to="/remix/contenus?content=musique">
+                {L("Configurer les accès musicaux personnels", "Configure personal music access")}
+              </SettingsLink>
+            ) : null}
+            {choices.clients.includes("jellyfin") || choices.clients.includes("emby") ? (
+              <div className="space-y-2">
+                <SettingsLink to="/remix/contenus?content=films">
+                  {L(
+                    "Exclusions des derniers ajouts Films et Séries",
+                    "Latest movie and show exclusions",
+                  )}
+                </SettingsLink>
+                <p>
+                  {L(
+                    "Dans Jellyfin ou Emby, vérifiez ensuite les bibliothèques et le tri dans l’application utilisée.",
+                    "In Jellyfin or Emby, then check libraries and sorting in your chosen app.",
+                  )}
+                </p>
+              </div>
             ) : null}
             {choices.contents.includes("music") ? (
               <SettingsLink to="/remix/contenus?content=musique">
@@ -746,6 +779,24 @@ export function RemixWizard() {
                     .filter((o) => choices.usages.includes(o.id))
                     .map((o) => text(o.label))
                     .join(", ") || L("Aucun sélectionné", "None selected")}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium">{L("Découverte", "Discovery")}</dt>
+                <dd>
+                  {activeDiscovery
+                    .filter((o) => choices.discovery.includes(o.id))
+                    .map((o) => text(o.label))
+                    .join(", ") || L("Aucune sélectionnée", "None selected")}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium">{L("Applications", "Apps")}</dt>
+                <dd>
+                  {clientOptions
+                    .filter((o) => choices.clients.includes(o.id))
+                    .map((o) => text(o.label))
+                    .join(", ") || L("Aucune sélectionnée", "None selected")}
                 </dd>
               </div>
             </dl>

@@ -81,7 +81,7 @@ describe("Ask Ether", () => {
 
   it("shows an approval card after the turn and records the decision", async () => {
     const user = userEvent.setup();
-    const { fake } = renderApp("/quality");
+    const { fake } = renderApp("/releases");
     const dialog = await openAskEther();
     const composer = await within(dialog).findByPlaceholderText("Ask Ether…");
     await user.type(composer, "Blocklist this release");
@@ -160,7 +160,7 @@ describe("Ask Ether", () => {
 
   it.each([
     ["/", "What needs my attention?"],
-    ["/quality", "Why did this title pick this release?"],
+    ["/releases", "Why did this title pick this release?"],
     ["/livetv", "Which channels are failing?"],
     ["/sources", "Add a plugin from Stremio"],
   ])("suggests a page prompt on %s", async (path, suggestion) => {

@@ -53,32 +53,37 @@ type frontendRuntime struct {
 	app              *App
 	registry         *frontend.Registry
 	siloExperience   *surfaceExperience
-	plex             plex.Frontend
-	control          *frontendControl
-	events           *sessions.EventBus
-	broker           *sessions.Broker
-	stateUnsub       func()
-	artworkWait      func()
-	ctx              context.Context
-	cancel           context.CancelFunc
-	mu               sync.Mutex
-	lifecycleMu      sync.Mutex
-	lan              lanCheck
-	lanChecking      bool
-	lanGeneration    uint64
-	discoveryError   string
-	runCtx           context.Context
-	mainAddr         net.Addr
-	consoleAddr      net.Addr
-	consoleOnMain    bool
-	gdmRunning       bool
-	discovery        plexDiscovery
-	newDiscovery     func() plexDiscovery
-	closed           bool
+	// velaExperience serves plugin library pages to the Recommendations
+	// engine: every plugin library is presented to Vela.
+	velaExperience *surfaceExperience
+	plex           plex.Frontend
+	control        *frontendControl
+	events         *sessions.EventBus
+	broker         *sessions.Broker
+	stateUnsub     func()
+	artworkWait    func()
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	lifecycleMu    sync.Mutex
+	lan            lanCheck
+	lanChecking    bool
+	lanGeneration  uint64
+	discoveryError string
+	runCtx         context.Context
+	mainAddr       net.Addr
+	consoleAddr    net.Addr
+	consoleOnMain  bool
+	gdmRunning     bool
+	discovery      plexDiscovery
+	newDiscovery   func() plexDiscovery
+	closed         bool
 }
 
 func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
-	grants, err := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil)
+	// The sealer opens app-login passwords for clients that prove them with
+	// a salted hash token (query-credential frontend adapters).
+	grants, err := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil, a.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +148,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 	}
 
 	experiences := make(map[frontend.Protocol]frontend.Experience)
-	for _, protocol := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo"} {
+	for _, protocol := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo", "vela"} {
 		surfaceArtwork := artwork
 		if source, ok := artwork.(interface {
 			WithLandscapeThumb(bool) frontend.Artwork
@@ -158,8 +163,11 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 			scoped.playability = func(ctx context.Context, req frontend.ItemRequest) *bool {
 				return detailCanPlay(ctx, req, protocol, surfaceCapabilities{app: a, surface: protocol, policy: frontendHostPolicy(protocol)}, r.broker)
 			}
-			if protocol == "silo" {
+			switch protocol {
+			case "silo":
 				r.siloExperience = scoped
+			case "vela":
+				r.velaExperience = scoped
 			}
 		}
 		experiences[protocol] = experience
@@ -322,6 +330,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		if !frontendHostPolicy(id).ExternalIdentity {
 			imageOptions := identity.ImageGrantOptions{
 				LibraryLiveThumbs: surfaceLibraryLive{app: a, surface: string(id)},
+				PluginImages:      pluginImages{app: a},
 			}
 			if frontendHostPolicy(id).PublicContentTags {
 				imageOptions.Token = authhdr.MediaBrowserToken
@@ -374,13 +383,13 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		}
 		var kindStreams frontend.KindStreams
 		if a.pluginsRT != nil && a.pluginsRT.kindResolver != nil {
-			kindStreams = a.pluginsRT.kindResolver
+			kindStreams = surfaceKindStreams{inner: a.pluginsRT.kindResolver, surface: string(id)}
 		}
 		var viewerAdmin frontend.ViewerAdmin
 		if id == "jellyfin" || id == "emby" {
 			viewerAdmin = a.viewerAdmin(local, grants)
 		}
-		return frontend.Host{Support: a.support, IDs: ids.Codecs{Allocator: compact}, DirectProxy: egress.ProxyFunc(egress.CapExtras), MetadataHTTP: metadataHTTP, Experience: experience, KindStreams: kindStreams, LastPlayedSource: surfaceLastPlayedSource{experience: experience, state: a.state}, VersionHandles: versionHandles, SourceOffers: sourceOffers, Editions: surfaceEditions{app: a}, VirtualPaths: surfaceVirtualPaths{experience: experience, index: &pathIndex{}, stamp: func(v *core.Viewer) string {
+		return frontend.Host{Support: a.support, IDs: ids.Codecs{Allocator: compact}, DirectProxy: egress.ProxyFunc(egress.CapExtras), MetadataHTTP: metadataHTTP, Experience: experience, KindStreams: kindStreams, OfflineDownloads: sessions.NewOfflineDownloadSources(r.broker.Playback(), a.kindSourceFunc()), Loudness: a.frontendLoudness(), SkipMarkers: a.frontendSkipMarkers(), LastPlayedSource: surfaceLastPlayedSource{experience: experience, state: a.state}, VersionHandles: versionHandles, SourceOffers: sourceOffers, Editions: surfaceEditions{app: a, surface: string(id)}, TitleRefresh: a.appTitleRefresher(), TitleMatch: a, VirtualPaths: surfaceVirtualPaths{experience: experience, index: &pathIndex{}, stamp: func(v *core.Viewer) string {
 			if v == nil || a.catalog == nil || a.cfg == nil {
 				return ""
 			}
@@ -392,7 +401,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 				kindGen = a.pluginsRT.pluginitems.Generation()
 			}
 			return fmt.Sprintf("%d|%d|%d|%d|%d|%s|%v|%d", a.catalog.WriteGeneration(), a.cfg.Generation(), libGen, kindGen, v.ID, v.MaxContentRating, v.AllowedLibraries, frontend.PSEThemesGeneration())
-		}, enabled: func() bool { _, ok := r.registry.Instance("webdav"); return ok }, base: func(ctx context.Context, req *http.Request) (string, error) { return r.surfaceURL(ctx, "webdav", req) }}, ViewerCapabilities: a.viewerCapabilities(local, experience), ViewerPolicy: surfaceViewerPolicy{app: a}, ViewerAdmin: viewerAdmin, ImageGrants: imageGrants, Artwork: artwork, ExtraStreams: extraPlay, Themes: a.extras, ThemeTitle: a.themeTitle, Cinema: cinema, Prerolls: prerollIntros, Subtitles: subtitleCatalog, Preferences: identity.NewPreferences(a.db, id), TrackPreferences: surfaceTrackPreferences{app: a}, LiveTV: surfaceLiveTV{app: a, surface: string(id), channelArtwork: channelArtwork, programmeArtwork: programmeArtwork, artwork: artwork}, LibraryLive: surfaceLibraryLive{app: a, surface: string(id)}, LiveEvents: surfaceLiveEvents{app: a}, LiveEventLink: surfaceLiveEventLink{app: a}, LiveEventTicker: surfaceLiveEventTicker{app: a}, Screens: surfaceScreens{app: a, surface: string(id)}, Sessions: scorecardSessions(a, sessions.BindSurface(r.broker, id, sessionPolicy(id))), LazyStreams: lazy, LANStreams: lanStreams, Capabilities: surfaceCapabilities{app: a, surface: id, policy: frontendHostPolicy(id)}, Identity: surfaceIdentity{app: a, policy: frontendHostPolicy(id), settings: settings, hostConfig: hostConfig, surface: id, users: a.users, resolver: resolver, local: local, grants: grants, apiKeys: apiKeys, quick: quick, login: login, poll: poll, times: times}, Events: sessions.BindEvents(r.events, id), WatchRefresh: watchRefresh, HomeInvalidation: homeInvalidation, Tickets: tickets, WatchParty: parties, Images: frontendImages{source: a.images}, RemoteUploadCap: a.remoteUploadCap, Log: a.log.With("frontend", id), ClientSeen: func(deviceID string) { a.frontendClients.observe(id, deviceID) }, RemoteClientSeen: func(address string) {
+		}, enabled: func() bool { _, ok := r.registry.Instance("webdav"); return ok }, base: func(ctx context.Context, req *http.Request) (string, error) { return r.surfaceURL(ctx, "webdav", req) }}, ViewerCapabilities: a.viewerCapabilities(local, experience), ViewerPolicy: surfaceViewerPolicy{app: a}, ViewerAdmin: viewerAdmin, ImageGrants: imageGrants, Artwork: artwork, ExtraStreams: extraPlay, Themes: a.extras, ThemeTitle: func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (*core.Title, error) {
+			return a.themeTitle(core.WithLiveApp(ctx, string(id)), viewer, key)
+		}, Cinema: cinema, Prerolls: prerollIntros, Subtitles: subtitleCatalog, Preferences: identity.NewPreferences(a.db, id), TrackPreferences: surfaceTrackPreferences{app: a}, LiveTV: surfaceLiveTV{app: a, surface: string(id), channelArtwork: channelArtwork, programmeArtwork: programmeArtwork, artwork: artwork}, LibraryLive: surfaceLibraryLive{app: a, surface: string(id)}, LiveEvents: surfaceLiveEvents{app: a}, LiveEventLink: surfaceLiveEventLink{app: a}, Screens: surfaceScreens{app: a, surface: string(id)}, Sessions: scorecardSessions(a, sessions.BindSurface(r.broker, id, sessionPolicy(id))), LazyStreams: lazy, LANStreams: lanStreams, Capabilities: surfaceCapabilities{app: a, surface: id, policy: frontendHostPolicy(id)}, Identity: surfaceIdentity{app: a, policy: frontendHostPolicy(id), settings: settings, hostConfig: hostConfig, surface: id, users: a.users, resolver: resolver, local: local, grants: grants, apiKeys: apiKeys, quick: quick, login: login, poll: poll, times: times}, Events: sessions.BindEvents(r.events, id), WatchRefresh: watchRefresh, HomeInvalidation: homeInvalidation, Tickets: tickets, WatchParty: parties, Images: frontendImages{source: a.images}, RemoteUploadCap: a.remoteUploadCap, Log: a.log.With("frontend", id), ClientSeen: func(deviceID string) { a.frontendClients.observe(id, deviceID) }, RemoteClientSeen: func(address string) {
 			if a.registrar != nil {
 				a.registrar.ObserveRemoteClient(address)
 			}
@@ -515,16 +526,23 @@ func (a *App) frontendClientIP(req *http.Request) (netip.Addr, bool) {
 // trustedProxyPrefixes caches the parsed trusted-proxy list. Reading it
 // used to clone the whole configuration, and a play does that several times.
 func (a *App) trustedProxyPrefixes() []netip.Prefix {
-	gen := a.cfg.Generation()
 	a.proxyMu.Lock()
-	defer a.proxyMu.Unlock()
-	if a.proxyReady && a.proxyGen == gen {
-		return a.proxyPrefixes
+	gen := a.cfg.Generation()
+	if !a.proxyReady || a.proxyGen != gen {
+		a.proxyEntries = a.cfg.TrustedProxyCIDRs()
+		a.proxyNamed = identity.HasProxyHostNames(a.proxyEntries)
+		if !a.proxyNamed {
+			a.proxyPrefixes = identity.ProxyPrefixes(a.proxyEntries)
+		}
+		a.proxyGen = gen
+		a.proxyReady = true
 	}
-	a.proxyPrefixes = identity.ProxyPrefixes(a.cfg.TrustedProxyCIDRs())
-	a.proxyGen = gen
-	a.proxyReady = true
-	return a.proxyPrefixes
+	entries, named, prefixes := a.proxyEntries, a.proxyNamed, a.proxyPrefixes
+	a.proxyMu.Unlock()
+	if named {
+		return identity.ProxyPrefixes(entries)
+	}
+	return prefixes
 }
 
 // plexHandler wires the main protocol mount into the public dispatcher.
@@ -933,7 +951,7 @@ func (a *App) browseFreshness() frontend.PageFreshness {
 		f.KindSync = a.pluginsRT.pluginitems.Generation()
 	}
 	if a.pluginsRT != nil && a.pluginsRT.screens != nil {
-		f.Screens = a.pluginsRT.screens.Generation()
+		f.Screens = a.pluginsRT.screens.Documents().Generation()
 	}
 	return f
 }

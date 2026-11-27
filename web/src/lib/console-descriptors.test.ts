@@ -45,10 +45,14 @@ describe("pluginNavGroup", () => {
   const page = (meta: Record<string, unknown>, group?: string) =>
     ({ ...fixturePluginPage, group, meta }) as unknown as Descriptor<PageMeta>;
   it("never places a plugin page in the top group above Overview", () => {
-    expect(pluginNavGroup(page({ group: "" }, "My plugin"))).toBe("server");
+    expect(pluginNavGroup(page({ group: "" }, "My plugin"))).toBe("system");
     expect(pluginNavGroup(page({}))).toBeUndefined();
   });
-  it("keeps a group the manifest declares", () => {
+  it("keeps the groups a manifest may declare, with server under System", () => {
     expect(pluginNavGroup(page({ group: "library" }))).toBe("library");
+    expect(pluginNavGroup(page({ navGroup: "streaming" }))).toBe("streaming");
+    expect(pluginNavGroup(page({ group: "server" }))).toBe("system");
+    // Connect and Automate are for built-in pages.
+    expect(pluginNavGroup(page({ group: "connect" }))).toBe("system");
   });
 });

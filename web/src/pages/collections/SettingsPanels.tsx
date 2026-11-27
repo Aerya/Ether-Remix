@@ -1,16 +1,4 @@
-import {
-  Alert,
-  AlertDescription,
-  Badge,
-  Button,
-  Input,
-  MultiSelect,
-  SearchSelect,
-  Select,
-  Switch,
-  cn,
-  toast,
-} from "@braedonsaunders/appkit-ui";
+import { Button, Select, Input, MultiSelect, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
 import {
   Check,
   Clapperboard,
@@ -23,23 +11,16 @@ import {
 } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import { Artwork } from "../../components/Artwork";
-import { ChipGroup, Field, NumberInput, Segmented } from "../../components/fields";
+import { Field, NumberInput, Segmented } from "../../components/fields";
 import { TitleSearch, useViewers, viewerName } from "../../components/pickers";
-import type {
-  ArtworkMode,
-  CollectionSpec,
-  Daypart,
-  DeviceClass,
-  TargetSchedule,
-  TitleCard,
-} from "../../lib/contract";
-import { getLocale, localized, t, tx } from "../../i18n";
-import { searchSelectLabels } from "../../i18n/appkit-labels";
-import { WEEKDAYS, formatDateTime, formatHour, relativeTime } from "../../lib/format";
-import { PseRefreshField } from "../../pse/RefreshField"; // PSE-HOOK: voir docs/pse/FORK.fr.md
-import { DAYPARTS, MONTHS, tidySchedule } from "../../lib/layout";
+import type { ArtworkMode, CollectionSpec, CollectionUse, TitleCard } from "../../lib/contract";
+import type { AsyncState } from "../../lib/hooks";
+import { getLocale, localized, t } from "../../i18n";
+import { formatDateTime, relativeTime } from "../../lib/format";
+import { PseRefreshField } from "../../pse/RefreshField";
 import type { SpecUpdate } from "./BuildPanel";
 import { artworkPreviewURL, artworkSource } from "./artwork";
+import { UsedOn } from "./UsedOn";
 
 // ---- Refresh ----------------------------------------------------------------------
 
@@ -567,68 +548,33 @@ export function ArtworkPreview({
   );
 }
 
-// ---- Audience ------------------------------------------------------------------------
+// ---- Used on ------------------------------------------------------------------------
 
-const DEVICES = localized<{ value: DeviceClass; label: string }[]>(() => [
-  { value: "tv", label: t("TV") },
-  { value: "mobile", label: t("Phone & tablet") },
-  { value: "web", label: t("Web") },
-  { value: "desktop", label: t("Desktop app") },
-]);
-
-export function AudiencePanel({ spec, update }: { spec: CollectionSpec; update: SpecUpdate }) {
+/**
+ * Where the collection shows. Collections are content only: rows that show
+ * one are placed in the Recommendations designer, listed here as "Used on".
+ */
+export function UsedOnPanel({
+  spec,
+  update,
+  usage,
+}: {
+  spec: CollectionSpec;
+  update: SpecUpdate;
+  usage: AsyncState<CollectionUse[]>;
+}) {
   const { viewers } = useViewers();
-  const tg = spec.targets;
-  const schedule = tg.schedule ?? {};
-  const setTargets = (patch: Partial<CollectionSpec["targets"]>) =>
-    update({ targets: { ...tg, ...patch } });
-  const setSchedule = (patch: TargetSchedule) =>
-    setTargets({ schedule: tidySchedule({ ...schedule, ...patch }) ?? null });
-  const hourOptions = [
-    { value: "", label: t("Any time") },
-    ...Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: formatHour(h) })),
-  ];
-  // Until midnight is 24 (the Home designer's "Midnight"); 0 means the same.
-  const untilOptions = [
-    ...hourOptions.slice(0, 1),
-    ...hourOptions.slice(2),
-    { value: "24", label: t("Midnight") },
-  ];
-  const until = schedule.toHour === 0 ? 24 : schedule.toHour;
-  const nowhere = !tg.collectionsTab && !tg.homeRow && !tg.sectionRow;
+  const users = spec.users ?? "all";
+  const audienceLabel = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
   return (
     <div className="space-y-7">
-      <section className="space-y-2" aria-labelledby="where-h">
-        <h3 id="where-h" className="text-sm font-semibold text-fg">
-          {t("Where it appears")}
+      <section className="space-y-2" aria-labelledby="used-on-h">
+        <h3 id="used-on-h" className="text-sm font-semibold text-fg">
+          {t("Used on")}
         </h3>
         <p className="text-sm text-fg-muted">
-          {t(
-            "A browseable collection and a discovery row are independent. Choose either, or publish in both places.",
-          )}
+          {t("Rows that show this collection. Open one to change where, when and for whom.")}
         </p>
-        <div className="grid grid-cols-3 gap-2 py-2">
-          {[
-            { key: "library", name: t("Collection only"), library: true, rows: false },
-            { key: "rows", name: t("Discovery rows"), library: false, rows: true },
-            { key: "both", name: t("Both"), library: true, rows: true },
-          ].map((p) => (
-            <Button
-              key={p.key}
-              variant={
-                tg.collectionsTab === p.library && tg.homeRow === p.rows && tg.sectionRow === p.rows
-                  ? "secondary"
-                  : "outline"
-              }
-              size="sm"
-              onClick={() =>
-                setTargets({ collectionsTab: p.library, homeRow: p.rows, sectionRow: p.rows })
-              }
-            >
-              {p.name}
-            </Button>
-          ))}
-        </div>
         <label className="block space-y-2 text-sm">
           <span className="font-medium">
             {getLocale().startsWith("fr") ? "Carte de navigation Remix" : "Remix navigation card"}
@@ -640,7 +586,7 @@ export function AudiencePanel({ spec, update }: { spec: CollectionSpec; update: 
               const navigationGroup = e.target.value as CollectionSpec["navigationGroup"];
               update({
                 navigationGroup: navigationGroup || undefined,
-                targets: { ...tg, collectionsTab: navigationGroup ? true : tg.collectionsTab },
+                browseInApps: navigationGroup ? true : spec.browseInApps,
               });
             }}
           >
@@ -660,238 +606,60 @@ export function AudiencePanel({ spec, update }: { spec: CollectionSpec; update: 
               : "Use Xperience or custom collections in the Nuvio-inspired cards preset too. This collection's content and sources stay unchanged."}
           </span>
         </label>
-        <ToggleRow
-          title={t("Play trailer preview on focus")}
-          description={
-            tg.homeRow || tg.sectionRow
-              ? t(
-                  "Vela and Moonfin can play the focused title's trailer. Other apps show wide artwork.",
-                )
-              : t("Turn on a Home or Library row to use trailer previews.")
-          }
-          disabled={!tg.homeRow && !tg.sectionRow}
-          checked={Boolean(spec.previewOnFocus)}
-          onChange={(previewOnFocus) => update({ previewOnFocus })}
-        />
-        <ToggleRow
-          title={t("Ranked (Top 10)")}
-          checked={Boolean(spec.rankedTop10)}
-          onChange={(rankedTop10) => update({ rankedTop10 })}
-        />
-        <ToggleRow
-          title={t("Collections tab")}
-          description={t("Listed in the matching libraries.")}
-          checked={tg.collectionsTab}
-          onChange={(v) => setTargets({ collectionsTab: v })}
-        />
-        <ToggleRow
-          title={t("Home row")}
-          description={t("Shown as a Home row.")}
-          checked={tg.homeRow}
-          onChange={(v) => setTargets({ homeRow: v })}
-        />
-        <ToggleRow
-          title={t("Library row")}
-          description={t("Shown as a row at the top of the Movies or TV library.")}
-          checked={tg.sectionRow}
-          onChange={(v) => setTargets({ sectionRow: v })}
-        />
-        {nowhere ? (
-          <Alert variant="warning">
-            <AlertDescription>
-              {t("Pick at least one place, or viewers won't see this collection.")}
-            </AlertDescription>
-          </Alert>
-        ) : null}
+        <UsedOn collectionId={spec.id} usage={usage} />
       </section>
-
       <section className="space-y-2" aria-labelledby="who-h">
         <h3 id="who-h" className="text-sm font-semibold text-fg">
-          {t("Who sees it")}
+          {audienceLabel("Qui peut voir cette collection", "Who sees it")}
         </h3>
         <Segmented
-          ariaLabel={t("Audience")}
-          value={tg.users === "all" ? "all" : "some"}
-          onChange={(v) => setTargets({ users: v === "all" ? "all" : [] })}
+          ariaLabel={audienceLabel("Accès à la collection", "Audience")}
+          value={users === "all" ? "all" : "some"}
+          onChange={(v) => update({ users: v === "all" ? "all" : [] })}
           options={[
-            { value: "all", label: t("Everyone") },
-            { value: "some", label: t("Specific viewers") },
+            { value: "all", label: audienceLabel("Tout le monde", "Everyone") },
+            { value: "some", label: audienceLabel("Certains spectateurs", "Specific viewers") },
           ]}
         />
-        {tg.users !== "all" ? (
+        {users !== "all" ? (
           <MultiSelect
-            value={tg.users.map(String)}
-            onChange={(v) => setTargets({ users: v.map(Number) })}
-            ariaLabel={t("Viewers")}
-            placeholder={viewers ? t("Choose viewers…") : t("Loading viewers…")}
-            searchPlaceholder={t("Search…")}
-            noMatchesLabel={t("No matches")}
-            clearLabel={t("Clear")}
-            selectAllLabel={t("Select all")}
+            value={users.map(String)}
+            onChange={(v) => update({ users: v.map(Number) })}
+            ariaLabel={audienceLabel("Spectateurs", "Viewers")}
+            placeholder={
+              viewers
+                ? audienceLabel("Choisir des spectateurs…", "Choose viewers…")
+                : audienceLabel("Chargement des spectateurs…", "Loading viewers…")
+            }
+            searchPlaceholder={audienceLabel("Rechercher…", "Search…")}
+            noMatchesLabel={audienceLabel("Aucun résultat", "No matches")}
+            clearLabel={audienceLabel("Effacer", "Clear")}
+            selectAllLabel={audienceLabel("Tout sélectionner", "Select all")}
             options={(viewers ?? []).map((v) => ({
               value: String(v.id),
               label: viewerName(v),
-              description: v.isOwner ? t("Owner") : v.username,
+              description: v.isOwner ? audienceLabel("Propriétaire", "Owner") : v.username,
             }))}
           />
         ) : null}
-        {tg.users !== "all" && tg.users.length === 0 ? (
-          <p className="text-xs text-warning">{t("No viewers chosen yet.")}</p>
+        {users !== "all" && users.length === 0 ? (
+          <p className="text-xs text-warning">
+            {audienceLabel("Aucun spectateur sélectionné.", "No viewers chosen yet.")}
+          </p>
         ) : null}
       </section>
 
-      <section className="space-y-3" aria-labelledby="when-h">
-        <div>
-          <h3 id="when-h" className="text-sm font-semibold text-fg">
-            {t("When")}
-          </h3>
-          <p className="text-xs text-fg-muted">
-            {t("Limits its Home and library rows. The Home designer edits this same schedule.")}
-          </p>
-        </div>
-        <Field label={t("Days")}>
-          <div className="space-y-2">
-            <ChipGroup
-              ariaLabel={t("Days")}
-              size="sm"
-              value={schedule.days ?? []}
-              onChange={(days) => setSchedule({ days: days.length ? [...days].sort() : undefined })}
-              options={WEEKDAYS.map((d, i) => ({ value: i, label: d }))}
-            />
-            <div className="flex gap-1.5">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => setSchedule({ days: [1, 2, 3, 4] })}
-              >
-                {t("Weeknights")}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => setSchedule({ days: [0, 6] })}
-              >
-                {t("Weekends")}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => setSchedule({ days: undefined })}
-              >
-                {t("Every day")}
-              </Button>
-            </div>
-          </div>
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={t("From")}>
-            <SearchSelect
-              value={schedule.fromHour === undefined ? "" : String(schedule.fromHour)}
-              onChange={(v) => setSchedule({ fromHour: v === "" ? undefined : Number(v) })}
-              options={hourOptions}
-              ariaLabel={t("From hour")}
-              {...searchSelectLabels()}
-            />
-          </Field>
-          <Field label={t("Until")}>
-            <SearchSelect
-              value={until === undefined ? "" : String(until)}
-              onChange={(v) => setSchedule({ toHour: v === "" ? undefined : Number(v) })}
-              options={untilOptions}
-              ariaLabel={t("Until hour")}
-              {...searchSelectLabels()}
-            />
-          </Field>
-        </div>
-        <Field label={t("Times of day")}>
-          <ChipGroup
-            ariaLabel={t("Times of day")}
-            size="sm"
-            value={schedule.dayparts ?? []}
-            onChange={(d) => setSchedule({ dayparts: d as Daypart[] })}
-            options={DAYPARTS}
-          />
-        </Field>
-        <Field label={t("Months")}>
-          <ChipGroup
-            ariaLabel={t("Months")}
-            size="sm"
-            value={schedule.months ?? []}
-            onChange={(m) => setSchedule({ months: [...m].sort((a, b) => a - b) })}
-            options={MONTHS.map((m, i) => ({ value: i + 1, label: m }))}
-          />
-        </Field>
-        <Field label={t("Dates")}>
-          <div className="flex flex-wrap items-center gap-2 text-sm text-fg-muted">
-            {tx("Between {start} and {end}", {
-              start: (
-                <Input
-                  type="date"
-                  aria-label={t("Start date")}
-                  className="h-8 w-40"
-                  value={schedule.startDate ?? ""}
-                  onChange={(e) => setSchedule({ startDate: e.currentTarget.value || undefined })}
-                />
-              ),
-              end: (
-                <Input
-                  type="date"
-                  aria-label={t("End date")}
-                  className="h-8 w-40"
-                  value={schedule.endDate ?? ""}
-                  onChange={(e) => setSchedule({ endDate: e.currentTarget.value || undefined })}
-                />
-              ),
-            })}
-          </div>
-        </Field>
-        <Field label={t("Devices")}>
-          <ChipGroup
-            ariaLabel={t("Devices")}
-            size="sm"
-            value={schedule.devices ?? []}
-            onChange={(devices) => setSchedule({ devices: devices.length ? devices : undefined })}
-            options={DEVICES}
-          />
-        </Field>
-        <div className="flex flex-wrap gap-1.5">
-          <Badge variant="secondary">{describeSchedule(spec)}</Badge>
-        </div>
+      <section className="space-y-2" aria-labelledby="browse-h">
+        <h3 id="browse-h" className="text-sm font-semibold text-fg">
+          {t("Browse")}
+        </h3>
+        <ToggleRow
+          title={t("Browse in apps")}
+          description={t("Show it as a collection in its library's Collections view.")}
+          checked={spec.browseInApps}
+          onChange={(browseInApps) => update({ browseInApps })}
+        />
       </section>
     </div>
   );
-}
-
-export function describeSchedule(spec: CollectionSpec): string {
-  const s = spec.targets.schedule;
-  if (!s) return t("Any day, any time, every device");
-  const parts: string[] = [];
-  parts.push(s.days?.length ? s.days.map((d) => WEEKDAYS[d]).join(", ") : t("Any day"));
-  if (s.fromHour !== undefined || s.toHour !== undefined)
-    parts.push(
-      t("{from}–{until}", {
-        from: s.fromHour !== undefined ? formatHour(s.fromHour) : t("midnight"),
-        until: s.toHour !== undefined && s.toHour !== 24 ? formatHour(s.toHour) : t("midnight"),
-      }),
-    );
-  else parts.push(t("any time"));
-  if (s.dayparts?.length)
-    parts.push(s.dayparts.map((d) => DAYPARTS.find((x) => x.value === d)?.label ?? d).join(", "));
-  parts.push(
-    s.devices?.length
-      ? s.devices.map((d) => DEVICES.find((x) => x.value === d)?.label ?? d).join(", ")
-      : t("every device"),
-  );
-  if (s.months?.length) parts.push(s.months.map((m) => MONTHS[m - 1]).join(", "));
-  if (s.startDate && s.endDate)
-    parts.push(t("{start} to {end}", { start: s.startDate, end: s.endDate }));
-  else if (s.startDate) parts.push(t("from {date}", { date: s.startDate }));
-  else if (s.endDate) parts.push(t("until {date}", { date: s.endDate }));
-  return parts.join(" · ");
 }

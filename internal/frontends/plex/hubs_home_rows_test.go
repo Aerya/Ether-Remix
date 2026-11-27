@@ -232,6 +232,10 @@ func (b *brokenCollectionRows) HomeRowsFor(ctx context.Context, _ *core.User, _ 
 	return nil, b.err
 }
 
+func (b *brokenCollectionRows) LayoutRow(context.Context, *core.User, core.HubContext, string) (*core.CollectionRow, error) {
+	return nil, b.err
+}
+
 func TestBrokenCollectionCannotStallOrEmptyHubs(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
@@ -312,7 +316,7 @@ func TestPlexPartitionedHomeDoesNotAppendLibraryRecommendations(t *testing.T) {
 	for _, directory := range []string{"1", "2", "playlists"} {
 		rows := hubRows(t, f.get(t, "/hubs/promoted?count=20&contentDirectoryID="+directory+"&pinnedContentDirectoryID=1,2", headers...).Body.Bytes())
 		for _, r := range rows {
-			id := strings.TrimPrefix(strings.TrimPrefix(r.ID, "movie."), "tv.")
+			id, _, _ := strings.Cut(r.ID, "@")
 			actual[id] += r.Size
 		}
 	}

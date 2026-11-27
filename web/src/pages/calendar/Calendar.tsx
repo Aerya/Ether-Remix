@@ -451,6 +451,7 @@ export default function Calendar() {
         <TitleInspector
           key={titleKey}
           titleKey={titleKey}
+          onMatch={(key) => update({ title: key })}
           onClose={() => update({ title: null })}
         />
       ) : null}

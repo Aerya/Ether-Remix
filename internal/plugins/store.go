@@ -21,8 +21,18 @@ import (
 )
 
 func init() {
+	// v13 (Remix): upstream v12; v12 already tracks KV usage here.
+	store.Register("plugins", 13, `ALTER TABLE plugins_installed ADD COLUMN replace_libraries INTEGER NOT NULL DEFAULT 0;`)
 	store.Register("plugins", 7, `ALTER TABLE plugins_installed ADD COLUMN manifest_refresh_hours INTEGER NOT NULL DEFAULT 1;`)
 
+	// v12 (Remix): per-plugin KV usage, kept with every KV write, so a put checks
+	// its quota from one row instead of summing every value it stored
+	// (each size sits after its value, so the sum walked the overflow
+	// pages of every stored blob while holding the writer).
+	store.Register("plugins", 12, `
+CREATE TABLE plugins_kv_usage(plugin TEXT PRIMARY KEY,byte_count BIGINT NOT NULL DEFAULT 0,key_count BIGINT NOT NULL DEFAULT 0);
+INSERT INTO plugins_kv_usage(plugin,byte_count,key_count) SELECT plugin,COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv GROUP BY plugin;
+`)
 	// v10: sealed derived secrets written by plugins (#660). Kept separate from
 	// plugins_settings.secrets so plugins can never overwrite owner-configured
 	// credentials and derived session tokens stay out of settings UI/caches.
@@ -104,7 +114,19 @@ const (
 	// JournalSettledMaxAge is how long an undone or shadow journal entry
 	// (one undo can no longer act on) stays in the activity history.
 	JournalSettledMaxAge = 90 * 24 * time.Hour
-	MaxFetchBytes        = wasm.MaxFetchBodyBytes
+	// JournalLiveMaxEntries is the maximum number of live (applied, non-shadow,
+	// non-undone) journal entries kept per plugin and read by UndoSince (#766).
+	JournalLiveMaxEntries = 10000
+	// JournalLiveMaxAge is the maximum age of live journal entries kept per plugin.
+	JournalLiveMaxAge = 30 * 24 * time.Hour
+	// JournalLiveMaxBytes is the per-plugin byte budget for live journal
+	// inverse payloads (UTF-8 byte length of plugins_journal.inverse).
+	JournalLiveMaxBytes int64 = 256 << 20
+	// journalLivePruneBatch caps one live-journal delete transaction so large
+	// journals shrink incrementally without long write locks or WAL spikes.
+	journalLivePruneBatch = 200
+	journalPruneYield     = 5 * time.Millisecond
+	MaxFetchBytes         = wasm.MaxFetchBodyBytes
 )
 
 // Grants is what the owner has granted one plugin on top of its manifest
@@ -164,6 +186,7 @@ type Record struct {
 	// them: EffectiveEther leaves them out.
 	RolesOff             []Capability
 	ManifestRefreshHours int
+	ReplaceLibraries     bool `json:"-"`
 }
 
 // Health is one plugin's health and impact record.
@@ -244,11 +267,11 @@ type storage struct {
 func (s *storage) record(ctx context.Context, id string) (Record, error) {
 	var r Record
 	var man, updMan, updFiles string
-	var en, ver, sh, au int
+	var en, ver, sh, au, replace int
 	var inst, upd int64
 	var rolesOff string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off,manifest_refresh_hours FROM plugins_installed WHERE id=?`, id).
-		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff, &r.ManifestRefreshHours)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off,manifest_refresh_hours,replace_libraries FROM plugins_installed WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff, &r.ManifestRefreshHours, &replace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -288,6 +311,7 @@ func (s *storage) record(ctx context.Context, id string) (Record, error) {
 	r.Manifest.rolesOff = r.RolesOff
 	r.Enabled, r.Verified, r.Shadow, r.AutoUpdate = en == 1, ver == 1, sh == 1, au == 1
 	r.updateManifest, r.updateFiles = updMan, updFiles
+	r.ReplaceLibraries = replace == 1
 	r.InstalledAt, r.UpdatedAt = time.Unix(inst, 0).UTC(), time.Unix(upd, 0).UTC()
 	return r, nil
 }
@@ -326,10 +350,10 @@ func (s *storage) upsert(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_installed(id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name,version=excluded.version,kind=excluded.kind,manifest=excluded.manifest,source_kind=excluded.source_kind,source_url=excluded.source_url,enabled=excluded.enabled,verified=excluded.verified,shadow=excluded.shadow,auto_update=excluded.auto_update,update_version=excluded.update_version,update_manifest=excluded.update_manifest,update_files=excluded.update_files,prev_version=excluded.prev_version,updated_at=excluded.updated_at`,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_installed(id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,replace_libraries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,version=excluded.version,kind=excluded.kind,manifest=excluded.manifest,source_kind=excluded.source_kind,source_url=excluded.source_url,enabled=excluded.enabled,verified=excluded.verified,shadow=excluded.shadow,auto_update=excluded.auto_update,update_version=excluded.update_version,update_manifest=excluded.update_manifest,update_files=excluded.update_files,prev_version=excluded.prev_version,updated_at=excluded.updated_at,replace_libraries=excluded.replace_libraries`,
 		r.ID, r.Name, r.Version, r.Kind, string(r.ManifestRaw), r.SourceKind, sealedURL,
-		bi(r.Enabled), bi(r.Verified), bi(r.Shadow), bi(r.AutoUpdate), r.UpdateVersion, r.updateManifest, r.updateFiles, r.PrevVersion, timeOr(r.InstalledAt, now), now)
+		bi(r.Enabled), bi(r.Verified), bi(r.Shadow), bi(r.AutoUpdate), r.UpdateVersion, r.updateManifest, r.updateFiles, r.PrevVersion, timeOr(r.InstalledAt, now), now, bi(r.ReplaceLibraries))
 	return err
 }
 
@@ -589,16 +613,17 @@ func (s *storage) allDerivedSecrets(ctx context.Context, plugin string) (map[str
 
 // --- KV ---
 
+// kvUsed and kvUsage read the plugin's running KV tally
+// (plugins_kv_usage), which every put and delete keeps in the same
+// transaction as the value.
 func (s *storage) kvUsed(ctx context.Context, plugin string) (int64, error) {
-	var n sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&n)
-	return n.Int64, err
+	used, _, err := kvTally(ctx, s.db, plugin)
+	return used, err
 }
 
 func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
-	var used int64
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+	used, count, err := kvTally(ctx, s.db, plugin)
+	if err != nil {
 		return KVUsage{}, err
 	}
 	return KVUsage{
@@ -607,6 +632,29 @@ func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
 		QuotaBytes: KVQuotaBytes,
 		QuotaKeys:  KVQuotaKeys,
 	}, nil
+}
+
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func kvTally(ctx context.Context, q rowQueryer, plugin string) (used, count int64, err error) {
+	err = q.QueryRowContext(ctx, `SELECT byte_count,key_count FROM plugins_kv_usage WHERE plugin=?`, plugin).Scan(&used, &count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil
+	}
+	return used, count, err
+}
+
+// addKVTally moves the plugin's KV tally by bytes and keys inside tx.
+func addKVTally(ctx context.Context, tx *sql.Tx, plugin string, bytes, keys int64) error {
+	if bytes == 0 && keys == 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO plugins_kv_usage(plugin,byte_count,key_count) VALUES(?,?,?)
+		ON CONFLICT(plugin) DO UPDATE SET byte_count=plugins_kv_usage.byte_count+excluded.byte_count,key_count=plugins_kv_usage.key_count+excluded.key_count`,
+		plugin, bytes, keys)
+	return err
 }
 
 func (s *storage) kvGet(ctx context.Context, plugin, key string) ([]byte, bool, error) {
@@ -645,15 +693,16 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var used int64
-	var count int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+	used, count, err := kvTally(ctx, tx, plugin)
+	if err != nil {
 		return err
 	}
 	// A fixed key allowance also bounds Unicode keys on SQLite and PostgreSQL.
+	var added int64
 	if !exists {
-		count++
+		added = 1
 	}
+	count += added
 	if count > KVQuotaKeys || used-old+int64(len(value))+count*KVKeyChargeBytes > KVQuotaBytes {
 		return ErrQuotaExceeded
 	}
@@ -661,12 +710,30 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if err != nil {
 		return err
 	}
+	if err := addKVTally(ctx, tx, plugin, int64(len(value))-old, added); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (s *storage) kvDelete(ctx context.Context, plugin, key string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM plugins_kv WHERE plugin=? AND kkey=?`, plugin, key)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var size int64
+	err = tx.QueryRowContext(ctx, `DELETE FROM plugins_kv WHERE plugin=? AND kkey=? RETURNING size`, plugin, key).Scan(&size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := addKVTally(ctx, tx, plugin, -size, -1); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // kvListLimit caps one prefix listing.
@@ -788,12 +855,166 @@ func (s *storage) markUndone(ctx context.Context, id int64) error {
 }
 
 // pruneJournal deletes settled journal entries older than
-// JournalSettledMaxAge. Live entries (applied, not shadow, not undone) are
-// what "Undo everything" and undo-to-here replay, so they are never pruned.
+// JournalSettledMaxAge, then trims each plugin's live (applied, non-shadow,
+// non-undone) journal to what undo can reach: at most JournalLiveMaxEntries
+// entries, no older than JournalLiveMaxAge, and within JournalLiveMaxBytes of
+// inverse payload data. Live entries are removed oldest-first in bounded
+// batches so existing large journals shrink incrementally without leaving gaps
+// in the remaining undo history (#766).
 func (s *storage) pruneJournal(ctx context.Context) (int64, error) {
-	return store.PruneBatched(ctx, s.db,
+	return s.pruneJournalWithLimits(ctx, JournalLiveMaxEntries, JournalLiveMaxAge, JournalLiveMaxBytes, journalLivePruneBatch)
+}
+
+func (s *storage) pruneJournalWithLimits(ctx context.Context, maxEntries int, maxAge time.Duration, maxBytes int64, batchSize int) (int64, error) {
+	settled, err := store.PruneBatched(ctx, s.db,
 		`DELETE FROM plugins_journal WHERE id IN (SELECT id FROM plugins_journal WHERE (undone=1 OR shadow=1) AND created<? ORDER BY created LIMIT ?)`,
 		s.now().Add(-JournalSettledMaxAge).Unix())
+	if err != nil {
+		return settled, err
+	}
+	if batchSize <= 0 {
+		batchSize = journalLivePruneBatch
+	}
+	pluginIDs, err := s.journalPlugins(ctx)
+	if err != nil {
+		return settled, err
+	}
+	minCreated := s.now().Add(-maxAge).Unix()
+	total := settled
+	for _, pluginID := range pluginIDs {
+		cutoffID, err := s.liveJournalCutoff(ctx, pluginID, maxEntries, minCreated, maxBytes)
+		if err != nil {
+			return total, err
+		}
+		if cutoffID == 0 {
+			continue
+		}
+		n, err := s.deleteLiveJournalUpTo(ctx, pluginID, cutoffID, batchSize)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func (s *storage) journalPlugins(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT plugin FROM plugins_journal`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// liveJournalCutoff scans pluginID's newest live entries (at most maxEntries+1
+// rows) and returns the highest entry id that exceeds any retention bound
+// (age, count, or cumulative inverse byte budget). Returning 0 means every live
+// entry for pluginID is within bounds.
+func (s *storage) liveJournalCutoff(ctx context.Context, pluginID string, maxEntries int, minCreated, maxBytes int64) (int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, created, octet_length(inverse) FROM plugins_journal WHERE plugin=? AND undone=0 AND shadow=0 ORDER BY id DESC LIMIT ?`,
+		pluginID, maxEntries+1)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var (
+		kept      int
+		keptBytes int64
+		cutoffID  int64
+	)
+	for rows.Next() {
+		var id, created, invBytes int64
+		if err := rows.Scan(&id, &created, &invBytes); err != nil {
+			return 0, err
+		}
+		if created < minCreated || kept >= maxEntries || keptBytes+invBytes > maxBytes {
+			cutoffID = id
+			break
+		}
+		kept++
+		keptBytes += invBytes
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return cutoffID, nil
+}
+
+func (s *storage) deleteLiveJournalUpTo(ctx context.Context, pluginID string, cutoffID int64, batchSize int) (int64, error) {
+	var (
+		total   int64
+		afterID int64
+	)
+	for {
+		ids, err := s.nextLiveJournalBatch(ctx, pluginID, afterID, cutoffID, batchSize)
+		if err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		afterID = ids[len(ids)-1]
+		placeholders := make([]string, len(ids))
+		args := make([]any, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		res, err := s.db.ExecContext(ctx,
+			`DELETE FROM plugins_journal WHERE undone=0 AND shadow=0 AND id IN (`+strings.Join(placeholders, ",")+`)`,
+			args...)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if len(ids) < batchSize || afterID >= cutoffID {
+			return total, nil
+		}
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		case <-time.After(journalPruneYield):
+		}
+		if err := store.WaitWALBudget(ctx, s.db); err != nil {
+			return total, err
+		}
+	}
+}
+
+func (s *storage) nextLiveJournalBatch(ctx context.Context, pluginID string, afterID, cutoffID int64, limit int) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM plugins_journal WHERE plugin=? AND undone=0 AND shadow=0 AND id>? AND id<=? ORDER BY id ASC LIMIT ?`,
+		pluginID, afterID, cutoffID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func capRing(ctx context.Context, db *sql.DB, table, plugin string, cap int) {
@@ -1023,6 +1244,7 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM plugins_derived_secrets WHERE plugin=?`,
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
+		`DELETE FROM plugins_kv_usage WHERE plugin=?`,
 		`DELETE FROM plugin_poster_badges WHERE plugin_id=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
 		`DELETE FROM plugins_remote_hashes WHERE plugin=?`,

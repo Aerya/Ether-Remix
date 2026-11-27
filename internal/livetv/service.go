@@ -23,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 func init() {
@@ -144,6 +145,8 @@ type Service struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	dvrOnce          sync.Once
+	dvr              *transcode.LiveDVRCache
 	direct           ownedServiceState // Direct-path owned timelines and slates (owned_*.go)
 }
 
@@ -1419,11 +1422,18 @@ func (s *Service) allowedWithLookupOpts(ctx context.Context, u *core.User, c Cha
 	if !u.IsOwner && !pol.Permits(c.ID, c.Private) {
 		return false
 	}
+	var rating string
+	if u.MaxContentRating != "" || pol.MaxRating != "" {
+		rating = s.channelContentRating(ctx, c, p)
+	}
+	return s.allowedProgrammeContent(ctx, u, c, p, pol, rating, lookup, strict)
+}
+
+func (s *Service) allowedProgrammeContent(ctx context.Context, u *core.User, c Channel, p *Programme, pol Policy, rating string, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
 	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && contentrating.EnforceLevelOf(p.Item.Rating) == contentrating.Unrated && (u.MaxContentRating != "" || pol.MaxRating != "") {
 		return false
 	}
 	if u.MaxContentRating != "" || pol.MaxRating != "" {
-		rating := s.channelContentRating(ctx, c, p)
 		if p != nil && p.Item.EnforcementRating != "" && (p.Item.EnforcementRating == contentrating.UncertifiedAdult || contentrating.EnforceLevelOf(p.Item.EnforcementRating) > contentrating.EnforceLevelOf(rating)) {
 			rating = p.Item.EnforcementRating
 		}
@@ -1582,6 +1592,7 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 		}
 		if s.allowedProgramme(ctx, u, c, current) {
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			out = append(out, s.personalChannel(ctx, c, u))
 		}
@@ -1645,6 +1656,7 @@ func (s *Service) allowedChannelRecord(ctx context.Context, u *core.User, c Chan
 		return Channel{}, core.ErrNotFound
 	}
 	c.StreamURL = ""
+	c.redactArchiveSource()
 	c.StreamSources = nil
 	return c, nil
 }
@@ -2161,36 +2173,121 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	if _, idx := s.getOwnerGroupCacheState(); idx != nil {
 		ctx = contextWithOwnerGroupIndex(ctx, idx)
 	}
-	ctx, err = s.withVirtualGuide(ctx, cs)
+	ctx, readyVirtual, err := s.withOnNowVirtual(ctx, cs)
 	if err != nil {
 		return nil, nil, err
 	}
-	channels := make([]Channel, 0, len(cs))
-	programmes := make([]Programme, 0, len(cs)*2)
-	for _, c := range cs {
-		if !c.Enabled {
-			continue
+	channels := make([]Channel, 0, min(len(cs), max(limit, 1)))
+	programmes := make([]Programme, 0, 2*min(len(cs), max(limit, 1)))
+	// Channels are read a batch at a time (one guide query per batch, never
+	// one per channel) and the walk stops once the row is full.
+	for start := 0; start < len(cs); start += programmesAtBatch {
+		chunk := make([]Channel, 0, programmesAtBatch)
+		for _, c := range cs[start:min(start+programmesAtBatch, len(cs))] {
+			if !c.Enabled || c.Kind == "virtual" && c.Personal == nil && !readyVirtual[c.ID] {
+				continue
+			}
+			chunk = append(chunk, c)
 		}
-		ps, err := s.programmesLimit(ctx, c, now, until, 2)
+		guide, err := s.programmesLimitBatch(ctx, chunk, now, until, 2)
 		if err != nil {
 			return nil, nil, err
 		}
-		var current *Programme
-		if len(ps) > 0 {
-			current = &ps[0]
-		}
-		if !s.allowedProgramme(ctx, u, c, current) {
-			continue
-		}
-		c.StreamURL = ""
-		c.StreamSources = nil
-		channels = append(channels, s.personalChannel(ctx, c, u))
-		programmes = append(programmes, ps...)
-		if limit > 0 && len(channels) >= limit {
-			break
+		for i, c := range chunk {
+			ps, ok := guide[i]
+			if !ok {
+				ps, err = s.programmesLimit(ctx, c, now, until, 2)
+				if err != nil {
+					if errors.Is(err, core.ErrPreparing) {
+						continue
+					}
+					return nil, nil, err
+				}
+			}
+			var current *Programme
+			if len(ps) > 0 {
+				current = &ps[0]
+			}
+			if !s.allowedProgramme(ctx, u, c, current) {
+				continue
+			}
+			c.StreamURL = ""
+			c.redactArchiveSource()
+			c.StreamSources = nil
+			channels = append(channels, s.personalChannel(ctx, c, u))
+			programmes = append(programmes, ps...)
+			if limit > 0 && len(channels) >= limit {
+				return channels, programmes, nil
+			}
 		}
 	}
 	return channels, programmes, nil
+}
+
+// programmesLimitBatch reads up to limit programmes in [from, until) for
+// every guide-backed channel of cs in one query. Personal and virtual
+// channels are absent from the result (their guide is built elsewhere);
+// a guide channel with nothing on maps to an empty list.
+func (s *Service) programmesLimitBatch(ctx context.Context, cs []Channel, from, until time.Time, limit int) (map[int][]Programme, error) {
+	out := make(map[int][]Programme, len(cs))
+	type pair struct{ source, channel string }
+	want := map[pair][]int{}
+	var order []pair
+	for i, c := range cs {
+		if c.Personal != nil || c.Kind == "virtual" {
+			continue
+		}
+		if c.GuideID == "" || guideSource(c) == "" {
+			out[i] = nil
+			continue
+		}
+		k := pair{guideSource(c), c.GuideID}
+		if _, ok := want[k]; !ok {
+			order = append(order, k)
+		}
+		want[k] = append(want[k], i)
+		out[i] = nil
+	}
+	if len(order) == 0 || limit <= 0 {
+		return out, nil
+	}
+	values := make([]string, len(order))
+	args := make([]any, 0, 2*len(order)+2)
+	for i, k := range order {
+		values[i] = "(?,?)"
+		args = append(args, k.source, k.channel)
+	}
+	args = append(args, from.UnixMilli(), until.UnixMilli())
+	rows, err := s.o.DB.QueryContext(ctx, `WITH ch(source_id, channel_id) AS (VALUES `+strings.Join(values, ",")+`)
+SELECT p.source_id, p.channel_id, p.data FROM livetv_programmes p JOIN ch ON p.source_id=ch.source_id AND p.channel_id=ch.channel_id
+WHERE p.end_ms>? AND p.start_ms<? ORDER BY p.source_id, p.channel_id, p.start_ms`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	got := map[pair]int{}
+	for rows.Next() {
+		var k pair
+		var b []byte
+		if err := rows.Scan(&k.source, &k.channel, &b); err != nil {
+			return nil, err
+		}
+		if got[k] >= limit {
+			continue
+		}
+		var p Programme
+		if err := json.Unmarshal(b, &p); err != nil {
+			return nil, err
+		}
+		got[k]++
+		for _, i := range want[k] {
+			q := p
+			q.ChannelID = cs[i].ID
+			q.ID = fmt.Sprintf("%s-%d", cs[i].ID, q.Start.UnixMilli())
+			out[i] = append(out[i], q)
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) programmesLimit(ctx context.Context, c Channel, from, until time.Time, limit int) ([]Programme, error) {
@@ -2198,6 +2295,7 @@ func (s *Service) programmesLimit(ctx context.Context, c Channel, from, until ti
 		if v, ok := ctx.Value(loadedPolicyKey{}).(loadedPolicy); ok {
 			c = s.personalChannel(ctx, c, v.user)
 		}
+		s.demandPersonalReadiness(c, c.personalViewer)
 		ps, err := s.personalProgrammesLimit(ctx, c, c.personalViewer, from, until, limit)
 		if limit > 0 && len(ps) > limit {
 			ps = ps[:limit]
@@ -2407,7 +2505,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	src.PlaylistGuide = false
 	// Account and groups are what this fetch reports; a source body from the
 	// owner API carries stale read-only copies.
-	src.Account, src.Groups = nil, nil
+	src.Account, src.Groups, src.ArchiveTimezone = nil, nil, ""
 	fetched, err := kind.Fetch(ctx, s, &src)
 	if err != nil {
 		return src, err
@@ -2422,6 +2520,19 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		progress.setChannels(len(cs))
 		progress.setProgrammes(len(g.Programmes))
 		progress.setPhase("saving")
+	}
+	// Everything the import compares against is read, decoded and encoded
+	// before it takes the writer; the transaction then checks one epoch
+	// row and writes what changed. Stored channels include virtual ones,
+	// whose programming is megabytes of JSON, so decoding them inside the
+	// transaction held every other writer for seconds.
+	pre, err := readImportSnapshot(ctx, s.o.DB, src.ID)
+	if err != nil {
+		return src, err
+	}
+	progPlan, err := planProgrammes(g.Programmes)
+	if err != nil {
+		return src, err
 	}
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -2448,7 +2559,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	if err != nil {
 		return src, err
 	}
-	old, err := channels(ctx, tx)
+	old, fresh, err := pre.current(ctx, tx)
 	if err != nil {
 		return src, err
 	}
@@ -2485,6 +2596,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		for _, c := range cs {
 			if !fetched.cachedLineup {
 				c.ProviderGuideID = c.GuideID
+				if err := s.sealArchive(&c, oldByID[c.ID]); err != nil {
+					return src, err
+				}
 			}
 			if previous, ok := oldByID[c.ID]; ok {
 				if _, keep := keepNumber[c.ID]; keep {
@@ -2528,7 +2642,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			stored = append(stored, c)
 		}
 	}
-	crossChanged, crossInvalidated, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
+	crossChanged, crossInvalidated, crossWritten, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
 	if err != nil {
 		return src, err
 	}
@@ -2543,11 +2657,35 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	if progress != nil {
 		savedChannels, savedProgrammes = progress.setSavedChannels, progress.setSavedProgrammes
 	}
-	writes, err := writeSourceChannels(ctx, tx, dialect, batch, src.ID, ids, encoded, savedChannels)
+	var storedRows map[string][]byte
+	if fresh {
+		storedRows = pre.sourceRows(src.ID)
+	}
+	writes, err := writeSourceChannels(ctx, tx, dialect, batch, src.ID, ids, encoded, storedRows, savedChannels)
 	if err != nil {
 		return src, err
 	}
-	pw, err := writeProgrammes(ctx, tx, batch, src.ID, g.Programmes, savedProgrammes)
+	// Guide rows are shared by every channel mapped to this source and guide
+	// ID. Keep the longest window among those channels, using the new lineup
+	// for the source being refreshed.
+	archiveSince := make(map[string]int64)
+	noteArchive := func(c Channel) {
+		if days := min(c.ArchiveDays(), 30); days > 0 && c.GuideID != "" && guideSource(c) == src.ID {
+			since := src.UpdatedAt.Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+			if previous, ok := archiveSince[c.GuideID]; !ok || since < previous {
+				archiveSince[c.GuideID] = since
+			}
+		}
+	}
+	for _, c := range old {
+		if c.SourceID != src.ID {
+			noteArchive(c)
+		}
+	}
+	for _, c := range stored {
+		noteArchive(c)
+	}
+	pw, err := writeProgrammes(ctx, tx, batch, src.ID, progPlan, src.UpdatedAt, archiveSince, savedProgrammes)
 	if err != nil {
 		return src, err
 	}
@@ -2557,7 +2695,28 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		return src, err
 	}
 	writes.GuideChannelsWritten, writes.GuideChannelsDeleted = gw.GuideChannelsWritten, gw.GuideChannelsDeleted
-	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsTx(ctx, tx, batch, stored)
+	// Duplicate backups match against the IPTV channels as just written:
+	// on SQLite, when the snapshot held, that is the snapshot with this
+	// import's own writes applied, decoded afresh; otherwise read here.
+	var iptv []Channel
+	if fresh && dialect == store.SQLite {
+		written := make(map[string][]byte, len(ids)+len(crossWritten))
+		for i, id := range ids {
+			written[id] = encoded[i]
+		}
+		for id, b := range crossWritten {
+			written[id] = b
+		}
+		iptv, err = pre.iptvAfter(src.ID, written)
+	} else {
+		var all []Channel
+		all, err = channels(ctx, tx)
+		iptv = iptvOnly(all)
+	}
+	if err != nil {
+		return src, err
+	}
+	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsIn(ctx, tx, batch, stored, iptv)
 	if err != nil {
 		return src, err
 	}
@@ -2610,11 +2769,10 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		}
 	}
 	if err == nil && src.Auth != nil && src.Auth.Type == "xtream" {
+		// The VOD loop refreshes this provider's catalogue now and announces
+		// VODChanged itself, only when the catalogue really changed.
 		_, _ = s.o.DB.ExecContext(ctx, `UPDATE xtream_vod_refresh SET next=0 WHERE provider=?`, src.ID)
 		s.wakeVODLoop()
-		if s.o.VODChanged != nil {
-			s.o.VODChanged()
-		}
 	}
 	src = storedSource(src)
 	src.HasPlaylist = src.Playlist != "" || src.PlaylistURL != ""
@@ -2655,38 +2813,51 @@ func guidePinned(previous Channel) bool {
 	return previous.GuideID != previous.ProviderGuideID
 }
 
-// guideAllow is the set of XMLTV channel ids a playlist source keeps.
-// Nil means every channel (a guide-only source). Stored guide ids are
-// included so an owner mapping survives the next refresh.
-func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel, hasChannels bool) (map[string]struct{}, error) {
-	if !hasChannels {
-		return nil, nil
+// sourceGuideFilter bounds XMLTV imports by guide ID and time. A guide-only
+// source accepts every ID. Owner mappings contribute their archive windows.
+func (s *Service) sourceGuideFilter(ctx context.Context, src Source, playlist []Channel, hasChannels bool) (guideFilter, error) {
+	now := s.o.Now()
+	filter := guideFilter{From: now.Add(-guideLookback), Until: now.Add(guideLookahead), ArchiveFrom: map[string]time.Time{}}
+	if hasChannels {
+		filter.IDs = map[string]struct{}{}
 	}
-	ids := map[string]struct{}{}
-	add := func(id string) {
+	add := func(c Channel, id string) {
 		id = strings.ToLower(strings.TrimSpace(id))
-		if id != "" {
-			ids[id] = struct{}{}
+		if id == "" {
+			return
+		}
+		if filter.IDs != nil {
+			filter.IDs[id] = struct{}{}
+		}
+		if days := min(c.ArchiveDays(), 30); days > 1 {
+			from := now.Add(-time.Duration(days) * 24 * time.Hour)
+			if previous, ok := filter.ArchiveFrom[id]; !ok || from.Before(previous) {
+				filter.ArchiveFrom[id] = from
+			}
 		}
 	}
-	inPlaylist := make(map[string]bool, len(playlist))
+	inPlaylist := make(map[string]Channel, len(playlist))
 	for _, c := range playlist {
-		inPlaylist[c.ID] = true
-		add(c.GuideID)
+		inPlaylist[c.ID] = c
+		add(c, c.GuideID)
 	}
 	stored, err := s.allChannels(ctx)
 	if err != nil {
-		return nil, err
+		return guideFilter{}, err
 	}
 	for _, c := range stored {
-		if c.SourceID == src.ID && inPlaylist[c.ID] && !guidePinned(c) {
+		if guideSource(c) != src.ID {
 			continue
 		}
-		if guideSource(c) == src.ID {
-			add(c.GuideID)
+		if next, ok := inPlaylist[c.ID]; c.SourceID == src.ID && ok {
+			if guidePinned(c) {
+				add(next, c.GuideID)
+			}
+			continue
 		}
+		add(c, c.GuideID)
 	}
-	return ids, nil
+	return filter, nil
 }
 
 // nameCandidates returns guide ids whose normalized name matches a playlist
@@ -2840,11 +3011,10 @@ func (s *Service) ImportUpload(ctx context.Context, id, part string, body io.Rea
 			}
 		}
 	}
-	allow, err := s.guideAllow(ctx, src, cs, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
+	filter, err := s.sourceGuideFilter(ctx, src, cs, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
 	if err != nil {
 		return src, err
 	}
-	filter := guideFilter{From: s.o.Now().Add(-guideLookback), Until: s.o.Now().Add(guideLookahead), IDs: allow}
 	if len(cs) > 0 {
 		filter.Resolve = func(channels map[string]Channel, names map[string][]string) map[string]struct{} {
 			return nameCandidates(cs, channels, names)

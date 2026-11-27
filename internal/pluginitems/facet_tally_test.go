@@ -413,6 +413,9 @@ func TestMigration17BackfillFromPre17Schema(t *testing.T) {
 			PRIMARY KEY (library_id, level, field, v_text)
 		)`,
 		`CREATE INDEX plugin_item_field_tally_count ON plugin_item_field_tally(library_id, level, field, cnt DESC, v_text)`,
+		`DROP INDEX IF EXISTS plugin_items_recording`,
+		`ALTER TABLE plugin_items DROP COLUMN recording`,
+		`ALTER TABLE plugin_facet_expansions DROP COLUMN decl_hash`,
 		`DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version >= 17`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -1047,4 +1050,47 @@ func TestTallyRepresentativeMaintenanceInvariants(t *testing.T) {
 	if err != nil || !ok || pm.CreditCount != 520 || pm.Roles["actor"] != 520 || pm.Roles["director"] != 1 {
 		t.Fatalf("PersonByID = (%+v, ok=%v, err=%v), want count=520 actor=520 director=1", pm, ok, err)
 	}
+
+	// #805: the recompute walks a bounded window of the released index from
+	// the removed representative down. Put 300 newer items that do not hold
+	// RPG or Jordan Lee above the bucket, then one newest holder on top:
+	// removing it walks a window of non-holders and must fall back to the
+	// index-first plan; removing the next representative must start below
+	// the 300 non-holders. Both must leave every representative exact.
+	filler := make([]core.KindItem, 0, 301)
+	for i := range 300 {
+		filler = append(filler, core.KindItem{
+			ID:       fmt.Sprintf("filler-%04d", i),
+			Level:    "game",
+			Title:    fmt.Sprintf("Filler %04d", i),
+			Year:     2025,
+			Released: int64(1_720_000_000 + i*10),
+			Playable: true,
+			Fields:   map[string]json.RawMessage{"genres": rawJSON(t, []string{"Puzzle"})},
+		})
+	}
+	filler = append(filler, core.KindItem{
+		ID:       "top",
+		Level:    "game",
+		Title:    "Top Quest",
+		Year:     2026,
+		Released: 1_730_000_000,
+		Playable: true,
+		Fields: map[string]json.RawMessage{
+			"genres": rawJSON(t, []string{"RPG"}),
+			"cast":   rawJSON(t, []map[string]any{{"name": "Jordan Lee", "thumb": "https://img.example.test/jordan-top.jpg"}}),
+		},
+	})
+	if _, err := s.UpsertItems(ctx, pluginID, kindKey, filler); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "after newer non-holders and a newest holder")
+	if err := s.KindDelete(ctx, pluginID, kindKey, []string{"top"}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "newest holder removed above a window of non-holders")
+	if err := s.KindDelete(ctx, pluginID, kindKey, []string{"bulk-0517"}); err != nil {
+		t.Fatal(err)
+	}
+	assertTalliesExact(t, db, libID, "representative removed below newer non-holders")
 }

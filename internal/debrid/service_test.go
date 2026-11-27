@@ -221,14 +221,14 @@ func TestServiceRefresh(t *testing.T) {
 	if err != nil || out.Provider != "torbox-1" {
 		t.Fatalf("move %+v %v", out, err)
 	}
-	// Gone everywhere: transient, never "missing" (no bad mark).
+	// Gone everywhere: confirmed loss of the original, without a bad mark.
 	for _, fp := range h.provs {
 		fp.mu.Lock()
 		fp.cached[testHash], fp.gone = false, true
 		fp.mu.Unlock()
 	}
 	_, err = h.svc.Refresh(ctx, out, true)
-	if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrArticleMissing) {
+	if !errors.Is(err, core.ErrOriginalLost) || !errors.Is(err, core.ErrNotCached) || errors.Is(err, core.ErrArticleMissing) {
 		t.Fatalf("gone everywhere: %v", err)
 	}
 	// The file vanished from the torrent: missing (failover + bad mark).
@@ -238,7 +238,7 @@ func TestServiceRefresh(t *testing.T) {
 		fp.files = []File{{ID: "9", Path: "Other/other.mkv", Size: 77}}
 		fp.mu.Unlock()
 	}
-	if _, err = h.svc.Refresh(ctx, out, true); !errors.Is(err, core.ErrArticleMissing) {
+	if _, err = h.svc.Refresh(ctx, out, true); !errors.Is(err, core.ErrOriginalLost) || !errors.Is(err, core.ErrArticleMissing) {
 		t.Fatalf("file missing: %v", err)
 	}
 }

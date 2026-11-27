@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"time"
+
 	"github.com/braedonsaunders/ether/internal/availability"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
-	"time"
+	"github.com/braedonsaunders/ether/internal/watchlist"
 )
 
 func (a *App) buildAvailability() error {
@@ -18,25 +20,8 @@ func (a *App) buildAvailability() error {
 			return a.indexers.Search(ctx, req)
 		}, Watchlist: func(ctx context.Context) (map[core.RatingKey]bool, error) {
 			out := map[core.RatingKey]bool{}
-			follow := func(k core.RatingKey) {
-				out[k] = true
-				if k.Kind() == core.KindEpisode || k.Kind() == core.KindSeason {
-					out[core.ShowKey(k.TMDB())] = true
-				}
-			}
-			rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT item_key FROM watchlist_items`)
+			keys, err := watchlist.ListedTitleKeys(ctx, a.db)
 			if err != nil {
-				return nil, err
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var key int64
-				if err := rows.Scan(&key); err != nil {
-					return nil, err
-				}
-				follow(core.RatingKey(key))
-			}
-			if err := rows.Err(); err != nil {
 				return nil, err
 			}
 			if a.state != nil {
@@ -44,8 +29,16 @@ func (a *App) buildAvailability() error {
 				if err != nil {
 					return nil, err
 				}
-				for _, k := range recent {
-					follow(k)
+				keys = append(keys, recent...)
+			}
+			parents, err := a.catalog.ChildAncestry(ctx, keys)
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range keys {
+				out[key] = true
+				if show := parents[key].ShowKey; show != 0 {
+					out[show] = true
 				}
 			}
 			return out, nil

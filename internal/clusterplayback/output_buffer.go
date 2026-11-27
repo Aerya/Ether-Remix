@@ -41,6 +41,10 @@ type bufferedSession struct {
 	headers            map[int64]http.Header // At most one entry per retained segment.
 	supersededAt       int64                 // -1 until a fixed-grid replacement is committed (Runtime.mu).
 	reason             string
+	// unbuffered is set once a segment could not be retained and was delivered
+	// anyway: the viewer is past the restart watermark, so this session is no
+	// longer recoverable and later segments pass straight through.
+	unbuffered bool
 }
 
 func (r *Runtime) newBufferedSession(route Route, q core.HLSRequest, s *remotetranscode.Session) *bufferedSession {
@@ -110,6 +114,51 @@ func (s *bufferedSession) LastAccess() time.Time {
 func (s *bufferedSession) key(n int) playbackbuffer.Key {
 	return playbackbuffer.Key{Session: s.route.Fence.Session, Generation: uint64(s.route.Fence.Generation), Sequence: int64(n), Kind: playbackbuffer.Segment}
 }
+
+// passThrough reports whether segment n is served without capture: the
+// session gave up buffering, or n lies at or below the published floor (its
+// retained bytes were released by MakeRoom), so delivering it cannot put the
+// viewer past the restart watermark.
+func (s *bufferedSession) passThrough(n int) bool {
+	s.mu.Lock()
+	unbuffered := s.unbuffered
+	s.mu.Unlock()
+	if unbuffered {
+		return true
+	}
+	floor, err := s.r.o.OutputBuffer.Floor(s.route.Fence.Session)
+	return err == nil && int64(n) <= floor
+}
+
+// unbuffer stops retention for a still-current session, so a segment the
+// buffer cannot hold may be delivered. Recovery checks the flag under s.mu
+// before committing a replacement, so it never resumes behind a viewer.
+func (s *bufferedSession) unbuffer(n int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.r.mu.Lock()
+	current := s.r.executions[s.route.Fence.Session]
+	active := current != nil && current.route == s.route && current.replacement == nil && !current.stopping
+	s.r.mu.Unlock()
+	if !active {
+		return false
+	}
+	if !s.unbuffered {
+		s.unbuffered = true
+		if s.reason == "" {
+			s.reason = "segment retention unavailable; recovery disabled"
+		}
+		slog.Warn("recovery buffer full, continuing without encoder recovery", "session", s.route.Fence.Session, "generation", s.route.Fence.Generation, "segment", n)
+	}
+	return true
+}
+
+func (s *bufferedSession) isUnbuffered() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unbuffered
+}
+
 func (s *bufferedSession) degrade(reason string) {
 	s.mu.Lock()
 	if s.reason == "" {
@@ -156,6 +205,10 @@ func (s *bufferedSession) serveSegment(w http.ResponseWriter, q *http.Request, n
 	if s.serveRetained(w, q, n, key, &retained) {
 		return
 	}
+	if s.passThrough(n) {
+		serve(w, q)
+		return
+	}
 	// Backpressure precedes allocation and the encoder RPC. A busy capture must
 	// never turn a recoverable response into an unretained successful segment.
 	waitBound := s.r.o.EncoderSegmentWait
@@ -187,7 +240,21 @@ func (s *bufferedSession) serveSegment(w http.ResponseWriter, q *http.Request, n
 	if s.r.deliveryAuthority(q.Context(), s.route) != nil {
 		return
 	}
-	if err := s.r.o.OutputBuffer.Retain(q.Context(), key, playbackbuffer.MPEGTS, int64(len(capture.body)), bytes.NewReader(capture.body)); err != nil {
+	err := s.r.o.OutputBuffer.Retain(q.Context(), key, playbackbuffer.MPEGTS, int64(len(capture.body)), bytes.NewReader(capture.body))
+	if errors.Is(err, playbackbuffer.ErrCapacity) && s.r.o.OutputBuffer.MakeRoom(key, int64(len(capture.body))) {
+		err = s.r.o.OutputBuffer.Retain(q.Context(), key, playbackbuffer.MPEGTS, int64(len(capture.body)), bytes.NewReader(capture.body))
+	}
+	if errors.Is(err, playbackbuffer.ErrCapacity) {
+		// Withholding the last byte would stop playback for good: the
+		// buffer never frees enough (other sessions hold the global pool,
+		// or this segment alone exceeds the per-session budget). Deliver it
+		// and give up recovery for this session instead.
+		if s.unbuffer(n) && capture.complete(q.Context()) {
+			_, _ = w.Write(capture.body[len(capture.body)-1:])
+		}
+		return
+	}
+	if err != nil {
 		s.degrade("segment retention unavailable")
 		return
 	}
@@ -284,6 +351,13 @@ func (s *bufferedSession) serveRetained(w http.ResponseWriter, q *http.Request, 
 			if s.publishStaged(q.Context()) == nil {
 				lease, err = s.r.o.OutputBuffer.Acquire(key)
 			}
+		}
+		if err != nil && !s.r.o.OutputBuffer.Has(key) {
+			// MakeRoom released these bytes behind the restart watermark.
+			s.mu.Lock()
+			delete(s.headers, int64(n))
+			s.mu.Unlock()
+			return false
 		}
 		if err == nil {
 			defer lease.Close()

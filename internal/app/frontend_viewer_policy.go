@@ -75,6 +75,27 @@ func (s surfaceViewerPolicy) AdmitDownload(ctx context.Context, u *core.User, ke
 	return s.app.safety.AdmitDownload(ctx, u, key, estimatedBytes)
 }
 
+func (s surfaceViewerPolicy) OfflineDownloadReceipt(ctx context.Context, u *core.User, receipt string) (core.OfflineDownloadBinding, error) {
+	if s.app == nil || s.app.safety == nil {
+		return core.OfflineDownloadBinding{}, core.ErrNotAvailable
+	}
+	return s.app.safety.OfflineDownloadReceipt(ctx, u, receipt)
+}
+
+func (s surfaceViewerPolicy) AdmitOfflineDownload(ctx context.Context, u *core.User, key core.RatingKey, receipt string, binding core.OfflineDownloadBinding, bytes int64) (core.DownloadLimitDecision, error) {
+	if s.app == nil || s.app.safety == nil {
+		return core.DownloadLimitDecision{}, core.ErrNotAvailable
+	}
+	return s.app.safety.AdmitOfflineDownload(ctx, u, key, receipt, binding, bytes)
+}
+
+func (s surfaceViewerPolicy) RemainingDailyDownloads(ctx context.Context, u *core.User) (int, int, bool) {
+	if s.app == nil || s.app.safety == nil {
+		return 0, 0, false
+	}
+	return s.app.safety.RemainingDailyDownloads(ctx, u)
+}
+
 func (s surfaceViewerPolicy) ReconcileDownloadBytes(ctx context.Context, u *core.User, key core.RatingKey, actualBytes int64) core.DownloadLimitDecision {
 	if s.app == nil || s.app.safety == nil {
 		return core.DownloadLimitDecision{Allowed: true}

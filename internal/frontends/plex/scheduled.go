@@ -9,23 +9,15 @@ import (
 )
 
 func (s *Server) scheduledEpisodes(ctx context.Context, pr *Request, season frontend.RatingKey) []frontend.Title {
-	if !s.cfg().Catalog.ShowUpcomingEpisodes || season.Kind() != frontend.KindSeason || season.Season() <= 0 {
+	if !s.cfg().Catalog.ShowUpcomingEpisodes || season.Kind() != frontend.KindSeason {
 		return nil
 	}
 	schedule, ok := s.catalog().(frontend.CatalogSchedule)
 	if !ok {
 		return nil
 	}
-	// Alternate groups have their own numbering; do not attach canonical future
-	// episodes to an unrelated group or offer a detail page outside that tree.
-	if s.episodeOrder() != nil {
-		grouped, err := s.episodeOrder().Grouped(ctx, pr.User, []frontend.RatingKey{frontend.ShowKey(season.TMDB())})
-		if err != nil || grouped[frontend.ShowKey(season.TMDB())] {
-			return nil
-		}
-	}
 	parent, err := s.catalog().Get(ctx, season)
-	if err != nil || !s.visibleTitle(ctx, pr.User, parent) {
+	if err != nil || parent == nil || parent.Season <= 0 || !s.visibleTitle(ctx, pr.User, parent) || s.viewerGroupHidesSchedule(ctx, pr, parent) {
 		return nil
 	}
 	episodes, err := schedule.ScheduledEpisodes(ctx, season)
@@ -34,19 +26,43 @@ func (s *Server) scheduledEpisodes(ctx context.Context, pr *Request, season fron
 	}
 	out := make([]frontend.Title, 0, len(episodes))
 	for _, ep := range episodes {
-		if ep.Type == frontend.TypeEpisode && ep.Key.Parent() == season && ep.Released.After(s.now()) && s.playableTitle(ctx, pr.User, &ep) {
+		if ep.Type == frontend.TypeEpisode && titleParent(&ep) == season && ep.Released.After(s.now()) && s.playableTitle(ctx, pr.User, &ep) {
 			out = append(out, ep)
 		}
 	}
 	return out
 }
 
+func (s *Server) viewerGroupHidesSchedule(ctx context.Context, pr *Request, t *frontend.Title) bool {
+	if s.episodeOrder() == nil || !viewerEpisodeOrder(t) {
+		return false
+	}
+	show := titleShow(t)
+	grouped, err := s.episodeOrder().Grouped(ctx, pr.User, []frontend.RatingKey{show})
+	return err != nil || grouped[show]
+}
+
 func (s *Server) scheduledEpisode(ctx context.Context, pr *Request, key frontend.RatingKey) (*frontend.Title, error) {
-	if key.Kind() == frontend.KindEpisode {
-		for _, ep := range s.scheduledEpisodes(ctx, pr, key.Parent()) {
-			if ep.Key == key {
-				return &ep, nil
-			}
+	if !s.cfg().Catalog.ShowUpcomingEpisodes || key.Kind() != frontend.KindEpisode {
+		return nil, frontend.ErrNotFound
+	}
+	schedule, ok := s.catalog().(frontend.CatalogSchedule)
+	if !ok {
+		return nil, frontend.ErrNotFound
+	}
+	episodes, err := schedule.ScheduledEpisodes(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, ep := range episodes {
+		if ep.Key != key || ep.Type != frontend.TypeEpisode || ep.Season <= 0 || !ep.Released.After(s.now()) ||
+			s.viewerGroupHidesSchedule(ctx, pr, &ep) || !s.playableTitle(ctx, pr.User, &ep) {
+			continue
+		}
+		parent, err := s.catalog().Get(ctx, titleParent(&ep))
+		if err == nil && parent != nil && parent.Type == frontend.TypeSeason && parent.Season == ep.Season &&
+			titleShow(parent) == titleShow(&ep) && s.visibleTitle(ctx, pr.User, parent) {
+			return &ep, nil
 		}
 	}
 	return nil, frontend.ErrNotFound

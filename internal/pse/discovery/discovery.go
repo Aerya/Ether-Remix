@@ -116,8 +116,8 @@ func Spec(card Card, order int, typ, region string) core.CollectionSpec {
 		NavigationGroup: card.Group, NavigationOrder: order,
 		Sources: []core.CollectionSource{src}, Match: "all", Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{},
 		Sort: "popularity", SortDesc: true, Limit: 100, Refresh: "daily", ReleaseMode: "released", Enabled: true,
-		Artwork: core.CollectionArtwork{Mode: "auto", Accent: card.Accent},
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+		Artwork:      core.CollectionArtwork{Mode: "auto", Accent: card.Accent},
+		BrowseInApps: true,
 	}
 }
 

@@ -2,9 +2,12 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -75,7 +78,7 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 				}
 				seen[i][t.Key] = true
 				r := releases[i]
-				tv := len(r.Info.Seasons) > 0 || len(r.Info.Episodes) > 0 || r.Info.FullSeason || r.Category/1000 == 5
+				tv := len(r.Info.Seasons) > 0 || len(r.Info.Episodes) > 0 || r.Info.AirDate != "" || r.Info.FullSeason || r.Category/1000 == 5
 				if (t.Type == core.TypeShow) != tv {
 					continue
 				}
@@ -114,69 +117,147 @@ func (c *Catalog) ReleaseMatches(ctx context.Context, releases []core.Release) (
 			return nil, err
 		}
 	}
+	type showLayout struct {
+		title  *core.Title
+		layout EpisodeLayout
+	}
+	shows := map[core.RatingKey]showLayout{}
 	out := map[string][]core.Title{}
 	for i, keys := range matches {
 		if overflow[i] || len(keys) != 1 {
 			continue
 		}
 		r := releases[i]
-		if keys[0].Kind() == core.KindMovie {
-			if t, e := c.CachedTitle(ctx, keys[0]); e == nil && t.IsReleased(c.now()) {
+		key := keys[0]
+		if key.Kind() == core.KindMovie {
+			if t, e := c.CachedTitle(ctx, key); e == nil && t.IsReleased(c.now()) {
 				out[r.ID] = []core.Title{*t}
 			}
 			continue
 		}
-		eps, e := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE show_key=? AND type='episode' AND adult=0 AND release_known=1 AND released_ts<=? ORDER BY season,episode LIMIT 2000`, int64(keys[0]), c.now().Unix())
-		if e != nil {
-			return nil, e
-		}
-		if len(eps) == 0 {
-			seasonOne := false
-			for _, s := range r.Info.Seasons {
-				if s == 1 {
-					seasonOne = true
-				}
+		entry, ok := shows[key]
+		if !ok {
+			show, err := c.StoredTitle(ctx, key)
+			if errors.Is(err, core.ErrNotFound) {
+				continue
 			}
-			if releaseparse.EpisodeMatches(r.Info, 1, 1) || (r.Info.FullSeason && seasonOne) {
-				var hasRegular bool
-				if err := c.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_titles WHERE show_key=? AND type='episode' AND season>0)`, int64(keys[0])).Scan(&hasRegular); err == nil && !hasRegular {
-					if show, e := c.CachedTitle(ctx, keys[0]); e == nil && !show.Adult && show.IsReleased(c.now()) {
-						out[r.ID] = []core.Title{{
-							Key: core.EpisodeKey(show.Key.TMDB(), 1, 1), Type: core.TypeEpisode,
-							ShowKey: show.Key, ShowIDs: show.IDs, ShowTitle: show.Title,
-							ShowOriginalTitle: show.OriginalTitle, ShowEnglishTitle: show.EnglishTitle, ShowYear: show.Year,
-							Season: 1, Episode: 1, Released: show.Released, Language: show.Language,
-						}}
-					}
-				}
+			if err != nil {
+				return nil, err
+			}
+			layout, _, err := c.CachedEpisodeLayout(ctx, key)
+			if err != nil {
+				return nil, err
+			}
+			entry = showLayout{title: show, layout: layout}
+			shows[key] = entry
+		}
+		coords := releaseCoordinates(entry.layout, r.Info)
+		if len(coords) == 0 && !hasRegularEpisode(entry.layout) && entry.layout.Order == tmdbAired &&
+			entry.title.IDs.TMDB > 0 && !entry.title.Adult && entry.title.IsReleased(c.now()) &&
+			(releaseparse.EpisodeMatches(r.Info, 1, 1) || releaseSeasonPack(r.Info, 1)) {
+			// Feed-first evidence for an unmirrored TMDB premiere. It does
+			// not insert an episode or infer a provider-only identity.
+			show := entry.title
+			if show.IDs.TMDB < 100_000_000 {
+				out[r.ID] = []core.Title{{
+					Key: core.EpisodeKey(show.IDs.TMDB, 1, 1), Type: core.TypeEpisode, EpisodeOrder: entry.layout.Order,
+					ShowKey: show.Key, ShowIDs: show.IDs, ShowTitle: show.Title,
+					ShowOriginalTitle: show.OriginalTitle, ShowEnglishTitle: show.EnglishTitle, ShowYear: show.Year,
+					Season: 1, Episode: 1, Released: show.Released, Language: show.Language,
+				}}
 			}
 			continue
 		}
-		show, _ := c.CachedTitle(ctx, keys[0])
-		for _, t := range eps {
-			season := false
-			for _, s := range r.Info.Seasons {
-				if s == t.Season {
-					season = true
-				}
+		episodes, err := c.releaseTitlesForCoordinates(ctx, entry.layout, coords)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range episodes {
+			if !t.IsReleased(c.now()) {
+				continue
 			}
-			if releaseparse.EpisodeMatches(r.Info, t.Season, t.Episode) || (r.Info.FullSeason && season) {
-				if show != nil {
-					t.ShowKey, t.ShowIDs = show.Key, show.IDs
-					if t.ShowTitle == "" {
-						t.ShowTitle = show.Title
-					}
-					t.ShowOriginalTitle, t.ShowEnglishTitle, t.ShowYear = show.OriginalTitle, show.EnglishTitle, show.Year
-					if t.Language == "" {
-						t.Language = show.Language
-					}
-				}
-				out[r.ID] = append(out[r.ID], t)
+			show := entry.title
+			t.ShowKey, t.ShowIDs = show.Key, show.IDs
+			if t.ShowTitle == "" {
+				t.ShowTitle = show.Title
 			}
+			t.ShowOriginalTitle, t.ShowEnglishTitle, t.ShowYear = show.OriginalTitle, show.EnglishTitle, show.Year
+			if t.Language == "" {
+				t.Language = show.Language
+			}
+			out[r.ID] = append(out[r.ID], t)
 		}
 	}
 	return out, nil
 }
+
+func releaseSeasonPack(info core.ReleaseInfo, season int) bool {
+	if info.FullSeason {
+		for _, number := range info.Seasons {
+			if number == season {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasRegularEpisode(layout EpisodeLayout) bool {
+	return len(layout.Episodes) > 0 && layout.Episodes[len(layout.Episodes)-1].Season > 0
+}
+
+func releaseCoordinates(layout EpisodeLayout, info core.ReleaseInfo) []EpisodeCoordinate {
+	var date time.Time
+	if info.AirDate != "" && !info.FullSeason {
+		var err error
+		date, err = time.Parse(time.DateOnly, info.AirDate)
+		if err != nil {
+			return nil
+		}
+		if len(info.Episodes) == 0 {
+			if ep, ok := layout.EpisodeOn(date); ok {
+				return []EpisodeCoordinate{ep}
+			}
+			return nil
+		}
+	}
+
+	const maxMatches = 2000
+	seasons := slices.Clone(info.Seasons)
+	if len(seasons) == 0 && !info.FullSeason {
+		for number := range layout.Seasons {
+			if number > 0 {
+				seasons = append(seasons, number)
+			}
+		}
+	}
+	slices.Sort(seasons)
+	seasons = slices.Compact(seasons)
+	episodes := slices.Clone(info.Episodes)
+	slices.Sort(episodes)
+	episodes = slices.Compact(episodes)
+	var out []EpisodeCoordinate
+	for _, season := range seasons {
+		if info.FullSeason {
+			pack := layoutSeasonEpisodes(layout, season)
+			out = append(out, pack[:min(maxMatches-len(out), len(pack))]...)
+		} else {
+			for _, episode := range episodes {
+				if ep, ok := layout.EpisodeAt(season, episode); ok && (date.IsZero() || releaseparse.EpisodeMatchesAirDate(info, ep.AirDate)) {
+					out = append(out, ep)
+					if len(out) == maxMatches {
+						break
+					}
+				}
+			}
+		}
+		if len(out) == maxMatches {
+			break
+		}
+	}
+	return out
+}
+
 func feedIDs(ids core.IDs) []string {
 	var out []string
 	if ids.TMDB > 0 {

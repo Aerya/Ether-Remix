@@ -8,11 +8,18 @@
 import type { PluginContext } from "./router.ts";
 import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText, normalizeStreamUrlOptions } from "./host.ts";
 import type {
+  FrontendArt,
+  FrontendBlob,
+  FrontendMedia,
   KindBrowseQuery,
   KindBrowseRequest,
   KindChangePage,
   KindExpandRequest,
   KindExpandResponse,
+  KindLyrics,
+  KindLyricsRequest,
+  KindRelated,
+  KindRelatedRequest,
   KindItem,
   KindLivePage,
   KindLiveRequest,
@@ -33,6 +40,7 @@ import type {
   KindResolveRequest,
   KindResolveResponse,
   MaybePromise,
+  NZBIdentity,
   RawRequest,
   RawResponse,
   SetupTestRequest,
@@ -52,6 +60,10 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
   /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
   expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
+  /** Optional related items when the kind declares related. */
+  related?(req: KindRelatedRequest, ctx: PluginContext<S>): MaybePromise<KindRelated>;
+  /** Optional lyrics for a playable item when the kind declares lyrics; null when there are none. */
+  lyrics?(req: KindLyricsRequest, ctx: PluginContext<S>): MaybePromise<KindLyrics | null>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -84,17 +96,41 @@ export interface FrontendAdapter<S = Record<string, unknown>> {
     headers: Record<string, string>,
     body: string,
     ctx?: PluginContext<S>,
-  ): MaybePromise<{ status: number; headers?: Record<string, string>; body: string }>;
+  ): MaybePromise<{
+    status: number;
+    headers?: Record<string, string>;
+    body: string;
+    /** Ether serves cached bytes, an item's media, or an item's artwork instead of body. */
+    blob?: FrontendBlob;
+    media?: FrontendMedia;
+    art?: FrontendArt;
+  }>;
 }
 
 export interface SetupTester<S = Record<string, unknown>> {
   testSetup(req: SetupTestRequest, ctx: PluginContext<S>): MaybePromise<SetupTestResult>;
 }
 
+/** Request an indexer NZB through Ether and get its file list and vault reference. */
+export async function requestNzb<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  release: string | NZBIdentity,
+): Promise<SourceCandidate> {
+  if (!ctx.ether?.kinds) throw new Error("NZB request: no host service available");
+  const candidates = await ctx.ether.kinds.resolveSources(typeof release === "string"
+    ? { kind: "nzb_request", nzbRef: release }
+    : { kind: "nzb_request", nzbIdentity: release });
+  const result = candidates[0];
+  if (!result?.nzbRef) throw new Error("nzb_request returned no vault reference");
+  return result;
+}
+
 /** The stable ref matchers report for a source candidate. */
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentRef) return `torrentref:${c.torrentRef}`;
+  if (c.nzbRef) return `nzbref:${c.nzbRef}`;
   if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
@@ -120,7 +156,7 @@ export async function streamUrl<S = Record<string, unknown>>(
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  if (opts.source !== undefined) {
+  if (opts.source !== undefined || opts.absolute) {
     return ctx.ether.frontend.streamUrl(viewerId, itemRef, opts);
   }
   return opts.partIndex === undefined
@@ -188,8 +224,72 @@ export interface KindHandlers<S = Record<string, unknown>> {
   live: Map<string, KindLiveProvider<S>>;
   liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
+  /** Screen and surface sources and actions, keyed "<screen>/<name>" (docs/plugin-screens.md). */
+  screenSources?: Map<string, ScreenSourceHandler<S>>;
+  screenActions?: Map<string, ScreenActionHandler<S>>;
   setup?: SetupTester<S>;
 }
+
+/** What Ether sends a screen source: the document's arguments with their holes filled. */
+export interface ScreenSourceRequest {
+  /** The screen (or surface) id and its page. */
+  screen: string;
+  route: string;
+  page: string;
+  args: Record<string, string>;
+  locale: string;
+  /** The viewer's IANA time zone. */
+  tz: string;
+}
+
+/** A source answer. Images, links, records, events and entities go through the envelope helpers. */
+export interface ScreenSourceAnswer {
+  value: unknown;
+  records?: ScreenRecord[];
+  /** How long Ether may reuse this answer (5..3600 s, default 60; viewer-scoped answers at most 60). */
+  maxAgeSec?: number;
+  /** While a viewer has the page open, ask again after this many seconds (at least 10). */
+  nextRefreshSec?: number;
+}
+
+export interface ScreenRecord {
+  type: string;
+  id: string;
+  value: unknown;
+}
+
+export interface ScreenActionRequest {
+  screen: string;
+  action: string;
+  page: string;
+  args: Record<string, unknown>;
+  params: Record<string, string>;
+  locale: string;
+  tz: string;
+}
+
+/** An action answer: patches the client applies at once. */
+export interface ScreenActionAnswer {
+  records?: ScreenRecord[];
+  /** Whole-source replacements, by source id. */
+  sources?: Record<string, unknown>;
+  /** Sources Ether reads again before answering. */
+  refresh?: string[];
+  /** Plain text, at most 200 characters. */
+  toast?: string;
+  /** A Vela navigate action: { action: "navigate", args: { page, ...params } }. */
+  navigate?: { action: "navigate"; args: Record<string, string> };
+}
+
+export type ScreenSourceHandler<S = Record<string, unknown>> = (
+  req: ScreenSourceRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenSourceAnswer>;
+
+export type ScreenActionHandler<S = Record<string, unknown>> = (
+  req: ScreenActionRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenActionAnswer | void>;
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
   return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
@@ -293,7 +393,11 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const res = await adapter.handle(method, subPath, headers, frontendBodyString(req), ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
-    return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
+    const out: RawResponse = { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
+    if (res.blob) out.blob = res.blob;
+    if (res.media) out.media = res.media;
+    if (res.art) out.art = res.art;
+    return out;
   }
 
   if (method !== "GET" && method !== "POST") {
@@ -311,6 +415,27 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length === 4 && (parts[0] === "screens" || parts[0] === "surfaces") && (parts[2] === "sources" || parts[2] === "actions")) {
+    if (method !== "POST") return err(405, "method_not_allowed", "Screen routes use POST.");
+    const screen = parts[1] ?? "";
+    const name = parts[3] ?? "";
+    const key = `${screen}/${name}`;
+    const page = String(body.page ?? "");
+    const locale = String(body.locale ?? "en");
+    const tz = String(body.tz ?? "UTC");
+    if (parts[2] === "sources") {
+      const handler = handlers.screenSources?.get(key) ?? handlers.screenSources?.get(`*/${name}`);
+      if (!handler) return err(404, "not_found", `No screen source "${name}" is registered for "${screen}".`);
+      const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, string>;
+      return ok(await handler({ screen, route: name, page, args, locale, tz }, ctx));
+    }
+    const handler = handlers.screenActions?.get(key) ?? handlers.screenActions?.get(`*/${name}`);
+    if (!handler) return err(404, "not_found", `No screen action "${name}" is registered for "${screen}".`);
+    const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, unknown>;
+    const params = (body.params && typeof body.params === "object" ? body.params : {}) as Record<string, string>;
+    return ok((await handler({ screen, action: name, page, args, params, locale, tz }, ctx)) ?? {});
   }
 
   if (parts.length >= 3 && parts[0] === "live") {
@@ -396,6 +521,19 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
     if (!result.job) result.items = result.items ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "related") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.related) return err(501, "not_implemented", "This provider has no related items.");
+    const result = { ...(await provider.related({ ...body, kind } as unknown as KindRelatedRequest, ctx)) };
+    result.items = result.items ?? [];
+    return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "lyrics") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.lyrics) return err(501, "not_implemented", "This provider has no lyrics.");
+    const result = await provider.lyrics({ ...body, kind } as unknown as KindLyricsRequest, ctx);
+    return result ? ok({ ...result }) : err(404, "not_found", "No lyrics for this item.");
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);

@@ -56,3 +56,39 @@ func (m *Manager) UnpinSourceRevision(id string) {
 	}
 	s.mu.Unlock()
 }
+
+// BindSource records why an exact session holds its release. An Auto or
+// remembered start opens its release exactly, yet only a viewer's own pick
+// stays on a release that cannot be read.
+func (m *Manager) BindSource(id string, binding core.SourceBinding) {
+	s := m.lookup(id)
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.binding != core.SourceBindingExplicit {
+		s.binding = binding
+	}
+	s.mu.Unlock()
+}
+
+// replaceableLocked reports whether a failing exact or pinned session may
+// move to another release. A pin holds the client's track and revision
+// promises, so only an unpinned Auto start fails over freely and an
+// unpinned remembered start only when its release is proven unreadable.
+// Caller holds s.mu.
+func (s *session) replaceableLocked(unreadable bool) bool {
+	if s.sourcePins > 0 || s.originalRevision != "" {
+		return false
+	}
+	if !s.exact {
+		return true
+	}
+	switch s.binding {
+	case core.SourceBindingAuto:
+		return true
+	case core.SourceBindingRemembered:
+		return unreadable
+	}
+	return false
+}

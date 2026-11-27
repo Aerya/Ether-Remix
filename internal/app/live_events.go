@@ -89,22 +89,14 @@ func (a *App) buildLiveEvents() {
 	// Wire W256 screens to W255's hub and W257's watch matcher.
 	if a.pluginsRT.screens != nil {
 		a.pluginsRT.screens.SetHub(liveEventsScreenHub{hub: hub})
+		a.pluginsRT.screens.SetLiveSubscriber(screenLiveSubscriber{hub: hub})
 		a.pluginsRT.screens.SetWatchTargets(watchTargetAdapter{matcher: watchMatcher})
-		hub.SetScreenFeedResolver(func(ctx context.Context, viewer *core.Viewer, screenID string) ([]liveevents.FeedRef, error) {
-			return a.liveScreenFeeds(ctx, viewer, screenID)
-		})
 	}
-
-	// Wire A6 compact ticker service.
-	a.liveTicker = liveevents.NewTickerService(liveevents.TickerServiceOptions{
-		Source: appTickerSource{app: a, hub: hub},
-		Policy: hubAlertPolicy{hub: hub},
-	})
 
 	// Wire A7 alert engine and bounded-window scheduler into W255's unified
 	// AlertHub (/vela/v0/live/stream?alerts=1) + Flows bus + ViewerPush.
 	if a.db != nil {
-		favReader := liveevents.NewSQLFavoriteEntitiesReader(a.db)
+		favReader := grantedFavoriteEntities{app: a, inner: liveevents.NewSQLFavoriteEntitiesReader(a.db)}
 		alertEngine := liveevents.NewAlertEngine(liveevents.AlertEngineOptions{
 			Favorites: favReader,
 			Policy:    hubAlertPolicy{hub: hub},
@@ -141,38 +133,6 @@ func (a *App) buildLiveEvents() {
 		}
 	})
 	a.closers = append(a.closers, hub.Close)
-}
-
-func (a *App) liveScreenFeeds(ctx context.Context, viewer *core.Viewer, screenID string) ([]liveevents.FeedRef, error) {
-	if a == nil || a.pluginsRT == nil || a.pluginsRT.screens == nil || viewer == nil {
-		return nil, nil
-	}
-	reg := a.pluginsRT.screens.Registry()
-	if reg == nil {
-		return nil, nil
-	}
-	sc, ok, err := reg.FindScreen(ctx, viewer, "vela", screenID)
-	if err != nil || !ok {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var refs []liveevents.FeedRef
-	addFeed := func(feed string) {
-		if feed == "" || seen[feed] {
-			return
-		}
-		seen[feed] = true
-		refs = append(refs, liveevents.FeedRef{PluginID: sc.PluginID, FeedID: feed})
-	}
-	addFeed(sc.DefaultFeed)
-	for _, sec := range sc.Sections {
-		if sec.Feed != "" {
-			addFeed(sec.Feed)
-		} else if sec.Query != nil && sec.Query.Feed != "" {
-			addFeed(sec.Query.Feed)
-		}
-	}
-	return refs, nil
 }
 
 // runLiveEvents runs the hub's cluster leadership/bus lifecycle and the A7
@@ -288,47 +248,6 @@ func (s hubActiveEventsSource) ActiveEvents(ctx context.Context, _ *core.User, _
 	return out, hex.EncodeToString(h.Sum(nil)[:8]), nil
 }
 
-type appTickerSource struct {
-	app *App
-	hub *liveevents.Hub
-}
-
-func (s appTickerSource) TickerEvents(ctx context.Context, viewer *core.User, screen string, _ time.Time) ([]core.LiveEvent, error) {
-	if s.hub == nil {
-		return nil, nil
-	}
-	var refs []liveevents.FeedRef
-	if screen != "" && s.app != nil {
-		resolved, err := s.app.liveScreenFeeds(ctx, viewer, screen)
-		if err != nil {
-			return nil, err
-		}
-		refs = resolved
-	} else {
-		for _, f := range s.hub.Feeds(ctx) {
-			refs = append(refs, liveevents.FeedRef{PluginID: f.PluginID, FeedID: f.FeedID})
-		}
-	}
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	byID := make(map[string]core.LiveEvent)
-	for _, ref := range refs {
-		resp, err := s.hub.FetchEvents(ctx, ref.PluginID, ref.FeedID, liveevents.EventQuery{})
-		if err != nil {
-			continue
-		}
-		for _, ev := range resp.Events {
-			byID[ev.ID] = ev
-		}
-	}
-	out := make([]core.LiveEvent, 0, len(byID))
-	for _, ev := range byID {
-		out = append(out, ev)
-	}
-	return out, nil
-}
-
 type hubAlertPolicy struct {
 	hub *liveevents.Hub
 }
@@ -410,17 +329,6 @@ func (s surfaceLiveEventLink) LiveEventForChannel(ctx context.Context, viewer *f
 	return s.app.liveWatchMatcher.LiveEventForChannel(ctx, viewer, channelID)
 }
 
-type surfaceLiveEventTicker struct {
-	app *App
-}
-
-func (s surfaceLiveEventTicker) LiveTicker(ctx context.Context, viewer *frontend.Viewer, screen string) ([]frontend.LiveTickerItem, error) {
-	if s.app == nil || s.app.liveTicker == nil {
-		return nil, frontend.ErrNotAvailable
-	}
-	return s.app.liveTicker.LiveTicker(ctx, viewer, screen)
-}
-
 type surfaceLiveEvents struct {
 	app *App
 }
@@ -440,38 +348,12 @@ func (s surfaceLiveEvents) Available(ctx context.Context) bool {
 	return hub.HasLiveFeeds(ctx)
 }
 
-func (s surfaceLiveEvents) Events(ctx context.Context, viewer *frontend.Viewer, ids []string) ([]frontend.LiveEvent, error) {
-	hub := s.hub()
-	if hub == nil {
-		return nil, frontend.ErrNotAvailable
-	}
-	events, err := hub.GetEvents(ctx, viewer, ids)
-	if err != nil {
-		return nil, mapLiveEventError(err)
-	}
-	return events, nil
-}
-
-func (s surfaceLiveEvents) Detail(ctx context.Context, viewer *frontend.Viewer, id string) (*frontend.LiveEventDetail, error) {
-	hub := s.hub()
-	if hub == nil {
-		return nil, frontend.ErrNotAvailable
-	}
-	detail, err := hub.GetDetail(ctx, viewer, id)
-	if err != nil {
-		return nil, mapLiveEventError(err)
-	}
-	return detail, nil
-}
-
 func (s surfaceLiveEvents) Subscribe(ctx context.Context, viewer *frontend.Viewer, req frontend.LiveEventStreamRequest) (frontend.LiveEventStream, error) {
 	hub := s.hub()
 	if hub == nil {
 		return nil, frontend.ErrNotAvailable
 	}
 	sub, err := hub.Subscribe(ctx, liveevents.SubscribeRequest{
-		EventIDs:       req.EventIDs,
-		Screens:        req.Screens,
 		Viewer:         viewer,
 		FilterSpoilers: true,
 		Alerts:         req.Alerts,
@@ -479,18 +361,16 @@ func (s surfaceLiveEvents) Subscribe(ctx context.Context, viewer *frontend.Viewe
 	if err != nil {
 		return nil, mapLiveEventError(err)
 	}
-	initial, err := hub.SubscriptionSnapshot(ctx, sub)
-	if err != nil {
-		sub.Close()
-		return nil, mapLiveEventError(err)
-	}
-	return &liveEventStreamAdapter{sub: sub, initial: initial}, nil
+	return &liveEventStreamAdapter{sub: sub}, nil
 }
 
 func (s surfaceLiveEvents) Reveal(ctx context.Context, viewer *frontend.Viewer, id string) error {
 	hub := s.hub()
 	if hub == nil {
 		return frontend.ErrNotAvailable
+	}
+	if !s.app.liveEventPluginAllowed(ctx, viewer, liveEventIDPlugin(id)) {
+		return frontend.ErrNotFound
 	}
 	_, err := hub.RevealEvent(ctx, viewer, id)
 	return mapLiveEventError(err)
@@ -523,12 +403,9 @@ func (s surfaceLiveEvents) SetSpoilerFree(ctx context.Context, viewer *frontend.
 }
 
 type liveEventStreamAdapter struct {
-	sub     *liveevents.Subscription
-	initial []frontend.LiveEvent
+	sub *liveevents.Subscription
 }
 
-func (a *liveEventStreamAdapter) Initial() []frontend.LiveEvent          { return a.initial }
-func (a *liveEventStreamAdapter) Updates() <-chan []frontend.LiveEvent   { return a.sub.Updates() }
 func (a *liveEventStreamAdapter) Alerts() <-chan frontend.LiveEventAlert { return a.sub.Alerts() }
 func (a *liveEventStreamAdapter) Close()                                 { a.sub.Close() }
 

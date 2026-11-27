@@ -7,45 +7,9 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
-
-// upgradeShippedQuality moves an install still on the quality defaults
-// releases up to v0.3.1 shipped (1080p at home and away, an Apple TV rule
-// for 4K, an 8 Mbps remote cap) to the current ones: no server cap at
-// home or away, each device held to what it can play. Anything the owner
-// changed is left alone. It reports whether cfg changed.
-func upgradeShippedQuality(cfg *Config) bool {
-	q := &cfg.Quality
-	if q.Default != "1080p" || q.Remote != "1080p" || len(q.Rules) != 1 || q.Rules[0] != (QualityRule{Product: "Apple TV", Profile: "4K"}) {
-		return false
-	}
-	uhd := -1
-	for i, p := range q.Profiles {
-		if p.Name == "4K" {
-			uhd = i
-		}
-	}
-	if uhd < 0 {
-		return false
-	}
-	q.Default, q.Remote, q.Rules = "4K", "", nil
-	if q.Profiles[uhd].MinHeight == 1080 {
-		q.Profiles[uhd].MinHeight = 720
-	}
-	if cfg.Transcode.RemoteMaxBitrateKbps == 8000 {
-		cfg.Transcode.RemoteMaxBitrateKbps = 0
-	}
-	return true
-}
-
-// The per-media At home and Away fields of each profile media.
-var mediaDefaultFields = map[string]struct{ home, away string }{
-	core.MediaMovie: {"defaultMovie", "remoteMovie"},
-	core.MediaTV:    {"defaultTv", "remoteTv"},
-}
 
 // normalizeQuality settles q into the one shape this version accepts; see
 // normalizeQualityDocument. It works on q's JSON form so the typed and the
@@ -86,287 +50,397 @@ func normalizeSharedDocument(doc map[string]any) []string {
 	return normalizeQualityDocument(quality)
 }
 
-// normalizeQualityDocument gives every profile of a quality section exactly
-// one media, keeps names unique per media and points every default and client
-// rule at a profile that serves its media. It runs on every load (config.json
-// and the cluster's shared settings), so it must be idempotent: a settled
-// section comes back unchanged and with no notes.
-//
-// Splitting. A profile saved before profiles were per media (v0.3.4 and
-// earlier) served movies and TV shows alike; it becomes a movie profile and
-// a TV profile with the same name and settings, the TV one right after it.
-// Names are unique per media and every reference to a profile (client
-// rules, the At home and Away defaults, AI tools) is a name resolved with
-// the title's media, so each reference keeps resolving to the same settings
-// and no reference is rewritten.
-//
-// A name repeated among profiles without a media cannot come from v0.3.4,
-// which rejected duplicate names: it is a per-media list whose media was
-// lost (a release that predates per-media profiles saved over it, such as
-// a downgrade or an older cluster node). v0.3.5 writes the movie profile of
-// a name before the TV one, so the n-th unmarked copy of a name is the
-// profile of the n-th media. Splitting each copy into every media instead
-// made two movie and two TV profiles of every name, which validation then
-// refused, so no change (deleting one included) could be saved.
-//
-// Duplicates. A second profile with the media and name of an earlier one is
-// dropped when its settings are the same and renamed "<name> (2)" when they
-// differ, so an owner's customization is never lost. The first keeps the
-// name: it is the one every reference already resolved to.
+// normalizeQualityDocument settles a quality section: it runs the one-time
+// move off per-media profiles (migrateMediaProfiles) and then points the
+// defaults and every client rule at a profile that exists. It runs on every
+// load (config.json and the cluster's shared settings), so it must be
+// idempotent: a settled section comes back unchanged and with no notes.
 func normalizeQualityDocument(quality map[string]any) []string {
-	profiles, ok := quality["profiles"].([]any)
-	if !ok {
+	notes := migrateMediaProfiles(quality)
+	profiles, _ := quality["profiles"].([]any)
+	if len(profiles) == 0 {
+		return notes
+	}
+	exists := func(name string) bool {
+		for _, item := range profiles {
+			if p, ok := item.(map[string]any); ok && docString(p, "name") == name {
+				return true
+			}
+		}
+		return false
+	}
+	first := ""
+	if p, ok := profiles[0].(map[string]any); ok {
+		first = docString(p, "name")
+	}
+	// Each repair resolves as the missing name already did at playback: a
+	// missing Default profile is the first one, a missing Default away the
+	// Default, and a rule naming a removed profile keeps its conditions and
+	// limits but no longer picks a profile. Validation refuses a name no
+	// profile has, so left alone it would block every quality change.
+	if v := docString(quality, "default"); first != "" && (v == "" || !exists(v)) {
+		notes = append(notes, fmt.Sprintf("default named a missing profile %q; now %q", v, first))
+		quality["default"] = first
+	}
+	if v := docString(quality, "defaultAway"); v != "" && !exists(v) {
+		notes = append(notes, fmt.Sprintf("defaultAway named a missing profile %q; now the Default", v))
+		quality["defaultAway"] = ""
+	}
+	if rules, ok := quality["rules"].([]any); ok {
+		changed := false
+		for i, item := range rules {
+			r, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if prof := docString(r, "profile"); prof != "" && !exists(prof) {
+				c := maps.Clone(r)
+				delete(c, "profile")
+				rules[i] = c
+				changed = true
+				notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing profile %q; now limits only", i, prof))
+			}
+		}
+		if changed {
+			quality["rules"] = rules
+		}
+	}
+	return notes
+}
+
+// RulesMigration carries the v0.3.20 mapping (per-media defaults and
+// client rules) from config load, which cannot reach the libraries or
+// viewers, to the app, which turns it into rules once at startup
+// (App.migrateQualityRules) and clears it. Delete both, with
+// migrateMediaProfiles, in the release after next.
+type RulesMigration struct {
+	// Rules are the v0.3.20 client rules in order, their profiles already
+	// renamed; a rule for both media whose profile was kept apart is split.
+	Rules []LegacyQualityRule `json:"rules,omitempty"`
+	// Home and Away are the profiles each media ("movie", "tv") used at
+	// home and away, already renamed; "" means none was set.
+	Home map[string]string `json:"home,omitempty"`
+	Away map[string]string `json:"away,omitempty"`
+	// Renames maps a media's old profile name to its new one, for the
+	// libraries that had chosen a profile by name.
+	Renames map[string]map[string]string `json:"renames,omitempty"`
+}
+
+// LegacyQualityRule is a v0.3.20 client rule.
+type LegacyQualityRule struct {
+	Protocol             string `json:"protocol,omitempty"`
+	Product              string `json:"product,omitempty"`
+	Platform             string `json:"platform,omitempty"`
+	UserID               int64  `json:"userId,omitempty"`
+	MediaType            string `json:"mediaType,omitempty"`
+	Profile              string `json:"profile"`
+	MaxHeight            int    `json:"maxHeight,omitempty"`
+	ConvertSurroundAudio bool   `json:"convertSurroundAudio,omitempty"`
+}
+
+// legacyMediaDefaults are the per-media At home and Away fields of
+// v0.3.20 and earlier.
+var legacyMediaDefaults = []struct{ media, home, away string }{
+	{core.MediaMovie, "defaultMovie", "remoteMovie"},
+	{core.MediaTV, "defaultTv", "remoteTv"},
+}
+
+// legacyProfileMedia is the order v0.3.5 to v0.3.20 wrote a name's
+// per-media profiles in: the movie one, then the TV one.
+var legacyProfileMedia = []string{core.MediaMovie, core.MediaTV}
+
+// legacyQualityDocument reports whether a quality section still has the
+// v0.3.20 shape: a remote or per-media default key, a profile with a
+// media, or a rule without an id.
+func legacyQualityDocument(quality map[string]any) bool {
+	if n, ok := quality["migratedRules"]; ok && n != nil && fmt.Sprint(n) != "0" {
+		return false
+	}
+	if _, has := quality["remote"]; has {
+		return true
+	}
+	for _, f := range legacyMediaDefaults {
+		for _, k := range []string{f.home, f.away} {
+			if _, has := quality[k]; has {
+				return true
+			}
+		}
+	}
+	profiles, _ := quality["profiles"].([]any)
+	for _, item := range profiles {
+		if p, ok := item.(map[string]any); ok {
+			if _, has := p["mediaType"]; has {
+				return true
+			}
+		}
+	}
+	rules, _ := quality["rules"].([]any)
+	for _, item := range rules {
+		if r, ok := item.(map[string]any); ok && docString(r, "id") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateMediaProfiles is the config half of the one-time move off the
+// v0.3.20 model, where every profile served movies or TV shows (one name
+// could be two profiles) and the mapping was spread over per-media
+// defaults, client rules and library profiles. A profile now ranks
+// releases for whatever rule picks it.
+//
+// Profiles. The movie and TV profiles of a name become one profile when
+// they rank alike. They were copies of each other unless the owner edited
+// one: a movie profile drops the scores of the formats only episodes can
+// match and has no use for episode size limits, so those are taken from
+// the TV profile and the rest must be equal. Movie and TV profiles of a
+// name that the owner made rank differently are both kept, the TV one as
+// "<name> (TV)", so no customization is lost or blended into the other.
+// A profile with no media (saved before v0.3.5) stays as it is.
+//
+// Mapping. Default becomes the movie At home profile; the rules list is
+// emptied and everything the app needs to rebuild it exactly is recorded
+// in rulesMigration.
+func migrateMediaProfiles(quality map[string]any) []string {
+	if !legacyQualityDocument(quality) {
 		return nil
 	}
+	profiles, _ := quality["profiles"].([]any)
 	var notes []string
-	changed := false
 
+	// Which media each profile served. Copies of a name without a media
+	// beyond the first are a per-media list whose media was lost (an
+	// older node saved over it): the n-th is the n-th media.
+	type variant struct {
+		media string // "" serves every media
+		p     map[string]any
+	}
+	byName := map[string][]variant{}
+	var order []string
+	unmarkedSeen := map[string]int{}
 	unmarked := map[string]int{}
 	for _, item := range profiles {
 		if p, ok := item.(map[string]any); ok && docString(p, "mediaType") == "" {
 			unmarked[docString(p, "name")]++
 		}
 	}
-	split := make([]any, 0, len(profiles))
-	seen := map[string]int{}
+	var others []any
 	for _, item := range profiles {
 		p, ok := item.(map[string]any)
-		if !ok || docString(p, "mediaType") != "" {
-			split = append(split, item)
-			continue
-		}
-		changed = true
-		name := docString(p, "name")
-		media := core.ProfileMediaTypes
-		if i := seen[name]; unmarked[name] > 1 && i < len(media) {
-			if i == 0 {
-				notes = append(notes, fmt.Sprintf("profile %q appeared %d times without a media; restored its copies as the %s profiles in order", name, unmarked[name], strings.Join(media, ", ")))
-			}
-			media = media[i : i+1]
-		} else {
-			notes = append(notes, fmt.Sprintf("split profile %q into %s profiles", name, strings.Join(media, " and ")))
-		}
-		seen[name]++
-		for _, m := range media {
-			c := maps.Clone(p)
-			c["mediaType"] = m
-			split = append(split, c)
-		}
-	}
-
-	type key struct{ media, name string }
-	taken := map[key]bool{}
-	for _, item := range split {
-		if p, ok := item.(map[string]any); ok {
-			taken[key{docString(p, "mediaType"), docString(p, "name")}] = true
-		}
-	}
-	first := map[key][]map[string]any{}
-	out := make([]any, 0, len(split))
-	for _, item := range split {
-		p, ok := item.(map[string]any)
 		if !ok || docString(p, "name") == "" {
-			out = append(out, item)
+			others = append(others, item)
 			continue
 		}
-		media, name := docString(p, "mediaType"), docString(p, "name")
-		k := key{media, name}
-		earlier := first[k]
-		if len(earlier) == 0 {
-			first[k] = []map[string]any{p}
-			out = append(out, p)
-			continue
+		name, media := docString(p, "name"), docString(p, "mediaType")
+		if media == "" && unmarked[name] > 1 {
+			if i := unmarkedSeen[name]; i < len(legacyProfileMedia) {
+				media = legacyProfileMedia[i]
+			}
+			unmarkedSeen[name]++
 		}
-		changed = true
-		if slices.ContainsFunc(earlier, func(e map[string]any) bool { return reflect.DeepEqual(e, p) }) {
-			notes = append(notes, fmt.Sprintf("removed a duplicate %s profile %q", media, name))
-			continue
-		}
-		first[k] = append(earlier, p)
-		renamed := name
-		for n := 2; taken[key{media, renamed}]; n++ {
-			renamed = fmt.Sprintf("%s (%d)", name, n)
-		}
-		taken[key{media, renamed}] = true
 		c := maps.Clone(p)
-		c["name"] = renamed
-		out = append(out, c)
-		notes = append(notes, fmt.Sprintf("a second %s profile %q has different settings; renamed it %q", media, name, renamed))
-	}
-	if changed {
-		quality["profiles"] = out
+		delete(c, "mediaType")
+		if _, ok := byName[name]; !ok {
+			order = append(order, name)
+		}
+		byName[name] = append(byName[name], variant{media, c})
 	}
 
-	serves := func(name, media string) bool {
-		for _, item := range out {
-			if p, ok := item.(map[string]any); ok && docString(p, "name") == name && (media == "" || docString(p, "mediaType") == media) {
-				return true
-			}
-		}
-		return false
+	taken := map[string]bool{}
+	for _, name := range order {
+		taken[name] = true
 	}
-	firstFor := func(media string) string {
-		for _, item := range out {
-			if p, ok := item.(map[string]any); ok && (media == "" || docString(p, "mediaType") == media) {
-				return docString(p, "name")
-			}
+	renames := map[string]map[string]string{}
+	rename := func(media, from, to string) {
+		if renames[media] == nil {
+			renames[media] = map[string]string{}
 		}
-		return ""
+		renames[media][from] = to
 	}
-	repoint := func(field, to string) {
-		notes = append(notes, fmt.Sprintf("%s named a missing profile %q; now %q", field, docString(quality, field), to))
-		quality[field] = to
+	out := make([]any, 0, len(profiles))
+	for _, name := range order {
+		vs := byName[name]
+		kept := []map[string]any{}
+		for _, v := range vs {
+			merged := -1
+			for i, k := range kept {
+				if m, ok := mergeMediaProfiles(k, v.p, v.media); ok {
+					kept[i], merged = m, i
+					break
+				}
+			}
+			target := name
+			if merged < 0 {
+				if len(kept) > 0 {
+					suffix := " (TV)"
+					if v.media != core.MediaTV {
+						suffix = " (2)"
+					}
+					target = name + suffix
+					for n := 2; taken[target]; n++ {
+						target = fmt.Sprintf("%s%s %d", name, suffix, n)
+					}
+					taken[target] = true
+					v.p["name"] = target
+					notes = append(notes, fmt.Sprintf("the %s profile %q ranks differently from the other %q; kept it as %q", mediaWord(v.media), name, name, target))
+				}
+				kept = append(kept, v.p)
+			} else {
+				target = docString(kept[merged], "name")
+				notes = append(notes, fmt.Sprintf("merged the %s profile %q into %q", mediaWord(v.media), name, target))
+			}
+			if v.media == "" {
+				for _, m := range legacyProfileMedia {
+					if target != name {
+						rename(m, name, target)
+					}
+				}
+			} else if target != name {
+				rename(v.media, name, target)
+			}
+		}
+		for _, k := range kept {
+			out = append(out, k)
+		}
 	}
-	for _, m := range core.ProfileMediaTypes {
-		f, ok := mediaDefaultFields[m]
-		if !ok {
-			continue
+	out = append(out, others...)
+	quality["profiles"] = out
+
+	renamed := func(media, name string) string {
+		if to, ok := renames[media][name]; ok {
+			return to
 		}
-		if v := docString(quality, f.home); v != "" && !serves(v, m) {
-			repoint(f.home, firstFor(m))
-		}
-		if v := docString(quality, f.away); v != "" && !serves(v, m) {
-			repoint(f.away, "")
-		}
+		return name
 	}
-	// Each repair resolves as the missing name already did at playback: a
-	// missing At home profile is the media's first one, a missing Away one
-	// the At home one, and a client rule naming a removed profile falls back
-	// to the At home profile while keeping the rule's device matchers and
-	// limits. Validation refuses a name that serves nothing, so left alone
-	// it would block every quality change.
-	if len(out) > 0 {
-		if v := docString(quality, "default"); v != "" && !serves(v, "") {
-			repoint("default", "")
+	mig := RulesMigration{Home: map[string]string{}, Away: map[string]string{}}
+	for _, f := range legacyMediaDefaults {
+		home := docString(quality, f.home)
+		if home == "" {
+			home = docString(quality, "default")
 		}
-		if v := docString(quality, "remote"); v != "" && !serves(v, "") {
-			repoint("remote", "")
+		away := docString(quality, f.away)
+		if away == "" {
+			away = docString(quality, "remote")
 		}
-		homeFor := func(media string) string {
-			if f, ok := mediaDefaultFields[media]; ok {
-				if v := docString(quality, f.home); v != "" && serves(v, media) {
-					return v
-				}
+		mig.Home[f.media] = renamed(f.media, home)
+		mig.Away[f.media] = renamed(f.media, away)
+		delete(quality, f.home)
+		delete(quality, f.away)
+	}
+	delete(quality, "remote")
+	if len(renames) > 0 {
+		mig.Renames = renames
+	}
+	quality["default"] = mig.Home[core.MediaMovie]
+	quality["defaultAway"] = ""
+
+	if rules, ok := quality["rules"].([]any); ok {
+		for _, item := range rules {
+			r, ok := item.(map[string]any)
+			if !ok {
+				continue
 			}
-			if v := docString(quality, "default"); v != "" && serves(v, media) {
-				return v
+			var lr LegacyQualityRule
+			if b, err := json.Marshal(r); err != nil || json.Unmarshal(b, &lr) != nil {
+				continue
 			}
-			return firstFor(media)
-		}
-		if rules, ok := quality["rules"].([]any); ok && len(rules) > 0 {
-			repaired := make([]any, 0, len(rules))
-			rulesChanged := false
-			for i, item := range rules {
-				r, ok := item.(map[string]any)
-				if !ok {
-					repaired = append(repaired, item)
-					continue
+			if lr.MediaType != "" || renamed(core.MediaMovie, lr.Profile) == renamed(core.MediaTV, lr.Profile) {
+				media := lr.MediaType
+				if media == "" {
+					media = core.MediaMovie
 				}
-				media, prof := docString(r, "mediaType"), docString(r, "profile")
-				if (media != "" && !core.IsProfileMedia(media)) || prof == "" || serves(prof, media) {
-					repaired = append(repaired, r)
-					continue
-				}
-				rulesChanged = true
-				if media != "" {
-					if to := homeFor(media); to != "" {
-						c := maps.Clone(r)
-						c["profile"] = to
-						repaired = append(repaired, c)
-						notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing %s profile %q; now %q", i, media, prof, to))
-					} else {
-						notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing %s profile %q with no %s profiles; removed rule", i, media, prof, media))
-					}
-					continue
-				}
-				sharedTo := ""
-				sameAcrossAll := true
-				type mediaTarget struct{ media, to string }
-				var targets []mediaTarget
-				for _, m := range core.ProfileMediaTypes {
-					to := homeFor(m)
-					if to == "" {
-						sameAcrossAll = false
-						continue
-					}
-					targets = append(targets, mediaTarget{m, to})
-					if sharedTo == "" {
-						sharedTo = to
-					} else if sharedTo != to {
-						sameAcrossAll = false
-					}
-					if !serves(to, m) {
-						sameAcrossAll = false
-					}
-				}
-				switch {
-				case sameAcrossAll && sharedTo != "":
-					c := maps.Clone(r)
-					c["profile"] = sharedTo
-					repaired = append(repaired, c)
-					notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing profile %q; now %q", i, prof, sharedTo))
-				case len(targets) > 0:
-					var parts []string
-					for _, t := range targets {
-						c := maps.Clone(r)
-						c["mediaType"] = t.media
-						c["profile"] = t.to
-						repaired = append(repaired, c)
-						parts = append(parts, fmt.Sprintf("%s=%q", t.media, t.to))
-					}
-					notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing profile %q; split to %s", i, prof, strings.Join(parts, ", ")))
-				default:
-					notes = append(notes, fmt.Sprintf("quality.rules[%d].profile named a missing profile %q with no profiles; removed rule", i, prof))
-				}
+				lr.Profile = renamed(media, lr.Profile)
+				mig.Rules = append(mig.Rules, lr)
+				continue
 			}
-			if rulesChanged {
-				quality["rules"] = repaired
+			prof := lr.Profile
+			for _, m := range legacyProfileMedia {
+				c := lr
+				c.MediaType = m
+				c.Profile = renamed(m, prof)
+				mig.Rules = append(mig.Rules, c)
 			}
 		}
 	}
+	quality["rules"] = []any{}
+	b, _ := json.Marshal(mig)
+	var doc map[string]any
+	_ = json.Unmarshal(b, &doc)
+	quality["rulesMigration"] = doc
+	notes = append(notes, fmt.Sprintf("profiles no longer have a media; Default is %q; the mapping moves into rules at startup", docString(quality, "default")))
 	return notes
+}
+
+func mediaWord(media string) string {
+	switch media {
+	case core.MediaMovie:
+		return "movie"
+	case core.MediaTV:
+		return "TV"
+	}
+	return "shared"
+}
+
+// episodeOnlyProfileKeys are the profile fields only episodes use.
+var episodeOnlyProfileKeys = []string{"episodeMinSizeMbPerMin", "episodeMaxSizeMbPerMin"}
+
+// mergeMediaProfiles merges profile b of media into a when the two rank
+// every title alike: equal once the formats only episodes match and the
+// episode size limits are set aside. The merged profile takes those from
+// the one that served episodes, so nothing either one ranked changes.
+func mergeMediaProfiles(a, b map[string]any, media string) (map[string]any, bool) {
+	strip := func(p map[string]any) map[string]any {
+		c := maps.Clone(p)
+		delete(c, "name")
+		for _, k := range episodeOnlyProfileKeys {
+			delete(c, k)
+		}
+		if scores, ok := c["customFormatScores"].(map[string]any); ok {
+			s := maps.Clone(scores)
+			for _, id := range core.TVOnlyFormats {
+				delete(s, id)
+			}
+			if len(s) == 0 {
+				delete(c, "customFormatScores")
+			} else {
+				c["customFormatScores"] = s
+			}
+		}
+		return c
+	}
+	if !reflect.DeepEqual(strip(a), strip(b)) {
+		return nil, false
+	}
+	if media != core.MediaTV {
+		return a, true
+	}
+	out := maps.Clone(a)
+	for _, k := range episodeOnlyProfileKeys {
+		if v, ok := b[k]; ok {
+			out[k] = v
+		} else {
+			delete(out, k)
+		}
+	}
+	if bs, ok := b["customFormatScores"].(map[string]any); ok {
+		scores, _ := out["customFormatScores"].(map[string]any)
+		scores = maps.Clone(scores)
+		if scores == nil {
+			scores = map[string]any{}
+		}
+		for _, id := range core.TVOnlyFormats {
+			if v, ok := bs[id]; ok {
+				scores[id] = v
+			}
+		}
+		out["customFormatScores"] = scores
+	}
+	return out, true
 }
 
 func docString(m map[string]any, key string) string {
 	s, _ := m[key].(string)
 	return s
-}
-
-// cloneProfile deep-copies p field by field so the per-media copies share
-// no slices or maps. It does not go through JSON, whose decoding would fill
-// defaults the original left unset.
-func cloneProfile(p core.QualityProfile) core.QualityProfile {
-	c := p
-	c.ReleaseRules = nil
-	for _, r := range p.ReleaseRules {
-		r.Conditions = slices.Clone(r.Conditions)
-		r.Unless = slices.Clone(r.Unless)
-		r.Fallback = slices.Clone(r.Fallback)
-		c.ReleaseRules = append(c.ReleaseRules, r)
-	}
-	if p.ReleaseRules != nil && c.ReleaseRules == nil {
-		c.ReleaseRules = []core.ReleaseRule{}
-	}
-	if p.PluginScores != nil {
-		c.PluginScores = make(map[string]json.RawMessage, len(p.PluginScores))
-		for k, v := range p.PluginScores {
-			c.PluginScores[k] = slices.Clone(v)
-		}
-	}
-	c.QualityOrder = CloneQualityOrder(p.QualityOrder)
-	c.AllowedQualities = slices.Clone(p.AllowedQualities)
-	c.CustomFormatScores = maps.Clone(p.CustomFormatScores)
-	if p.MinCustomFormatScore != nil {
-		v := *p.MinCustomFormatScore
-		c.MinCustomFormatScore = &v
-	}
-	if p.Import != nil {
-		imp := *p.Import
-		imp.Groups = slices.Clone(p.Import.Groups)
-		c.Import = &imp
-	}
-	c.PreferredLanguages = slices.Clone(p.PreferredLanguages)
-	return c
 }
 
 // CloneQualityOrder deep-copies a quality order.

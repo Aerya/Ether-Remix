@@ -81,6 +81,23 @@ func samePartIndex(a, b *int) bool {
 	return *a == *b
 }
 
+// ValidateSource checks an optional resolver source id scope: empty, or a
+// non-blank id without control characters.
+func ValidateSource(source string) error {
+	if source == "" {
+		return nil
+	}
+	if strings.TrimSpace(source) == "" {
+		return errors.New("frontendadapter: blank stream grant source")
+	}
+	for _, r := range source {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("frontendadapter: invalid stream grant source")
+		}
+	}
+	return nil
+}
+
 // Issue mints a ticket for the given grant and returns its opaque token.
 func (t *TicketIssuer) Issue(grant StreamGrant) (string, error) {
 	if grant.ViewerID == 0 || grant.ItemID == "" || grant.Adapter == "" {
@@ -89,15 +106,8 @@ func (t *TicketIssuer) Issue(grant StreamGrant) (string, error) {
 	if grant.PartIndex != nil && *grant.PartIndex < 0 {
 		return "", errors.New("frontendadapter: negative stream grant part index")
 	}
-	if grant.Source != "" {
-		if strings.TrimSpace(grant.Source) == "" {
-			return "", errors.New("frontendadapter: blank stream grant source")
-		}
-		for _, r := range grant.Source {
-			if r < 0x20 || r == 0x7f {
-				return "", errors.New("frontendadapter: invalid stream grant source")
-			}
-		}
+	if err := ValidateSource(grant.Source); err != nil {
+		return "", err
 	}
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {

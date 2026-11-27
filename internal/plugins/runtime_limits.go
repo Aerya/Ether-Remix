@@ -17,19 +17,21 @@ type runtimeCeilings struct {
 	fetch, member, expanded int64
 	members                 int
 	maxItems                int
+	listItems               int
 }
 
 func defaultRuntimeCeilings() runtimeCeilings {
 	return runtimeCeilings{
-		memory:   2 << 30,
-		deadline: 12 * time.Hour,
-		units:    1 << 60,
-		poolSize: wasm.DefaultPoolCeiling,
-		fetch:    8 << 30,
-		member:   8 << 30,
-		expanded: 32 << 30,
-		members:  65535,
-		maxItems: DefaultMaxPluginItems,
+		memory:    2 << 30,
+		deadline:  12 * time.Hour,
+		units:     1 << 60,
+		poolSize:  wasm.DefaultPoolCeiling,
+		fetch:     8 << 30,
+		member:    8 << 30,
+		expanded:  32 << 30,
+		members:   65535,
+		maxItems:  DefaultMaxPluginItems,
+		listItems: MaxListItems,
 	}
 }
 func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runtimeCeilings {
@@ -59,6 +61,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	}
 	if l.MaxItems > 0 {
 		c.maxItems = l.MaxItems
+	}
+	if l.ListItems > 0 {
+		c.listItems = min(l.ListItems, MaxListItems)
 	}
 	return c
 }
@@ -179,8 +184,8 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, and resource limits must not be negative.", wasm.MaxPoolSize), nil)
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 || req.Limits.ListItems < 0 || req.Limits.ListItems > MaxListItems {
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, titles per list at most %d, and resource limits must not be negative.", wasm.MaxPoolSize, MaxListItems), nil)
 			return
 		}
 		if req.Limits.Deadline != "" {

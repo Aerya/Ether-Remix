@@ -50,7 +50,10 @@ func (s *Server) libraryByGUID(w http.ResponseWriter, r *http.Request, sec *Sect
 	seen := map[frontend.RatingKey]bool{}
 	for _, guid := range guids {
 		keys, err := s.guidKeys(ctx, guid, typ)
-		if err != nil && !errors.Is(err, frontend.ErrNotFound) {
+		if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrAmbiguousLibraryGUID) {
+			continue
+		}
+		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
@@ -112,22 +115,21 @@ func (s *Server) guidKeys(ctx context.Context, guid string, typ frontend.MediaTy
 		if guidSrc == nil {
 			return nil, frontend.ErrNotFound
 		}
+		resolve := guidSrc.Lookup
 		if strings.HasPrefix(cleanGUID, "plex://season/") || strings.HasPrefix(cleanGUID, "plex://episode/") {
-			k, err := guidSrc.ExactKey(ctx, cleanGUID)
-			if err != nil {
-				if errors.Is(err, frontend.ErrAmbiguousLibraryGUID) {
-					return nil, frontend.ErrNotFound
-				}
-				return nil, err
-			}
-			return []frontend.RatingKey{k}, nil
+			resolve = guidSrc.ExactKey
 		}
-		k, err := guidSrc.Lookup(ctx, cleanGUID)
+		k, err := resolve(ctx, cleanGUID)
 		if err != nil {
 			return nil, err
 		}
 		return []frontend.RatingKey{k}, nil
 	case "tmdb", "themoviedb", "com.plexapp.agents.themoviedb":
+		if !strings.Contains(id, "/") && (scheme == "tmdb" || typ == frontend.TypeEpisode || typ == frontend.TypeSeason) {
+			if keys, err := s.storedGUIDKeys(ctx, "tmdb", id, typ); err != nil || len(keys) > 0 {
+				return keys, err
+			}
+		}
 		return tmdbGUIDKeys(id, typ)
 	case "imdb", "com.plexapp.agents.imdb":
 		if !strings.HasPrefix(id, "tt") {
@@ -137,6 +139,9 @@ func (s *Server) guidKeys(ctx context.Context, guid string, typ frontend.MediaTy
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || n <= 0 || strings.ContainsAny(raw, "+- /") {
 			return nil, frontend.ErrNotFound
+		}
+		if keys, err := s.storedGUIDKeys(ctx, "imdb", id, typ); err != nil || len(keys) > 0 {
+			return keys, err
 		}
 		t, err := s.catalog().ByExternalID(ctx, "imdb", id)
 		if err != nil {
@@ -152,9 +157,21 @@ func (s *Server) guidKeys(ctx context.Context, guid string, typ frontend.MediaTy
 	return nil, frontend.ErrNotFound
 }
 
+func (s *Server) storedGUIDKeys(ctx context.Context, provider, id string, typ frontend.MediaType) ([]frontend.RatingKey, error) {
+	catalogue, ok := s.catalog().(frontend.ProviderIDKeyReader)
+	if !ok {
+		return nil, nil
+	}
+	types := []frontend.MediaType{frontend.TypeMovie, frontend.TypeShow}
+	if typ != "" {
+		types = []frontend.MediaType{typ}
+	}
+	return catalogue.KeysByProviderID(ctx, provider, id, types)
+}
+
 func parsePositiveTMDBID(raw string) (int64, bool) {
 	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n <= 0 || n >= 1_000_000_000_000_000 || strconv.FormatInt(n, 10) != raw {
+	if err != nil || n <= 0 || n >= 4_294_967_296 || strconv.FormatInt(n, 10) != raw {
 		return 0, false
 	}
 	return n, true
@@ -207,6 +224,9 @@ func tmdbGUIDKeys(id string, typ frontend.MediaType) ([]frontend.RatingKey, erro
 		}
 		switch typ {
 		case frontend.TypeEpisode:
+			if showID >= 100_000_000 || seasonNum >= 1000 {
+				return nil, frontend.ErrNotFound
+			}
 			return []frontend.RatingKey{frontend.EpisodeKey(showID, seasonNum, epNum)}, nil
 		case frontend.TypeSeason:
 			return []frontend.RatingKey{frontend.SeasonKey(showID, seasonNum)}, nil
@@ -243,6 +263,11 @@ func (s *Server) tvdbGUIDKeys(ctx context.Context, id string, typ frontend.Media
 			return nil, frontend.ErrNotFound
 		}
 	}
+	if len(parts) == 1 {
+		if keys, err := s.storedGUIDKeys(ctx, "tvdb", showRaw, typ); err != nil || len(keys) > 0 {
+			return keys, err
+		}
+	}
 	t, err := s.catalog().ByExternalID(ctx, "tvdb", showRaw)
 	if err != nil {
 		return nil, err
@@ -258,12 +283,29 @@ func (s *Server) tvdbGUIDKeys(ctx context.Context, id string, typ frontend.Media
 	}
 	switch typ {
 	case frontend.TypeEpisode:
-		if len(parts) == 3 {
-			return []frontend.RatingKey{frontend.EpisodeKey(t.Key.TMDB(), seasonNum, epNum)}, nil
+		if len(parts) != 3 {
+			return nil, frontend.ErrNotFound
+		}
+		resolver, ok := s.catalog().(frontend.EpisodeCoordinateResolver)
+		if !ok {
+			return nil, frontend.ErrNotFound
+		}
+		key, err := resolver.ResolveEpisode(ctx, t.Key, seasonNum, epNum)
+		if err != nil {
+			return nil, err
+		}
+		return []frontend.RatingKey{key}, nil
+	case frontend.TypeSeason:
+		seasons, err := s.catalog().Children(ctx, t.Key)
+		if err != nil {
+			return nil, err
+		}
+		for _, season := range seasons {
+			if season.Type == frontend.TypeSeason && season.Season == seasonNum {
+				return []frontend.RatingKey{season.Key}, nil
+			}
 		}
 		return nil, frontend.ErrNotFound
-	case frontend.TypeSeason:
-		return []frontend.RatingKey{frontend.SeasonKey(t.Key.TMDB(), seasonNum)}, nil
 	case "", frontend.TypeShow:
 		return []frontend.RatingKey{t.Key}, nil
 	default:

@@ -35,6 +35,7 @@ export function SourceEditor({
   descriptor,
   descriptors,
   lookupPolicy,
+  unavailable,
 }: {
   source: Source;
   onChange: (s: Source) => void;
@@ -44,6 +45,7 @@ export function SourceEditor({
   removable: boolean;
   descriptor?: SourceDescriptor;
   descriptors: readonly SourceDescriptor[];
+  unavailable?: string;
   lookupPolicy?: { storedOnly: boolean; onChange: (storedOnly: boolean) => void };
 }) {
   const n = index + 1;
@@ -107,15 +109,19 @@ export function SourceEditor({
           </MoreOptions>
         </div>
       ) : null}
-      <div className="mt-2 empty:hidden">
-        <SourceBody
-          source={source as SourceRecord}
-          descriptor={descriptor}
-          onChange={onChange}
-          region={region}
-          label={label}
-        />
-      </div>
+      {unavailable ? (
+        <p className="mt-2 text-sm text-fg-muted">{unavailable}</p>
+      ) : (
+        <div className="mt-2 empty:hidden">
+          <SourceBody
+            source={source as SourceRecord}
+            descriptor={descriptor}
+            onChange={onChange}
+            region={region}
+            label={label}
+          />
+        </div>
+      )}
     </div>
   );
 }

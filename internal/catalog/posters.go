@@ -133,7 +133,7 @@ func (c *Catalog) FillPosters(ctx context.Context, titles []core.Title, unknown 
 			pending = append(pending, i)
 		}
 	}
-	if len(pending) == 0 || c.tmdb() == nil {
+	if len(pending) == 0 || !c.TMDBConfigured() {
 		return
 	}
 	type found struct {
@@ -202,6 +202,9 @@ func (info posterInfo) applyTo(t *core.Title) {
 
 // lookupPoster asks TMDB for one title's poster and caches the answer.
 func (c *Catalog) lookupPoster(ctx context.Context, key core.RatingKey) (posterInfo, error) {
+	if key.Allocated() {
+		return posterInfo{}, core.ErrNotFound
+	}
 	slots := c.posters.slots()
 	queue := time.NewTimer(posterQueueWait)
 	defer queue.Stop()

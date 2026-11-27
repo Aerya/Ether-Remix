@@ -42,7 +42,14 @@ func (s *Service) LiveWindow(ctx context.Context, id string) (frontend.LiveWindo
 		return frontend.LiveWindow{}, core.ErrNotAvailable
 	}
 	end := latest.Start.Add(latest.Duration)
-	segments := index.Window(end.Add(-s.latencyPolicy().PlaylistWindow()), end)
+	if s.broadcastTimeshift(lease) > 0 {
+		first := index.Since(-1, 1)
+		if len(first) == 0 || first[0].Seq > latest.Seq {
+			return frontend.LiveWindow{}, core.ErrNotAvailable
+		}
+		return broadcastLiveWindow(ctx, lease, index, []transcode.Segment{first[0], latest})
+	}
+	segments := index.Window(s.broadcastWindowStart(lease, end), end)
 	return broadcastLiveWindow(ctx, lease, index, segments)
 }
 
@@ -81,15 +88,18 @@ func broadcastLiveWindow(ctx context.Context, lease *broadcastLease, index trans
 	if r.originErr != nil {
 		return frontend.LiveWindow{}, r.originErr
 	}
-	origin := b.anchorOrigin
-	if origin.IsZero() {
-		origin = r.origin
-	}
+	// Measure windowStartSeconds and liveEdgeSeconds from this rendition's own
+	// first published segment (r.origin), matching its media timestamps (fMP4
+	// tfdt / TS PTS) and DASH timelineOrigin. A replanned rendition continues
+	// mediaSequence monotonically via StartSeq, while its encoder starts media
+	// timestamps at 0.
+	origin := r.origin
 	first, last := segments[0], segments[len(segments)-1]
 	return frontend.LiveWindow{Anchor: frontend.LiveAnchor{MediaSequence: first.Seq, WindowStartSeconds: first.Start.Sub(origin).Seconds()}, LiveEdgeSeconds: last.Start.Add(last.Duration).Sub(origin).Seconds()}, nil
 }
 
 func (t *ownedTimeline) liveWindowLocked() (frontend.LiveWindow, error) {
+	t.trimWindowLocked()
 	if len(t.window) == 0 {
 		return frontend.LiveWindow{}, core.ErrNotAvailable
 	}

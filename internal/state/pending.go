@@ -35,7 +35,9 @@ type pendingWrites struct {
 }
 
 func newPendingWrites(s *State) *pendingWrites {
-	p := &pendingWrites{s: s, entries: make(map[progressKey]pendingWrite), wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
+	// Pending revisions may be embedded in durable row views. Start each
+	// queue with a fresh sequence range so a crash cannot revive an old one.
+	p := &pendingWrites{s: s, seq: uint64(time.Now().UnixNano()), entries: make(map[progressKey]pendingWrite), wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 	go p.run()
 	return p
 }
@@ -81,6 +83,12 @@ func (p *pendingWrites) put(k progressKey, w pendingWrite) error {
 	}
 	return nil
 }
+func (p *pendingWrites) latestAt(k progressKey) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.entries[k].progress.at
+}
+
 func (p *pendingWrites) snapshot(user int64, keys []core.RatingKey) map[core.RatingKey]pendingWrite {
 	p.mu.Lock()
 	defer p.mu.Unlock()

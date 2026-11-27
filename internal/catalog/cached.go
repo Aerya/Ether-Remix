@@ -10,8 +10,15 @@ import (
 
 // CachedTitle returns a mirrored title without contacting TMDB.
 func (c *Catalog) CachedTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	key, err := c.canonicalSourceKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	st, err := c.loadByKey(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.projectSingle(ctx, &st.t); err != nil {
 		return nil, err
 	}
 	return &st.t, nil
@@ -87,11 +94,11 @@ func (c *Catalog) RecentEpisodesMany(ctx context.Context, shows []core.RatingKey
 	return out, nil
 }
 
-// CachedTitles returns released, non-adult mirrored titles in requested order,
-// without refreshing remote metadata. Batch consumers such as recommendation
+// CachedTitles returns mirrored titles in requested order without refreshing.
+// Episode and season lookups also include upcoming rows. Batch consumers such as recommendation
 // builders use this to avoid one full hydration round trip per history entry.
 func (c *Catalog) CachedTitles(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
-	return c.titlesByKeys(ctx, keys)
+	return c.titlesByKeysMode(ctx, keys, true)
 }
 
 // ShowTrajectories computes season/episode rating trajectories for a batch of
@@ -326,7 +333,7 @@ func (c *Catalog) CachedDiscoveryEpisodes(ctx context.Context, shows []core.Rati
 // CachedGetMany applies CachedGet's visibility gates to bounded local reads.
 // Missing or hidden titles are omitted. It never refreshes or admits fallbacks.
 func (c *Catalog) cachedListVisible(t *core.Title) bool {
-	return !t.Adult && (c.upcomingMovie(t) || (t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
+	return !t.Adult && (c.upcomingMovie(t) || (selectedEpisodeReleased(t, c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
 }
 
 func (c *Catalog) cachedStoredEntry(key core.RatingKey, gen uint64, minute int64) (storedTitle, bool) {
@@ -433,7 +440,25 @@ func (c *Catalog) putSnapshotLocked(key core.RatingKey, gen uint64, minute int64
 }
 
 func (c *Catalog) CachedGetMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
-	return c.cachedGetMany(ctx, keys, true)
+	out, err := c.cachedGetMany(ctx, keys, true)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]core.Title, 0, len(out))
+	for _, item := range out {
+		items = append(items, item)
+	}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if c.cachedListVisible(&item) {
+			out[item.Key] = item
+		} else {
+			delete(out, item.Key)
+		}
+	}
+	return out, nil
 }
 
 // cachedGetMany reads local titles. reuse serves the minute snapshot, which a
@@ -441,13 +466,14 @@ func (c *Catalog) CachedGetMany(ctx context.Context, keys []core.RatingKey) (map
 // false so they hydrate the current credit rows and leave that snapshot alone.
 func (c *Catalog) cachedGetMany(ctx context.Context, keys []core.RatingKey, reuse bool) (map[core.RatingKey]core.Title, error) {
 	out := make(map[core.RatingKey]core.Title, len(keys))
+	projected := reuse && c.canProjectAlternateOrders()
 	gen := c.writeGen.Load()
 	minute := c.minuteBucket()
 	missing := make([]core.RatingKey, 0, len(keys))
 	for _, key := range keys {
 		if reuse {
 			if title, ok := c.cachedStored(key, gen, minute); ok {
-				if c.cachedListVisible(&title) {
+				if c.cachedListVisible(&title) || projected && (title.Type == core.TypeEpisode || title.Type == core.TypeSeason) {
 					out[key] = title
 				}
 				continue
@@ -492,7 +518,7 @@ func (c *Catalog) cachedGetMany(ctx context.Context, keys []core.RatingKey, reus
 		}
 		visible := make([]storedTitle, 0, len(items))
 		for i := range items {
-			if c.cachedListVisible(&items[i]) {
+			if c.cachedListVisible(&items[i]) || projected && (items[i].Type == core.TypeEpisode || items[i].Type == core.TypeSeason) {
 				out[items[i].Key] = items[i]
 				st := *stored[i]
 				st.t = items[i]
@@ -525,8 +551,9 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		}
 	}
 	localShow := func(key core.RatingKey, st *storedTitle) bool {
-		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || c.tmdb() == nil || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
+		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || !c.TMDBConfigured() || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
 	}
+	var local []core.Title
 	missing := make([]core.RatingKey, 0, len(keys))
 	seen := make(map[core.RatingKey]bool, len(keys))
 	for _, key := range keys {
@@ -536,12 +563,12 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		seen[key] = true
 		if st, ok := c.cachedStoredEntry(key, gen, minute); ok && st.metaKnown {
 			if localShow(key, &st) {
-				if !c.fresh(&st) && c.tmdb() != nil {
-					c.loadSeasonsLater(ctx, key.TMDB(), nil)
+				if !c.fresh(&st) && c.TMDBConfigured() && !key.Allocated() && st.t.IDs.TMDB > 0 {
+					c.loadSeasonsLater(ctx, st.t.IDs.TMDB, nil)
 					c.reportDetailPending(ctx, key)
 				}
 				if c.visibleTitle(&st.t) {
-					out[key] = st.t
+					local = append(local, st.t)
 				}
 				continue
 			}
@@ -586,8 +613,8 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		for _, key := range part {
 			st := stored[key]
 			if localShow(key, st) {
-				if !c.fresh(st) && c.tmdb() != nil {
-					c.loadSeasonsLater(ctx, key.TMDB(), nil)
+				if !c.fresh(st) && c.TMDBConfigured() && !key.Allocated() && st.t.IDs.TMDB > 0 {
+					c.loadSeasonsLater(ctx, st.t.IDs.TMDB, nil)
 					c.reportDetailPending(ctx, key)
 				}
 				warm = append(warm, st.t)
@@ -604,7 +631,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 			st.t = warm[i]
 			remember = append(remember, st)
 			if c.visibleTitle(&warm[i]) {
-				out[warm[i].Key] = warm[i]
+				local = append(local, warm[i])
 			}
 		}
 		if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); !deferred {
@@ -620,6 +647,12 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 				out[key] = *title
 			}
 		}
+	}
+	if err := c.ProjectEpisodeTitles(ctx, local); err != nil {
+		return nil, err
+	}
+	for _, title := range local {
+		out[title.Key] = title
 	}
 	return out, nil
 }

@@ -70,7 +70,10 @@ func (ls *liveSearch) add(s *Service, batch []core.Release) {
 	if ls == nil || len(batch) == 0 {
 		return
 	}
-	norm := s.normalizeSearchResults(ls.req, append([]core.Release(nil), batch...))
+	ls.mu.Lock()
+	req := ls.req
+	ls.mu.Unlock()
+	norm := s.normalizeSearchResults(req, append([]core.Release(nil), batch...))
 	if len(norm) == 0 {
 		return
 	}
@@ -86,6 +89,14 @@ func (ls *liveSearch) add(s *Service, batch []core.Release) {
 	ls.rev++
 	close(ls.changed)
 	ls.changed = make(chan struct{})
+	ls.mu.Unlock()
+}
+
+// retarget sets the request arriving batches are normalized for, before
+// the search that feeds ls starts.
+func (ls *liveSearch) retarget(req core.SearchRequest) {
+	ls.mu.Lock()
+	ls.req = req
 	ls.mu.Unlock()
 }
 

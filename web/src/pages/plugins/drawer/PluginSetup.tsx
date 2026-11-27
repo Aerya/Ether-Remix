@@ -9,7 +9,7 @@ import { SettingsRow } from "../../../components/SettingsRow";
 import { t } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { ApiError, apiFetch, errorMessage } from "../../../lib/api";
-import { SchemaGroups } from "../../settings/SchemaForm";
+import { SchemaGroups, type SearchOptions } from "../../settings/SchemaForm";
 import {
   FolderGrantsPicker,
   LocalHostGrantsPicker,
@@ -48,7 +48,9 @@ export function PluginSetup({
   const { locale } = useLocale();
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [schema, setSchema] = useState<Record<string, unknown>>({});
-  const [options, setOptions] = useState<Record<string, { value: string; label: string }[]>>({});
+  const [options, setOptions] = useState<
+    Record<string, { value: string; label: string; hint?: string }[]>
+  >({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -69,8 +71,10 @@ export function PluginSetup({
       const entries = await Promise.all(
         fields.map(async (field) => {
           try {
-            const r = await apiFetch<{ options: { value: string; label: string }[] }>(
-              `/plugins/${encodeURIComponent(id)}/options/${encodeURIComponent(field)}`,
+            const r = await apiFetch<{
+              options: { value: string; label: string; hint?: string }[];
+            }>(
+              `/plugins/${encodeURIComponent(id)}/options/${encodeURIComponent(field)}?locale=${encodeURIComponent(locale)}`,
             );
             return [field, r.options ?? []] as const;
           } catch {
@@ -85,8 +89,25 @@ export function PluginSetup({
       setLoaded(true);
     }
   }, [id, locale]);
+  const searchOptions = useCallback<SearchOptions>(
+    async (field, query, signal) => {
+      const r = await apiFetch<{
+        options?: { value: string; label: string; hint?: string }[];
+      }>(
+        `/plugins/${encodeURIComponent(id)}/options/${encodeURIComponent(field)}?q=${encodeURIComponent(query)}&locale=${encodeURIComponent(locale)}`,
+        { signal },
+      );
+      return (r.options ?? []).map((o) => ({
+        value: String(o.value),
+        label: String(o.label),
+        description: o.hint,
+      }));
+    },
+    [id, locale],
+  );
   useEffect(() => {
     setLoaded(false);
+    setOptions({});
     setFieldErrors({});
     setTest({ status: "idle" });
     void load();
@@ -186,9 +207,11 @@ export function PluginSetup({
     (detail.pendingOperatorHosts?.length ?? 0) > 0,
   );
   const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
-  const hasRuntimeLimits = Boolean(
+  const hasRuntime = Boolean(
     detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data",
   );
+  // Plugins with lists have a list size the owner can change, even plain add-ons.
+  const hasRuntimeLimits = hasRuntime || Boolean(detail.listItems);
   // Updates come from where the plugin was installed; Studio builds and
   // add-ons that always follow their link have nothing to auto-update.
   const updatable = detail.sourceKind !== "studio" && !detail.stremioOnly;
@@ -225,6 +248,7 @@ export function PluginSetup({
           onChange={setDraft}
           errors={fieldErrors}
           prefix="settings"
+          searchOptions={searchOptions}
           footer={
             <div className="flex w-full flex-wrap items-center justify-between gap-2">
               <TestButton state={test} onTest={() => void runTest()} />
@@ -336,6 +360,8 @@ export function PluginSetup({
                     requested={detail.manifest.ether?.runtime?.limits}
                     storedItems={detail.impact.items}
                     maxItems={detail.impact.maxItems}
+                    listItems={detail.listItems}
+                    listsOnly={!hasRuntime}
                     hasMediaKinds={Boolean(detail.manifest.ether?.contributes?.mediaKinds?.length)}
                     flush
                     onSaved={() => {

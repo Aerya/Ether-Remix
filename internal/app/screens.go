@@ -18,29 +18,15 @@ import (
 )
 
 func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
-	reg := screens.NewRegistry(screens.RegistryOptions{
-		IsPublished: func(_ context.Context, _, _, frontendID string) bool {
-			return a.screenFrontendPublished(frontendID)
-		},
-		IsViewerAllowed: func(ctx context.Context, viewer *core.User, pluginID, _ string) bool {
-			return a.screenPluginViewerAllowed(ctx, mgr, viewer, pluginID)
-		},
-	})
 	svc := screens.NewService(screens.ServiceOptions{
-		Registry:  reg,
 		Hub:       pluginLiveFeedBridge{mgr: mgr},
 		Favorites: appFavoriteEntities{app: a},
 		Now:       time.Now,
+		Documents: a.buildDocRegistry(mgr),
 	})
-	mgr.OnSync(func(ctx context.Context, r plugins.Record) {
-		reg.Sync(r, func(key string) string {
-			text, _ := mgr.ResolveText(ctx, r.ID, key, "en")
-			return text
-		})
-	})
-	mgr.OnRemove(func(_ context.Context, id string) {
-		reg.Remove(id)
-	})
+	svc.SetPluginCaller(screenPluginCaller{mgr: mgr})
+	svc.SetItemFinder(screenItemFinder{app: a})
+	mgr.SetScreenPush(screenPushes{svc: svc})
 	return svc
 }
 
@@ -356,76 +342,16 @@ func (s surfaceScreens) Generation() uint64 {
 	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil {
 		return 0
 	}
-	return s.app.pluginsRT.screens.Generation()
+	return s.app.pluginsRT.screens.Documents().Generation()
 }
 
-func (s surfaceScreens) Navigation(ctx context.Context, viewer *frontend.Viewer) ([]frontend.NavigationScreen, error) {
-	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
-		return nil, nil
-	}
-	items, err := s.app.pluginsRT.screens.Navigation(ctx, viewer, s.surface)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]frontend.NavigationScreen, len(items))
-	for i, item := range items {
-		out[i] = frontend.NavigationScreen{
-			Kind:  item.Kind,
-			ID:    item.ID,
-			Title: item.Title,
-			Icon:  item.Icon,
-		}
-	}
-	return out, nil
-}
-
-func (s surfaceScreens) ResolveScreen(ctx context.Context, viewer *frontend.Viewer, id, league, date string) (json.RawMessage, error) {
-	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
-		return nil, frontend.ErrNotFound
-	}
-	resolved, err := s.app.pluginsRT.screens.Resolve(ctx, viewer, screens.ResolveRequest{
-		FrontendID: s.surface,
-		ScreenID:   id,
-		League:     league,
-		Date:       date,
-	})
-	if err != nil {
-		if errors.Is(err, screens.ErrInvalidDate) {
-			return nil, frontend.ErrInvalidScreenDate
-		}
-		return nil, err
-	}
-	b, err := json.Marshal(resolved)
-	if err != nil {
-		return nil, err
-	}
-	return json.RawMessage(b), nil
-}
-
-func (s surfaceScreens) QueryEntities(ctx context.Context, viewer *frontend.Viewer, feed, kind, league, q string) (json.RawMessage, error) {
-	if s.app == nil || s.app.pluginsRT == nil || s.app.pluginsRT.screens == nil || viewer == nil {
-		return nil, frontend.ErrNotFound
-	}
-	res, err := s.app.pluginsRT.screens.QueryEntities(ctx, viewer, s.surface, feed, kind, league, q)
-	if err != nil {
-		if errors.Is(err, screens.ErrFeedNotFound) {
-			return nil, frontend.ErrNotFound
-		}
-		return nil, err
-	}
-	b, err := json.Marshal(res)
-	if err != nil {
-		return nil, err
-	}
-	return json.RawMessage(b), nil
-}
-
+// SetFavoriteEntity sets or clears one entity favourite (ether.favorite).
 func (s surfaceScreens) SetFavoriteEntity(ctx context.Context, viewer *frontend.Viewer, key string, on bool) error {
 	if s.app == nil || s.app.favorites == nil || viewer == nil {
 		return frontend.ErrNotFound
 	}
 	if _, ok := favorites.ParseEntityKey(key); !ok {
-		return frontend.ErrInvalidEntityKey
+		return frontend.ErrScreenParams
 	}
 	_, err := s.app.favorites.Set(ctx, viewer, favorites.Subject{Kind: favorites.KindEntity, ID: key}, on)
 	if errors.Is(err, favorites.ErrForbidden) {

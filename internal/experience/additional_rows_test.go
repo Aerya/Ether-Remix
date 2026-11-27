@@ -217,3 +217,59 @@ func TestAdditionalRowsMatchesLegacyCallsAndResults(t *testing.T) {
 		})
 	}
 }
+
+type failingLiveFake struct{ err error }
+
+func (f failingLiveFake) AllowedChannels(context.Context, *core.User) ([]livetv.Channel, error) {
+	return nil, f.err
+}
+func (f failingLiveFake) Guide(context.Context, *core.User, time.Time, time.Time) ([]livetv.Programme, error) {
+	return nil, f.err
+}
+
+func TestAdditionalRowsSkipsUnavailableLiveRow(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	items := []core.Title{{Key: core.MovieKey(2)}}
+	for _, tc := range []struct {
+		name    string
+		liveErr error
+		wantErr bool
+	}{
+		{name: "preparing", liveErr: &core.PreparingError{RetryAfter: 2 * time.Second, Err: core.ErrNotAvailable}},
+		{name: "not_available", liveErr: core.ErrNotAvailable},
+		{name: "unexpected", liveErr: errors.New("db broke"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := []string{}
+			var limits []int
+			c := AdditionalRows{
+				Playlists: additionalPlaylistFake{calls: &calls},
+				Watchlist: additionalDiscoveryFake{name: "watchlist", calls: &calls, limits: &limits, items: items},
+				Live:      failingLiveFake{err: tc.liveErr},
+				Now:       func() time.Time { return now },
+			}
+			rows, err := c.Rows(context.Background(), frontend.RowRequest{
+				Viewer:    &core.User{ID: 1, IsOwner: true},
+				Placement: frontend.PlacementHome,
+				Limit:     4,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected unexpected live error to propagate")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("transient live unavailability broke Home rows: %v", err)
+			}
+			if len(rows) == 0 {
+				t.Fatal("expected non-live Home rows to remain")
+			}
+			for _, row := range rows {
+				if row.Purpose == frontend.RowLive {
+					t.Fatalf("unexpected live row on transient error: %+v", row)
+				}
+			}
+		})
+	}
+}

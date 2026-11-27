@@ -52,6 +52,11 @@ func validatePlaybackConfig(c config.Config) []admin.FieldError {
 	default:
 		errs = append(errs, admin.FieldError{Field: "resolver.hardSubtitles", Message: "must be empty, exclude or allow"})
 	}
+	if sv := c.Resolver.SourceVersions; sv != nil {
+		if path := sv.Invalid(); path != "" {
+			errs = append(errs, admin.FieldError{Field: "resolver.sourceVersions." + path, Message: "must be offer, required or off"})
+		}
+	}
 	if _, err := resolver.NewFormatScorer(c.Resolver.CustomFormats); err != nil {
 		errs = append(errs, admin.FieldError{Field: "resolver.customFormats", Message: err.Error()})
 	}

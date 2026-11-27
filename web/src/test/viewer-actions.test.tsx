@@ -79,7 +79,9 @@ describe("Viewer Actions menu", () => {
     const { fake } = renderApp("/viewers/2/overview");
     await openActions();
     await pick("Reset password");
-    expect(screen.getByLabelText("Username").tagName).not.toBe("INPUT");
+    // The viewer already signs in as "sam": the reset keeps that name, no picking.
+    await waitFor(() => expect(screen.getByLabelText("Username")).toHaveValue("sam"), WAIT);
+    expect(screen.getByLabelText("Username")).toHaveAttribute("readonly");
     fireEvent.change(await screen.findByLabelText("New password", {}, WAIT), {
       target: { value: "a-long-enough-password" },
     });
@@ -91,6 +93,37 @@ describe("Viewer Actions menu", () => {
     await waitFor(() => expect(calls(fake, "POST", "/users/2/password")).toHaveLength(1), WAIT);
     expect(calls(fake, "POST", "/users/2/password")[0]!.body).toEqual({
       username: "sam",
+      password: "a-long-enough-password",
+    });
+  });
+
+  it("lets the owner type a username for a viewer without a local sign-in", async () => {
+    const { fake } = renderApp("/viewers/2/overview", {}, (f) => {
+      const real = f.fetch;
+      f.fetch = (input, init) =>
+        String(input instanceof Request ? input.url : input).includes("/users/2/identities")
+          ? Promise.resolve(
+              new Response(JSON.stringify({ identities: [] }), {
+                headers: { "Content-Type": "application/json" },
+              }),
+            )
+          : real(input, init);
+    });
+    await openActions();
+    await pick("Reset password");
+    const name = await screen.findByLabelText("Username", {}, WAIT);
+    expect(name).not.toHaveAttribute("readonly");
+    fireEvent.change(name, { target: { value: " sam-r " } });
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "a-long-enough-password" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), {
+      target: { value: "a-long-enough-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Set or reset password" }));
+    await waitFor(() => expect(calls(fake, "POST", "/users/2/password")).toHaveLength(1), WAIT);
+    expect(calls(fake, "POST", "/users/2/password")[0]!.body).toEqual({
+      username: "sam-r",
       password: "a-long-enough-password",
     });
   });

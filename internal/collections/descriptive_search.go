@@ -351,7 +351,7 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 	stage := "draft"
 	var draftDuration, candidateDuration, scoringDuration time.Duration
 	publish := func(spec *core.CollectionSpec, items []core.Title) {
-		if ctx.Err() != nil || len(items) == 0 {
+		if ctx.Err() != nil || len(items) == 0 || (spec != nil && describesNothing(*spec)) {
 			return
 		}
 		result := core.DescriptiveResult{State: "partial", RetryAfterSeconds: 2, Items: slices.Clone(items)}
@@ -371,13 +371,24 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 	spec, err := s.describeSpec(ctx, key, query, publish)
 	draftDuration = time.Since(started)
 	result := core.DescriptiveResult{State: "failed"}
+	if errors.Is(err, core.ErrNothingDescribed) {
+		// Nothing to match: a finished answer with no titles.
+		result.State, err = "ready", nil
+		spec = &core.CollectionSpec{Name: query, Sources: []core.CollectionSource{{Kind: "catalog"}}}
+	}
 	if err == nil {
 		stage = "candidates"
 		candidatesStarted := time.Now()
 		// The console's collection_draft uses Preview too: preserve its source
 		// handling, rule evaluation, exclusions, ordering and spec limit.
 		var preview *core.CollectionPreview
-		preview, err = s.Preview(core.WithoutCatalogViewer(ctx), *spec, 200)
+		if describesNothing(*spec) {
+			// The agent found nothing the words describe ("zxqvjk"): an
+			// unconstrained draft would list the whole catalogue.
+			preview = &core.CollectionPreview{}
+		} else {
+			preview, err = s.Preview(core.WithoutCatalogViewer(ctx), *spec, 200)
+		}
 		if err == nil {
 			result.Items = preview.Items
 		}
@@ -448,3 +459,18 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 }
 
 var _ core.DescriptiveSearchController = (*Service)(nil)
+
+// describesNothing reports a drafted spec that constrains nothing: no rule
+// and no source beyond the whole catalogue. A description search answers
+// such a draft with no titles rather than the catalogue's most popular.
+func describesNothing(spec core.CollectionSpec) bool {
+	if len(spec.Rules) > 0 {
+		return false
+	}
+	for _, src := range spec.Sources {
+		if src.Kind != "catalog" {
+			return false
+		}
+	}
+	return true
+}

@@ -140,3 +140,8 @@ type HomeRowBudgetSource interface {
 type PlaylistHeaderLister interface {
 	ListHeaders(context.Context, int64) ([]Playlist, error)
 }
+
+// ProviderIDKeyReader resolves stored provider identifiers to title keys.
+type ProviderIDKeyReader interface {
+	KeysByProviderID(context.Context, string, string, []MediaType) ([]RatingKey, error)
+}

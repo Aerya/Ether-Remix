@@ -10,6 +10,8 @@ export interface PageSectionMeta {
   key: string;
   label: ExtendText;
   keywords?: ExtendText;
+  /** Where ⌘K lands when the section is not a tab of its own. */
+  href?: string;
 }
 
 export interface PageMeta {
@@ -59,7 +61,18 @@ export function searchTextOf(text?: ExtendText): string | undefined {
   return resolved || undefined;
 }
 
-const NAV_GROUPS = new Set(["", "library", "streaming", "server"]);
+/** The sidebar group holding the server's own pages. */
+export const SYSTEM_NAV_GROUP = "system";
+
+/**
+ * The sidebar groups a plugin page may declare. Connect, Automate and System
+ * are for built-in pages; a plugin's "server" lands in System.
+ */
+const PLUGIN_NAV_GROUPS: Record<string, string> = {
+  library: "library",
+  streaming: "streaming",
+  server: SYSTEM_NAV_GROUP,
+};
 
 /**
  * The sidebar group for a plugin page descriptor, when it declares one.
@@ -68,12 +81,10 @@ const NAV_GROUPS = new Set(["", "library", "streaming", "server"]);
  * group on `meta.group` (or `meta.navGroup`).
  */
 export function pluginNavGroup(d: Descriptor<PageMeta>): string | undefined {
-  const meta = d.meta;
-  const candidate = meta?.navGroup || meta?.group || d.group;
+  const candidate = d.meta?.navGroup || d.meta?.group || d.group;
   // Plugins never join the unlabelled top group above Overview.
   if (!candidate) return undefined;
-  if (meta?.navGroup || meta?.group) return candidate;
-  return NAV_GROUPS.has(candidate) ? candidate : "server";
+  return PLUGIN_NAV_GROUPS[candidate] ?? SYSTEM_NAV_GROUP;
 }
 
 /** The console route a page descriptor opens. */

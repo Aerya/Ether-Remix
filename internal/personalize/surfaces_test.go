@@ -210,8 +210,9 @@ func TestDedupeHomeSwitch(t *testing.T) {
 
 	on := preview(t, h, u, hc, "library:1")
 	off := false
-	draft := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", DedupeHome: &off, Rows: []core.RowPolicy{}}}}
-	offP, err := h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, draft)
+	draft := rpage(libPage(1))
+	draft.SkipHome = &off
+	offP, err := previewDraft(h.e, ctx, &u, hc, "library:1", 12, draft)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,14 +240,14 @@ func TestDedupeHomeSwitch(t *testing.T) {
 	if count(offP) < count(on) || count(offP) < 5 {
 		t.Fatalf("switching dedupe off should bring Home lead titles back: on %d off %d", count(on), count(offP))
 	}
-	// A viewer page overrides the global switch.
-	vdraft := core.HomeLayout{Global: draft.Global, Viewers: []core.ViewerLayout{{UserID: u.ID, Pages: []core.LayoutPage{{Section: "library:1", DedupeHome: boolPtr(true), Rows: []core.RowPolicy{}}}}}}
-	vp, err := h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, vdraft)
+	// Back on, the page skips Home's titles again.
+	draft.SkipHome = boolPtr(true)
+	vp, err := previewDraft(h.e, ctx, &u, hc, "library:1", 12, draft)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if vp.HomeDeduped == 0 {
-		t.Fatal("viewer page DedupeHome=true did not override the global page")
+		t.Fatal("SkipHome=true did not skip Home's titles")
 	}
 	// The production path dedupes the same way, deterministically.
 	hubs, _ := h.e.SectionCandidatesFor(ctx, &u, core.TypeMovie, hc, 12)
@@ -312,7 +313,6 @@ func TestDedupeBeforeTruncation(t *testing.T) {
 	page := func(pageLen int) []core.HomeRow {
 		return run(m, func(a *assembly) {
 			a.pageLen = pageLen
-			a.layout = &core.HomeLayout{}
 			for _, c := range m.rows {
 				c.scale = scores[c.id]
 			}
@@ -328,7 +328,7 @@ func TestDedupeBeforeTruncation(t *testing.T) {
 	if nt == nil || len(nt.Items) != 6 {
 		t.Fatalf("a surviving row lost titles to a cut row: %v", kindsOf(rows))
 	}
-	final := arrangeLayout(rows, core.HomeLayout{}, 1, hubContext(testNow, core.DeviceTV), "home", 2)
+	final := arrangePage(rows, nil, 1, hubContext(testNow, core.DeviceTV), 2)
 	var shown []string
 	for _, r := range final {
 		if !r.Hidden {
@@ -349,7 +349,7 @@ func TestDedupeBeforeTruncation(t *testing.T) {
 
 func TestSurvivorsReserveSectionFrontEndRows(t *testing.T) {
 	cat := newFakeCatalog(testNow)
-	a := &assembly{section: core.TypeMovie, hc: hubContext(testNow, core.DeviceTV), pageLen: 4, layout: &core.HomeLayout{}, user: core.User{ID: 1}}
+	a := &assembly{section: core.TypeMovie, hc: hubContext(testNow, core.DeviceTV), pageLen: 4, user: core.User{ID: 1}}
 	var sel []*rankedRow
 	for i, kind := range []string{KindTasteCluster, KindAcclaimed, KindEra, KindWorld} {
 		c := testRow(kind, kind, items(cat, movieKey(i, 1)))
@@ -454,7 +454,7 @@ func TestTuningDialsMoveOutcomes(t *testing.T) {
 	m := h.rebuild(u)
 	at := func(section core.MediaType, tu tuning) []core.HomeRow {
 		a := &assembly{model: m, user: u, hc: hubContext(testNow, core.DeviceTV), section: section, limit: 12,
-			global: map[string]arm{}, day: dayOf(testNow, time.UTC), maxRows: 100, tune: &tu, layout: &core.HomeLayout{}, pageLen: 16}
+			global: map[string]arm{}, day: dayOf(testNow, time.UTC), maxRows: 100, tune: &tu, pageLen: 16}
 		return a.run()
 	}
 	mean := func(rows []core.HomeRow, f func(*core.Title) float64) float64 {
@@ -551,120 +551,37 @@ func TestTuningDialsMoveOutcomes(t *testing.T) {
 	}
 }
 
-func TestResolveTuningPrecedence(t *testing.T) {
-	d := core.HomeLayout{
-		Global: []core.LayoutPage{{Section: "library:1", Tuning: &core.LayoutTuning{Discovery: floatPtr(0.9), Freshness: floatPtr(0.2)}}},
-		Viewers: []core.ViewerLayout{{UserID: 3, Pages: []core.LayoutPage{{Section: "library:1",
-			Tuning: &core.LayoutTuning{Freshness: floatPtr(0.7), Variety: floatPtr(0)}}}}},
+func TestResolveTuningFromPage(t *testing.T) {
+	p := rpage(libPage(1))
+	p.Tuning = &core.PageTuning{Discovery: floatPtr(0.9), Freshness: floatPtr(0.2)}
+	got := resolveTuning(compilePage(p, true, 3, nil))
+	if got != (tuning{0.9, 0.2, 0.5}) {
+		t.Fatalf("page dials, default variety: %+v", got)
 	}
-	got := resolveTuning(d, 3, "library:1")
-	if got != (tuning{0.9, 0.7, 0}) {
-		t.Fatalf("viewer → global → default: %+v", got)
+	if got := resolveTuning(compilePage(rpage(core.PageHome), true, 3, nil)); got != defaultTuning {
+		t.Fatalf("no dials: %+v", got)
 	}
-	if got := resolveTuning(d, 4, "library:1"); got != (tuning{0.9, 0.2, 0.5}) {
-		t.Fatalf("global only: %+v", got)
+	if !compilePage(p, true, 3, nil).skipHome() {
+		t.Fatal("library pages skip Home's titles by default")
 	}
-	if got := resolveTuning(d, 3, "home"); got != defaultTuning {
-		t.Fatalf("other page: %+v", got)
-	}
-	if !resolveDedupeHome(d, 3, "library:1") || resolveDedupeHome(d, 3, "home") {
-		t.Fatal("DedupeHome defaults: on for sections, never Home")
-	}
-	// The dials key the memo.
-	if resolveTuning(d, 3, "library:1").key() == resolveTuning(d, 4, "library:1").key() {
+	if resolveTuning(compilePage(p, true, 3, nil)).key() == defaultTuning.key() {
 		t.Fatal("tuning memo key")
 	}
 }
 
-func TestLayoutValidatesDedupeAndTuning(t *testing.T) {
-	bad := core.HomeLayout{
-		Global: []core.LayoutPage{
-			{Section: "home", DedupeHome: boolPtr(false)},
-			{Section: "library:1", Tuning: &core.LayoutTuning{Discovery: floatPtr(1.5), Variety: floatPtr(2)}},
-		},
-		Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "library:2", Tuning: &core.LayoutTuning{Freshness: floatPtr(-0.1)}}}}},
-	}
-	_, err := normalizeHomeLayout(bad)
-	ve, ok := err.(*ValidationError)
-	if !ok {
-		t.Fatalf("err = %v", err)
-	}
-	want := map[string]bool{"layout.global[0].dedupeHome": true, "layout.global[1].tuning.discovery": true,
-		"layout.global[1].tuning.variety": true, "layout.viewers[0].pages[0].tuning.freshness": true}
-	for _, p := range ve.Problems {
-		delete(want, p.Field)
-	}
-	if len(want) > 0 {
-		t.Fatalf("missing problems %v in %v", want, ve.Problems)
-	}
-	// NaN (which JSON cannot carry) is rejected too.
-	if _, err := normalizeHomeLayout(core.HomeLayout{Global: []core.LayoutPage{{Section: "library:2", Tuning: &core.LayoutTuning{Variety: floatPtr(math.NaN())}}}}); err == nil {
-		t.Fatal("NaN tuning accepted")
-	}
-	good := core.HomeLayout{
-		Global:  []core.LayoutPage{{Section: "library:1", DedupeHome: boolPtr(false), Tuning: &core.LayoutTuning{Discovery: floatPtr(0), Variety: floatPtr(1)}}, {Section: "library:2", Tuning: &core.LayoutTuning{}}},
-		Viewers: []core.ViewerLayout{{UserID: 2, Pages: []core.LayoutPage{{Section: "home", Tuning: &core.LayoutTuning{Freshness: floatPtr(0.8)}}}}},
-	}
-	d, err := normalizeHomeLayout(good)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if *d.Global[0].DedupeHome || *d.Global[0].Tuning.Variety != 1 || d.Global[1].Tuning != nil || *d.Viewers[0].Pages[0].Tuning.Freshness != 0.8 {
-		t.Fatalf("normalized = %+v", d)
-	}
-	// It persists through the engine.
+func TestPageValidatesTuningAndPersists(t *testing.T) {
 	h := newHarness(t, nil)
-	saved, err := h.e.SetHomeLayout(context.Background(), good)
-	if err != nil || saved.Global[0].DedupeHome == nil || *saved.Global[0].Tuning.Discovery != 0 {
+	bad := rpage(libPage(1))
+	bad.Tuning = &core.PageTuning{Discovery: floatPtr(1.5)}
+	if _, err := h.e.SavePage(context.Background(), bad); err == nil {
+		t.Fatal("out-of-range dial accepted")
+	}
+	good := rpage(libPage(1))
+	good.SkipHome = boolPtr(false)
+	good.Tuning = &core.PageTuning{Discovery: floatPtr(0), Variety: floatPtr(1)}
+	saved, err := h.e.SavePage(context.Background(), good)
+	if err != nil || saved.SkipHome == nil || *saved.SkipHome || *saved.Tuning.Discovery != 0 || *saved.Tuning.Variety != 1 {
 		t.Fatalf("saved = %+v %v", saved, err)
-	}
-}
-
-func TestAvailableRowsSectionsAndGroups(t *testing.T) {
-	h := newHarness(t, nil)
-	h.e.SetExtraHomeRows(func(_ context.Context, _ *core.User, _ core.HubContext, section string, _ int) []core.Hub {
-		out := []core.Hub{{ID: "watchlist.coming", Title: "Waiting for a stream"}}
-		if section == "home" {
-			out = append(out, core.Hub{ID: "live.onnow", Title: "On Now"})
-		}
-		return out
-	})
-	rows, err := h.e.AvailableRows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	by := map[string]core.RowDescriptor{}
-	for _, r := range rows {
-		if len(r.Sections) == 0 || r.Group == "" {
-			t.Errorf("%s lacks sections/group: %+v", r.HubID, r)
-		}
-		by[r.HubID] = r
-	}
-	has := func(id string, secs ...string) {
-		t.Helper()
-		got := strings.Join(by[id].Sections, ",")
-		if got != strings.Join(secs, ",") {
-			t.Errorf("%s sections = %q, want %q", id, got, strings.Join(secs, ","))
-		}
-	}
-	has(KindRecentlyAdded, "movies", "shows") // never offered for Home
-	has(KindPlaylists, "home")
-	has(KindNewSeasons, "home", "shows")
-	has(KindEra, "home", "movies")
-	has(KindTop10, "home", "movies", "shows")
-	has(KindTopRated, "home", "movies", "shows")
-	has("watchlist.coming", "home", "movies", "shows")
-	has("live.onnow", "home")
-	for id, group := range map[string]string{KindContinue: groupPlex, KindTop10: groupPicks, KindTasteCluster: groupExplore,
-		KindBinge: groupShows, KindPopularServer: groupHousehold, "live.onnow": groupPlex} {
-		if by[id].Group != group {
-			t.Errorf("%s group = %q, want %q", id, by[id].Group, group)
-		}
-	}
-	for _, k := range kinds {
-		if _, ok := by[k.kind]; !ok {
-			t.Errorf("kind %s not offered", k.kind)
-		}
 	}
 }
 
@@ -676,8 +593,8 @@ func TestOwnerPolicyPlacesLensOnHome(t *testing.T) {
 	sciFiFan(h, u.ID)
 	h.rebuild(u)
 	hc := hubContext(testNow, core.DeviceTV)
-	d := core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindFranchise, Status: "eligible"}, {Row: KindTasteCluster, Status: "always", Slot: 3}}}}}
-	p, err := h.e.PreviewLayout(ctx, &u, hc, "home", 12, d)
+	d := rpage(core.PageHome, prow(KindFranchise, core.PlacementAuto, 0), prow(KindTasteCluster, core.PlacementPinned, 3))
+	p, err := previewDraft(h.e, ctx, &u, hc, "home", 12, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,11 +602,11 @@ func TestOwnerPolicyPlacesLensOnHome(t *testing.T) {
 		t.Fatalf("an owner can place a lens on Home:\n%s", describe(p.Rows))
 	}
 	if rowByKind(p.Rows, KindFranchise) == nil {
-		t.Fatalf("an eligible policy admits the franchise row on Home: %v", kindsOf(p.Rows))
+		t.Fatalf("an Auto row admits the franchise row on Home: %v", kindsOf(p.Rows))
 	}
 	// A row that does not fit a page stays off it whatever the policy.
-	d = core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", Rows: []core.RowPolicy{{Row: KindAiringToday, Status: "always"}}}}}
-	p, _ = h.e.PreviewLayout(ctx, &u, hc, "library:1", 12, d)
+	d = rpage(libPage(1), prow(KindAiringToday, core.PlacementShow, 0))
+	p, _ = previewDraft(h.e, ctx, &u, hc, "library:1", 12, d)
 	if r := rowByKind(p.Rows, KindAiringToday); r != nil && len(r.Items) > 0 {
 		t.Fatalf("Airing Today on Movies: %+v", r)
 	}
@@ -738,4 +655,39 @@ func discoveryKeys(rows []core.HomeRow) map[core.RatingKey]bool {
 		}
 	}
 	return pageKeys(rest, 12)
+}
+
+func TestSurfaceRowCarriesPluginName(t *testing.T) {
+	h := newHarness(t, nil)
+	h.e.opts.Surfaces = func(context.Context) []core.SurfaceInfo {
+		return []core.SurfaceInfo{
+			{Plugin: "org.ether.sports", PluginName: "Sports", ID: "tonight", WireID: "sports.tonight", Title: "Tonight's Games"},
+		}
+	}
+	u := core.User{ID: 1, Username: "mia", IsOwner: true}
+	h.users.users = []core.User{u}
+	page := rpage(core.PageHome, core.Row{
+		ID:        "rsports01",
+		Source:    core.RowSource{Kind: SourceSurface, Params: map[string]string{"surface": "org.ether.sports:tonight"}},
+		Placement: core.RowPlacement{Mode: core.PlacementShow},
+	})
+	page.Mode = core.PageCurated
+	mustSavePage(t, h.e, page)
+	p, err := h.e.PreviewPage(context.Background(), &u, core.PageHome, core.PagePreviewRequest{Device: core.DeviceTV})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *core.RowSurface
+	for _, r := range p.Rows {
+		if r.Kind == SourceSurface && r.Present.Surface != nil {
+			found = r.Present.Surface
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("surface row not present in preview: %+v", p.Rows)
+	}
+	if found.Plugin != "org.ether.sports" || found.PluginName != "Sports" || found.Surface != "sports.tonight" {
+		t.Fatalf("surface = %+v, want plugin=org.ether.sports pluginName=Sports surface=sports.tonight", found)
+	}
 }

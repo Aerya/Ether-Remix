@@ -24,15 +24,15 @@ func TestPSEThemePresetsValidate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s / %s : %v", p.ID, sp.Name, err)
 			}
-			if !got.Targets.CollectionsTab || got.Targets.HomeRow || got.Targets.SectionRow {
-				t.Fatalf("%s / %s publiée : %+v", p.ID, sp.Name, got.Targets)
+			if !got.BrowseInApps {
+				t.Fatalf("%s / %s publiée : %+v", p.ID, sp.Name, got)
 			}
 			_ = e.svc.PSEKeys(ctx, got.ID, nil)
 		}
 	}
 	hidden := themes.PresetSpecs("services")[0]
 	hidden.Name, hidden.Sources = "Tout le catalogue", []core.CollectionSource{{Kind: "catalog"}}
-	hidden.Targets.CollectionsTab = false
+	hidden.BrowseInApps = false
 	got, err := e.svc.CreateSpec(ctx, hidden)
 	if err != nil {
 		t.Fatal(err)

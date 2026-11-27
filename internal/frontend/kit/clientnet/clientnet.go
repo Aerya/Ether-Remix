@@ -229,7 +229,7 @@ func peerAddr(r *http.Request) (netip.Addr, bool) {
 	if err != nil {
 		return netip.Addr{}, false
 	}
-	return peer.Unmap(), true
+	return peer.Unmap().WithZone(""), true
 }
 
 func isTrustedAddr(ip netip.Addr, trusted []netip.Prefix) bool {
@@ -264,6 +264,7 @@ func ClientNet(r *http.Request, trusted ...netip.Prefix) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	if !isTrustedAddr(peer, trusted) {
+		noteUntrustedForwarder(r, peer)
 		return peer, LAN(peer)
 	}
 	var hops []string
@@ -302,7 +303,7 @@ func ClientNet(r *http.Request, trusted ...netip.Prefix) (netip.Addr, bool) {
 		if e != nil {
 			return netip.Addr{}, false
 		}
-		ip = ip.Unmap()
+		ip = ip.Unmap().WithZone("")
 		if isTrustedAddr(ip, trusted) {
 			lastTrusted = ip
 			continue
@@ -345,12 +346,48 @@ func ParseProxyEntry(raw string) (netip.Prefix, error) {
 	return netip.Prefix{}, errors.New("enter an IP address or CIDR range (for example 192.168.1.5 or 10.0.0.0/8)")
 }
 
-// ProxyPrefixes parses configured proxy IPs and networks. Invalid entries grant no trust.
-func ProxyPrefixes(cidrs []string) []netip.Prefix {
+// ProxyPrefixes parses configured proxy IPs and networks and resolves proxy
+// names. All initial lookups share a single bounded wait. Later lookups refresh
+// asynchronously on use.
+func ProxyPrefixes(entries []string) []netip.Prefix {
 	var out []netip.Prefix
-	for _, raw := range cidrs {
+	type pendingHost struct {
+		entry *proxyHostEntry
+		ready <-chan struct{}
+	}
+	var hosts []pendingHost
+	for _, raw := range entries {
 		if p, err := ParseProxyEntry(raw); err == nil {
 			out = append(out, p)
+		} else if name, ok := proxyHostName(raw); ok {
+			entry, ready := startProxyHost(name)
+			hosts = append(hosts, pendingHost{entry, ready})
+		}
+	}
+	if len(hosts) == 0 {
+		return out
+	}
+	var wait *time.Timer
+initial:
+	for _, host := range hosts {
+		if host.ready != nil {
+			if wait == nil {
+				wait = time.NewTimer(proxyLookupBudget)
+				defer wait.Stop()
+			}
+			select {
+			case <-host.ready:
+			case <-wait.C:
+				break initial
+			}
+		}
+	}
+	proxyHosts.mu.Lock()
+	defer proxyHosts.mu.Unlock()
+	now := time.Now()
+	for _, host := range hosts {
+		if now.Before(host.entry.staleUntil) {
+			out = append(out, host.entry.prefixes...)
 		}
 	}
 	return out

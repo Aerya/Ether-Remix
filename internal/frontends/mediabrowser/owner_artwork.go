@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"net/http"
@@ -29,6 +30,10 @@ func (i *instance) uploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := uploader.UploadRequest(w, r, frontend.ArtworkRequest{Viewer: v, Item: key, Device: device(r)}, kind, true); err != nil {
+		if errors.Is(err, frontend.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "Invalid image", 400)
 		return
 	}

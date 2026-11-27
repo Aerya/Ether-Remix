@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // DefaultMaxPerHost bounds concurrent requests to any single indexer origin
@@ -24,8 +26,9 @@ type HostLimiter struct {
 }
 
 type hostGate struct {
-	sem  chan struct{}
-	refs int
+	sem        chan struct{}
+	refs       int
+	background bool
 }
 
 // NewHostLimiter returns a per-host concurrency limiter. limit == 0 uses
@@ -58,6 +61,38 @@ func (l *HostLimiter) Acquire(ctx context.Context, rawURL string) (func(), error
 	if !ok {
 		g = &hostGate{sem: make(chan struct{}, l.limit)}
 		l.hosts[key] = g
+	}
+	// Background requests never wait in the host queue.
+	// Keep at most one in flight per origin, including shared proxies.
+	// Leave room for Play where capacity permits.
+	background := backgroundSearch(ctx)
+	if background {
+		if g.background || len(g.sem) >= max(1, l.limit-1) {
+			l.mu.Unlock()
+			return nil, core.ErrBudgetExhausted
+		}
+		select {
+		case g.sem <- struct{}{}:
+			g.background = true
+			g.refs++
+		default:
+			l.mu.Unlock()
+			return nil, core.ErrBudgetExhausted
+		}
+		l.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				l.mu.Lock()
+				<-g.sem
+				g.background = false
+				g.refs--
+				if g.refs == 0 {
+					delete(l.hosts, key)
+				}
+				l.mu.Unlock()
+			})
+		}, nil
 	}
 	g.refs++
 	l.mu.Unlock()

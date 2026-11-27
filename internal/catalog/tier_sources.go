@@ -58,6 +58,8 @@ var tierTouchSources = []touchSource{
 	{table: "state_lifetime_events", column: "rating_key"},
 	{table: "state_history_rank", column: "rating_key"},
 	{table: "state_continue_hidden", column: "item_key", tierA: true},
+	{table: "state_recording_pref", column: "preferred_key", tierA: true},
+	{table: "state_recording_hidden", column: "item_key", tierA: true},
 	{table: "personalize_discovery_hidden", column: "item_key", tierA: true},
 	{table: "state_last_source", column: "rating_key", tierA: true},
 	{table: "watchlist_items", column: "item_key", tierA: true},
@@ -176,6 +178,7 @@ var tierUntouchedTables = []string{
 	"remix_quality_config",   // Release policy configuration, no viewer title references.
 	"transcode_decode_caps",  // Device capabilities hold no title references.
 	"personalize_meta",       // One-time migration markers, no titles.
+	"loudness_",              // Rebuilt loudness measurements.
 	// Release identity memory (blocklist links, failed grabs) names releases, not titles.
 	"resolver_content_links",
 	"resolver_failed_grabs",
@@ -218,7 +221,15 @@ var tierUntouchedTables = []string{
 	// Download quota ledger: counts a viewer's downloads per day; a removed
 	// title only frees a quota entry and is never a reason to keep it.
 	"safety_download_usage",
+	// Offline download grants pin a file for one device's transfer; a removed
+	// title only ends the grant.
+	"safety_offline_download_grants",
 	"collections_addon_imports",
+	// A derived index of the title references in collections_specs, which
+	// is already a touch source (touchScan); provider speed tests hold no
+	// title at all.
+	"collections_title_refs", "provider_speed_results",
+	"state_play_contexts",
 	// Live sports events are keyed by plugin event ids, never catalogue titles.
 	"live_event_reveals", "viewer_push_liveevent_claims",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",
@@ -228,7 +239,7 @@ var tierUntouchedTables = []string{
 	"mdblist_accounts", "mdblist_post_pacing",
 	"plexwatch_account", "plexwatch_fence", "plexwatch_pin", "plexwatch_pms", "plexwatch_pms_held", "plexwatch_pms_unmatched",
 	"plexwatch_pms_viewer", "plex_counters", "personalize_overrides", "personalize_ranker",
-	"personalize_row_impressions", "personalize_serves", "personalize_home_layout", "trackprefs_rules",
+	"personalize_row_impressions", "personalize_serves", "personalize_pages", "trackprefs_rules",
 	"episodeorder_groups", "watchlist_meta", "watchlist_settings", "watchlist_community_jobs", "watchlist_community_locks", "watchlist_availability_jobs", "migrate_plans",
 	// Cluster, placement, playback plumbing (titles only through the
 	// scanned sources above).
@@ -241,7 +252,7 @@ var tierUntouchedTables = []string{
 	"prerolls", "prerolls_settings", "stats_costs", "stats_device_registry", "stats_device_registry_counter", "stats_indexer_days",
 	"stats_debrid_days", "stats_stream_days",
 	"stats_newsletter_", "stats_provider_days", "stats_play_timeline", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
-	"plugins_remote_hashes", "plugins_remote_hash_budget", "plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
+	"plugins_remote_hashes", "plugins_remote_hash_budget", "plugins_hash_cache", "plugins_kv_usage", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
 	"plugins_proposals", "plugins_settings", "plugins_derived_secrets", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",
 }

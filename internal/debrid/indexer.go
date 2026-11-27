@@ -193,14 +193,12 @@ func (x *Indexer) SearchWithOptions(ctx context.Context, req core.SearchRequest,
 		res.Releases = out
 		return res, nil
 	}
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	cached, definitive := x.svc.CheckCached(cctx, torrents)
-	cancel()
+	cached := x.checkAvailability(ctx, torrents)
 	kept := out[:0]
-	dropUncached := definitive && x.svc.Config().CachedOnly
+	dropUncached := x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
+		if r.Protocol == core.ProtocolTorrent && (dropUncached || r.Private) && x.confirmedUncached(ctx, r, cached) {
 			if explain == 0 {
 				continue
 			}
@@ -208,11 +206,7 @@ func (x *Indexer) SearchWithOptions(ctx context.Context, req core.SearchRequest,
 		}
 		kept = append(kept, r)
 	}
-	sort.SliceStable(kept, func(i, j int) bool {
-		ci := kept[i].Protocol == core.ProtocolTorrent && (cached[kept[i].InfoHash] || x.svc.KnownCached(kept[i].InfoHash))
-		cj := kept[j].Protocol == core.ProtocolTorrent && (cached[kept[j].InfoHash] || x.svc.KnownCached(kept[j].InfoHash))
-		return ci && !cj
-	})
+	x.rankAvailability(kept, cached)
 	res.Releases = kept
 	return res, nil
 }
@@ -291,34 +285,40 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	// unknown ones of equal rank.
 	cacheStart := time.Now()
 	var cached map[string]bool
-	var definitive bool
+	var expired bool
 	if early != nil {
 		// Most hashes were checked while slower indexers were still
 		// searching; only stragglers are checked now.
-		cached, definitive = early.finish(ctx, torrents)
+		cached, expired = early.finish(ctx, torrents)
 	} else {
-		cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		cached, definitive = x.svc.CheckCached(cctx, torrents)
-		cancel()
+		cached = x.checkAvailability(ctx, torrents)
 	}
 	cacheDuration, hashCount = time.Since(cacheStart), len(torrents)
 	kept := out[:0]
 	anyCached := false
 	// With cached-only off an uncached torrent is still playable later
 	// (playback sends it to download), so it stays, ranked after cached ones.
-	dropUncached := definitive && x.svc.Config().CachedOnly
+	dropUncached := x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	var explained []string // ids kept only to explain a not-cached failure
+	var unknown []core.Release
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
-			if explain == 0 {
+		if r.Protocol == core.ProtocolTorrent {
+			hit, checked := cached[r.InfoHash]
+			// Late unknowns must not suppress the season query or claim a
+			// release ID before it can return a confirmed match.
+			if expired && r.InfoHash != "" && !checked && (dropUncached || r.Private) {
+				unknown = append(unknown, r)
 				continue
 			}
-			explain--
-			explained = append(explained, r.ID)
-		}
-		if r.Protocol == core.ProtocolTorrent && (cached[r.InfoHash] || x.svc.KnownCached(r.InfoHash)) {
-			anyCached = true
+			if (dropUncached || r.Private) && x.confirmedUncached(ctx, r, cached) {
+				if explain == 0 {
+					continue
+				}
+				explain--
+				explained = append(explained, r.ID)
+			}
+			anyCached = anyCached || hit || x.svc.KnownCached(r.InfoHash)
 		}
 		kept = append(kept, r)
 	}
@@ -344,36 +344,90 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 				cached[h] = true
 			}
 		}
+		byID := make(map[string]int, len(kept))
+		for i, r := range kept {
+			byID[r.ID] = i
+		}
+		for _, r := range packs {
+			if i, seen := byID[r.ID]; seen {
+				if packCached[r.InfoHash] && !cached[kept[i].InfoHash] {
+					kept[i] = r
+				}
+				continue
+			}
+			byID[r.ID] = len(kept)
+			kept = append(kept, r)
+		}
+		if len(explained) > 0 && slices.ContainsFunc(packs, func(r core.Release) bool { return packCached[r.InfoHash] }) {
+			// A cached pack plays: nothing is left to explain.
+			kept = slices.DeleteFunc(kept, func(r core.Release) bool {
+				return !cached[r.InfoHash] && slices.Contains(explained, r.ID)
+			})
+		}
+	}
+	if len(unknown) > 0 {
 		seenID := make(map[string]bool, len(kept))
 		for _, r := range kept {
 			seenID[r.ID] = true
 		}
-		for _, r := range packs {
+		for _, r := range unknown {
 			if !seenID[r.ID] {
-				seenID[r.ID] = true
 				kept = append(kept, r)
+				seenID[r.ID] = true
 			}
 		}
-		if len(explained) > 0 && slices.ContainsFunc(packs, func(r core.Release) bool { return packCached[r.InfoHash] }) {
-			// A cached pack plays: nothing is left to explain.
-			kept = slices.DeleteFunc(kept, func(r core.Release) bool { return slices.Contains(explained, r.ID) })
-		}
 	}
-	rank := func(r core.Release) int {
-		if r.Protocol == core.ProtocolTorrent && (cached[r.InfoHash] || x.svc.KnownCached(r.InfoHash)) {
-			return 0
-		}
-		return 1
-	}
-	sort.SliceStable(kept, func(i, j int) bool { return rank(kept[i]) < rank(kept[j]) })
+	x.rankAvailability(kept, cached)
 	return kept, nil
+}
+
+// checkAvailability retains positive answers from partial batches. Only a
+// definitive batch can establish that a torrent is absent everywhere.
+func (x *Indexer) checkAvailability(ctx context.Context, hashes []string) map[string]bool {
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cached, definitive := x.svc.CheckCached(cctx, hashes)
+	if !definitive {
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			core.NoteSearchIncomplete(ctx)
+		}
+		for h, hit := range cached {
+			if !hit {
+				delete(cached, h)
+			}
+		}
+	}
+	return cached
+}
+
+func (x *Indexer) confirmedUncached(ctx context.Context, r core.Release, cached map[string]bool) bool {
+	hit, checked := cached[r.InfoHash]
+	return checked && !hit && !x.svc.KnownCached(r.InfoHash) && !x.svc.mayBeZipOnlyCached(ctx, r)
+}
+
+func (x *Indexer) rankAvailability(releases []core.Release, cached map[string]bool) {
+	rank := func(r core.Release) int {
+		if r.Protocol == core.ProtocolTorrent {
+			if cached[r.InfoHash] {
+				return 0
+			}
+			if x.svc.KnownCached(r.InfoHash) {
+				return 1
+			}
+			if _, checked := cached[r.InfoHash]; checked {
+				return 3
+			}
+		}
+		return 2
+	}
+	sort.SliceStable(releases, func(i, j int) bool { return rank(releases[i]) < rank(releases[j]) })
 }
 
 // keepUncached is how many torrents no provider holds a cached-only search
 // keeps when none is cached (the rest are dropped so they do not use up the
 // resolver's check budget). Their availability answer is remembered, so each fails as not
 // cached at once without an API call, and when nothing else plays the
-// player and Quality › History say "not cached" instead of "no release
+// player and Releases › History say "not cached" instead of "no release
 // found".
 const keepUncached = 3
 
@@ -482,19 +536,16 @@ func (x *Indexer) searchSeasonPacks(ctx context.Context, req core.SearchRequest)
 		return nil, nil
 	}
 	var cached map[string]bool
-	var definitive bool
 	if len(hashes) > 0 {
 		if early != nil {
-			cached, definitive = early.finish(ctx, hashes)
+			cached, _ = early.finish(ctx, hashes)
 		} else {
-			cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			cached, definitive = x.svc.CheckCached(cctx, hashes)
-			cancel()
+			cached = x.checkAvailability(ctx, hashes)
 		}
 	}
 	kept := packs[:0]
 	for _, r := range packs {
-		if r.InfoHash != "" && definitive && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
+		if x.confirmedUncached(ctx, r, cached) {
 			continue
 		}
 		kept = append(kept, r)
@@ -547,19 +598,16 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 		return out, nil
 	}
 	var cached map[string]bool
-	var definitive bool
 	if early != nil {
-		cached, definitive = early.finish(ctx, torrents)
+		cached, _ = early.finish(ctx, torrents)
 	} else {
-		cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		cached, definitive = x.svc.CheckCached(cctx, torrents)
-		cancel()
+		cached = x.checkAvailability(ctx, torrents)
 	}
 	kept := out[:0]
-	dropUncached := definitive && x.svc.Config().CachedOnly
+	dropUncached := x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
+		if r.Protocol == core.ProtocolTorrent && (dropUncached || r.Private) && x.confirmedUncached(ctx, r, cached) {
 			if explain == 0 {
 				continue
 			}
@@ -567,13 +615,7 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 		}
 		kept = append(kept, r)
 	}
-	rank := func(r core.Release) int {
-		if r.Protocol == core.ProtocolTorrent && (cached[r.InfoHash] || x.svc.KnownCached(r.InfoHash)) {
-			return 0
-		}
-		return 1
-	}
-	sort.SliceStable(kept, func(i, j int) bool { return rank(kept[i]) < rank(kept[j]) })
+	x.rankAvailability(kept, cached)
 	return kept, nil
 }
 
@@ -674,7 +716,7 @@ type earlyChecks struct {
 	onCached func([]core.Release)
 	pending  []string
 	running  bool
-	sure     bool // every check so far was definitive
+	expired  bool // the deadline interrupted an availability batch
 }
 
 func (x *Indexer) earlyCacheChecks(ctx context.Context, onCached func([]core.Release)) *earlyChecks {
@@ -690,7 +732,6 @@ func (x *Indexer) earlyCacheChecks(ctx context.Context, onCached func([]core.Rel
 		cached:   map[string]bool{},
 		byHash:   map[string][]core.Release{},
 		onCached: onCached,
-		sure:     true,
 	}
 }
 
@@ -740,12 +781,14 @@ func (e *earlyChecks) add(rs []core.Release) {
 			e.mu.Lock()
 			var newlyCached []core.Release
 			for h, ok := range cached {
+				if ok || definitive {
+					e.cached[h] = ok
+				}
 				if ok {
-					e.cached[h] = true
 					newlyCached = append(newlyCached, e.byHash[h]...)
 				}
 			}
-			e.sure = e.sure && definitive
+			e.expired = e.expired || (!definitive && errors.Is(e.ctx.Err(), context.DeadlineExceeded))
 			done := len(e.pending) == 0
 			if done {
 				e.running = false
@@ -761,19 +804,19 @@ func (e *earlyChecks) add(rs []core.Release) {
 	}()
 }
 
-// finish checks any hashes not yet asked about, waits for every check and
-// returns the merged availability.
+// finish returns verdicts for completed checks. Hashes without a verdict
+// stay unknown, including hashes that arrived after the discovery window.
 func (e *earlyChecks) finish(ctx context.Context, hashes []string) (map[string]bool, bool) {
 	defer e.cancel()
 	e.add(hashOnly(hashes))
 	e.wg.Wait()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := make(map[string]bool, len(e.cached))
-	for h := range e.cached {
-		out[h] = true
+	expired := e.expired || (len(e.pending) > 0 && errors.Is(e.ctx.Err(), context.DeadlineExceeded))
+	if expired {
+		core.NoteSearchIncomplete(ctx)
 	}
-	return out, e.sure && ctx.Err() == nil
+	return e.cached, expired
 }
 
 func hashOnly(hashes []string) []core.Release {

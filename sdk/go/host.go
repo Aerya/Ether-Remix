@@ -114,6 +114,27 @@ type ViewerWatchEntry struct {
 	Completed bool   `json:"completed,omitempty"`
 }
 
+// ViewerWatchEventPayload is the payload of viewer.watch.scrobbled,
+// viewer.watch.watched, viewer.watch.unwatched and viewer.watch.progress.
+type ViewerWatchEventPayload struct {
+	ViewerID   int64  `json:"viewerId,omitempty"`
+	Username   string `json:"username,omitempty"`
+	TitleKey   string `json:"titleKey"`
+	TitleName  string `json:"titleName"`
+	MediaType  string `json:"mediaType"`
+	Watched    bool   `json:"watched"`
+	State      string `json:"state"`  // watched, unwatched, or progress
+	Source     string `json:"source"` // playback, manual, plugin, or import
+	Surface    string `json:"surface,omitempty"`
+	ItemRef    string `json:"itemRef,omitempty"`
+	TMDBID     int64  `json:"tmdbId,omitempty"`
+	TVDBID     int64  `json:"tvdbId,omitempty"`
+	IMDBID     string `json:"imdbId,omitempty"`
+	Season     *int   `json:"season,omitempty"`
+	Episode    *int   `json:"episode,omitempty"`
+	PositionMS *int64 `json:"positionMs,omitempty"`
+}
+
 // Host provides access to Ether host services (KV, secrets, HTTP, catalog,
 // viewers, collections, folders, owner notifications, and logging).
 type Host interface {
@@ -126,6 +147,7 @@ type Host interface {
 	CatalogSearch(ctx context.Context, query string, limit, offset int) ([]CatalogTitleSummary, error)
 	CatalogGet(ctx context.Context, id string) (*CatalogTitleSummary, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) ([]ViewerWatchEntry, error)
+	// titleID accepts a catalogue movie/episode ID or an owned playable item ref.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	UpsertCollection(ctx context.Context, collection map[string]any) error
 	FoldersList(ctx context.Context, root, path string) ([]FolderEntry, error)
@@ -303,6 +325,10 @@ const (
 	// HeaderViewerToken carries the host-minted, request-scoped adapter viewer
 	// proof header on frontend adapter calls (#615).
 	HeaderViewerToken = "X-Ether-Viewer-Token"
+	// HeaderOrigin carries the client-visible origin
+	// ("scheme://host[:port][/prefix]") injected by Ether on authenticated
+	// frontend adapter calls (#772).
+	HeaderOrigin = "X-Ether-Origin"
 )
 
 type viewerTokenContextKey struct{}
@@ -1156,7 +1182,8 @@ func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, it
 
 // StreamURLWithOptions mints a scoped stream ticket for one of this plugin's
 // own kind items, optionally pinned to a zero-based part and/or resolver
-// PlayableSource.ID (#576, #661).
+// PlayableSource.ID (#576, #661) and optionally resolved to an absolute URL
+// using the active request origin or the adapter's first published address (#772).
 func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID int64, itemRef string, opts StreamURLOptions) (string, error) {
 	if opts.PartIndex != nil && *opts.PartIndex < 0 {
 		return "", fmt.Errorf("stream url: partIndex must be non-negative")
@@ -1171,10 +1198,17 @@ func (c *RemoteHostClient) StreamURLWithOptions(ctx context.Context, viewerID in
 	if opts.Source != "" {
 		payload["source"] = opts.Source
 	}
+	if opts.Absolute {
+		payload["absolute"] = true
+	}
+	var headers map[string]string
+	if tok, ok := ViewerTokenFromContext(ctx); ok && tok != "" {
+		headers = map[string]string{HeaderViewerToken: tok}
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", payload, &out, false)
+	_, err := c.callJSONWithHeaders(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url", headers, payload, &out, false)
 	if err != nil {
 		return "", err
 	}

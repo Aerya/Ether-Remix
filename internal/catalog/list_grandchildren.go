@@ -31,6 +31,13 @@ func (c *Catalog) StoredEpisodeCandidates(ctx context.Context, shows []core.Rati
 
 func (c *Catalog) storedGrandchildrenBatch(ctx context.Context, shows []core.RatingKey, full bool) (map[core.RatingKey][]core.Title, error) {
 	out := map[core.RatingKey][]core.Title{}
+	if c.canProjectAlternateOrders() {
+		canonical, err := c.storedProviderGrandchildren(ctx, shows, out, full)
+		if err != nil {
+			return nil, err
+		}
+		shows = canonical
+	}
 	var need []core.RatingKey
 	gen, minute := c.writeGen.Load(), c.minuteBucket()
 	c.cacheMu.RLock()
@@ -55,6 +62,52 @@ func (c *Catalog) storedGrandchildrenBatch(ctx context.Context, shows []core.Rat
 		}
 	}
 	return out, nil
+}
+
+func (c *Catalog) storedProviderGrandchildren(ctx context.Context, shows []core.RatingKey, out map[core.RatingKey][]core.Title, full bool) ([]core.RatingKey, error) {
+	var canonical []core.RatingKey
+	shows = uniqueRatingKeys(shows)
+	for start := 0; start < len(shows); start += airedManyBatch {
+		ids := shows[start:min(start+airedManyBatch, len(shows))]
+		chosen, err := c.readShowOrders(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		var alternate []core.RatingKey
+		for _, id := range ids {
+			choice, known := chosen[id]
+			if known && providerLayout(&choice.title, choice.order) {
+				alternate = append(alternate, id)
+				if !full {
+					out[id] = []core.Title{}
+				}
+			} else {
+				canonical = append(canonical, id)
+			}
+		}
+		if len(alternate) == 0 {
+			continue
+		}
+		scope, args := episodeScope(alternate, chosen)
+		now := c.now()
+		args = append(args, now.Unix(), now.UTC().Format(time.DateOnly))
+		q := scope + `SELECT ` + prefixedCols("t") + ` FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key
+ WHERE t.adult=0 AND ` + scopedAired
+		if full {
+			q += ` AND NOT EXISTS (SELECT 1 FROM chosen_orders o JOIN catalog_order_seasons s
+ ON s.show_key=o.show_key AND s.provider=o.provider AND s.order_kind=o.order_kind
+ WHERE o.show_key=e.show_key AND s.fetched_at=0 AND (s.air_date='' OR s.air_date<=?))`
+			args = append(args, now.UTC().Format(time.DateOnly))
+		}
+		items, err := c.queryPagedTitles(ctx, q+` ORDER BY e.show_key,e.season,e.episode,e.key`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, title := range items {
+			out[title.ShowKey] = append(out[title.ShowKey], title)
+		}
+	}
+	return canonical, nil
 }
 
 func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKey, gen uint64, minute int64, out map[core.RatingKey][]core.Title, full bool) error {
@@ -83,7 +136,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		return err
 	}
 	// seasonsOfShow: hydrated season rows, then listableSeason.
-	all, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key IN (`+in+`) ORDER BY show_key ASC, season ASC`, keys...)
+	all, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND key<3900000000000000 AND show_key IN (`+in+`) ORDER BY show_key ASC, season ASC`, keys...)
 	if err != nil {
 		return err
 	}
@@ -98,7 +151,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 	type mirrored struct{ episodes, pending int }
 	have := map[core.RatingKey]map[int]mirrored{}
 	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,COUNT(*),COUNT(CASE WHEN release_known=0 OR released_ts>? THEN 1 END)
-		FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key IN (`+in+`) GROUP BY show_key,season`, append([]any{now.Unix()}, keys...)...)
+		FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND key<5000000000000000 AND show_key IN (`+in+`) GROUP BY show_key,season`, append([]any{now.Unix()}, keys...)...)
 	if err != nil {
 		return err
 	}
@@ -125,7 +178,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		episodes        int
 	}
 	records := map[core.RatingKey]map[int]record{}
-	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,detail,detail_at,child_count FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key IN (`+in+`)`, keys...)
+	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,detail,detail_at,child_count FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND key<3900000000000000 AND show_key IN (`+in+`)`, keys...)
 	if err != nil {
 		return err
 	}
@@ -201,7 +254,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		query = c.queryEpisodeCandidates
 		columns = "key,show_key,season,episode,released_ts,adult"
 	}
-	eps, err := query(ctx, `SELECT `+columns+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key IN (`+placeholders(len(ask))+`) ORDER BY show_key ASC, season ASC, episode ASC`, ask...)
+	eps, err := query(ctx, `SELECT `+columns+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND key<5000000000000000 AND show_key IN (`+placeholders(len(ask))+`) ORDER BY show_key ASC, season ASC, episode ASC`, ask...)
 	if err != nil {
 		return err
 	}
@@ -247,7 +300,7 @@ func (c *Catalog) queryEpisodeCandidates(ctx context.Context, query string, args
 	var out []core.Title
 	now := c.now()
 	for rows.Next() {
-		t := core.Title{Type: core.TypeEpisode}
+		t := core.Title{Type: core.TypeEpisode, EpisodeOrder: tmdbAired}
 		var released int64
 		if err := rows.Scan(&t.Key, &t.ShowKey, &t.Season, &t.Episode, &released, &t.Adult); err != nil {
 			return nil, err
@@ -255,6 +308,7 @@ func (c *Catalog) queryEpisodeCandidates(ctx context.Context, query string, args
 		if released != 0 {
 			t.Released = time.Unix(released, 0).UTC()
 		}
+		t.ParentKey, t.EpisodeAirDate = t.Key.Parent(), t.Released
 		if !t.Adult && t.IsReleased(now) {
 			out = append(out, t)
 		}

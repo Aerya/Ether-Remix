@@ -217,7 +217,7 @@ func extraEstimateInfo(e frontend.ExtraClip) frontend.MediaInfo {
 
 // extraMetadata renders one extra as PMS does: a clip Video with a
 // subtype and numeric extra type, carrying a single Media/Part.
-func (s *Server) extraMetadata(e frontend.ExtraClip, parent *frontend.Title, withMedia bool) model.Metadata {
+func (s *Server) extraMetadata(ctx context.Context, e frontend.ExtraClip, parent *frontend.Title, withMedia bool) model.Metadata {
 	if e.Source == prerollSource {
 		return s.prerollMetadata(e, frontend.PrerollClip{UpdatedAt: e.PublishedAt}, false)
 	}
@@ -246,7 +246,7 @@ func (s *Server) extraMetadata(e frontend.ExtraClip, parent *frontend.Title, wit
 		md.OriginallyAvailableAt = e.PublishedAt.Format("2006-01-02")
 		md.AddedAt = e.PublishedAt.Unix()
 	}
-	if sec, ok := s.sectionFor(parent.Type); ok {
+	if sec, ok := s.sectionForTitle(ctx, parent); ok {
 		md.LibrarySectionID = sec.ID
 		md.LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 		md.LibrarySectionTitle = sec.Title
@@ -282,7 +282,7 @@ func (s *Server) extraMetadataByKey(ctx context.Context, pr *Request, key fronte
 	if err != nil || !s.visibleTitle(ctx, pr.User, parent) {
 		return model.Metadata{}, false
 	}
-	return s.extraMetadata(e, parent, true), true
+	return s.extraMetadata(ctx, e, parent, true), true
 }
 
 // handleExtras serves /library/metadata/{key}/extras.
@@ -302,9 +302,9 @@ func (s *Server) handleExtras(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	for _, e := range s.extrasFor(ctx, pr, parent, r.URL.Query().Get("extraTypes")) {
-		mc.Metadata = append(mc.Metadata, s.extraMetadata(e, parent, true))
+		mc.Metadata = append(mc.Metadata, s.extraMetadata(ctx, e, parent, true))
 	}
 	if pluginExtras := s.pluginVideoExtras(ctx, pr, parent); len(pluginExtras) > 0 {
 		mc.Metadata = append(mc.Metadata, pluginExtras...)
@@ -556,8 +556,8 @@ func (s *Server) extraDecision(w http.ResponseWriter, r *http.Request, pr *Reque
 		}
 		// Shared fill failures are logged by the extras service.
 		msg := "This trailer could not be played right now. Try again in a moment."
-		mc := s.itemContainer(parent.Type)
-		md := s.extraMetadata(e, parent, false)
+		mc := s.titleContainer(ctx, parent)
+		md := s.extraMetadata(ctx, e, parent, false)
 		decisionItem(&md)
 		mc.Metadata = []model.Metadata{md}
 		mc.Size = 1
@@ -573,13 +573,13 @@ func (s *Server) extraDecision(w http.ResponseWriter, r *http.Request, pr *Reque
 	}
 	syn := &frontend.Title{Key: e.Key, Type: frontend.TypeMovie, Title: e.Title, Runtime: sess.info.Duration}
 	ps := &frontend.PlaySession{ID: "extra:" + p.sessionID, UserID: pr.User.ID, ClientID: pr.ClientID, Key: e.Key, Info: sess.info, StartedAt: s.now()}
-	md := s.extraMetadata(e, parent, false)
+	md := s.extraMetadata(ctx, e, parent, false)
 	decisionItem(&md)
 	md.Media = []model.Media{s.decisionMedia(syn, ps, sess.decision, p, pr.User)}
 	if md.Duration == 0 {
 		md.Duration = md.Media[0].Duration
 	}
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	mc.Metadata = []model.Metadata{md}
 	mc.Size = 1
 	mc.SetDecision()

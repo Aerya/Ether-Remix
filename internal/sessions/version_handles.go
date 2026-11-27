@@ -116,7 +116,7 @@ func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.Versi
 		if v.broker.deps.KindVersions == nil {
 			return nil, nil, core.ErrNotFound
 		}
-		offered, err := v.broker.deps.KindVersions(ctx, viewer, item)
+		offered, err := v.broker.deps.KindVersions(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, item)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -273,9 +273,64 @@ func (v *versionHandles) Issue(ctx context.Context, scope frontend.VersionScope,
 	return handles[release], nil
 }
 
+// ListedHandle derives the id Issue would return for (item, release) on this
+// surface, with no offer check and no write: list rows name configured
+// version slots this way. The id grants nothing; ResolveListed checks the
+// offer when it is played.
+func (v *versionHandles) ListedHandle(scope frontend.VersionScope, item core.RatingKey, release string) string {
+	if scope.Protocol != v.protocol || item == 0 || release == "" || len(release) > 512 {
+		return ""
+	}
+	return versionID(v.key, v.protocol, item, release)
+}
+
+// ResolveListed resolves an id ListedHandle derived for item: it matches the
+// id against the releases this viewer is offered for item now, records the
+// match, and resolves it as an issued handle. Cost is one offer check for
+// the played item, never a scan.
+func (v *versionHandles) ResolveListed(ctx context.Context, scope frontend.VersionScope, item core.RatingKey, handle string) (frontend.VersionTarget, error) {
+	handle = normalizeVersionHandle(handle)
+	if handle == "" {
+		return frontend.VersionTarget{}, core.ErrNotFound
+	}
+	_, offered, err := v.allowedOffers(ctx, scope, item)
+	if err != nil {
+		return frontend.VersionTarget{}, err
+	}
+	for release := range offered {
+		if release == "" || len(release) > 512 || versionID(v.key, v.protocol, item, release) != handle {
+			continue
+		}
+		if err := v.remember(ctx, item, map[string]string{release: handle}); err != nil {
+			return frontend.VersionTarget{}, err
+		}
+		return v.Resolve(ctx, scope, handle)
+	}
+	return frontend.VersionTarget{}, core.ErrNotFound
+}
+
 func (v *versionHandles) Resolve(ctx context.Context, scope frontend.VersionScope, handle string) (frontend.VersionTarget, error) {
 	item, release, err := v.resolveRecord(ctx, scope, handle)
 	return frontend.VersionTarget{Item: item, Release: release}, err
+}
+
+// ResolveOfflineVersion resolves an issued or listed ID against this title's
+// offers without consulting a live session's version substitution.
+func (v *versionHandles) ResolveOfflineVersion(ctx context.Context, scope frontend.VersionScope, item core.RatingKey, handle string) (frontend.VersionTarget, error) {
+	handle = normalizeVersionHandle(handle)
+	if handle == "" {
+		return frontend.VersionTarget{}, core.ErrNotFound
+	}
+	_, offered, err := v.allowedOffers(ctx, scope, item)
+	if err != nil {
+		return frontend.VersionTarget{}, err
+	}
+	for release := range offered {
+		if versionID(v.key, v.protocol, item, release) == handle {
+			return frontend.VersionTarget{Item: item, Release: release}, nil
+		}
+	}
+	return frontend.VersionTarget{}, core.ErrNotFound
 }
 
 // ResolveStaleParent identifies the parent item of a previously issued handle
@@ -375,11 +430,12 @@ func (v *versionHandles) MatchSession(ctx context.Context, scope frontend.Versio
 	if err != nil {
 		return err
 	}
-	if s.public.Item != item || s.versionHandle != handle || s.exactRelease != release {
+	if s.public.Item != item || s.versionHandle != handle || (s.exactRelease != release && !s.autoRelease) {
 		return core.ErrNotFound
 	}
 	ps, ok := v.broker.deps.Playback.Session(s.playID)
-	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID != release {
+	// An Auto entry may already have failed over to another release.
+	if !ok || ps == nil || ps.Resolution == nil || (ps.Resolution.Release.ID != release && !s.autoRelease) {
 		return core.ErrNotAvailable
 	}
 	return nil

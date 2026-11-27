@@ -1,5 +1,7 @@
 package diagnostics
 
+import "github.com/braedonsaunders/ether/internal/speedtest"
+
 // collect runs archive collectors outside the recorder lock. A failed
 // collector becomes a gap and does not stop the ZIP.
 func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap) {
@@ -63,6 +65,18 @@ func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap
 	} else {
 		put("settings.json", redactSettings(s, snap.flags[0], uses))
 	}
+	if r.deps.UsenetSpeed != nil {
+		tests, observed := r.deps.UsenetSpeed()
+		put("usenet.json", struct {
+			SpeedTests map[string]speedtest.Result `json:"speedTests"`
+			Observed   []speedtest.Observation     `json:"observedThroughput,omitempty"`
+		}{tests, observed})
+	}
+	if r.deps.DebridSpeed != nil {
+		put("debrid.json", struct {
+			SpeedTests map[string]speedtest.Result `json:"speedTests"`
+		}{r.deps.DebridSpeed()})
+	}
 	if r.deps.Sessions == nil {
 		gaps = append(gaps, Gap{Collector: "sessions", Status: "unavailable", Detail: "Sessions were not collected."})
 	} else if rows, omitted, err := r.deps.Sessions(snap.deviceKey); err != nil {
@@ -95,6 +109,19 @@ func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap
 	} else {
 		c.SecureConnections = redactString(c.SecureConnections, uses)
 		put("connectivity.json", c)
+	}
+	if r.deps.ReleaseSearch == nil {
+		gaps = append(gaps, Gap{Collector: "release-search", Status: "unavailable", Detail: "Release searches were not collected."})
+	} else {
+		q := ReleaseSearchQuery{From: snap.started.Add(-preRoll), Until: snap.finished, DeviceKey: snap.deviceKey}
+		if !snap.viewerAmbiguous {
+			q.ViewerID = snap.viewerID
+		}
+		if in, err := r.deps.ReleaseSearch(q); err != nil {
+			gaps = append(gaps, Gap{Collector: "release-search", Status: "failed", Detail: "Release searches could not be collected."})
+		} else {
+			put("release-search.json", releaseSearchDocument(in, snap.flags[0], uses))
+		}
 	}
 	gaps = append(gaps, Gap{Collector: "logs", Status: "unavailable", Detail: "Rotated logs were not read."})
 	q := logQuery(snap)

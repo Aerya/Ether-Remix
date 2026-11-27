@@ -31,6 +31,7 @@ type Source struct {
 	Catalog          core.StoredTitleLookup
 	CollectionDevice string
 	Collections      core.Collections
+	CollectionCards  func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]*core.Collection, error)
 	Playlists        core.Playlists
 	Visibility       experience.Visibility
 	LiveTV           interface {
@@ -47,8 +48,11 @@ type Source struct {
 	VirtualSeason    func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
 	PluginItem       func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)
 	LibraryLiveThumb func(context.Context, *core.Viewer, string, string) (string, error)
-	ViewerAvatar     func(context.Context, *core.Viewer) ([]byte, string, error)
-	URLImages        interface {
+	// PluginImage authorizes a plugin-named image (frontend.PluginImagePrefix)
+	// for viewer and returns the upstream URL to fetch.
+	PluginImage  func(context.Context, *core.Viewer, string, string) (string, error)
+	ViewerAvatar func(context.Context, *core.Viewer) ([]byte, string, error)
+	URLImages    interface {
 		GetUntrustedURL(context.Context, string) ([]byte, string, error)
 	}
 	Raster   frontend.SVGRasterizer
@@ -170,6 +174,11 @@ type frontendArtworkEntry struct {
 	generated                     *artwork.TitlePoster
 }
 
+// Absolute artwork paths are passed to the guarded URL image store by remote.
+func validRemoteArtwork(path string) bool {
+	return artwork.ValidPath(path) || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
 func artworkReference(req frontend.ArtworkRequest, kind, source string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", req.Viewer.ID, req.Item, req.Device.Language, kind, source, "artwork-v1")))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
@@ -224,6 +233,9 @@ func (a Source) ChannelImage(viewer *core.Viewer, channel livetv.Channel) fronte
 }
 
 func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]frontendArtworkEntry, bool, error) {
+	if frontend.CollectionCardArtwork(ctx) && req.Item.Kind() == core.KindSmart && req.Viewer != nil {
+		return a.collectionCardEntries(ctx, req)
+	}
 	if a.LandscapeThumb {
 		// Public cache tags must resolve to the same descriptor for every viewer.
 		req.Device.Language = ""
@@ -306,9 +318,20 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 	}
 	var entries []frontendArtworkEntry
 	posterGen := a.PosterGeneration()
+	primaryOnly := frontend.PrimaryArtworkOnly(ctx)
+	var haveKind map[string]bool
+	if primaryOnly {
+		haveKind = map[string]bool{}
+	}
 	add := func(kind, source string, entry frontendArtworkEntry) {
 		if !frontend.ArtworkKindWanted(ctx, kind) {
 			return
+		}
+		if primaryOnly {
+			if haveKind[kind] {
+				return
+			}
+			haveKind[kind] = true
 		}
 		if posterGen > 0 && (kind == frontend.ImagePoster || (kind == frontend.ImageThumb && !a.LandscapeThumb) || entry.ownerKind != "") {
 			source += "\x00pgen:" + strconv.FormatUint(posterGen, 10)
@@ -347,7 +370,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 				if a.Variants != nil {
 					if variants, ready := a.Variants(title, req.Device.Language); ready && variants != nil {
 						for _, file := range variants.Backdrops {
-							if !artwork.ValidPath(file.FilePath) || file.Width <= file.Height {
+							if !validRemoteArtwork(file.FilePath) || file.Width <= file.Height {
 								continue
 							}
 							if path == "" {
@@ -360,7 +383,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 						}
 					}
 				}
-				if artwork.ValidPath(path) {
+				if validRemoteArtwork(path) {
 					add(item.kind, "landscape\x00"+path, frontendArtworkEntry{remotePath: path})
 				}
 			}
@@ -393,36 +416,55 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 	}
 	complete := true
 	if title != nil {
-		if s.Palettes != nil && ultraBlurType(title.Type) && title.BackdropPath != "" && frontend.ArtworkKindWanted(ctx, frontend.ImageBackdrop) {
+		if s.Palettes != nil && ultraBlurType(title.Type) && title.BackdropPath != "" && frontend.ArtworkKindWanted(ctx, frontend.ImageBackdrop) && (!primaryOnly || !haveKind[frontend.ImageBackdrop]) {
 			if colors := s.Palettes.Lookup(title.Key, title.BackdropPath); colors != nil {
 				stamp := colors.TopLeft + colors.TopRight + colors.BottomLeft + colors.BottomRight
 				add(frontend.ImageBackdrop, "ultrablur\x00"+title.BackdropPath+"\x00"+stamp, frontendArtworkEntry{ultra: colors})
 			}
 		}
-		if artwork.ValidPath(title.StillPath) {
+		if validRemoteArtwork(title.StillPath) {
 			add(frontend.ImageStill, "still\x00"+title.StillPath, frontendArtworkEntry{remotePath: title.StillPath})
 		}
 		if virtualSeason == nil && a.Variants != nil {
-			variants, ready := a.Variants(title, req.Device.Language)
-			if ready && variants != nil {
-				for _, group := range []struct {
-					kind  string
-					files []frontend.ArtworkImageFile
-				}{{frontend.ImagePoster, variants.Posters}, {frontend.ImageBackdrop, variants.Backdrops}, {frontend.ImageLogo, variants.Logos}, {frontend.ImageStill, variants.Still}} {
-					for _, file := range group.files {
-						if artwork.ValidPath(file.FilePath) {
-							add(group.kind, "variant\x00"+file.FilePath, frontendArtworkEntry{remotePath: file.FilePath})
+			needVariants := !primaryOnly
+			if primaryOnly {
+				for _, k := range []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageLogo, frontend.ImageStill} {
+					if frontend.ArtworkKindWanted(ctx, k) && !haveKind[k] {
+						needVariants = true
+						break
+					}
+				}
+			}
+			if needVariants {
+				variants, ready := a.Variants(title, req.Device.Language)
+				if ready && variants != nil {
+					for _, group := range []struct {
+						kind  string
+						files []frontend.ArtworkImageFile
+					}{{frontend.ImagePoster, variants.Posters}, {frontend.ImageBackdrop, variants.Backdrops}, {frontend.ImageLogo, variants.Logos}, {frontend.ImageStill, variants.Still}} {
+						if !frontend.ArtworkKindWanted(ctx, group.kind) || (primaryOnly && haveKind[group.kind]) {
+							continue
+						}
+						for _, file := range group.files {
+							if validRemoteArtwork(file.FilePath) {
+								add(group.kind, "variant\x00"+file.FilePath, frontendArtworkEntry{remotePath: file.FilePath})
+								if primaryOnly {
+									break
+								}
+							}
 						}
 					}
 				}
 			}
 		}
-		for _, portrait := range creditedPortraits(*title) {
-			add(frontend.ImagePerson, portrait.source, frontendArtworkEntry{
-				personKind: portrait.role,
-				personID:   base64.RawURLEncoding.EncodeToString([]byte(portrait.thumb)),
-				subject:    portrait.subject,
-			})
+		if frontend.ArtworkKindWanted(ctx, frontend.ImagePerson) {
+			for _, portrait := range creditedPortraits(*title) {
+				add(frontend.ImagePerson, portrait.source, frontendArtworkEntry{
+					personKind: portrait.role,
+					personID:   base64.RawURLEncoding.EncodeToString([]byte(portrait.thumb)),
+					subject:    portrait.subject,
+				})
+			}
 		}
 	}
 	return entries, complete, nil
@@ -712,16 +754,99 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 		}
 	}
-	out := make(map[core.RatingKey][]frontend.Image, len(titles))
+	type listedTitle struct {
+		idx     int
+		req     frontend.ArtworkRequest
+		entries []frontendArtworkEntry
+	}
+	listed := make([]listedTitle, 0, len(titles))
+	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	var lookups []artworkMetadataLookup
 	for i := range titles {
-		images, _, err := a.List(frontend.WithArtworkTitle(ctx, &titles[i]), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: titles[i].Key})
+		req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: titles[i].Key}
+		entries, _, err := a.entries(frontend.WithArtworkTitle(ctx, &titles[i]), req)
 		if errors.Is(err, core.ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		out[titles[i].Key] = images
+		listed = append(listed, listedTitle{idx: i, req: req, entries: entries})
+		if withMetadata && a.meta != nil {
+			for _, e := range entries {
+				lookups = append(lookups, artworkMetadataLookup{request: req, image: e.image})
+			}
+		}
+	}
+	if withMetadata && a.meta != nil && len(lookups) > 0 {
+		ctx = a.meta.Preload(ctx, lookups)
+	}
+	out := make(map[core.RatingKey][]frontend.Image, len(listed))
+	for _, item := range listed {
+		titleCtx := frontend.WithArtworkTitle(ctx, &titles[item.idx])
+		images := make([]frontend.Image, 0, len(item.entries))
+		for _, e := range item.entries {
+			img := e.image
+			if withMetadata {
+				img = a.Metadata(titleCtx, item.req, img)
+			}
+			images = append(images, img)
+		}
+		out[item.req.Item] = images
+	}
+	return out, nil
+}
+
+// ListCollectionPage builds images from policy-checked collection headers and
+// preloads metadata for every image on the page together.
+func (a Source) ListCollectionPage(ctx context.Context, viewer *core.Viewer, device core.Device, cols []core.Collection) (map[core.RatingKey][]frontend.Image, error) {
+	type listedCollection struct {
+		req     frontend.ArtworkRequest
+		ctx     context.Context
+		entries []frontendArtworkEntry
+	}
+	withMetadata := !frontend.CollectionCardArtwork(ctx) && a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	listed := make([]listedCollection, 0, len(cols))
+	var lookups []artworkMetadataLookup
+	for i := range cols {
+		c := &cols[i]
+		req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: c.Key}
+		listCtx := ctx
+		if frontend.CollectionCardArtwork(ctx) || c.Key.Kind() == core.KindCollection || (!c.Upcoming && c.PosterPath != "") {
+			listCtx = frontend.WithArtworkCollection(ctx, c)
+		}
+		entries, _, err := a.entries(listCtx, req)
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		listed = append(listed, listedCollection{req: req, ctx: listCtx, entries: entries})
+		if withMetadata && a.meta != nil {
+			for _, e := range entries {
+				lookups = append(lookups, artworkMetadataLookup{request: req, image: e.image})
+			}
+		}
+	}
+	if len(lookups) > 0 {
+		ctx = a.meta.Preload(ctx, lookups)
+	}
+	out := make(map[core.RatingKey][]frontend.Image, len(listed))
+	for _, item := range listed {
+		images := make([]frontend.Image, 0, len(item.entries))
+		for _, e := range item.entries {
+			img := e.image
+			if withMetadata {
+				metadataCtx := ctx
+				if col, ok := frontend.ArtworkCollection(item.ctx, item.req.Item); ok {
+					metadataCtx = frontend.WithArtworkCollection(ctx, col)
+				}
+				img = a.Metadata(metadataCtx, item.req, img)
+			}
+			images = append(images, img)
+		}
+		out[item.req.Item] = images
 	}
 	return out, nil
 }
@@ -731,11 +856,18 @@ func (a Source) List(ctx context.Context, req frontend.ArtworkRequest) ([]fronte
 	if err != nil {
 		return nil, false, err
 	}
+	withMetadata := !frontend.CollectionCardArtwork(ctx) && a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	if withMetadata && a.meta != nil && len(entries) > 1 {
+		lookups := make([]artworkMetadataLookup, len(entries))
+		for i, e := range entries {
+			lookups[i] = artworkMetadataLookup{request: req, image: e.image}
+		}
+		ctx = a.meta.Preload(ctx, lookups)
+	}
 	out := make([]frontend.Image, 0, len(entries))
-	withMetadata := frontend.ArtworkMetadataWanted(ctx)
 	for _, e := range entries {
 		img := e.image
-		if a.Metadata != nil && withMetadata {
+		if withMetadata {
 			img = a.Metadata(ctx, req, img)
 		}
 		out = append(out, img)

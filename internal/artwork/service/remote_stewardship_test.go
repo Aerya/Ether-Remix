@@ -51,7 +51,7 @@ func TestBackedRemoteCachePersistsTMDBOnDiskWithoutTTLRefetch(t *testing.T) {
 			ImageURL:    imageURL,
 			Now:         func() time.Time { return now },
 		})
-		rc := NewBackedRemoteCache(memBudget, store)
+		rc := NewBackedRemoteCache(store)
 		key := core.MovieKey(550)
 		viewer := &core.User{ID: 1, IsOwner: true}
 		src := Source{

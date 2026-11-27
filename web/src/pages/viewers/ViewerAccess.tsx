@@ -34,6 +34,7 @@ import { ViewerLiveTVAccess } from "./sections/ViewerLiveTV";
 import { ViewerSimkl } from "./sections/ViewerSimkl";
 import { ViewerMDBList } from "./sections/ViewerMDBList";
 import { ViewerTrakt } from "./sections/ViewerTrakt";
+import { ViewerNuvio } from "../../pse/ViewerNuvio"; // PSE-HOOK: liaison Nuvio par spectateur — voir docs/pse/FORK.fr.md
 import { KID_PRESETS, ListText, normalizePolicy, type SafetyPolicy } from "./shared";
 import { librariesApi } from "../libraries/api";
 import {
@@ -199,6 +200,8 @@ export function ViewerAccountSync({ viewer }: { viewer: Viewer }) {
       {config.data ? (
         <>
           <ViewerTrakt viewerId={id} ready={Boolean(trakt?.enabled && trakt.clientId.trim())} />
+          {/* PSE-HOOK: liaison Nuvio par spectateur — voir docs/pse/FORK.fr.md */}
+          <ViewerNuvio viewerId={id} />
           <ViewerSimkl viewerId={id} ready={Boolean(simkl?.enabled && simkl.clientId.trim())} />
           <ViewerMDBList viewerId={id} ready={Boolean(mdblist?.enabled)} />
         </>

@@ -738,14 +738,13 @@ func (rc *recovery) restoreUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.leave()
-	body := http.MaxBytesReader(w, r.Body, backup.MaxUploadBytes)
 	head := make([]byte, 8)
-	n, _ := io.ReadFull(body, head)
+	n, _ := io.ReadFull(r.Body, head)
 	if !backup.IsEncrypted(head[:n]) {
 		recoveryError(w, http.StatusBadRequest, "encrypted_only", "restore an encrypted backup downloaded from Ether here; older unencrypted bundles need the running console")
 		return
 	}
-	st, err := backup.StageUpload(r.Context(), rc.dataDir, io.MultiReader(bytes.NewReader(head[:n]), body), string(raw), uploadFileName(r))
+	st, err := backup.StageUpload(r.Context(), rc.dataDir, io.MultiReader(bytes.NewReader(head[:n]), r.Body), string(raw), uploadFileName(r))
 	if errors.Is(err, backup.ErrBadPassword) {
 		recoveryError(w, http.StatusBadRequest, "bad_password", err.Error())
 		return

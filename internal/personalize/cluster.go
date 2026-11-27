@@ -55,13 +55,13 @@ func (e *Engine) applyRemote(ctx context.Context, hints []string, all bool) {
 		e.clearOwnerRows()
 	}
 	if layout {
-		if d, err := e.store.homeLayout(ctx); err == nil {
+		if pages, err := e.store.loadPages(ctx); err == nil {
 			e.mu.Lock()
-			e.homeLayout = cloneLayout(d)
+			e.pages = pages
 			e.layoutVer++
 			e.mu.Unlock()
 		} else {
-			e.log.Warn("personalize: reload home layout", "err", err)
+			e.log.Warn("personalize: reload recommendations pages", "err", err)
 		}
 	}
 	e.mu.Lock()

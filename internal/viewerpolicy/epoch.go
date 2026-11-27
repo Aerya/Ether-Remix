@@ -89,6 +89,33 @@ func Read(ctx context.Context, db *sql.DB) (int64, error) {
 	return generation, err
 }
 
+// CheckReadSnapshot validates an already-built read response at the statement
+// snapshot. A concurrent uncommitted write stays outside that snapshot. Shared
+// config and the epoch must be checked by the same statement.
+func CheckReadSnapshot(ctx context.Context, db *sql.DB, epoch, version int64, clustered bool) error {
+	if !clustered {
+		generation, err := Read(ctx, db)
+		if err != nil {
+			return err
+		}
+		if generation != epoch {
+			return ErrChanged
+		}
+		return nil
+	}
+	var generation, currentVersion int64
+	err := db.QueryRowContext(ctx, `SELECT generation,
+		COALESCE((SELECT version FROM clusterconfig_shared WHERE id=1),0)
+		FROM viewer_policy_epoch WHERE id=1`).Scan(&generation, &currentVersion)
+	if err != nil {
+		return err
+	}
+	if generation != epoch || currentVersion != version {
+		return ErrChanged
+	}
+	return nil
+}
+
 // Fence locks the epoch until commit. PostgreSQL policy triggers update this
 // same row. SQLite explicitly obtains the write lock even on connections that
 // use deferred transactions; it must not rely on a particular DSN.

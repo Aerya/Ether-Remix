@@ -186,6 +186,22 @@ func (s *Service) Get(id int64) Policy {
 	return p
 }
 
+// All returns a cloned snapshot of every stored viewer policy.
+func (s *Service) All() map[int64]Policy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[int64]Policy, len(s.policies))
+	for id, p := range s.policies {
+		p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
+		p.Bedtime = cloneBedtime(p.Bedtime)
+		p.AllowedHours = append([]int(nil), p.AllowedHours...)
+		p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
+		p.BlockedKeywords = append([]string(nil), p.BlockedKeywords...)
+		out[id] = p
+	}
+	return out
+}
+
 // Validate reports why p cannot be stored, if it cannot.
 func (p Policy) Validate() error {
 	if err := validateBedtime(p.Bedtime); err != nil {

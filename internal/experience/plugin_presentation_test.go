@@ -364,7 +364,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Genres:        []string{dev},
 		})
 	}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{}, "9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,16 +604,17 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	}
 
 	owner := &core.User{ID: 1, IsOwner: true}
-	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
 	if err != nil {
 		t.Fatalf("PluginLibraryRows: %v", err)
 	}
-	// 1 Continue Watching + 23 non-empty declared shelves (empty-topic skipped) = 24 rows (>16 and >8).
-	if len(rows) != 24 {
-		t.Fatalf("expected 24 uncapped rows (continue + 23 non-empty shelves), got %d", len(rows))
+	// 1 Continue Watching + 23 non-empty declared shelves (empty-topic
+	// skipped) + Newest and Recently Added (rows any page may place) = 26.
+	if len(rows) != 26 {
+		t.Fatalf("expected 26 uncapped rows (continue + 23 non-empty shelves + 2 library rows), got %d", len(rows))
 	}
-	if layout.lastSituation.DefaultMaxRows != 24 {
-		t.Fatalf("expected DefaultMaxRows=24 passed to layout, got %d", layout.lastSituation.DefaultMaxRows)
+	if layout.lastSituation.DefaultMaxRows != 26 {
+		t.Fatalf("expected DefaultMaxRows=26 passed to layout, got %d", layout.lastSituation.DefaultMaxRows)
 	}
 	if rows[0].ID != "plugin:12:continue" || len(rows[0].Items) != 1 || rows[0].Items[0].Key != d2.Key {
 		t.Fatalf("row[0] = %+v, want Continue Watching with d2", rows[0])
@@ -627,12 +628,13 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 	if rows[3].ID != "plugin:12:shelf:history-feature" || len(rows[3].Items) != 1 || rows[3].Items[0].Key != d3.Key {
 		t.Fatalf("row[3] = %+v, want AND topic+format shelf (and empty-topic skipped)", rows[3])
 	}
+	// The library's own rows follow the shelves; the page decides which show.
+	if rows[24].ID != "plugin:12:released" || rows[25].ID != "plugin:12:added" {
+		t.Fatalf("library rows = %q, %q", rows[24].ID, rows[25].ID)
+	}
 	for _, r := range rows {
 		if r.ID == "plugin:12:shelf:empty-topic" {
 			t.Fatal("empty shelf must be skipped")
-		}
-		if r.ID == "plugin:12:released" || r.ID == "plugin:12:added" {
-			t.Fatalf("auto row %q must not appear when library.shelves is declared", r.ID)
 		}
 	}
 	for i, q := range plug.browseLog {
@@ -643,8 +645,51 @@ func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
 
 	// With Layout == nil, declared shelves are still not clamped to 8.
 	svc.d.Layout = nil
-	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
-	if err != nil || len(rowsNoLayout) != 24 {
-		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 24", len(rowsNoLayout), err)
+	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
+	if err != nil || len(rowsNoLayout) != 26 {
+		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 26", len(rowsNoLayout), err)
 	}
+
+	// Hide watched on a plugin library page drops the viewer's played titles.
+	svc.d.Layout = hideWatchedLayout{row: "plugin:12:shelf:latest"}
+	svc.d.State = watchedPluginState{fakeInProgressState: fakeInProgressState{inProgress: []core.WatchStatus{{Key: d2.Key, ViewOffset: 30_000}}}, watched: d1.Key}
+	hidden, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range hidden {
+		if r.ID != "plugin:12:shelf:latest" {
+			continue
+		}
+		for _, e := range r.Entries {
+			if e.Title != nil && e.Title.Key == d1.Key {
+				t.Fatalf("hide watched kept the played title: %+v", r.Entries)
+			}
+		}
+	}
+}
+
+// hideWatchedLayout keeps every row and hides watched titles on one.
+type hideWatchedLayout struct{ row string }
+
+func (h hideWatchedLayout) FinalizeNeutralHome(_ context.Context, _ *core.User, _ core.HomeSituation, _ string, rows []core.NeutralHomeRow) ([]core.NeutralHomeRow, error) {
+	for i := range rows {
+		rows[i].HideWatched = rows[i].ID == h.row
+	}
+	return rows, nil
+}
+
+type watchedPluginState struct {
+	fakeInProgressState
+	watched core.RatingKey
+}
+
+func (w watchedPluginState) GetMany(_ context.Context, _ int64, keys []core.RatingKey) (map[core.RatingKey]core.WatchStatus, error) {
+	out := map[core.RatingKey]core.WatchStatus{}
+	for _, k := range keys {
+		if k == w.watched {
+			out[k] = core.WatchStatus{Key: k, ViewCount: 1}
+		}
+	}
+	return out, nil
 }

@@ -40,11 +40,32 @@ var (
 	ErrNotFound = errors.New("blobcache: blob not found")
 	// ErrTooLarge is returned when a blob exceeds the namespace or shared quota.
 	ErrTooLarge = errors.New("blobcache: blob exceeds quota")
+	// ErrQuotaFull is returned when a write or reservation cannot fit because
+	// the namespace quota or shared cap is currently occupied by non-evictable
+	// data (such as open blobs or active partials) or tight disk headroom.
+	// Errors matching ErrQuotaFull also match ErrTooLarge via errors.Is.
+	ErrQuotaFull = errors.New("blobcache: quota reached")
 	// ErrClosed is returned on mutating operations after Close.
 	ErrClosed = errors.New("blobcache: cache closed")
 	// ErrBadRef is returned when a blob reference is not "blob:<64-hex>".
 	ErrBadRef = errors.New("blobcache: invalid blob reference")
 )
+
+type quotaFullError struct {
+	msg string
+}
+
+func (e quotaFullError) Error() string { return e.msg }
+
+func (e quotaFullError) Is(target error) bool {
+	return target == ErrTooLarge || target == ErrQuotaFull
+}
+
+func quotaFullErrorf(format string, args ...any) error {
+	return quotaFullError{
+		msg: fmt.Sprintf("%s: %s", ErrTooLarge.Error(), fmt.Sprintf(format, args...)),
+	}
+}
 
 // Ref is a content-addressed blob reference ("blob:<sha256>").
 type Ref string
@@ -115,6 +136,8 @@ type Cache struct {
 
 	floorMu sync.Mutex
 	diskFn  segcache.DiskUsageFunc
+
+	evictMu sync.Mutex // serializes global cap eviction and cross-namespace reservations
 
 	mu         sync.Mutex
 	closed     bool
@@ -288,9 +311,9 @@ func (c *Cache) SweepAll() {
 	}
 	c.mu.Unlock()
 	for _, ns := range nss {
-		ns.Sweep()
+		ns.Sweep(0)
 	}
-	c.enforceGlobalLimit()
+	c.enforceGlobalLimit(0)
 }
 
 // TotalStats returns aggregate bytes and blob count across all namespaces.
@@ -307,6 +330,27 @@ func (c *Cache) TotalStats() (bytes int64, blobs int) {
 		blobs += n
 	}
 	return bytes, blobs
+}
+
+func (c *Cache) totalReserved() int64 {
+	c.mu.Lock()
+	nss := make([]*Namespace, 0, len(c.namespaces))
+	for _, ns := range c.namespaces {
+		nss = append(nss, ns)
+	}
+	c.mu.Unlock()
+	var reserved int64
+	for _, ns := range nss {
+		ns.mu.Lock()
+		reserved += ns.partialReserved
+		ns.mu.Unlock()
+	}
+	return reserved
+}
+
+func (c *Cache) totalAccounted() int64 {
+	used, _ := c.TotalStats()
+	return used + c.totalReserved()
 }
 
 // EffectiveSharedCap computes the global cap across all plugin libraries:
@@ -347,14 +391,30 @@ type globalCandidate struct {
 	size     int64
 }
 
-// enforceGlobalLimit evicts the oldest blobs across all namespaces when total
-// usage exceeds EffectiveSharedCap(). Each namespace independently manages its
-// own quota via Sweep(); this only acts when the combined usage breaches the
-// shared disk cap or free-space floor.
-func (c *Cache) enforceGlobalLimit() {
+// enforceGlobalLimit evicts idle partials and least-recently-opened non-open
+// blobs across all namespaces until totalAccounted() + need <= EffectiveSharedCap().
+// Active partials and currently open blobs are never evicted.
+func (c *Cache) enforceGlobalLimit(need int64) {
+	c.enforceGlobalLimitProtected(need, nil, "")
+}
+
+func (c *Cache) enforceGlobalLimitProtected(need int64, protectNS *Namespace, protectHash string) {
+	c.evictMu.Lock()
+	defer c.evictMu.Unlock()
+	c.enforceGlobalLimitLocked(need, protectNS, protectHash)
+}
+
+func (c *Cache) enforceGlobalLimitLocked(need int64, protectNS *Namespace, protectHash string) {
+	if need < 0 {
+		need = 0
+	}
 	limit := c.EffectiveSharedCap()
-	used, _ := c.TotalStats()
-	if used <= limit {
+	target := limit
+	if need <= limit {
+		target = limit - need
+	}
+	accounted := c.totalAccounted()
+	if accounted <= target {
 		return
 	}
 	c.mu.Lock()
@@ -366,14 +426,14 @@ func (c *Cache) enforceGlobalLimit() {
 
 	// Evict idle incomplete partials oldest-first before touching completed blobs.
 	for _, pc := range c.collectIdlePartials(nss) {
-		if used <= limit {
+		if accounted <= target {
 			break
 		}
 		if freed := pc.ns.evictPartial(pc.id); freed > 0 {
-			used -= freed
+			accounted -= freed
 		}
 	}
-	if used <= limit {
+	if accounted <= target {
 		return
 	}
 
@@ -381,6 +441,9 @@ func (c *Cache) enforceGlobalLimit() {
 	for _, ns := range nss {
 		ns.mu.Lock()
 		for h, e := range ns.blobs {
+			if ns.isOpenLocked(h) || (ns == protectNS && h == protectHash) {
+				continue
+			}
 			cands = append(cands, globalCandidate{
 				ns:       ns,
 				hash:     h,
@@ -398,11 +461,11 @@ func (c *Cache) enforceGlobalLimit() {
 	})
 	touched := make(map[*Namespace]bool)
 	for _, cand := range cands {
-		if used <= limit {
+		if accounted <= target {
 			break
 		}
 		if freed := cand.ns.evictHash(cand.hash); freed > 0 {
-			used -= freed
+			accounted -= freed
 			touched[cand.ns] = true
 		}
 	}
@@ -588,18 +651,21 @@ type Namespace struct {
 	libraryKey string
 	dir        string
 
-	mu           sync.Mutex
-	quota        Quota
-	used         int64
-	blobs        map[string]*blobEntry    // sha256 hex -> entry
-	keys         map[string]string        // caller key -> sha256 hex
-	flights      map[string]*putFlight    // single-flight per caller key
-	partials     map[string]*partialEntry // partial id -> tracked partial
-	partialUsed  int64                    // total bytes staged in partials
-	partialLocks map[string]chan struct{} // active partial writers by id
-	dirty        bool
-	lastSaved    time.Time
-	tempSeq      atomic.Uint64
+	mu                  sync.Mutex
+	quota               Quota
+	used                int64
+	blobs               map[string]*blobEntry    // sha256 hex -> entry
+	openCounts          map[string]int           // sha256 hex -> active Open handles
+	keys                map[string]string        // caller key -> sha256 hex
+	flights             map[string]*putFlight    // single-flight per caller key
+	partials            map[string]*partialEntry // partial id -> tracked partial
+	partialUsed         int64                    // total bytes staged in partials
+	partialReservations map[string]int64         // active partial id -> remaining reserved bytes
+	partialReserved     int64                    // sum of partialReservations
+	partialLocks        map[string]chan struct{} // active partial writers by id
+	dirty               bool
+	lastSaved           time.Time
+	tempSeq             atomic.Uint64
 
 	saveMu sync.Mutex
 }
@@ -609,16 +675,18 @@ func newEmptyNamespace(c *Cache, key string, quota Quota) *Namespace {
 		quota.MaxBytes = DefaultMaxBytes
 	}
 	return &Namespace{
-		cache:        c,
-		key:          key,
-		libraryKey:   key,
-		dir:          filepath.Join(c.dir, key),
-		quota:        quota,
-		blobs:        make(map[string]*blobEntry),
-		keys:         make(map[string]string),
-		flights:      make(map[string]*putFlight),
-		partials:     make(map[string]*partialEntry),
-		partialLocks: make(map[string]chan struct{}),
+		cache:               c,
+		key:                 key,
+		libraryKey:          key,
+		dir:                 filepath.Join(c.dir, key),
+		quota:               quota,
+		blobs:               make(map[string]*blobEntry),
+		openCounts:          make(map[string]int),
+		keys:                make(map[string]string),
+		flights:             make(map[string]*putFlight),
+		partials:            make(map[string]*partialEntry),
+		partialReservations: make(map[string]int64),
+		partialLocks:        make(map[string]chan struct{}),
 	}
 }
 
@@ -751,7 +819,7 @@ func (n *Namespace) SetQuota(q Quota) {
 	}
 	n.quota.TTL = q.TTL
 	n.mu.Unlock()
-	n.Sweep()
+	n.Sweep(0)
 }
 
 // Quota returns the namespace's current quota.
@@ -790,7 +858,7 @@ func (n *Namespace) LookupKey(key string) (Ref, bool) {
 	}
 	if n.isExpiredLocked(e, now) {
 		n.mu.Unlock()
-		n.Sweep()
+		n.Sweep(0)
 		return "", false
 	}
 	n.mu.Unlock()
@@ -955,13 +1023,13 @@ func (n *Namespace) PutWithExpectedSHA256(ctx context.Context, key string, r io.
 		}
 	}
 	n.dirty = true
-	overNamespace := n.used+n.partialUsed > n.quota.EffectiveMaxBytes()
+	overNamespace := n.used+n.partialUsed+n.partialReserved > n.quota.EffectiveMaxBytes()
 	n.mu.Unlock()
 
 	if overNamespace {
-		n.Sweep()
+		n.sweep(0, digest)
 	}
-	n.cache.enforceGlobalLimit()
+	n.cache.enforceGlobalLimitProtected(0, n, digest)
 	n.flushIndex()
 	return Ref("blob:" + digest), nil
 }
@@ -1034,15 +1102,18 @@ func (n *Namespace) Open(ref Ref) (ByteSource, error) {
 		return nil, ErrNotFound
 	}
 	if n.isExpiredLocked(e, now) {
+		isOpen := n.isOpenLocked(hash)
 		n.mu.Unlock()
-		n.evictHash(hash)
-		n.flushIndex()
+		if !isOpen {
+			n.evictHash(hash)
+			n.flushIndex()
+		}
 		return nil, ErrNotFound
 	}
 	path := n.blobPath(hash)
 	f, err := os.Open(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) && !n.isOpenLocked(hash) {
 			n.dropEntryLocked(hash)
 			n.dirty = true
 		}
@@ -1052,6 +1123,7 @@ func (n *Namespace) Open(ref Ref) (ByteSource, error) {
 		}
 		return nil, err
 	}
+	n.openCounts[hash]++
 	e.LastOpen = nowNs
 	n.dirty = true
 	shouldFlush := now.Sub(n.lastSaved) >= atimeSaveDebounce
@@ -1076,7 +1148,23 @@ func (n *Namespace) Open(ref Ref) (ByteSource, error) {
 		name:       name,
 		mime:       mimeType,
 		libraryKey: libKey,
+		ns:         n,
+		hash:       hash,
 	}, nil
+}
+
+func (n *Namespace) isOpenLocked(hash string) bool {
+	return n.openCounts[hash] > 0
+}
+
+func (n *Namespace) releaseOpen(hash string) {
+	n.mu.Lock()
+	if c := n.openCounts[hash]; c <= 1 {
+		delete(n.openCounts, hash)
+	} else {
+		n.openCounts[hash] = c - 1
+	}
+	n.mu.Unlock()
 }
 
 func (n *Namespace) isExpiredLocked(e *blobEntry, now time.Time) bool {
@@ -1104,6 +1192,10 @@ func (n *Namespace) dropEntryLocked(hash string) int64 {
 
 func (n *Namespace) evictHash(hash string) int64 {
 	n.mu.Lock()
+	if n.isOpenLocked(hash) {
+		n.mu.Unlock()
+		return 0
+	}
 	freed := n.dropEntryLocked(hash)
 	if freed > 0 {
 		n.dirty = true
@@ -1143,16 +1235,27 @@ func (n *Namespace) Delete(ref Ref) (bool, error) {
 	return true, nil
 }
 
-// Sweep evicts TTL-expired blobs and then LRU-evicts by last-open time until
-// the namespace's usage is at or below its MaxBytes quota (and any disk-floor
-// constraint).
-func (n *Namespace) Sweep() {
+// Sweep evicts TTL-expired blobs and idle partials, then LRU-evicts idle
+// partials and least-recently-opened non-open blobs until
+// used + partialUsed + partialReserved + need <= maxBytes.
+// Currently open blobs and active partials are never evicted.
+func (n *Namespace) Sweep(need int64) {
+	n.sweep(need, "")
+}
+
+func (n *Namespace) sweep(need int64, protectHash string) {
+	if need < 0 {
+		need = 0
+	}
 	now := n.cache.now()
 	n.mu.Lock()
 	maxBytes := n.quota.EffectiveMaxBytes()
 	var expired []string
 	var active []*blobEntry
 	for h, e := range n.blobs {
+		if n.isOpenLocked(h) || h == protectHash {
+			continue
+		}
 		if n.isExpiredLocked(e, now) {
 			expired = append(expired, h)
 		} else {
@@ -1167,8 +1270,12 @@ func (n *Namespace) Sweep() {
 			pathsToRemove = append(pathsToRemove, n.blobPath(h))
 		}
 	}
-	pathsToRemove = append(pathsToRemove, n.sweepPartialsLocked(now, maxBytes)...)
-	if n.used+n.partialUsed > maxBytes {
+	target := maxBytes
+	if need <= maxBytes {
+		target = maxBytes - need
+	}
+	pathsToRemove = append(pathsToRemove, n.sweepPartialsLocked(now, target)...)
+	if n.used+n.partialUsed+n.partialReserved > target {
 		sort.Slice(active, func(i, j int) bool {
 			if active[i].LastOpen != active[j].LastOpen {
 				return active[i].LastOpen < active[j].LastOpen
@@ -1176,7 +1283,7 @@ func (n *Namespace) Sweep() {
 			return active[i].Hash < active[j].Hash
 		})
 		for _, e := range active {
-			if n.used+n.partialUsed <= maxBytes {
+			if n.used+n.partialUsed+n.partialReserved <= target {
 				break
 			}
 			if n.dropEntryLocked(e.Hash) > 0 {
@@ -1204,10 +1311,13 @@ func (n *Namespace) Purge() {
 
 	n.mu.Lock()
 	n.blobs = make(map[string]*blobEntry)
+	n.openCounts = make(map[string]int)
 	n.keys = make(map[string]string)
 	n.partials = make(map[string]*partialEntry)
+	n.partialReservations = make(map[string]int64)
 	n.used = 0
 	n.partialUsed = 0
+	n.partialReserved = 0
 	n.dirty = false
 	dir := n.dir
 	n.mu.Unlock()
@@ -1231,6 +1341,10 @@ type fileSource struct {
 	name       string
 	mime       string
 	libraryKey string
+	ns         *Namespace
+	hash       string
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) {
@@ -1249,4 +1363,12 @@ func (s *fileSource) Size() int64        { return s.size }
 func (s *fileSource) Name() string       { return s.name }
 func (s *fileSource) MIME() string       { return s.mime }
 func (s *fileSource) LibraryKey() string { return s.libraryKey }
-func (s *fileSource) Close() error       { return s.f.Close() }
+func (s *fileSource) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = s.f.Close()
+		if s.ns != nil && s.hash != "" {
+			s.ns.releaseOpen(s.hash)
+		}
+	})
+	return s.closeErr
+}

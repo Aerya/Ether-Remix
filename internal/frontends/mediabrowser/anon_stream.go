@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"context"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -459,8 +460,13 @@ func (i *instance) serveAnonymousStream(w http.ResponseWriter, r *http.Request, 
 			return false
 		}
 	}
+	r = r.WithContext(context.WithValue(r.Context(), verifiedDeviceKey{}, entry.device))
 	i.anon.touch(peer, key, entry.seq)
 	viewer := entry.viewer
+	if _, ok := i.authorizePlaybackItem(r, &viewer, key); !ok {
+		http.NotFound(w, r)
+		return true
+	}
 	versionScope, err := i.versionScope(r, &viewer)
 	if err != nil {
 		return false
@@ -519,7 +525,7 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 	fullTimeline := i.protocol == "jellyfin" && format == frontend.StreamHLS
 	url, err := i.host.Sessions.StartStream(r.Context(), access, sessionID, frontend.StreamRequest{Format: format, FullTimeline: fullTimeline})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if !strings.HasPrefix(url, "/sessions/media/") || strings.ContainsAny(url, "\r\n") {

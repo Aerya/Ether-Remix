@@ -81,7 +81,7 @@ func (i *instance) suggestions(w http.ResponseWriter, r *http.Request) {
 	seen := map[frontend.RatingKey]bool{}
 	wireTypes := map[frontend.MediaType]string{"movie": "movie", "show": "series", "season": "season", "episode": "episode"}
 	for _, row := range rows {
-		if !personalRowAllowed(personalHomeConfig{}, row) {
+		if !personalShelfCompatible(row) {
 			continue
 		}
 		for _, title := range personalTitles(row) {

@@ -18,6 +18,8 @@ import { useState } from "react";
 import { ActionMenu } from "../../components/ActionMenu";
 import { SectionHeading } from "../../components/feedback";
 import { ChipGroup, Field, NumberInput, Segmented } from "../../components/fields";
+import { useAsync } from "../../lib/hooks";
+import { metadataSources } from "../../lib/metadataSources";
 import type { CollectionSpec, Rule, RuleField } from "../../lib/contract";
 import { t, tx } from "../../i18n";
 import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
@@ -49,6 +51,10 @@ function fieldMenu(onPick: (f: RuleField) => void): ContextMenuEntry[] {
   return out;
 }
 
+function needsTMDB(kind: string) {
+  return kind.startsWith("tmdb") || kind === "watchProvider";
+}
+
 export function BuildPanel({
   spec,
   update,
@@ -58,11 +64,15 @@ export function BuildPanel({
   spec: CollectionSpec;
   update: SpecUpdate;
   region: string;
-  /** Open the Stremio add-on catalog picker straight away. */
   pickAddonCatalog?: boolean;
 }) {
   const [sourceError, setSourceError] = useState("");
   const [addonCatalogs, setAddonCatalogs] = useState(pickAddonCatalog);
+  const metadata = useAsync(metadataSources, []);
+  const tmdbUnavailable = metadata.data?.some(
+    (source) => source.id === "tmdb" && !source.configured,
+  );
+  const unavailableNote = t("TMDB lists and discovery need a configured TMDB source.");
   const setRules = (key: "rules" | "exclude", rules: Rule[]) => update({ [key]: rules });
   // Source kinds come from the descriptor registry (built-ins and plugins
   // in one list); the console keeps no kind list of its own.
@@ -103,7 +113,8 @@ export function BuildPanel({
       .filter(
         (d) =>
           (d.id !== "catalog" || !spec.sources.some((s) => s.kind === "catalog")) &&
-          !d.owner.startsWith("addon."),
+          !d.owner.startsWith("addon.") &&
+          !(tmdbUnavailable && needsTMDB(d.id)),
       )
       .map((d) => ({
         key: d.id,
@@ -211,6 +222,7 @@ export function BuildPanel({
             </ActionMenu>
           }
         />
+        {tmdbUnavailable ? <p className="mb-2 text-sm text-fg-muted">{unavailableNote}</p> : null}
         {registry.error ? (
           <p role="alert" className="mb-2 text-sm text-danger">
             {t("Source kinds could not be loaded.")}{" "}
@@ -231,6 +243,7 @@ export function BuildPanel({
               removable={spec.sources.length > 1}
               descriptor={sourceDescriptor(descriptors, s.kind)}
               descriptors={descriptors}
+              unavailable={tmdbUnavailable && needsTMDB(s.kind) ? unavailableNote : undefined}
               lookupPolicy={
                 s.kind === "catalog" && spec.sources.length === 1
                   ? {

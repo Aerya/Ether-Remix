@@ -125,6 +125,15 @@ ALTER TABLE plugin_sync_state ADD COLUMN guard_json TEXT NOT NULL DEFAULT '';
 	store.RegisterSQLiteApply("pluginitems", 18, applyMigration18SQLite)
 	store.RegisterPostgresApply("pluginitems", 18, applyMigration18Postgres)
 
+	// Migration 19 (#768): bound PostgreSQL btree index entries on
+	// plugin_item_fields, plugin_item_field_tally, and plugin_item_person_tally
+	// with md5(...) / left(..., 256) expressions so any validated field value
+	// up to MaxFieldRunes (4,000 runes) fits well under PostgreSQL's 2,704-byte
+	// btree tuple limit. SQLite has no btree tuple cap and keeps its covering
+	// indexes unchanged.
+	store.Register("pluginitems", 19, `SELECT 1;`)
+	store.RegisterDialect("pluginitems", 19, store.Postgres, migration19PostgresDDL)
+
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
 	// (field, 0, item_ref) entries for every text value. Both SQLite and
@@ -849,6 +858,7 @@ func (s *Service) KindBackends() plugins.KindBackends {
 	return plugins.KindBackends{
 		KindUpsert:      s.KindUpsert,
 		KindUpsertStats: s.KindUpsertWithStats,
+		KindUpsertUndo:  s.KindUpsertWithUndo,
 		KindDelete:      s.KindDelete,
 		KindItems:       s.KindItems,
 		KindItemsByID:   s.KindItemsByID,

@@ -41,8 +41,8 @@ import (
 )
 
 var (
-	_ core.Collections    = (*Service)(nil)
-	_ core.CollectionRows = (*Service)(nil)
+	_ core.Collections            = (*Service)(nil)
+	_ core.CollectionLayoutSource = (*Service)(nil)
 )
 
 // TitleUpserter adds titles to the catalogue mirror; *catalog.Catalog
@@ -73,12 +73,15 @@ type Service struct {
 	// PSE-HOOK: appelé après chaque reconstruction réussie d'une collection — voir docs/pse/FORK.fr.md
 	builtHook atomic.Pointer[func()]
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
-	describeMu      sync.Mutex
-	describeJobs    map[string]*describeJob
-	describeDrafts  map[string]*describeDraft
-	describeActive  int
-	describeAgent   CollectionDraftAgent
-	vibe            *vibeRegistry
+	describeMu     sync.Mutex
+	describeJobs   map[string]*describeJob
+	describeDrafts map[string]*describeDraft
+	describeActive int
+	describeAgent  CollectionDraftAgent
+	vibe           *vibeRegistry
+	// Plugin list rows placed directly on pages (plugin_list_rows.go).
+	listRowsOnce    sync.Once
+	listRows        *listRows
 	vibeTTL         time.Duration
 	vibeMax         int
 	scorer          atomic.Pointer[scorerBox]
@@ -88,6 +91,7 @@ type Service struct {
 	images          *artwork.Images
 	catCfg          func() config.Catalog
 	librarySections func(context.Context) map[int]core.MediaType
+	cardFilter      func(context.Context, *core.User, core.MediaType) (core.Filter, bool, error)
 	kinds           *KindRegistry
 	traktCfg        func() config.Trakt
 	sealer          config.FieldSealer
@@ -215,11 +219,8 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 		s.bases = s.opts.bases.withDefaults()
 	}
 	ctx := context.Background()
-	if err := s.seedBuiltins(ctx); err != nil {
-		return nil, fmt.Errorf("collections: built-ins: %w", err)
-	}
-	if err := s.separateDiscoveryCollections(ctx); err != nil {
-		return nil, err
+	if err := s.purgeSpecs(ctx, `slug LIKE 'plugin:%' AND builtin=0`); err != nil {
+		return nil, fmt.Errorf("collections: retire plugin row collections: %w", err)
 	}
 	if err := s.adoptLibraryDefaultTemplates(ctx); err != nil {
 		return nil, err
@@ -707,12 +708,8 @@ type personalEntry struct {
 
 // serve returns the members a user sees: content-rating and personal
 // rules applied, personal order, limit, rotation.
-func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
+func (s *Service) pseServeMembers(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
 	ctx = core.WithCatalogViewer(ctx, user)
-	viewer := core.CatalogViewerID(ctx)
-	if user != nil {
-		viewer = user.ID
-	}
 
 	ms, err := s.membersFor(ctx, row, wait)
 	if err != nil {
@@ -723,12 +720,22 @@ func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.Use
 	if err != nil {
 		return nil, err
 	}
+	return s.serveMembers(ctx, row, user, ms, snap), nil
+}
+
+func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.User, ms *memberSet, snap *snapshot) []core.RatingKey {
+	if !visible(row, user) {
+		return nil
+	}
+	ctx = core.WithCatalogViewer(ctx, user)
+	viewer := core.CatalogViewerID(ctx)
 	authorized, err := s.authorizedMembers(ctx, row, ms.keys, viewer)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	present := make([]core.RatingKey, 0, len(authorized))
 	for _, k := range authorized {
+
 		if snap.entries[k] != nil {
 			present = append(present, k)
 		}
@@ -763,7 +770,7 @@ func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.Use
 	if sp.Rotate != nil && sp.Rotate.Size > 0 {
 		keys = rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), s.now())
 	}
-	return keys, nil
+	return keys
 }
 
 const personalTTL = 10 * time.Minute
@@ -821,13 +828,16 @@ func (s *Service) personalOrder(ctx context.Context, id int64, hash string, user
 
 // visible reports whether a user may see a collection at all.
 func visible(row *specRow, user *core.User) bool {
+	if row.spec.Users != nil && !row.spec.Users.Includes(user) {
+		return false
+	}
 	if !row.enabled {
 		return false
 	}
 	if row.owner != 0 {
 		return user != nil && user.ID == row.owner
 	}
-	return row.spec.Targets.Users.Includes(user)
+	return true
 }
 
 func typeMatches(sp core.CollectionSpec, t core.MediaType) bool {
@@ -856,6 +866,10 @@ func sectionKeys(keys []core.RatingKey, typ core.MediaType) []core.RatingKey {
 }
 
 func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.User, t core.MediaType, keys []core.RatingKey) core.Collection {
+	return s.collectionWithArt(ctx, row, t, keys, nil)
+}
+
+func (s *Service) collectionWithArt(ctx context.Context, row *specRow, t core.MediaType, keys []core.RatingKey, art map[core.RatingKey]core.Title) core.Collection {
 	if row.spec.MediaType == MediaMixed && t != "" {
 		keys = sectionKeys(keys, t)
 	}
@@ -904,20 +918,29 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 		}
 	}
 	if (c.PosterPath == "" || c.BackdropPath == "" || c.Type == "") && len(keys) > 0 {
-		if ts, err := s.mirror.ArtSummary(ctx, keys[:min(len(keys), 4)]); err == nil {
-			for _, mt := range ts {
-				if c.Type == "" {
-					c.Type = mt.Type
+		head := keys[:min(len(keys), 4)]
+		var ts []core.Title
+		if art == nil {
+			ts, _ = s.mirror.ArtSummary(ctx, head)
+		} else {
+			for _, key := range head {
+				if title, ok := art[key]; ok {
+					ts = append(ts, title)
 				}
-				if c.PosterPath == "" && mt.PosterPath != "" {
-					c.PosterPath = mt.PosterPath
-				}
-				if c.BackdropPath == "" && mt.BackdropPath != "" {
-					c.BackdropPath = mt.BackdropPath
-				}
-				if c.PosterPath != "" && c.BackdropPath != "" {
-					break
-				}
+			}
+		}
+		for _, mt := range ts {
+			if c.Type == "" {
+				c.Type = mt.Type
+			}
+			if c.PosterPath == "" && mt.PosterPath != "" {
+				c.PosterPath = mt.PosterPath
+			}
+			if c.BackdropPath == "" && mt.BackdropPath != "" {
+				c.BackdropPath = mt.BackdropPath
+			}
+			if c.PosterPath != "" && c.BackdropPath != "" {
+				break
 			}
 		}
 	}
@@ -1064,7 +1087,7 @@ func (s *Service) list(ctx context.Context, user *core.User, t core.MediaType, w
 		return rows[i].builtin && !rows[j].builtin
 	})
 	for _, row := range rows {
-		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, t) {
+		if !visible(row, user) || !row.spec.BrowseInApps || !typeMatches(row.spec, t) {
 			continue
 		}
 		wait := row.spec.Refresh == RefreshLive || time.Now().Before(deadline)
@@ -1315,6 +1338,33 @@ func (s *Service) CheckMembersBatch(ctx context.Context, user *core.User, keys [
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(want) == 0 || scanLimit <= 0 {
+		bySection := make(map[core.MediaType][]*specRow)
+		for _, key := range uniqueKeys {
+			base, section := key.CollectionSection()
+			if key.IsEphemeral() || base.Kind() != core.KindSmart {
+				if c, err := s.Get(ctx, user, key); err == nil && c != nil {
+					cols[key] = c
+				}
+				continue
+			}
+			row := rowsByID[base.TMDB()]
+			if row == nil || !visible(row, user) || section != "" && (row.spec.MediaType != MediaMixed || !typeMatches(row.spec, section)) {
+				continue
+			}
+			bySection[section] = append(bySection[section], row)
+		}
+		for section, rows := range bySection {
+			headers, err := s.collectionHeaders(ctx, rows, user, section)
+			if err != nil {
+				return nil, nil, err
+			}
+			for i := range headers {
+				cols[headers[i].Key] = &headers[i]
+			}
+		}
+		return cols, matched, nil
+	}
 	type pendingSmart struct {
 		key      core.RatingKey
 		wantList []core.RatingKey
@@ -1441,7 +1491,7 @@ func (s *Service) AllowsPlaceholders(ctx context.Context, user *core.User, colle
 		return false
 	}
 	row, err := s.rowByKey(ctx, collection)
-	return err == nil && visible(row, user) && row.spec.Targets.CollectionsTab && row.spec.Targets.Schedule.Allows(device, s.now()) && (row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed")
+	return err == nil && visible(row, user) && row.spec.BrowseInApps && (row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed")
 }
 
 func (s *Service) Placeholder(ctx context.Context, user *core.User, collection, key core.RatingKey, device string) (*core.Title, error) {
@@ -1454,7 +1504,7 @@ func (s *Service) Placeholder(ctx context.Context, user *core.User, collection, 
 		return nil, core.ErrNotFound
 	}
 	row, err := s.rowByKey(ctx, collection)
-	if err != nil || !visible(row, user) || !row.spec.Targets.CollectionsTab || !row.spec.Targets.Schedule.Allows(device, s.now()) || (row.spec.ReleaseMode != "upcoming" && row.spec.ReleaseMode != "mixed") {
+	if err != nil || !visible(row, user) || !row.spec.BrowseInApps || (row.spec.ReleaseMode != "upcoming" && row.spec.ReleaseMode != "mixed") {
 		return nil, core.ErrNotFound
 	}
 	keys, err := s.serve(ctx, row, user, true)

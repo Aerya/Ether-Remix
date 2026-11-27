@@ -114,7 +114,7 @@ func libraryWire(view frontend.View) object {
 	var tabs []object
 	if !isPlugin && len(view.Tabs) == 0 {
 		tabs = []object{
-			{"id": "recommended", "label": "Recommended", "kind": "recommended"},
+			{"id": "recommended", "label": "Recommendations", "kind": "recommended"},
 			{"id": "library", "label": "Library", "kind": "library"},
 		}
 		if kind == "movies" || kind == "shows" {
@@ -124,7 +124,7 @@ func libraryWire(view frontend.View) object {
 		srcTabs := view.Tabs
 		if len(srcTabs) == 0 {
 			srcTabs = []frontend.ViewTab{
-				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
+				{ID: "recommended", Label: "Recommendations", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library", Search: true},
 			}
 		}
@@ -213,6 +213,7 @@ func libraryWire(view frontend.View) object {
 		"artwork":      []object{},
 		"dateDisplay":  dateDisplay,
 		"presentation": object{"card": card},
+		"experience":   view.EffectiveExperience(),
 		"tabs":         tabs,
 		"browse":       object{"sorts": sorts, "defaultSort": defaultSort, "defaultDirection": defaultDirection, "filters": filters},
 	}
@@ -859,20 +860,12 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			fail(w, frontend.ErrLiveGuideStale)
 			return
 		}
-		var srcRows []frontend.Row
-		if tabID != "" {
-			if tabReader, ok := i.host.Experience.(frontend.PluginLibraryTabRowsReader); ok {
-				srcRows, err = tabReader.PluginLibraryTabRows(r.Context(), v, requestDevice(r), id, tabID)
-			} else {
-				srcRows, err = reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
-			}
-		} else {
-			srcRows, err = reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
-		}
+		srcRows, err := reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id, tabID)
 		if err != nil {
 			fail(w, err, r)
 			return
 		}
+		assignRowKeys(srcRows)
 		start := min(c.Offset, len(srcRows))
 		end := min(start+pageLimit, len(srcRows))
 		pageRows := srcRows[start:end]
@@ -881,7 +874,7 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			effectiveView.Card = activeTab.Card
 		}
 		markLandscapeRows(pageRows, effectiveView)
-		rows, err := i.rowsToWire(r, v, token, pageRows, nil, false, defaultRowItemLimit)
+		rows, err := i.rowsToWire(r, v, token, pageRows, &effectiveView, nil, false, defaultRowItemLimit)
 		if err != nil {
 			fail(w, err, r)
 			return

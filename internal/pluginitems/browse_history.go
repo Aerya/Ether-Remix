@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // browseLastViewed returns a keyset-paged slice of plugin items ordered by the
@@ -16,9 +17,7 @@ import (
 func (s *Service) browseLastViewed(
 	ctx context.Context,
 	q BrowseQuery,
-	viewerID int64,
-	baseWhere string,
-	baseArgs []any,
+	plan browseQueryPlan,
 	hasFacets bool,
 	parentRef string,
 	level string,
@@ -26,6 +25,7 @@ func (s *Service) browseLastViewed(
 	desc bool,
 	limit int,
 ) (BrowsePage, error) {
+	viewerID := plan.viewerID
 	var cur browseCursor
 	hasCursor := strings.TrimSpace(q.Cursor) != ""
 	if hasCursor {
@@ -79,13 +79,16 @@ rolled AS (
 	phase0Count := 0
 
 	// Phase 0: dated watch history from state_watch (including ancestor
-	// rollups), bounded to this viewer and library.
+	// rollups), bounded to this viewer and library. Because Phase 0 drives
+	// from rolled watch rows, apply the full item predicate (including the
+	// driver facet as correlated EXISTS when present).
 	if viewerID > 0 && (!hasCursor || cur.Phase == 0) {
+		fullWhere, fullArgs := plan.fullWhereAndArgs()
 		var p0Where strings.Builder
-		p0Args := make([]any, 0, len(baseArgs)+6)
+		p0Args := make([]any, 0, len(fullArgs)+6)
 		p0Args = append(p0Args, viewerID, int64(q.LibraryID))
-		fmt.Fprintf(&p0Where, `i.item_ref = r.item_ref AND (%s)`, baseWhere)
-		p0Args = append(p0Args, baseArgs...)
+		fmt.Fprintf(&p0Where, `i.item_ref = r.item_ref AND (%s)`, fullWhere)
+		p0Args = append(p0Args, fullArgs...)
 
 		if hasCursor && !cur.StartPhase {
 			if desc {
@@ -145,7 +148,7 @@ LIMIT ?`
 					return BrowsePage{}, err
 				}
 			}
-			total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, false, len(items))
+			total, totalExact, err := s.resolveBrowseTotal(ctx, q, plan, hasFacets, parentRef, tally, false, len(items))
 			if err != nil {
 				return BrowsePage{}, err
 			}
@@ -162,36 +165,67 @@ LIMIT ?`
 	// has any remaining rows without over-fetching.
 	need := limit + 1 - len(items)
 	if need > 0 {
+		isPG := store.DialectOf(s.db) == store.Postgres
+		cols := prefixedItemCols("i.")
+		p1Where := plan.baseWhere
+		p1ItemArgs := append([]any(nil), plan.baseArgs...)
+		if viewerID > 0 {
+			p1Where += ` AND NOT EXISTS (SELECT 1 FROM rolled _r WHERE _r.item_ref = i.item_ref)`
+		}
+		if hasCursor && cur.Phase == 1 && !cur.StartPhase {
+			p1Where += ` AND (i.sort_title >= ? AND (i.sort_title > ? OR i.item_ref > ?))`
+			p1ItemArgs = append(p1ItemArgs, cur.StrVal, cur.StrVal, cur.ItemRef)
+		}
+
 		var querySQL string
 		var p1Args []any
-		p1Where := baseWhere
-		if viewerID > 0 {
-			p1Args = make([]any, 0, len(baseArgs)+6)
+		switch {
+		case viewerID > 0 && plan.driver != nil:
+			p1Args = make([]any, 0, 2+len(plan.driver.cteArgs)+len(p1ItemArgs)+1)
 			p1Args = append(p1Args, viewerID, int64(q.LibraryID))
-			p1Args = append(p1Args, baseArgs...)
-			p1Where += ` AND i.item_ref NOT IN (SELECT item_ref FROM rolled)`
-			if hasCursor && cur.Phase == 1 && !cur.StartPhase {
-				p1Where += ` AND (i.sort_title >= ? AND (i.sort_title > ? OR i.item_ref > ?))`
-				p1Args = append(p1Args, cur.StrVal, cur.StrVal, cur.ItemRef)
-			}
+			p1Args = append(p1Args, plan.driver.cteArgs...)
+			p1Args = append(p1Args, p1ItemArgs...)
 			p1Args = append(p1Args, need)
-			querySQL = rolledCTE + `SELECT ` + prefixedItemCols("i.") + `
+			baseCTE := strings.TrimRight(rolledCTE, "\n")
+			if isPG {
+				querySQL = baseCTE + `,
+_drv AS MATERIALIZED (
+	` + plan.driver.cteSQL + `
+)
+SELECT ` + cols + `
+FROM _drv _d
+CROSS JOIN LATERAL (
+	SELECT ` + cols + `
+	FROM plugin_items i
+	WHERE i.item_ref = _d.item_ref AND ` + p1Where + `
+	LIMIT 1
+) i
+ORDER BY i.sort_title ASC, i.item_ref ASC
+LIMIT ?`
+			} else {
+				querySQL = baseCTE + `,
+_drv(item_ref) AS (
+	` + plan.driver.cteSQL + `
+)
+SELECT ` + cols + `
+FROM _drv _d
+CROSS JOIN plugin_items i
+WHERE i.item_ref = _d.item_ref AND ` + p1Where + `
+ORDER BY i.sort_title ASC, i.item_ref ASC
+LIMIT ?`
+			}
+		case viewerID > 0:
+			p1Args = make([]any, 0, 2+len(p1ItemArgs)+1)
+			p1Args = append(p1Args, viewerID, int64(q.LibraryID))
+			p1Args = append(p1Args, p1ItemArgs...)
+			p1Args = append(p1Args, need)
+			querySQL = rolledCTE + `SELECT ` + cols + `
 FROM plugin_items i
 WHERE ` + p1Where + `
 ORDER BY i.sort_title ASC, i.item_ref ASC
 LIMIT ?`
-		} else {
-			p1Args = append([]any(nil), baseArgs...)
-			if hasCursor && cur.Phase == 1 && !cur.StartPhase {
-				p1Where += ` AND (i.sort_title >= ? AND (i.sort_title > ? OR i.item_ref > ?))`
-				p1Args = append(p1Args, cur.StrVal, cur.StrVal, cur.ItemRef)
-			}
-			p1Args = append(p1Args, need)
-			querySQL = `SELECT ` + prefixedItemCols("i.") + `
-FROM plugin_items i
-WHERE ` + p1Where + `
-ORDER BY i.sort_title ASC, i.item_ref ASC
-LIMIT ?`
+		default:
+			querySQL, p1Args = plan.pageSQLAndArgs(isPG, cols, p1Where, p1ItemArgs, "i.sort_title ASC, i.item_ref ASC", need)
 		}
 
 		tail, err := s.queryItems(ctx, querySQL, p1Args, false)
@@ -231,7 +265,7 @@ LIMIT ?`
 	if items == nil {
 		items = []core.KindItem{}
 	}
-	total, totalExact, err := s.resolveBrowseTotal(ctx, q, baseWhere, baseArgs, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
+	total, totalExact, err := s.resolveBrowseTotal(ctx, q, plan, hasFacets, parentRef, tally, !hasCursor && nextCursor == "", len(items))
 	if err != nil {
 		return BrowsePage{}, err
 	}

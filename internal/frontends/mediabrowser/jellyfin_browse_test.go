@@ -672,13 +672,14 @@ func TestJellyfinUnplayedCountUsesEpisodeWatchState(t *testing.T) {
 
 func TestJellyfinEpisodeParentsComeFromTheTitle(t *testing.T) {
 	i := &instance{protocol: "jellyfin"}
-	encoded := i.itemDTO(frontend.Title{Key: core.EpisodeKey(42, 1, 3), Type: "episode", Title: "Pilot"}, frontend.WatchStatus{})
+	encoded := i.itemDTO(frontend.Title{Key: core.EpisodeKey(42, 1, 3), Type: "episode", Title: "Pilot", ShowKey: core.ShowKey(42), ParentKey: core.SeasonKey(42, 1), Season: 1, Episode: 3}, frontend.WatchStatus{})
 	showID := ids.RatingKeyGUID(core.ShowKey(42))
 	seasonID := ids.RatingKeyGUID(core.SeasonKey(42, 1))
 	if encoded["SeriesId"] != showID || encoded["SeasonId"] != seasonID || encoded["ParentId"] != seasonID || encoded["SeasonName"] != "Season 1" {
 		t.Fatal(encoded["SeriesId"], encoded["SeasonId"], encoded["ParentId"], encoded["SeasonName"])
 	}
-	named := i.itemDTO(frontend.Title{Key: 8, Type: "episode", ShowKey: core.ShowKey(42), ShowTitle: "Show", SeasonTitle: "The Beginning", Season: 1, Episode: 3}, frontend.WatchStatus{})
+	allocated, _ := core.AllocatedKey(core.KindEpisode, 8)
+	named := i.itemDTO(frontend.Title{Key: allocated, Type: "episode", ShowKey: core.ShowKey(42), ParentKey: core.SeasonKey(42, 1), ShowTitle: "Show", SeasonTitle: "The Beginning", Season: 1, Episode: 3}, frontend.WatchStatus{})
 	if named["SeriesName"] != "Show" || named["SeasonName"] != "The Beginning" || named["SeasonId"] != seasonID {
 		t.Fatal(named["SeriesName"], named["SeasonName"], named["SeasonId"])
 	}

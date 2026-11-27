@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,6 +79,7 @@ func (s *Service) ConsoleHandler(deps ConsoleDeps) http.Handler {
 	h := &consoleAPI{s: s, deps: deps}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /profiles", h.profiles)
+	mux.HandleFunc("GET /presets", h.presets)
 	mux.HandleFunc("POST /rules/preview", h.previewRules)
 	mux.HandleFunc("GET /search", h.search)
 	mux.HandleFunc("GET /season", h.season)
@@ -95,6 +97,7 @@ func (s *Service) ConsoleHandler(deps ConsoleDeps) http.Handler {
 	mux.HandleFunc("GET /history/{id}", h.historyEntry)
 	mux.HandleFunc("GET /trash/{app}/profiles", h.trashProfiles)
 	mux.HandleFunc("GET /dictionarry/{app}/profiles", h.dictionarryProfiles)
+	mux.HandleFunc("POST /quality-databases/check", h.checkQualityDatabase)
 	mux.HandleFunc("POST /quality-import/preview", h.previewImport)
 	mux.HandleFunc("POST /quality-import", h.applyImport)
 	mux.HandleFunc("POST /quality/sync", h.syncQuality)
@@ -202,7 +205,7 @@ func pageParams(r *http.Request) (limit, offset int) {
 }
 
 func (h *consoleAPI) profiles(w http.ResponseWriter, r *http.Request) {
-	def, names := h.s.ConsoleProfilesFor(r.URL.Query().Get("media"))
+	def, names := h.s.ConsoleProfiles()
 	if names == nil {
 		names = []string{}
 	}
@@ -232,6 +235,12 @@ func (h *consoleAPI) search(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *consoleAPI) season(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Catalog == nil {
+		consoleError(w, http.StatusNotImplemented, "not_implemented", "the catalogue is not available")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
 	q := r.URL.Query()
 	var seasonKey core.RatingKey
 	if raw := strings.TrimSpace(q.Get("key")); raw != "" {
@@ -258,38 +267,40 @@ func (h *consoleAPI) season(w http.ResponseWriter, r *http.Request) {
 			consoleError(w, http.StatusBadRequest, "invalid", "season must be a valid season number")
 			return
 		}
-		seasonKey = core.SeasonKey(showKey.TMDB(), n)
+		seasons, err := h.deps.Catalog.Children(ctx, showKey)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		for _, season := range seasons {
+			if season.Type == core.TypeSeason && season.Season == n {
+				seasonKey = season.Key
+				break
+			}
+		}
+		if seasonKey == 0 {
+			h.fail(w, core.ErrNotFound)
+			return
+		}
 	} else {
 		consoleError(w, http.StatusBadRequest, "invalid", "season key or show and season are required")
 		return
 	}
-	if h.deps.Catalog == nil {
-		consoleError(w, http.StatusNotImplemented, "not_implemented", "the catalogue is not available")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-
 	episodes, err := h.deps.Catalog.Children(ctx, seasonKey)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	showTitle, _ := h.deps.Catalog.Get(ctx, seasonKey.Parent())
-	seasonTitle, _ := h.deps.Catalog.Get(ctx, seasonKey)
-
-	header := &core.Title{
-		Key:     seasonKey,
-		Type:    core.TypeSeason,
-		ShowKey: seasonKey.Parent(),
-		Season:  seasonKey.Season(),
-	}
-	if seasonTitle != nil {
-		header.Title = seasonTitle.Title
-		if seasonTitle.ShowTitle != "" {
-			header.ShowTitle = seasonTitle.ShowTitle
+	seasonTitle, err := h.deps.Catalog.Get(ctx, seasonKey)
+	if err != nil || seasonTitle == nil {
+		if err == nil {
+			err = core.ErrNotFound
 		}
+		h.fail(w, err)
+		return
 	}
+	header := *seasonTitle
+	showTitle, _ := h.deps.Catalog.Get(ctx, header.ShowKey)
 	if showTitle != nil {
 		if header.ShowTitle == "" {
 			header.ShowTitle = showTitle.Title
@@ -329,7 +340,7 @@ func (h *consoleAPI) season(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fresh := q.Get("fresh") == "1" || q.Get("fresh") == "true"
-	res, err := h.s.SeasonReleases(ctx, header, episodes, SearchOptions{Profile: q.Get("profile"), Fresh: fresh})
+	res, err := h.s.SeasonReleases(ctx, &header, episodes, SearchOptions{Profile: q.Get("profile"), Fresh: fresh})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -369,14 +380,8 @@ func (h *consoleAPI) children(w http.ResponseWriter, r *http.Request) {
 	out := make([]childTitle, 0, len(kids))
 	for _, t := range kids {
 		c := childTitle{Key: t.Key.String(), Type: string(t.Type), Title: t.Title, Season: t.Season, Episode: t.Episode}
-		if c.Season == 0 && t.Key.Kind() != core.KindShow {
-			c.Season = t.Key.Season()
-		}
-		if c.Episode == 0 {
-			c.Episode = t.Key.Episode()
-		}
-		if !t.Released.IsZero() {
-			c.Aired = t.Released.Format("2006-01-02")
+		if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+			c.Aired = date.Format("2006-01-02")
 		}
 		_, c.Pinned = h.s.PinFor(t.Key)
 		out = append(out, c)

@@ -611,9 +611,9 @@ func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
 	})
 	f.srv.bindHost(frontend.Host{Experience: expSvc})
 
-	// (1) Music section hubs (/hubs/sections/3?count=1) return a single Artists
-	// hub linking to /library/sections/3/all?type=8 with totalSize=2, more=true,
-	// and never leak video recommendation rows.
+	// (1) Music section hubs (/hubs/sections/3?count=1) are the plugin
+	// library's own rows (its rows tab), with their row ids, and never leak
+	// video recommendation rows.
 	musicHubResp := f.get(t, "/hubs/sections/3?count=1", "Accept", "application/json", "X-Plex-Token", musicOnlyToken)
 	if musicHubResp.Code != http.StatusOK {
 		t.Fatalf("/hubs/sections/3 status = %d: %s", musicHubResp.Code, musicHubResp.Body.String())
@@ -624,18 +624,16 @@ func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
 	if err := json.Unmarshal(musicHubResp.Body.Bytes(), &hubPayload); err != nil {
 		t.Fatalf("decode music section hubs: %v", err)
 	}
-	if len(hubPayload.MediaContainer.Hub) != 1 {
-		t.Fatalf("music section hubs = %+v, want 1 Artists hub", hubPayload.MediaContainer.Hub)
+	if len(hubPayload.MediaContainer.Hub) == 0 {
+		t.Fatalf("music section hubs empty: %s", musicHubResp.Body.String())
 	}
-	artistsHub := hubPayload.MediaContainer.Hub[0]
-	if artistsHub.Title != "Artists" || artistsHub.Type != plexBaseArtist || artistsHub.Key != "/library/sections/3/all?type=8" {
-		t.Fatalf("unexpected Artists hub: %+v", artistsHub)
-	}
-	if artistsHub.TotalSize == nil || *artistsHub.TotalSize != 2 || !artistsHub.More || len(artistsHub.Metadata) != 1 {
-		t.Fatalf("unexpected Artists hub paging: size=%d total=%v more=%v", artistsHub.Size, artistsHub.TotalSize, artistsHub.More)
-	}
-	if artistsHub.Metadata[0].Type != plexBaseArtist || artistsHub.Metadata[0].Title != "Artist One" {
-		t.Fatalf("unexpected artist item in hub: %+v", artistsHub.Metadata[0])
+	for _, h := range hubPayload.MediaContainer.Hub {
+		if !strings.HasPrefix(h.HubIdentifier, "plugin:3:") || h.Type != plexBaseArtist || !strings.HasPrefix(h.Context, "hub.artist.") || len(h.Metadata) != 1 || !h.More {
+			t.Fatalf("unexpected music row: %+v", h)
+		}
+		if h.Metadata[0].Type != plexBaseArtist || h.Metadata[0].Title != "Artist One" {
+			t.Fatalf("unexpected artist item in %s: %+v", h.HubIdentifier, h.Metadata[0])
+		}
 	}
 
 	// Viewer restricted away from section 3 cannot see its hubs or its artists.
@@ -855,7 +853,7 @@ type kindVideoHubRowsExperience struct {
 	*kindVideoHubExperience
 }
 
-func (e *kindVideoHubRowsExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+func (e *kindVideoHubRowsExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID, _ string) ([]frontend.Row, error) {
 	if viewID != "9" {
 		return nil, nil
 	}
@@ -935,19 +933,6 @@ func TestKindVideoHubsAndContinuation(t *testing.T) {
 		t.Fatalf("/hubs?contentDirectoryID=1,9 = %d %s", homeRec.Code, homeRec.Body.String())
 	}
 
-	// 4. Fallback without PluginLibraryRowsReader still renders a shelf from LibraryItems.
-	fallbackSrv := newTestServer(testServerDeps{Experience: &kindVideoHubExperience{Experience: frontend.NoopExperience()}})
-	fbRec := httptest.NewRecorder()
-	fbReq := httptest.NewRequest(http.MethodGet, "/hubs/sections/9?count=12", nil)
-	fbReq.Header.Set("Accept", "application/json")
-	fbReq = fbReq.WithContext(withRequest(fbReq.Context(), &Request{User: &ownerUser, Format: model.JSON}))
-	fbRctx := chi.NewRouteContext()
-	fbRctx.URLParams.Add("section", "9")
-	fbReq = fbReq.WithContext(context.WithValue(fbReq.Context(), chi.RouteCtxKey, fbRctx))
-	fallbackSrv.handleSectionHubs(fbRec, fbReq)
-	if fbRec.Code != http.StatusOK || !strings.Contains(fbRec.Body.String(), "Opening Cut") {
-		t.Fatalf("fallback /hubs/sections/9 = %d %s", fbRec.Code, fbRec.Body.String())
-	}
 }
 
 func TestKindMediaProvidersTypesAndPivots(t *testing.T) {

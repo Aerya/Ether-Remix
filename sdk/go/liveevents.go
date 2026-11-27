@@ -124,6 +124,8 @@ type LiveEvent struct {
 	Watch       []LiveEventWatchTarget `json:"watch,omitempty"`
 	Spoiler     bool                   `json:"spoiler,omitempty"`
 	UpdatedAt   string                 `json:"updatedAt,omitempty"`
+	// Prominence ranks featured lists: how big the event is, 0..1.
+	Prominence float64 `json:"prominence,omitempty"`
 }
 
 // LiveEventTable is a generic table for box scores, line scores, or standings.
@@ -131,6 +133,8 @@ type LiveEventTable struct {
 	Title   string     `json:"title"`
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+	// RowEntityIDs names the entity each row is about, in row order.
+	RowEntityIDs []string `json:"rowEntityIds,omitempty"`
 }
 
 // LiveEventPlay is one entry in an event's play-by-play or race timeline.
@@ -140,6 +144,10 @@ type LiveEventPlay struct {
 	Text         string `json:"text"`
 	Emphasis     string `json:"emphasis,omitempty"` // score|key|normal
 	CompetitorID string `json:"competitorId,omitempty"`
+	// At is the play's wall-clock time (RFC3339).
+	At string `json:"at,omitempty"`
+	// Score is every competitor's score after the play, by competitor id.
+	Score map[string]string `json:"score,omitempty"`
 }
 
 // LiveEventProbabilityPoint is one sample along an event's probability series.

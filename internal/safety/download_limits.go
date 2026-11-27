@@ -3,6 +3,7 @@ package safety
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -15,6 +16,15 @@ func init() {
 	// completed. Limits are sums over a day or a month.
 	store.Register("safety", 3, `CREATE TABLE safety_download_usage(user_id INTEGER NOT NULL, day TEXT NOT NULL, item_key INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, day, item_key));`)
 	store.RegisterViewerTable("safety", "safety_download_usage", "user_id", store.ViewerMergeDrop)
+	store.Register("safety", 4, `
+		ALTER TABLE safety_download_usage ADD COLUMN offline_bytes BIGINT NOT NULL DEFAULT 0;
+		CREATE INDEX safety_download_usage_item ON safety_download_usage(user_id, item_key, day);
+		CREATE TABLE safety_offline_download_grants (
+			user_id BIGINT NOT NULL, receipt TEXT NOT NULL, release_id TEXT NOT NULL,
+			version_id TEXT NOT NULL, etag TEXT NOT NULL, PRIMARY KEY(user_id, receipt)
+		);
+	`)
+	store.RegisterViewerTable("safety", "safety_offline_download_grants", "user_id", store.ViewerMergeDrop)
 }
 
 var _ core.DownloadLimitPolicy = (*Service)(nil)
@@ -92,62 +102,58 @@ func (s *Service) AdmitDownload(ctx context.Context, u *core.User, key core.Rati
 	if u == nil || u.IsOwner || s.db == nil {
 		return core.DownloadLimitDecision{Allowed: true}
 	}
-	if estimatedBytes < 0 {
-		estimatedBytes = 0
-	}
 	s.downloadMu.Lock()
 	defer s.downloadMu.Unlock()
-
-	allowance := s.DownloadAllowance(u)
-	day, from, to, resetAt := downloadPeriod(allowance.LimitPeriod, s.nowTime())
-	var counted int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM safety_download_usage WHERE user_id=? AND day=? AND item_key=?`, u.ID, day, int64(key)).Scan(&counted); err != nil {
+	tx, err := s.beginDownload(ctx, u.ID)
+	if err != nil {
 		return core.DownloadLimitDecision{Allowed: true}
 	}
-	if counted > 0 {
+	defer tx.Rollback()
+	decision, err := s.admitDownload(ctx, tx, u, key, max(0, estimatedBytes), false, s.nowTime())
+	if err != nil || tx.Commit() != nil {
 		return core.DownloadLimitDecision{Allowed: true}
+	}
+	return decision
+}
+
+func (s *Service) beginDownload(ctx context.Context, user int64) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.LockKey(ctx, store.DialectOf(s.db), tx, fmt.Sprintf("download-usage/%d", user)); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
+}
+
+func (s *Service) admitDownload(ctx context.Context, tx *sql.Tx, u *core.User, key core.RatingKey, bytes int64, offline bool, now time.Time) (core.DownloadLimitDecision, error) {
+	allowance := s.DownloadAllowance(u)
+	day, from, to, resetAt := downloadPeriod(allowance.LimitPeriod, now)
+	var existingBytes int64
+	err := tx.QueryRowContext(ctx, `SELECT bytes FROM safety_download_usage WHERE user_id=? AND day=? AND item_key=?`, u.ID, day, int64(key)).Scan(&existingBytes)
+	counted := err == nil
+	if err != nil && err != sql.ErrNoRows {
+		return core.DownloadLimitDecision{}, err
+	}
+	if counted && (!offline || bytes <= existingBytes) {
+		return core.DownloadLimitDecision{Allowed: true}, nil
 	}
 	if allowance.LimitUnit != "" {
 		var titles, usedBytes int64
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(bytes),0) FROM safety_download_usage WHERE user_id=? AND day>=? AND day<?`, u.ID, from, to).Scan(&titles, &usedBytes); err != nil {
-			return core.DownloadLimitDecision{Allowed: true}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(bytes),0) FROM safety_download_usage WHERE user_id=? AND day>=? AND day<?`, u.ID, from, to).Scan(&titles, &usedBytes); err != nil {
+			return core.DownloadLimitDecision{}, err
 		}
-		switch allowance.LimitUnit {
-		case "titles":
-			if titles >= int64(allowance.LimitAmount) {
-				return core.DownloadLimitDecision{
-					Allowed: false,
-					Unit:    "titles",
-					Period:  allowance.LimitPeriod,
-					ResetAt: resetAt,
-				}
-			}
-		case "gb":
-			limitBytes := int64(allowance.LimitAmount) << 30
-			if usedBytes >= limitBytes || (estimatedBytes > 0 && usedBytes+estimatedBytes > limitBytes) {
-				return core.DownloadLimitDecision{
-					Allowed: false,
-					Unit:    "gb",
-					Period:  allowance.LimitPeriod,
-					ResetAt: resetAt,
-				}
-			}
+		limitBytes := int64(allowance.LimitAmount) << 30
+		if (allowance.LimitUnit == "titles" && !counted && titles >= int64(allowance.LimitAmount)) ||
+			(allowance.LimitUnit == "gb" && (usedBytes >= limitBytes || bytes-existingBytes > limitBytes-usedBytes)) {
+			return core.DownloadLimitDecision{Unit: allowance.LimitUnit, Period: allowance.LimitPeriod, ResetAt: resetAt}, nil
 		}
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO safety_download_usage(user_id,day,item_key,bytes) VALUES(?,?,?,?) ON CONFLICT(user_id,day,item_key) DO NOTHING`, u.ID, day, int64(key), estimatedBytes)
-	reserved := false
-	if err == nil && res != nil {
-		if n, rerr := res.RowsAffected(); rerr == nil && n > 0 {
-			reserved = true
-		}
-	}
-	return core.DownloadLimitDecision{
-		Allowed:  true,
-		Reserved: reserved,
-		Unit:     allowance.LimitUnit,
-		Period:   allowance.LimitPeriod,
-		ResetAt:  resetAt,
-	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO safety_download_usage(user_id,day,item_key,bytes) VALUES(?,?,?,?)
+		ON CONFLICT(user_id,day,item_key) DO UPDATE SET bytes=excluded.bytes`, u.ID, day, int64(key), bytes)
+	return core.DownloadLimitDecision{Allowed: true, Reserved: !counted, Unit: allowance.LimitUnit, Period: allowance.LimitPeriod, ResetAt: resetAt}, err
 }
 
 // ReconcileDownloadBytes replaces the reserved estimate with the prepared
@@ -161,16 +167,23 @@ func (s *Service) ReconcileDownloadBytes(ctx context.Context, u *core.User, key 
 	s.downloadMu.Lock()
 	defer s.downloadMu.Unlock()
 
-	var rowDay sql.NullString
-	if err := s.db.QueryRowContext(ctx, `SELECT MAX(day) FROM safety_download_usage WHERE user_id=? AND item_key=?`, u.ID, int64(key)).Scan(&rowDay); err != nil || !rowDay.Valid {
+	tx, err := s.beginDownload(ctx, u.ID)
+	if err != nil {
 		return core.DownloadLimitDecision{Allowed: true}
 	}
+	defer tx.Rollback()
+	var rowDay string
+	var offlineBytes int64
+	if err := tx.QueryRowContext(ctx, `SELECT day, offline_bytes FROM safety_download_usage WHERE user_id=? AND item_key=? ORDER BY day DESC LIMIT 1`, u.ID, int64(key)).Scan(&rowDay, &offlineBytes); err != nil {
+		return core.DownloadLimitDecision{Allowed: true}
+	}
+	actualBytes = max(actualBytes, offlineBytes)
 	allowance := s.DownloadAllowance(u)
 	if allowance.LimitUnit == "gb" {
 		_, from, to, resetAt := downloadPeriod(allowance.LimitPeriod, s.nowTime())
-		if rowDay.String >= from && rowDay.String < to {
+		if rowDay >= from && rowDay < to {
 			var otherBytes int64
-			if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(bytes),0) FROM safety_download_usage WHERE user_id=? AND day>=? AND day<? AND NOT (day=? AND item_key=?)`, u.ID, from, to, rowDay.String, int64(key)).Scan(&otherBytes); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(bytes),0) FROM safety_download_usage WHERE user_id=? AND day>=? AND day<? AND NOT (day=? AND item_key=?)`, u.ID, from, to, rowDay, int64(key)).Scan(&otherBytes); err != nil {
 				return core.DownloadLimitDecision{Allowed: true}
 			}
 			limitBytes := int64(allowance.LimitAmount) << 30
@@ -184,7 +197,8 @@ func (s *Service) ReconcileDownloadBytes(ctx context.Context, u *core.User, key 
 			}
 		}
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE safety_download_usage SET bytes=? WHERE user_id=? AND day=? AND item_key=?`, actualBytes, u.ID, rowDay.String, int64(key))
+	_, _ = tx.ExecContext(ctx, `UPDATE safety_download_usage SET bytes=CASE WHEN offline_bytes>? THEN offline_bytes ELSE ? END WHERE user_id=? AND day=? AND item_key=?`, actualBytes, actualBytes, u.ID, rowDay, int64(key))
+	_ = tx.Commit()
 	return core.DownloadLimitDecision{Allowed: true}
 }
 
@@ -198,7 +212,7 @@ func (s *Service) RecordDownloadBytes(ctx context.Context, u *core.User, key cor
 	defer s.downloadMu.Unlock()
 	// The newest row for the title: a download queued before midnight UTC and
 	// finished after it belongs to the day it was queued.
-	_, _ = s.db.ExecContext(ctx, `UPDATE safety_download_usage SET bytes=? WHERE user_id=? AND item_key=? AND day=(SELECT MAX(day) FROM safety_download_usage WHERE user_id=? AND item_key=?)`, bytes, u.ID, int64(key), u.ID, int64(key))
+	_, _ = s.db.ExecContext(ctx, `UPDATE safety_download_usage SET bytes=CASE WHEN offline_bytes>? THEN offline_bytes ELSE ? END WHERE user_id=? AND item_key=? AND day=(SELECT MAX(day) FROM safety_download_usage WHERE user_id=? AND item_key=?)`, bytes, bytes, u.ID, int64(key), u.ID, int64(key))
 }
 
 // ReleaseDownloadReservation removes the newest usage row for an uncompleted
@@ -211,5 +225,5 @@ func (s *Service) ReleaseDownloadReservation(ctx context.Context, u *core.User, 
 	}
 	s.downloadMu.Lock()
 	defer s.downloadMu.Unlock()
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM safety_download_usage WHERE user_id=? AND item_key=? AND day=(SELECT MAX(day) FROM safety_download_usage WHERE user_id=? AND item_key=?)`, u.ID, int64(key), u.ID, int64(key))
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM safety_download_usage WHERE user_id=? AND item_key=? AND offline_bytes=0 AND day=(SELECT MAX(day) FROM safety_download_usage WHERE user_id=? AND item_key=?)`, u.ID, int64(key), u.ID, int64(key))
 }

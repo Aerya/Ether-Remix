@@ -65,6 +65,11 @@ func missingRoutes() []string {
 // unprobedRoutes are GET routes the offline parity world cannot compare
 // byte for byte, each with the reason. They are not counted as covered.
 var unprobedRoutes = map[string]string{
+	// New in 0.3.22 (Live TV catch-up library, #812): artwork for an archived
+	// airing, an Ether-only route with no PMS equivalent to compare.
+	// internal/frontends/plex catch-up tests cover listing and play.
+	"/library/catchup/art/{key}/{kind}": "new in 0.3.22 catch-up library; no PMS baseline",
+	"/library/metadata/{key}/matches":   "owner-only Fix match search (0.3.22); probing PMS would query its agents for a real library item",
 	// New in 0.3.19, so the v0.3.18 parity baseline has no such route to
 	// compare. internal/frontends/plex/account_id_consistency_test.go checks
 	// the canonical owner id 1 and plex.tv ids for friends and Home users.

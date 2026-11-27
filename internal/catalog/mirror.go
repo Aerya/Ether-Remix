@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/store"
 	"sort"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // Mirror exposes bounded local reads for catalogue consumers. It owns schema
@@ -53,6 +54,17 @@ const mirrorBrowsableWhere = `t.type IN ('movie','show') AND t.browsable=1 AND t
 // in its own short statements instead.
 const mirrorSnapshotChunk = 4000
 
+// titleChunkEnd is shared by the search and browse indexes. Both read only
+// movies and shows, whose key ranges are contiguous.
+func titleChunkEnd(ctx context.Context, db *sql.DB, lo int64) (hi int64, done bool, err error) {
+	err = db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key>? AND key<=? ORDER BY key LIMIT 1 OFFSET ?`,
+		lo, seasonKeyStart, mirrorSnapshotChunk-1).Scan(&hi)
+	if errors.Is(err, sql.ErrNoRows) {
+		return seasonKeyStart, true, nil
+	}
+	return hi, false, err
+}
+
 // Snapshot reads every browsable title with its facets and credits, most
 // popular first. Ranges are read one after another, so the result is not one
 // point in time; the index that consumes it rebuilds when the fingerprint
@@ -60,16 +72,16 @@ const mirrorSnapshotChunk = 4000
 func (m *Mirror) Snapshot(ctx context.Context) ([]MirrorItem, error) {
 	var items []*MirrorItem
 	byKey := map[core.RatingKey]*MirrorItem{}
-	for lo, done := int64(-1<<63), false; !done; {
-		var hi int64
-		err := m.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key>? ORDER BY key LIMIT 1 OFFSET ?`, lo, mirrorSnapshotChunk-1).Scan(&hi)
-		if errors.Is(err, sql.ErrNoRows) {
-			hi, done = 1<<63-1, true
-		} else if err != nil {
+	for lo := int64(core.MovieKey(0)) - 1; ; {
+		hi, done, err := titleChunkEnd(ctx, m.db, lo)
+		if err != nil {
 			return nil, err
 		}
 		if err := m.snapshotRange(ctx, lo, hi, &items, byKey); err != nil {
 			return nil, err
+		}
+		if done {
+			break
 		}
 		lo = hi
 	}

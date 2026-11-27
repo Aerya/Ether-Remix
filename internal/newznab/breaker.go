@@ -279,33 +279,48 @@ func callerLeft(ctx context.Context, elapsed time.Duration) bool {
 	return true
 }
 
+func backgroundSearch(ctx context.Context) bool {
+	return core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx) || core.IndexerPurpose(ctx) == core.IndexerPurposeFeed
+}
+
+func (c *Client) searchBreaker(ctx context.Context) *breaker {
+	if backgroundSearch(ctx) {
+		return &c.backgroundBR
+	}
+	return &c.br
+}
+
 // guardSearch runs one search request through the breaker and per-host
 // concurrency limiter. Local host-queue wait is excluded from both the
 // adaptive timeout and p95 latency sampling. adaptive applies the adaptive
 // timeout under ceiling (Newznab/Torznab HTTP requests; a backend's own
 // sessions and challenge solving keep their timeouts).
 func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool, ceiling time.Duration, do func(context.Context) ([]core.Release, error)) ([]core.Release, error) {
-	tk, err := c.br.admit(c.now())
+	if err := c.searchPaused(ctx); err != nil {
+		return nil, err
+	}
+	br := c.searchBreaker(ctx)
+	tk, err := br.admit(c.now())
 	if err != nil {
 		return nil, fmt.Errorf("indexer %q: %w", c.Name(), err)
 	}
 	settled := false
 	defer func() {
 		if !settled {
-			c.br.neutral(tk)
+			br.neutral(tk)
 		}
 	}()
 	hctx, releaseHost, err := c.acquireHost(ctx, hostURL)
 	if err != nil {
 		settled = true
-		c.br.neutral(tk)
+		br.neutral(tk)
 		return nil, err
 	}
 	defer releaseHost()
 	rctx := hctx
 	var limit time.Duration
 	if adaptive {
-		if limit = c.br.timeout(ceiling); limit > 0 {
+		if limit = br.timeout(ceiling); limit > 0 {
 			var cancel context.CancelFunc
 			rctx, cancel = context.WithTimeout(hctx, limit)
 			defer cancel()
@@ -319,18 +334,18 @@ func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool,
 		// The caller went away, or a budget or rate-limit pause (which
 		// has its own back-off) refused the request: no verdict.
 		settled = true
-		c.br.neutral(tk)
+		br.neutral(tk)
 		return res, err
 	}
 	if err != nil && limit > 0 && rctx.Err() != nil {
 		err = fmt.Errorf("indexer %q: no answer within %s (its usual time is far shorter): %w", c.Name(), limit.Round(time.Second), context.DeadlineExceeded)
 	}
 	settled = true
-	c.settleBreaker(ctx, tk, err, elapsed, adaptive)
+	c.settleBreaker(ctx, br, tk, err, elapsed, adaptive)
 	return res, err
 }
 
-func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error, elapsed time.Duration, adaptive bool) {
+func (c *Client) settleBreaker(ctx context.Context, br *breaker, tk breakerTicket, err error, elapsed time.Duration, adaptive bool) {
 	failed := transientFailure(err)
 	var sample time.Duration
 	if err == nil && adaptive {
@@ -340,7 +355,11 @@ func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error,
 	if err != nil {
 		c.emitRequestFailed(searchEventKind(ctx), err, elapsed)
 	}
-	if pause := c.br.done(now, tk, failed, sample); pause > 0 {
+	pause := br.done(now, tk, failed, sample)
+	if br != &c.br {
+		return
+	}
+	if pause > 0 {
 		c.log.Warn("indexer paused after repeated failures; will try again automatically", "indexer", c.Name(), "pause", pause, "err", err)
 		failures, _ := c.br.outageSnapshot(now)
 		c.publishDomainEvent(events.EventIndexerServiceOutage, events.IndexerServiceOutagePayload{
@@ -348,7 +367,7 @@ func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error,
 			IndexerName:         c.Name(),
 			Kind:                c.indexerKind(),
 			ConsecutiveFailures: failures,
-			Error:               err.Error(),
+			Error:               classifyIndexerError(err),
 		})
 	} else if tk.probe && !failed {
 		c.log.Info("indexer is answering again", "indexer", c.Name())
@@ -365,18 +384,22 @@ func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error,
 // recordSearchTimeout feeds a search-ceiling timeout that happened before
 // guardSearch (for example during a cold t=caps request against a hung server)
 // into the circuit breaker so repeated hangs still open backoff.
-func (c *Client) recordSearchTimeout(ctx context.Context, err error, elapsed time.Duration) {
-	tk, admitErr := c.br.admit(c.now())
+func (c *Client) recordSearchTimeout(ctx context.Context, br *breaker, err error, elapsed time.Duration) {
+	if errors.Is(err, core.ErrBudgetExhausted) {
+		return
+	}
+	tk, admitErr := br.admit(c.now())
 	if admitErr != nil {
 		return
 	}
-	c.settleBreaker(ctx, tk, err, elapsed, false)
+	c.settleBreaker(ctx, br, tk, err, elapsed, false)
 }
 
 // searchPaused reports whether the indexer is paused by the breaker, so a
 // search can skip it before any caps or budget work.
-func (c *Client) searchPaused() error {
-	if c.br.blocked(c.now()) {
+func (c *Client) searchPaused(ctx context.Context) error {
+	now := c.now()
+	if c.br.blocked(now) || (backgroundSearch(ctx) && c.backgroundBR.blocked(now)) {
 		return fmt.Errorf("indexer %q: %w", c.Name(), ErrIndexerPaused)
 	}
 	return nil

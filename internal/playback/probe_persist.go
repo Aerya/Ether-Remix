@@ -372,12 +372,12 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 				}
 				if !found && m.deps.DebridFileMeta != nil {
 					if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
-						enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+						enrichEstimatedFromDebridMeta(&out[i], title, filePath, size)
 					}
 				}
 			} else if m.deps.DebridFileMeta != nil {
 				if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
-					enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+					enrichEstimatedFromDebridMeta(&out[i], title, filePath, size)
 				}
 			}
 			if !out[i].Info.Estimated && out[i].Info.Size > 0 && out[i].Release.Size <= 0 {

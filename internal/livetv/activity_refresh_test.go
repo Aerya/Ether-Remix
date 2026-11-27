@@ -3,7 +3,6 @@ package livetv
 import (
 	"context"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func TestActivityRefreshAndPublication(t *testing.T) {
@@ -163,7 +163,16 @@ func (k fakeOnDemandKind) Fetch(_ context.Context, _ *Service, src *Source) (Fet
 func TestOnDemandSourceRefreshesOnlyWhileInUse(t *testing.T) {
 	ctx := context.Background()
 	clock := &testClock{now: guideTestNow}
-	s := testService(t, Options{Now: clock.Now})
+	// Drive refresh passes synchronously against the fake clock. The worker
+	// would otherwise consume the same activity wake with a real timer.
+	resume := make(chan struct{})
+	s := testService(t, Options{Now: clock.Now, NewTimer: func(d time.Duration) *time.Timer {
+		if d == refreshCheckInterval {
+			<-resume
+		}
+		return time.NewTimer(d)
+	}})
+	t.Cleanup(func() { close(resume) })
 	var hits atomic.Int32
 	if err := s.RegisterSourceKind(fakeOnDemandKind{id: "plugin:fake/channels", interval: 5 * time.Minute, hits: &hits}); err != nil {
 		t.Fatal(err)

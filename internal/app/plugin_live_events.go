@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"net/http"
 	"sort"
 	"strconv"
@@ -32,6 +33,9 @@ type pluginScreenFrontendOverview struct {
 	Name      string `json:"name"`
 	Published bool   `json:"published"`
 	Reason    string `json:"reason"`
+	// Enabled is the owner's switch for a document screen or surface in this
+	// app (absent for 0.3.19 section screens, which have none).
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type pluginScreenOverview struct {
@@ -40,6 +44,9 @@ type pluginScreenOverview struct {
 	Icon      string                         `json:"icon,omitempty"`
 	Feed      string                         `json:"feed,omitempty"`
 	Frontends []pluginScreenFrontendOverview `json:"frontends"`
+	// Kind is "screen" or "surface"; Presentation names a surface's slot.
+	Kind         string `json:"kind,omitempty"`
+	Presentation string `json:"presentation,omitempty"`
 }
 
 type pluginLiveEventSummary struct {
@@ -74,6 +81,18 @@ func (a *App) wrapPluginLiveEventsHandler(next http.Handler) http.Handler {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) == 2 && parts[1] == "live-events" && parts[0] != "" {
 			a.handlePluginLiveEvents(w, r, parts[0])
+			return
+		}
+		if len(parts) == 2 && parts[0] == "screens" && parts[1] == "overlay-order" {
+			a.handleOverlayOrder(w, r)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "screen-publish" && parts[0] != "" {
+			a.handleScreenPublish(w, r, parts[0])
+			return
+		}
+		if len(parts) == 4 && parts[0] == "studio" && parts[1] == "projects" && parts[3] == "screen-preview" && parts[2] != "" {
+			a.handleScreenPreview(w, r, parts[2])
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -269,49 +288,13 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 		declaredScreens = rec.Manifest.Ether.Contributes.Screens
 	}
 
-	// Collect optional static league declarations from contributed screens as a
-	// fallback when a feed has no cached events yet.
+	// Static league chips came from 0.3.19 sections; documents carry none,
+	// so a feed shows leagues once the hub has cached events.
 	staticLeaguesByFeed := map[string][]liveevents.FeedLeagueSummary{}
 	defaultFeed := ""
 	if len(declaredFeeds) == 1 {
 		defaultFeed = declaredFeeds[0].ID
 	}
-	for _, sc := range declaredScreens {
-		scFeed := sc.Feed
-		if scFeed == "" {
-			scFeed = defaultFeed
-		}
-		for _, sec := range sc.Sections {
-			if len(sec.Leagues) == 0 {
-				continue
-			}
-			feedID := sec.Feed
-			if feedID == "" && sec.Query != nil {
-				feedID = sec.Query.Feed
-			}
-			if feedID == "" {
-				feedID = scFeed
-			}
-			if feedID == "" {
-				continue
-			}
-			seen := map[string]bool{}
-			for _, existing := range staticLeaguesByFeed[feedID] {
-				seen[existing.ID] = true
-			}
-			for _, l := range sec.Leagues {
-				if l.ID == "" || seen[l.ID] {
-					continue
-				}
-				seen[l.ID] = true
-				staticLeaguesByFeed[feedID] = append(staticLeaguesByFeed[feedID], liveevents.FeedLeagueSummary{
-					ID:   l.ID,
-					Name: resolve(l.Name, l.ID),
-				})
-			}
-		}
-	}
-
 	feeds := make([]liveevents.FeedOverview, 0, max(len(declaredFeeds), len(hubFeeds)))
 	seenFeed := make(map[string]bool, len(declaredFeeds))
 	for _, decl := range declaredFeeds {
@@ -350,6 +333,13 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 	}
 
 	screensOut := make([]pluginScreenOverview, 0, len(declaredScreens))
+	switchState := func(kind, id, fe string, def *bool) *bool {
+		on := def == nil || *def
+		if a.screenPublish != nil {
+			on = a.screenPublish.Published(ctx, rec.ID, kind, id, fe, on)
+		}
+		return &on
+	}
 	for _, sc := range declaredScreens {
 		frontends := sc.Frontends
 		if len(frontends) == 0 {
@@ -358,17 +348,21 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 		feOut := make([]pluginScreenFrontendOverview, 0, len(frontends))
 		for _, fe := range frontends {
 			pub, reason := a.screenPublishStatus(ctx, a.pluginsRT.mgr, rec, fe)
-			feOut = append(feOut, pluginScreenFrontendOverview{
+			entry := pluginScreenFrontendOverview{
 				ID:        fe,
 				Name:      consoleFrontendLabel(fe),
 				Published: pub,
 				Reason:    reason,
-			})
+			}
+			if len(sc.Pages) > 0 {
+				entry.Enabled = switchState("screen", sc.ID, fe, sc.Default)
+				if pub && !*entry.Enabled {
+					entry.Published, entry.Reason = false, "owner_off"
+				}
+			}
+			feOut = append(feOut, entry)
 		}
-		scFeed := sc.Feed
-		if scFeed == "" {
-			scFeed = defaultFeed
-		}
+		scFeed := defaultFeed
 		screensOut = append(screensOut, pluginScreenOverview{
 			ID:        sc.ID,
 			Title:     resolve(sc.Title, sc.ID),
@@ -376,6 +370,25 @@ func (a *App) buildPluginLiveEventsOverview(ctx context.Context, rec plugins.Rec
 			Feed:      scFeed,
 			Frontends: feOut,
 		})
+	}
+
+	if rec.Manifest.Ether != nil {
+		for _, sf := range rec.Manifest.Ether.Contributes.Surfaces {
+			frontends := sf.Frontends
+			if len(frontends) == 0 {
+				frontends = []string{"vela"}
+			}
+			feOut := make([]pluginScreenFrontendOverview, 0, len(frontends))
+			for _, fe := range frontends {
+				pub, reason := a.screenPublishStatus(ctx, a.pluginsRT.mgr, rec, fe)
+				entry := pluginScreenFrontendOverview{ID: fe, Name: consoleFrontendLabel(fe), Published: pub, Reason: reason, Enabled: switchState("surface", sf.ID, fe, sf.Default)}
+				if pub && !*entry.Enabled {
+					entry.Published, entry.Reason = false, "owner_off"
+				}
+				feOut = append(feOut, entry)
+			}
+			screensOut = append(screensOut, pluginScreenOverview{ID: sf.ID, Title: resolve(sf.Title, sf.ID), Frontends: feOut, Kind: "surface", Presentation: sf.Presentation})
+		}
 	}
 
 	var liveUpcoming []core.LiveEvent
@@ -496,5 +509,196 @@ func consoleFrontendLabel(id string) string {
 			return ""
 		}
 		return strings.ToUpper(id[:1]) + id[1:]
+	}
+}
+
+// handleScreenPublish sets the owner's per-app switch for one of a plugin's
+// document screens or surfaces: PUT /api/plugins/{id}/screen-publish
+// {kind: "screen"|"surface", id, frontend, enabled}.
+func (a *App) handleScreenPublish(w http.ResponseWriter, r *http.Request, pluginID string) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use PUT"})
+		return
+	}
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.mgr == nil || a.screenPublish == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "plugin not found"})
+		return
+	}
+	var in struct {
+		Kind     string `json:"kind"`
+		ID       string `json:"id"`
+		Frontend string `json:"frontend"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil || in.Enabled == nil || (in.Kind != "screen" && in.Kind != "surface") || in.Frontend != "vela" {
+		httpjson.Write(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "expected {kind: screen|surface, id, frontend: vela, enabled}"})
+		return
+	}
+	rec, err := a.pluginsRT.mgr.Get(r.Context(), pluginID)
+	if err != nil || rec.Manifest.Ether == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "plugin not found"})
+		return
+	}
+	found := false
+	if in.Kind == "screen" {
+		for _, sc := range rec.Manifest.Ether.Contributes.Screens {
+			found = found || (sc.ID == in.ID && len(sc.Pages) > 0)
+		}
+	} else {
+		for _, sf := range rec.Manifest.Ether.Contributes.Surfaces {
+			found = found || sf.ID == in.ID
+		}
+	}
+	if !found {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "no such screen or surface"})
+		return
+	}
+	if err := a.screenPublish.Set(r.Context(), pluginID, in.Kind, in.ID, in.Frontend, *in.Enabled); err != nil {
+		httpjson.Write(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "could not save"})
+		return
+	}
+	if docs := (surfaceScreens{app: a}).docs(); docs != nil {
+		docs.Bump()
+		if in.Kind == "surface" && *in.Enabled {
+			a.offerHomeRowSurfaces(r.Context(), docs, pluginID)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleScreenPreview compiles a Studio project's screens and surfaces and
+// mints a two-hour preview token: POST /api/plugins/studio/projects/{id}/
+// screen-preview. A Vela client sending X-Vela-Screen-Preview: <token> sees
+// the draft in place of the installed documents. Compile problems come back
+// as {diagnostics: [{field, message}]} with 422.
+func (a *App) handleScreenPreview(w http.ResponseWriter, r *http.Request, projectID string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use POST"})
+		return
+	}
+	docs := (surfaceScreens{app: a}).docs()
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.studio == nil || docs == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "studio unavailable"})
+		return
+	}
+	proj, err := a.pluginsRT.studio.GetProject(r.Context(), projectID)
+	if err != nil || proj == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "project not found"})
+		return
+	}
+	man, err := plugins.ParseManifest([]byte(proj.Files["manifest.json"]))
+	if err != nil || man.Ether == nil {
+		httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": []plugins.FieldError{{Field: "manifest.json", Message: "the manifest does not parse"}}})
+		return
+	}
+	files := make(map[string][]byte, len(proj.Files))
+	for k, v := range proj.Files {
+		files[k] = []byte(v)
+	}
+	// Draft strings come from the working copy's strings files.
+	text := draftText(man, files)
+	var in struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&in)
+	token, expires, err := docs.UpdatePreview(strings.TrimSpace(in.Token), man, files, text, time.Now())
+	if err != nil {
+		var ve *plugins.ValidationError
+		if errors.As(err, &ve) {
+			httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": ve.Fields})
+			return
+		}
+		httpjson.Write(w, http.StatusUnprocessableEntity, map[string]any{"code": "invalid", "diagnostics": []plugins.FieldError{{Field: "screens", Message: err.Error()}}})
+		return
+	}
+	type pageList struct {
+		ID    string   `json:"id"`
+		Title string   `json:"title"`
+		Pages []string `json:"pages"`
+	}
+	type surfaceItem struct {
+		ID           string `json:"id"`
+		Presentation string `json:"presentation"`
+	}
+	var screensOut []pageList
+	for _, sc := range man.Ether.Contributes.Screens {
+		if len(sc.Pages) == 0 {
+			continue
+		}
+		pl := pageList{ID: sc.ID, Title: sc.Title}
+		for p := range sc.Pages {
+			pl.Pages = append(pl.Pages, p)
+		}
+		sort.Strings(pl.Pages)
+		screensOut = append(screensOut, pl)
+	}
+	var surfacesOut []surfaceItem
+	for _, sf := range man.Ether.Contributes.Surfaces {
+		surfacesOut = append(surfacesOut, surfaceItem{ID: sf.ID, Presentation: sf.Presentation})
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"token": token, "expires": expires.UTC().Format(time.RFC3339), "screens": screensOut, "surfaces": surfacesOut})
+}
+
+// draftText looks up a working copy's own strings files.
+func draftText(man plugins.Manifest, files map[string][]byte) screens.TextFunc {
+	byLocale := map[string]map[string]string{}
+	for loc, raw := range man.Ether.Strings {
+		var path string
+		var doc map[string]string
+		if json.Unmarshal(raw, &path) == nil {
+			_ = json.Unmarshal(files[path], &doc)
+		} else {
+			_ = json.Unmarshal(raw, &doc)
+		}
+		byLocale[loc] = doc
+	}
+	return func(locale, key string) (string, bool) {
+		for _, loc := range []string{locale, strings.SplitN(locale, "-", 2)[0], "en"} {
+			if t, ok := byLocale[loc][key]; ok {
+				return t, true
+			}
+		}
+		return "", false
+	}
+}
+
+// handleOverlayOrder reads and sets the owner's order of player overlays:
+// GET/PUT /api/plugins/screens/overlay-order {frontend: "vela", ids: [...]}.
+// When more than two overlays share an anchor, the first two in this order
+// show.
+func (a *App) handleOverlayOrder(w http.ResponseWriter, r *http.Request) {
+	if a == nil || a.screenPublish == nil {
+		httpjson.Write(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "screens unavailable"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		httpjson.Write(w, http.StatusOK, map[string]any{"frontend": "vela", "ids": a.screenPublish.OverlayOrder(r.Context(), "vela")})
+	case http.MethodPut:
+		var in struct {
+			Frontend string   `json:"frontend"`
+			IDs      []string `json:"ids"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil || in.Frontend != "vela" || len(in.IDs) > 64 {
+			httpjson.Write(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "expected {frontend: vela, ids: [surface ids]}"})
+			return
+		}
+		if err := a.screenPublish.SetOverlayOrder(r.Context(), in.Frontend, in.IDs); err != nil {
+			httpjson.Write(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "could not save"})
+			return
+		}
+		if docs := (surfaceScreens{app: a}).docs(); docs != nil {
+			docs.Bump()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		httpjson.Write(w, http.StatusMethodNotAllowed, map[string]any{"code": "method_not_allowed", "message": "use GET or PUT"})
 	}
 }

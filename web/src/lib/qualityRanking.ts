@@ -2,7 +2,7 @@
 // mirrored from internal/core/formats.go: a profile's quality order and
 // the formats it scores.
 import { localized, t } from "../i18n";
-import type { CustomFormatDefinition, QualityItem, QualityProfile, ReleaseRule } from "./types";
+import type { CustomFormatDefinition, QualityItem, ReleaseRule } from "./types";
 
 export const BUILTIN_PREFIX = "ether:";
 export const RULE_PREFIX = "rule:";
@@ -232,19 +232,6 @@ export function resolutionGroups(maxHeight: number, minHeight: number): QualityI
     name: `${h}p`,
     qualities: [...SOURCES, "unknown"].map((s) => `${s}-${h}`),
   }));
-}
-
-/** Whether a profile of this media can match a built-in format. */
-export function formatApplies(f: BuiltinFormat, mediaType: string | undefined): boolean {
-  return !f.tvOnly || mediaType !== "movie";
-}
-
-/** A profile without the formats its media never matches (core.ScoresForMedia). */
-export function withMediaFormats(p: QualityProfile): QualityProfile {
-  if (!p.customFormatScores) return p;
-  const scores = { ...p.customFormatScores };
-  for (const f of BUILTIN_FORMATS) if (!formatApplies(f, p.mediaType)) delete scores[f.id];
-  return { ...p, customFormatScores: scores };
 }
 
 /** The smallest 1, 2 or 5 × 10ⁿ that is at least x. */

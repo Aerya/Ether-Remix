@@ -12,12 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/agent/builtin"
 	"github.com/braedonsaunders/ether/internal/agent/tools"
+	"github.com/braedonsaunders/ether/internal/clientreg"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
+	"github.com/braedonsaunders/ether/internal/frontends/plex"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/stremio"
@@ -29,21 +33,22 @@ import (
 func (a *App) registerBuiltinTools(c *tools.Catalogue) error {
 	startedAt := time.Now()
 	deps := builtin.Deps{
-		OnAir:       a.onair,
-		Status:      &appStatusService{a: a, startedAt: startedAt},
-		Playback:    a.state,
-		Resolver:    &appResolverService{a: a},
-		Logs:        &appLogService{a: a},
-		Catalog:     a.catalog,
-		Collections: a.collections,
-		LiveTV:      a.livetv,
-		Sources:     &appSourceService{a: a},
-		Plugins:     &appPluginService{a: a},
-		Approvals:   &appApprovalReader{a: a},
-		Profiles:    &appProfileService{a: a},
-		Frontends:   &appFrontendService{a: a},
-		Server:      &appServerService{a: a},
-		Flows:       &appFlowsService{a: a},
+		OnAir:        a.onair,
+		Status:       &appStatusService{a: a, startedAt: startedAt},
+		Playback:     a.state,
+		Resolver:     &appResolverService{a: a},
+		Logs:         &appLogService{a: a},
+		Catalog:      a.catalog,
+		Collections:  a.collections,
+		LiveTV:       a.livetv,
+		Sources:      &appSourceService{a: a},
+		Plugins:      &appPluginService{a: a},
+		Approvals:    &appApprovalReader{a: a},
+		Profiles:     &appProfileService{a: a},
+		QualityRules: &appQualityRulesService{a: a},
+		Frontends:    &appFrontendService{a: a},
+		Server:       &appServerService{a: a},
+		Flows:        &appFlowsService{a: a},
 		OwnerUser: func(ctx context.Context) (*core.User, error) {
 			if a.users == nil {
 				return nil, errors.New("no owner")
@@ -122,6 +127,18 @@ func builtinToolLabel(name, fallback string) extend.Text {
 		return extend.T("Quality profiles")
 	case "quality_order_set":
 		return extend.T("Change quality order")
+	case "quality_rules_list":
+		return extend.T("Quality rules")
+	case "quality_explain":
+		return extend.T("Explain quality")
+	case "quality_rule_add":
+		return extend.T("Add a quality rule")
+	case "quality_rule_edit":
+		return extend.T("Edit a quality rule")
+	case "quality_rule_move":
+		return extend.T("Move a quality rule")
+	case "quality_defaults_set":
+		return extend.T("Change default quality profiles")
 	case "format_scores_set":
 		return extend.T("Change custom format scores")
 	case "rule_add":
@@ -688,7 +705,6 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 	for _, p := range cfg.Quality.Profiles {
 		out = append(out, builtin.ProfileInfo{
 			Name:               p.Name,
-			Media:              p.MediaType,
 			Scores:             maps.Clone(p.CustomFormatScores),
 			Rules:              append([]core.ReleaseRule(nil), p.ReleaseRules...),
 			QualityOrder:       config.CloneQualityOrder(p.QualityOrder),
@@ -703,11 +719,11 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 	return out, nil
 }
 
-func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
+func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
 			p := &c.Quality.Profiles[i]
-			if strings.EqualFold(p.Name, profile) && p.MediaType == media {
+			if strings.EqualFold(p.Name, profile) {
 				p.QualityOrder = config.CloneQualityOrder(order)
 				return nil
 			}
@@ -716,11 +732,11 @@ func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile, media
 	})
 }
 
-func (ps *appProfileService) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
+func (ps *appProfileService) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
 			p := &c.Quality.Profiles[i]
-			if strings.EqualFold(p.Name, profile) && p.MediaType == media {
+			if strings.EqualFold(p.Name, profile) {
 				if p.CustomFormatScores == nil {
 					p.CustomFormatScores = map[string]int{}
 				}
@@ -738,10 +754,10 @@ func (ps *appProfileService) SetFormatScores(ctx context.Context, profile, media
 	})
 }
 
-func (ps *appProfileService) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
+func (ps *appProfileService) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
-			if strings.EqualFold(c.Quality.Profiles[i].Name, profile) && c.Quality.Profiles[i].MediaType == media {
+			if strings.EqualFold(c.Quality.Profiles[i].Name, profile) {
 				p := &c.Quality.Profiles[i]
 				baseID := rule.ID
 				if baseID == "" {
@@ -767,6 +783,320 @@ func hasRuleID(rules []core.ReleaseRule, id string) bool {
 		}
 	}
 	return false
+}
+
+type appQualityRulesService struct {
+	a *App
+}
+
+func (qs *appQualityRulesService) QualityRules(ctx context.Context, includeDevices bool) (builtin.QualityRulesSnapshot, error) {
+	cfg := qs.a.cfg.Get()
+	profiles := make([]string, 0, len(cfg.Quality.Profiles))
+	for _, p := range cfg.Quality.Profiles {
+		profiles = append(profiles, p.Name)
+	}
+	var libraries []builtin.QualityLibraryRef
+	if qs.a.libraries != nil {
+		libs, err := qs.a.libraries.List(ctx)
+		if err != nil {
+			return builtin.QualityRulesSnapshot{}, err
+		}
+		libraries = make([]builtin.QualityLibraryRef, 0, len(libs))
+		for _, lib := range libs {
+			libraries = append(libraries, builtin.QualityLibraryRef{
+				ID:             int64(lib.ID),
+				Name:           lib.Name,
+				MediaType:      string(lib.MediaType),
+				ChosenByPlugin: lib.Source == core.LibraryPlugin,
+			})
+		}
+	}
+	var viewers []builtin.QualityViewerRef
+	if qs.a.users != nil {
+		users, err := qs.a.users.AllUsers(ctx)
+		if err != nil {
+			return builtin.QualityRulesSnapshot{}, err
+		}
+		viewers = make([]builtin.QualityViewerRef, 0, len(users))
+		for _, u := range users {
+			viewers = append(viewers, builtin.QualityViewerRef{
+				ID:   u.ID,
+				Name: firstNonEmptyStr(u.Title, u.Username, fmt.Sprintf("Viewer %d", u.ID)),
+			})
+		}
+	}
+	snap := builtin.QualityRulesSnapshot{
+		Default:           cfg.Quality.Default,
+		DefaultAway:       cfg.Quality.DefaultAway,
+		DefaultLimits:     cfg.Quality.DefaultLimits,
+		DefaultAwayLimits: cfg.Quality.DefaultAwayLimits,
+		Profiles:          profiles,
+		Rules:             cfg.Quality.Rules,
+		Libraries:         libraries,
+		Viewers:           viewers,
+	}
+	if includeDevices {
+		regApps := clientreg.Apps()
+		apps := make([]builtin.QualityDeviceAppRef, 0, len(regApps))
+		for _, item := range regApps {
+			apps = append(apps, builtin.QualityDeviceAppRef{
+				ID:       clientreg.AppID(item),
+				Name:     item.Name,
+				Protocol: item.Protocol,
+			})
+		}
+		clients := []builtin.QualityDeviceClientRef{}
+		if qs.a.db != nil {
+			if seen, err := qs.a.seenPlaybackDevices(ctx); err == nil {
+				clients = make([]builtin.QualityDeviceClientRef, 0, len(seen))
+				for _, d := range seen {
+					id := clientreg.Identity{
+						Product:    d.App,
+						Platform:   d.Platform,
+						Device:     d.Device,
+						DeviceName: d.Name,
+					}
+					name := firstNonEmptyStr(d.Name, d.App, d.Device, d.ClientIdentifier)
+					var lastSeen string
+					if !d.LastSeen.IsZero() {
+						lastSeen = d.LastSeen.UTC().Format(time.RFC3339)
+					}
+					clients = append(clients, builtin.QualityDeviceClientRef{
+						ID:       d.ClientIdentifier,
+						Name:     name,
+						Group:    clientreg.Class(id),
+						Type:     clientreg.DeviceType(id),
+						App:      clientreg.AppFor("", id),
+						Viewer:   d.Viewer,
+						LastSeen: lastSeen,
+					})
+				}
+			}
+		}
+		snap.Devices = &builtin.QualityDevicesRef{
+			Groups:  clientreg.Classes(),
+			Types:   clientreg.DeviceTypes(),
+			Apps:    apps,
+			Clients: clients,
+		}
+	}
+	return snap, nil
+}
+
+func (qs *appQualityRulesService) ExplainQuality(ctx context.Context, req builtin.QualityExplainRequest) (resolver.QualityAnswer, error) {
+	if req.Kind != "" && req.Kind != config.KindMovie && req.Kind != config.KindEpisode {
+		return resolver.QualityAnswer{}, tools.Userf("kind must be movie or episode")
+	}
+	var client qualityClient
+	var exactClientID string
+	lookupSeenClient := func(targetID string) bool {
+		if qs.a.db == nil {
+			return false
+		}
+		seen, err := qs.a.seenPlaybackDevices(ctx)
+		if err != nil {
+			return false
+		}
+		for _, d := range seen {
+			if d.ClientIdentifier == targetID {
+				exactClientID = d.ClientIdentifier
+				client = qualityClient{
+					ID:       d.ClientIdentifier,
+					Name:     d.Name,
+					Product:  d.App,
+					Platform: d.Platform,
+					Device:   d.Device,
+				}
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case req.ClientID == "any" || (req.ClientID == "" && req.Client == nil):
+		// Generic client with no assumed app.
+	case req.ClientID != "":
+		found := lookupSeenClient(req.ClientID)
+		if !found {
+			for _, c := range qualityClients() {
+				if c.ID == req.ClientID {
+					client, found = c, true
+					break
+				}
+			}
+		}
+		if !found {
+			if dev, ok := resolver.ParseSummaryDevice(req.ClientID); ok && dev.Field != "" {
+				switch dev.Field {
+				case "client":
+					found = lookupSeenClient(dev.Value)
+				case "type":
+					for _, d := range clientreg.Devices() {
+						if d.Name == dev.Value {
+							client = qualityClient{ID: req.ClientID, Name: d.Name, Product: d.Identity.Product, Platform: d.Identity.Platform, Device: d.Identity.Device}
+							found = true
+							break
+						}
+					}
+				case "app":
+					for _, appItem := range clientreg.Apps() {
+						if clientreg.AppID(appItem) == dev.Value {
+							prod := firstNonEmptyStr(appItem.Identity.Product, appItem.Product, appItem.Name)
+							client = qualityClient{ID: req.ClientID, Name: appItem.Name, Product: prod, Platform: appItem.Identity.Platform, Device: appItem.Identity.Device, Protocol: core.Protocol(appItem.Protocol)}
+							found = true
+							break
+						}
+					}
+				}
+			}
+		}
+		if !found {
+			return resolver.QualityAnswer{}, tools.Userf("no such device or app %q; call quality_rules_list with includeDevices=true to see valid ids", req.ClientID)
+		}
+	case req.Client != nil && strings.TrimSpace(req.Client.Product) != "":
+		client = qualityClient{
+			Product:  strings.TrimSpace(req.Client.Product),
+			Platform: strings.TrimSpace(req.Client.Platform),
+			Device:   strings.TrimSpace(req.Client.Device),
+			Protocol: req.Client.Protocol,
+		}
+	default:
+		return resolver.QualityAnswer{}, tools.Userf("choose a device or app")
+	}
+	if len(client.Product) > 128 || len(client.Platform) > 128 || len(client.Device) > 128 {
+		return resolver.QualityAnswer{}, tools.Userf("client fields are too long")
+	}
+
+	var u *core.User
+	if req.ViewerID > 0 {
+		if qs.a.users == nil {
+			return resolver.QualityAnswer{}, tools.Userf("no such viewer %d", req.ViewerID)
+		}
+		loaded, err := qs.a.users.ActiveUser(ctx, req.ViewerID)
+		if err != nil || loaded == nil {
+			return resolver.QualityAnswer{}, tools.Userf("no such viewer %d", req.ViewerID)
+		}
+		u = loaded
+	}
+
+	var title *core.Title
+	var inLib resolver.Membership
+	var chosenByPlugin string
+	kind := req.Kind
+	if req.TitleKey != 0 {
+		if qs.a.catalog == nil {
+			return resolver.QualityAnswer{}, tools.Userf("no such movie or episode")
+		}
+		loaded, err := qs.a.catalog.CachedGet(ctx, req.TitleKey)
+		if err != nil || loaded == nil || (loaded.Type != core.TypeMovie && loaded.Type != core.TypeEpisode) {
+			return resolver.QualityAnswer{}, tools.Userf("no such movie or episode")
+		}
+		title = loaded
+		if qs.a.libProfiles != nil {
+			inLib = func(id core.LibraryID) bool {
+				return qs.a.libProfiles.InLibrary(ctx, title, id)
+			}
+		}
+	} else if req.LibraryID > 0 {
+		if qs.a.libraries == nil {
+			return resolver.QualityAnswer{}, tools.Userf("no such library %d", req.LibraryID)
+		}
+		lib, err := qs.a.libraries.Get(ctx, core.LibraryID(req.LibraryID))
+		if err != nil {
+			return resolver.QualityAnswer{}, tools.Userf("no such library %d", req.LibraryID)
+		}
+		inLib = func(id core.LibraryID) bool { return id == lib.ID }
+		if lib.Source == core.LibraryPlugin {
+			chosenByPlugin = qs.a.pluginDisplayName(ctx, lib.PluginID)
+		}
+		if kind == "" {
+			switch lib.MediaType {
+			case core.TypeMovie:
+				kind = config.KindMovie
+			case core.TypeShow:
+				kind = config.KindEpisode
+			}
+		}
+	}
+
+	cfg := qs.a.cfg.Read()
+	devName := firstNonEmptyStr(client.Name, client.Device)
+	pr := &plex.Request{
+		ClientID:   exactClientID,
+		Product:    client.Product,
+		Platform:   client.Platform,
+		Device:     client.Device,
+		DeviceName: devName,
+		Remote:     req.Remote,
+		User:       u,
+	}
+	declared := pr.ClientCapsWith(0, cfg.Clients.Overrides)
+	builtinCaps := pr.ClientCapsWith(0, nil)
+	if frontendHostPolicy(client.Protocol).ProfileQualityEvaluation {
+		info := caps.DeviceInfo{
+			Protocol: client.Protocol,
+			ClientID: exactClientID,
+			Product:  client.Product,
+			Platform: client.Platform,
+			Device:   client.Device,
+			Remote:   req.Remote,
+		}
+		neutral, err := (caps.Builder{}).Build(ctx, info, caps.DeviceProfile{}, nil, "")
+		if err != nil {
+			return resolver.QualityAnswer{}, tools.Userf("cannot evaluate app")
+		}
+		builtinCaps = playbackFloor(neutral, nil)
+		declared = playbackFloor(neutral, cfg.Clients.Overrides)
+	} else if client.Product == "" {
+		declared = core.ClientCaps{ClientID: exactClientID, Remote: req.Remote, HDR10: true, DolbyVision: true}
+		builtinCaps = declared
+	}
+
+	q := resolver.QualityQuestion{
+		Quality:        cfg.Quality,
+		Caps:           declared,
+		Builtin:        &builtinCaps,
+		User:           u,
+		Title:          title,
+		Kind:           kind,
+		InLibrary:      inLib,
+		ChosenByPlugin: chosenByPlugin,
+	}
+	if qs.a.safety != nil && u != nil {
+		policy := qs.a.safety.ForUser(u)
+		q.RemoteDisabled = policy.RemoteDisabled
+	}
+	return resolver.ExplainQuality(q), nil
+}
+
+func (qs *appQualityRulesService) ValidateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	next := qs.a.cfg.Get()
+	if err := mutate(&next.Quality); err != nil {
+		return config.Quality{}, err
+	}
+	config.AssignRuleIDs(&next.Quality)
+	if errs := append(admin.ValidateConfig(next), qs.a.validateExtra(next)...); len(errs) > 0 {
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Field+" "+e.Message)
+		}
+		return config.Quality{}, tools.Userf("%s", strings.Join(msgs, "; "))
+	}
+	return next.Quality, nil
+}
+
+func (qs *appQualityRulesService) UpdateQuality(ctx context.Context, mutate func(*config.Quality) error) (config.Quality, error) {
+	err := qs.a.saveValidated(func(c *config.Config) error {
+		return mutate(&c.Quality)
+	})
+	if err != nil {
+		if errors.Is(err, resolver.ErrImportRejected) {
+			msg := strings.TrimPrefix(err.Error(), resolver.ErrImportRejected.Error()+": ")
+			return config.Quality{}, tools.Userf("%s", msg)
+		}
+		return config.Quality{}, err
+	}
+	return qs.a.cfg.Get().Quality, nil
 }
 
 type appFrontendService struct {

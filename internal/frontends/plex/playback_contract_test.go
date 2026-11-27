@@ -23,6 +23,11 @@ func TestPlaybackCorpusLifecycle(t *testing.T) {
 			t.Run(profile+"/"+format, func(t *testing.T) {
 				f := newFixture()
 				defer f.srv.Close()
+				// The corpus plays one minute of media; the title's runtime must
+				// agree or its timeline reads as a trailer reported against it.
+				movie := fightClub
+				movie.Runtime = time.Minute
+				f.catalog.titles[movie.Key] = movie
 				f.trans.decision = core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, Container: "mpegts"}
 				queueID := ""
 				segment := ""

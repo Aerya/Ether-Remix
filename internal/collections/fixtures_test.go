@@ -663,7 +663,7 @@ func fixtureTitle(x fx, now time.Time) core.Title {
 func spec(name, media string, sources []core.CollectionSource, rules ...core.CollectionRule) core.CollectionSpec {
 	return core.CollectionSpec{Name: name, MediaType: media, Sources: sources, Match: "all", Rules: rules,
 		Sort: "popularity", SortDesc: true, Refresh: "daily", Enabled: true,
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()}}
+		BrowseInApps: true}
 }
 
 func rl(field, op string, v any) core.CollectionRule {

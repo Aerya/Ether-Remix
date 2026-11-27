@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"net/http"
 	"strconv"
@@ -53,6 +54,10 @@ func (i *instance) mutate(w http.ResponseWriter, r *http.Request, kind string) {
 		err = i.host.Experience.SetFavorite(r.Context(), v, key, r.Method == "POST")
 	}
 	if err != nil {
+		if errors.Is(err, frontend.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "Unavailable", 503)
 		return
 	}

@@ -115,11 +115,13 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 		}
 		out := make([]model.Hub, 0, len(ordered))
 		for _, row := range ordered {
+			if row.Present.Surface != nil {
+				// A plugin surface row is drawn from the plugin's document;
+				// Plex has no renderer for it.
+				continue
+			}
 			if index, ok := byID[row.ID]; ok {
-				painted := rows[index]
-				painted.PreviewOnFocus = row.PreviewOnFocus
-				painted.RankedTop10 = row.RankedTop10
-				out = append(out, painted)
+				out = append(out, presentHub(rows[index], row))
 			}
 		}
 		return out
@@ -144,10 +146,65 @@ func (s *Server) arrangeHomeRows(ctx context.Context, pr *Request, hc frontend.H
 	return out
 }
 
+// presentHub draws a painted hub the way its page row asks (Present).
+// Plex hub styles are shelf and hero: Hero is a hero hub, Wide a shelf of
+// landscape art, Standard, Tiles and Track list a shelf. Numbered paints
+// Top 10 rank art and Trailer on focus landscape art. The card follows the
+// library. Plex rebuilds items itself, so it applies Hide watched from the
+// viewer's state already painted on each item: no lookup.
+func presentHub(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
+	p := row.Present
+	if p.HideWatched {
+		h = hideWatched(h)
+	}
+	h.PreviewOnFocus = p.Trailer
+	h.RankedTop10 = p.Numbered
+	h.Library = int64(p.Library)
+	h.Layout = p.Layout
+	if h.Type == "collection" && p.Card == "landscape" {
+		for n := range h.Directory {
+			if h.Directory[n].Art != "" {
+				h.Directory[n].Thumb = h.Directory[n].Art
+			}
+		}
+	}
+	switch h.Layout {
+	case "":
+	case frontend.RowStyleHero:
+		h.Style = "hero"
+	default:
+		h.Style = "shelf"
+	}
+	return h
+}
+
+// hideWatched drops the viewer's watched titles. A row with every title
+// watched comes back empty, and the Home passes drop it.
+func hideWatched(h model.Hub) model.Hub {
+	if len(h.Metadata) == 0 {
+		return h
+	}
+	kept, ok := keepHubMetadata(h, func(m model.Metadata) bool { return !plexWatched(m) })
+	if !ok {
+		kept.Metadata, kept.Size = nil, 0
+	}
+	return kept
+}
+
+// plexWatched reports a painted title the viewer has fully watched: a movie
+// or episode with a view, a show or season with every episode viewed.
+func plexWatched(m model.Metadata) bool {
+	switch m.Type {
+	case "show", "season":
+		return m.LeafCount != nil && *m.LeafCount > 0 && m.ViewedLeafCount != nil && *m.ViewedLeafCount >= *m.LeafCount
+	}
+	return m.ViewCount > 0
+}
+
 // stableHomeHubs drops rows a client would draw empty, and keeps the first
 // copy when the same hub was produced twice (promoted and section builders,
 // or a recommender repeating a row the front end already built).
-func stableHomeHubs(rows []model.Hub) []model.Hub {
+func stableHomeHubs(pr *Request, rows []model.Hub) []model.Hub {
 	seen := map[string]bool{}
 	out := make([]model.Hub, 0, len(rows))
 	for _, h := range rows {
@@ -160,7 +217,7 @@ func stableHomeHubs(rows []model.Hub) []model.Hub {
 			}
 			seen[h.HubIdentifier] = true
 		}
-		if h.PreviewOnFocus {
+		if h.PreviewOnFocus || h.Layout == frontend.RowStyleWide {
 			h.Metadata = append([]model.Metadata(nil), h.Metadata...)
 			landscapeMetadata(h.Metadata)
 		}
@@ -171,7 +228,7 @@ func stableHomeHubs(rows []model.Hub) []model.Hub {
 			h.Size = len(h.Metadata)
 			h.TotalSize = model.Ptr(h.Size)
 			h.More = false
-			h.Meta = &model.Meta{DisplayImage: []model.DisplayImage{{Type: h.Type, ImageType: "coverArt"}}}
+			h.Meta = rankedDisplayImageMeta(pr, h.Type)
 		}
 		out = append(out, h)
 	}
@@ -207,10 +264,16 @@ func heroReadyItem(m model.Metadata) bool {
 // and HubKey to match. A hub with no such titles is omitted so the client
 // never reserves the slot.
 func paintHeroItems(h model.Hub) (model.Hub, bool) {
+	return keepHubMetadata(h, heroReadyItem)
+}
+
+// keepHubMetadata keeps the titles keep accepts and rewrites Size and HubKey
+// to match. ok is false when nothing was kept; the hub is then unchanged.
+func keepHubMetadata(h model.Hub, keep func(model.Metadata) bool) (model.Hub, bool) {
 	kept := make([]model.Metadata, 0, len(h.Metadata))
 	keys := make([]string, 0, len(h.Metadata))
 	for _, m := range h.Metadata {
-		if !heroReadyItem(m) {
+		if !keep(m) {
 			continue
 		}
 		kept = append(kept, m)
@@ -238,25 +301,59 @@ func paintHeroItems(h model.Hub) (model.Hub, bool) {
 // cold or not-yet-warm row with no backdrop must not be sent: either the
 // next already-painted, art-ready shelf is promoted into that slot, or
 // the hero is omitted. Later shelves stay as they were.
+//
+// The owner's row style wins where it is set: a lead row the owner made
+// Standard or Wide keeps that style (it still needs hero art, as iOS
+// spotlights the lead hub), and an owner Hero row with no art-ready title
+// falls back to a shelf for this response instead of disappearing. Such a
+// row never takes the lead slot: it follows the first art-ready row.
 func heroReadyHomeHubs(rows []model.Hub) []model.Hub {
 	out := make([]model.Hub, 0, len(rows))
-	haveHero := false
+	var waiting []model.Hub
 	for _, h := range rows {
-		if strings.EqualFold(h.Style, "hero") || !haveHero {
+		lead := len(out) == 0
+		if lead || strings.EqualFold(h.Style, "hero") {
 			painted, ok := paintHeroItems(h)
 			if !ok {
+				if h.Layout == frontend.RowStyleHero {
+					h.Style = "shelf"
+					if lead {
+						waiting = append(waiting, h)
+					} else {
+						out = append(out, h)
+					}
+				}
 				continue
 			}
-			if !strings.EqualFold(painted.Style, "hero") {
+			if h.Layout == "" || h.Layout == frontend.RowStyleHero {
 				painted.Style = "hero"
 			}
 			out = append(out, painted)
-			haveHero = true
-			continue
+		} else {
+			out = append(out, h)
 		}
-		out = append(out, h)
+		if len(waiting) > 0 {
+			out = append(out, waiting...)
+			waiting = nil
+		}
 	}
 	return out
+}
+
+// ownerHeroHubs is the library page pass: an owner Hero row keeps only titles
+// with hero art, and falls back to a shelf when none has it yet.
+func ownerHeroHubs(rows []model.Hub) []model.Hub {
+	for i, h := range rows {
+		if h.Layout != frontend.RowStyleHero {
+			continue
+		}
+		if painted, ok := paintHeroItems(h); ok {
+			rows[i] = painted
+		} else {
+			rows[i].Style = "shelf"
+		}
+	}
+	return rows
 }
 
 // landscapeMetadata paints only response copies, retaining movie/show identities.

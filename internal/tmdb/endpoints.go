@@ -208,6 +208,13 @@ func (c *Client) SeasonDetails(ctx context.Context, tvID int64, season int) (*Se
 	return &out, err
 }
 
+// SeasonDetailsFresh bypasses the response cache for an explicit refresh.
+func (c *Client) SeasonDetailsFresh(ctx context.Context, tvID int64, season int) (*SeasonDetails, error) {
+	var out SeasonDetails
+	err := c.getFreshJSON(ctx, fmt.Sprintf("/tv/%d/season/%d", tvID, season), url.Values{}, &out)
+	return &out, err
+}
+
 // EpisodeDetails fetches one episode.
 func (c *Client) EpisodeDetails(ctx context.Context, tvID int64, season, episode int) (*Episode, error) {
 	var out Episode
@@ -282,13 +289,44 @@ func (c *Client) TVList(ctx context.Context, list string, page int) (*Paged[TVSh
 
 // SearchMovies / SearchTV / SearchMulti.
 func (c *Client) SearchMovies(ctx context.Context, query string, page int) (*Paged[Movie], error) {
+	return c.SearchMoviesByYear(ctx, query, page, 0)
+}
+
+func (c *Client) SearchMoviesByYear(ctx context.Context, query string, page, year int) (*Paged[Movie], error) {
+	return c.SearchMoviesInLanguage(ctx, query, page, year, "")
+}
+
+func (c *Client) SearchMoviesInLanguage(ctx context.Context, query string, page, year int, lang string) (*Paged[Movie], error) {
+
 	q := pageQ(values("query", query, "include_adult", "false"), page)
+	if lang != "" {
+		q.Set("language", lang)
+	}
+	if year > 0 {
+		q.Set("primary_release_year", strconv.Itoa(year))
+	}
 	var out Paged[Movie]
 	err := c.getJSON(ctx, "/search/movie", q, &out)
 	return &out, err
 }
+
 func (c *Client) SearchTV(ctx context.Context, query string, page int) (*Paged[TVShow], error) {
+	return c.SearchTVByYear(ctx, query, page, 0)
+}
+
+func (c *Client) SearchTVByYear(ctx context.Context, query string, page, year int) (*Paged[TVShow], error) {
+	return c.SearchTVInLanguage(ctx, query, page, year, "")
+}
+
+func (c *Client) SearchTVInLanguage(ctx context.Context, query string, page, year int, lang string) (*Paged[TVShow], error) {
+
 	q := pageQ(values("query", query, "include_adult", "false"), page)
+	if lang != "" {
+		q.Set("language", lang)
+	}
+	if year > 0 {
+		q.Set("first_air_date_year", strconv.Itoa(year))
+	}
 	var out Paged[TVShow]
 	err := c.getJSON(ctx, "/search/tv", q, &out)
 	return &out, err

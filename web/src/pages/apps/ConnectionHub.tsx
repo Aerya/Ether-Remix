@@ -10,6 +10,7 @@ import {
   householdIcon,
   JellyfinMark,
   PlexMark,
+  pluginAdapterLogo,
   SiloMark,
   VelaMark,
 } from "../../components/integration-brands";
@@ -39,6 +40,10 @@ export type HubFrontendInfo = {
     certifiedApps?: { name: string; steps: string[] }[];
     defaultPort?: number;
     auth?: string;
+    /** A plugin adapter's mark: its declared icon, else its plugin's icon. */
+    logo?: string;
+    /** A plugin adapter's declared protocol (opds, subsonic, custom). */
+    protocolHint?: string;
   };
   enabled: boolean;
   status: ReachabilityStatus & {
@@ -74,7 +79,7 @@ export async function fetchEtherConfig(): Promise<EtherConfig> {
 }
 const PHONE_QR_APPS = new Set(["jellyfin", "emby", "silo", "vela", "webdav", "xtream"]);
 
-export function appBrandMark(id: string): ReactNode {
+export function appBrandMark(id: string, logo?: string, protocolHint?: string): ReactNode {
   switch (id) {
     case "plex":
       return <PlexMark />;
@@ -89,7 +94,7 @@ export function appBrandMark(id: string): ReactNode {
     case "stremio":
       return <StremioMark />;
     default:
-      return householdIcon(id);
+      return id.startsWith("plugin:") ? pluginAdapterLogo(logo, protocolHint) : householdIcon(id);
   }
 }
 
@@ -769,7 +774,7 @@ export function AppOverviewRow({
     >
       <div className="flex min-w-0 flex-1 items-center gap-3.5">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-subtle/70">
-          {appBrandMark(id)}
+          {appBrandMark(id, info.descriptor.logo, info.descriptor.protocolHint)}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
@@ -891,7 +896,7 @@ export function AppAddressCard({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
         <div className="flex min-w-0 items-center gap-3.5">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border bg-bg-subtle/70">
-            {appBrandMark(id)}
+            {appBrandMark(id, info.descriptor.logo, info.descriptor.protocolHint)}
           </div>
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-fg">{name}</h2>

@@ -190,7 +190,7 @@ func (m *Manager) StartEncoder(ctx context.Context, r EncoderRequest) (Continuou
 	// Keep about 30 s of each container in memory: the live window clients
 	// read, served without touching the disk.
 	keep := int((30*time.Second + r.SegmentDuration - 1) / r.SegmentDuration)
-	enc.store, e = newContinuousStore(dir, keep, enc.index.kick)
+	enc.store, e = newBudgetedContinuousStore(dir, max(keep, enc.index.liveCount()), enc.index.kick, r.DVRCache, r.DVRWindow > 0)
 	if e != nil {
 		encCancel()
 		return nil, e

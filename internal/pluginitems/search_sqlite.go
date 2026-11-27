@@ -18,6 +18,10 @@ func sqliteIndexFTS(ctx context.Context, tx *sql.Tx, seq int64, ref core.ItemRef
 	if title == "" && fieldsText == "" && peopleText == "" {
 		return nil
 	}
+	return sqliteInsertFTS(ctx, tx, seq, ref, libraryID, title, fieldsText, peopleText)
+}
+
+func sqliteInsertFTS(ctx context.Context, tx *sql.Tx, seq int64, ref core.ItemRef, libraryID core.LibraryID, title, fieldsText, peopleText string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO plugin_item_fts(rowid, item_ref, library_id, title, fields, people) VALUES(?, ?, ?, ?, ?, ?)`,
 		seq, string(ref), int64(libraryID), title, fieldsText, peopleText)
 	return err
@@ -29,11 +33,7 @@ func sqliteDeleteFTS(ctx context.Context, tx *sql.Tx, seq int64) error {
 }
 
 func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
-	parts := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		parts = append(parts, `"`+strings.ReplaceAll(tok, `"`, `""`)+`"*`)
-	}
-	matchExpr := strings.Join(parts, " AND ")
+	matchExpr := buildSQLiteFTSMatch(tokens)
 
 	var where strings.Builder
 	args := []any{matchExpr, int64(q.LibraryID)}
@@ -62,9 +62,13 @@ func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []stri
 			return BrowsePage{Total: 0, TotalExact: !(q.NoTotal && !q.CheapTotal)}, nil
 		}
 	}
-	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets, q.AnyGroups); err != nil {
 		return BrowsePage{}, err
 	}
+	if err := s.appendBrowseEmptyFields(ctx, q.LibraryID, &where, &args, q.Empty); err != nil {
+		return BrowsePage{}, err
+	}
+	appendBrowseExcludeQuery(&where, &args, q.ExcludeQuery, false)
 	viewerID := q.ViewerID
 	if viewerID <= 0 {
 		viewerID = core.CatalogViewerID(ctx)

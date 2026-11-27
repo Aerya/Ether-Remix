@@ -147,11 +147,11 @@ func (b *Broker) NewDownloadQueuePersistence(queue frontend.DownloadQueueStore, 
 	return DownloadQueuePersistence{Queue: q, DB: db, Artifacts: artifacts, Log: log, Expiry: expiry, StorageID: storageID, Users: users}
 }
 
-func (b *Broker) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+func (b *Broker) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if b == nil {
 		return nil, core.ErrNotAvailable
 	}
-	return (PartSources{Playback: b.Playback(), Log: b.deps.Logger, KindSource: b.deps.KindSource}).Prepare(ctx, viewer, key, caps, release, wait)
+	return (PartSources{Playback: b.Playback(), Log: b.deps.Logger, KindSource: b.deps.KindSource}).Prepare(ctx, viewer, key, caps, release, exact, wait)
 }
 
 func (b *Broker) PartSource(viewer int64, client string, key core.RatingKey, release string) frontend.PartSource {
@@ -390,11 +390,11 @@ func (r *LocalRuntime) NewDownloadQueuePersistence(queue frontend.DownloadQueueS
 	return DownloadQueuePersistence{Queue: q, DB: db, Artifacts: artifacts, Log: log, Expiry: expiry, StorageID: storageID, Users: users}
 }
 
-func (r *LocalRuntime) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+func (r *LocalRuntime) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if r == nil {
 		return nil, core.ErrNotAvailable
 	}
-	return (PartSources{Playback: r.playback(), Log: r.deps.Logger, KindSource: r.deps.KindSource}).Prepare(ctx, viewer, key, caps, release, wait)
+	return (PartSources{Playback: r.playback(), Log: r.deps.Logger, KindSource: r.deps.KindSource}).Prepare(ctx, viewer, key, caps, release, exact, wait)
 }
 
 func (r *LocalRuntime) PartSource(viewer int64, client string, key core.RatingKey, release string) frontend.PartSource {

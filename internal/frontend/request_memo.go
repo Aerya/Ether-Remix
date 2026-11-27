@@ -40,6 +40,13 @@ func WithCatalogViewer(ctx context.Context, u *User) context.Context {
 	return core.WithCatalogViewer(ctx, u)
 }
 
+// WithoutCatalogViewer drops the catalogue viewer, for reads that are the
+// same for every viewer and share one cache entry. The context key stays
+// owned by core.
+func WithoutCatalogViewer(ctx context.Context) context.Context {
+	return core.WithoutCatalogViewer(ctx)
+}
+
 // WithSearchMemo lets one search request read each name's people once for
 // both its title and its person results. The context key stays owned by core.
 func WithSearchMemo(ctx context.Context) context.Context {

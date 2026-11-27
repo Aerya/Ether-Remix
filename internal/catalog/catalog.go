@@ -252,23 +252,31 @@ type Catalog struct {
 	remoteSearches remoteSearchCache // search_remote_cache.go
 	posters        posterResolver    // posters.go
 
-	startupContext    context.Context
-	metadataMu        sync.RWMutex
-	metadataProviders map[string]*metadataRegistration
-	metadataFlights   flight.Group[string, *core.Title]
-	viewerRules       viewerRuleCache
-	ownerIncludes     ownerIncludeCache
-	visibility        *libraryfilter.Filter // every rule: browsing and discovery
-	searchVis         *libraryfilter.Filter // rules scoped everywhere: explicit search
-	db                *sql.DB
-	remote            atomic.Pointer[tmdbRef]
-	configUpdateMu    sync.Mutex // serializes transitions without blocking config readers
-	cfgMu             sync.RWMutex
-	cfg               config.Catalog
-	libPolicies       LibraryPolicies
-	cfgVersion        *configVersion
-	log               *slog.Logger
-	clock             atomic.Value // func() time.Time
+	startupContext           context.Context
+	metadataSources          *core.MetadataSources
+	episodeOrderDefault      atomic.Pointer[orderDefaultLoader]
+	metadataSourceDefault    atomic.Pointer[metadataDefaultLoader]
+	episodeOrderBatchDefault atomic.Pointer[orderBatchDefaultLoader]
+	hasEpisodeLayouts        atomic.Bool
+	sourceIdentityRekey      atomic.Pointer[sourceIdentityRekey]
+	episodeGroupLoader       atomic.Pointer[metadataGroupLoader]
+	orderFlights             flight.Group[orderFetchKey, struct{}]
+	metadataMu               sync.RWMutex
+	metadataProviders        map[string]*metadataRegistration
+	metadataFlights          flight.Group[string, *core.Title]
+	viewerRules              viewerRuleCache
+	ownerIncludes            ownerIncludeCache
+	visibility               *libraryfilter.Filter // every rule: browsing and discovery
+	searchVis                *libraryfilter.Filter // rules scoped everywhere: explicit search
+	db                       *sql.DB
+	remote                   atomic.Pointer[tmdbRef]
+	configUpdateMu           sync.Mutex // serializes transitions without blocking config readers
+	cfgMu                    sync.RWMutex
+	cfg                      config.Catalog
+	libPolicies              LibraryPolicies
+	cfgVersion               *configVersion
+	log                      *slog.Logger
+	clock                    atomic.Value // func() time.Time
 
 	staleAfter time.Duration
 	listTTL    time.Duration
@@ -300,6 +308,7 @@ type Catalog struct {
 	syncBatch    atomic.Int64 // adaptive sync write batch (sync.go nextSyncBatch)
 	syncContend  atomic.Int32 // consecutive sync attempts ended by write contention (sync.go)
 	detailWrites detailWrites // batched detail writes (detail_writer.go)
+	holds        writeHolds   // background batch sizes by measured hold (write_hold.go)
 	ftsFold      bool         // bulk writes fold new rows into the title FTS (fts_fold.go)
 	personFold   bool         // and new credits into person names (fts_fold.go)
 	progress     SyncProgress
@@ -592,6 +601,12 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 		personHydrated: map[int64]time.Time{}, listMirrored: map[string]time.Time{}}
 	c.setNow(time.Now)
 	c.SetTMDB(client)
+	c.metadataSources = core.NewMetadataSources(NewTMDBSource(c))
+	var hasLayouts bool
+	if err := db.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM catalog_episode_order) OR EXISTS(SELECT 1 FROM catalog_order_manifest)`).Scan(&hasLayouts); err != nil {
+		return nil, err
+	}
+	c.hasEpisodeLayouts.Store(hasLayouts)
 	c.posterPrefetch = c.prefetchTailPosters
 	for _, fn := range opts {
 		fn(c)
@@ -675,8 +690,14 @@ func (c *Catalog) SetTMDB(client TMDB) {
 	}
 }
 
-// TMDBConfigured reports whether a remote TMDB client is attached.
-func (c *Catalog) TMDBConfigured() bool { return c.tmdb() != nil }
+// TMDBConfigured reports whether the registered source can make live requests.
+func (c *Catalog) TMDBConfigured() bool {
+	if c == nil || c.metadataSources == nil {
+		return false
+	}
+	source := c.metadataSources.Get(core.MetadataTMDB)
+	return source != nil && source.Configured()
+}
 
 func (c *Catalog) tmdb() TMDB {
 	if c == nil {

@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -113,6 +114,10 @@ type hedgeDialKey struct{}
 // It does not promote speculative requests to hedges or change host caps.
 type readAheadDialKey struct{}
 
+type speedDialKey struct{}
+
+var errSpeedDialBusy = errors.New("debrid: no spare media dial slot")
+
 func dialUrgent(ctx context.Context) bool {
 	if gateUrgent(ctx) {
 		return true
@@ -130,6 +135,9 @@ type dialWaiter struct {
 // Equal-priority dials with the same spacing policy keep FIFO order. Background
 // dials resume after the foreground queue drains; open connections stay put.
 func (c *connCap) acquire(ctx context.Context, addr string) error {
+	if ctx.Value(speedDialKey{}) != nil {
+		return c.trySpeedDial(ctx, addr)
+	}
 	w := &dialWaiter{urgent: func() bool { return dialUrgent(ctx) }, hedge: ctx.Value(hedgeDialKey{}) != nil}
 	c.mu.Lock()
 	c.waiters[addr] = append(c.waiters[addr], w)
@@ -251,6 +259,38 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 		}
 		if t != nil {
 			t.Stop()
+		}
+	}
+}
+
+// A diagnostic may reuse an idle socket or dial a genuinely free slot.
+// It cannot join the playback dial queue or ask the transport to close idle sockets.
+func (c *connCap) trySpeedDial(ctx context.Context, addr string) error {
+	for {
+		c.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return err
+		}
+		lim, _ := c.limitLocked(addr)
+		if c.open[addr] >= lim || len(c.waiters[addr]) > 0 {
+			c.mu.Unlock()
+			return errSpeedDialBusy
+		}
+		now := c.now()
+		delay := c.nextDial[addr].Sub(now)
+		if delay <= 0 {
+			c.open[addr]++
+			if c.dialGap > 0 {
+				c.nextDial[addr] = now.Add(c.dialGap)
+			}
+			c.mu.Unlock()
+			return nil
+		}
+		c.mu.Unlock()
+		// Dial spacing still applies. Recheck capacity after the pause.
+		if err := sleep(ctx, delay); err != nil {
+			return err
 		}
 	}
 }
@@ -507,6 +547,21 @@ func (g *hostGate) tryAcquire(addr string) (func(), bool) {
 	}
 	g.busy[addr]++
 	return g.releaser(addr), true
+}
+
+// trySpeedTest takes a spare request slot without joining the playback queue.
+func (g *hostGate) trySpeedTest(addr string, stop context.CancelFunc, reserve int) (release func(), spareOnly bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lim, _ := g.limit(addr)
+	busy := g.busy[addr]
+	if busy >= lim-reserve || len(g.waiters[addr]) > 0 {
+		return nil, true
+	}
+	w := &gateWaiter{urgent: func() bool { return false }, preempt: stop}
+	g.busy[addr]++
+	g.trackLocked(addr, w)
+	return g.trackedReleaser(addr, w), busy > 0 || reserve > 0
 }
 
 func (g *hostGate) releaser(addr string) func() {

@@ -1,3 +1,5 @@
+import type { EpisodeOrderDetails, EpisodeOrderProvenance } from "./metadataSources";
+
 /**
  * Shapes of the owner-UI API contract. Kept in one file so the screens, the
  * fake backend and the tests agree on a single definition.
@@ -24,7 +26,12 @@ export interface TitleCard {
   episode?: number;
 }
 
+export interface ShowOrderCard extends TitleCard {
+  episodeOrder?: EpisodeOrderProvenance;
+}
+
 export interface TitleDetail extends TitleCard {
+  episodeOrder?: EpisodeOrderDetails;
   tmdbId?: number;
   imdbId?: string;
   cast?: { id: number; name: string; role?: string; image?: string }[];
@@ -170,23 +177,10 @@ export type Refresh = "live" | "hourly" | "daily" | "weekly" | `${number}h`; // 
 export type ArtworkMode = "auto" | "collage" | "backdrop" | "tmdb" | "custom";
 export type DeviceClass = "tv" | "mobile" | "web" | "desktop";
 
-/** A collection's row schedule: the one schedule for its rows, edited in Collections and the Home designer. */
-export interface TargetSchedule {
-  days?: number[];
-  fromHour?: number;
-  toHour?: number;
-  devices?: DeviceClass[];
-  dayparts?: Daypart[];
-  months?: number[];
-  startDate?: string;
-  endDate?: string;
-}
-
 export interface CollectionSpec {
+  users?: number[] | "all";
   navigationGroup?: "studios" | "services" | "genres" | `services-${string}`;
   navigationOrder?: number;
-  previewOnFocus?: boolean;
-  rankedTop10?: boolean;
   localOnly?: boolean;
   releaseMode?: "released" | "upcoming" | "mixed";
   lookaheadDays?: number;
@@ -204,21 +198,15 @@ export interface CollectionSpec {
   refresh: Refresh;
   rotate?: { size: number; every: "daily" | "weekly" } | null;
   artwork: { mode: ArtworkMode; url?: string; accent?: string; logo?: string };
-  targets: {
-    collectionsTab: boolean;
-    homeRow: boolean;
-    sectionRow: boolean;
-    users: number[] | "all";
-    schedule?: TargetSchedule | null;
-  };
+  /** Where the collection is browseable. Rows that show it live on Recommendations pages. */
+  /** Browse in apps: listed in its library's Collections view. */
+  browseInApps: boolean;
   enabled: boolean;
   templateId?: string;
   updatedAt?: string;
   lastBuiltAt?: string;
   itemCount?: number;
   warnings?: string[];
-  /** Set by the server on built-in collections (read-only in the studio). */
-  builtIn?: boolean;
   /** Optional folder name grouping collections in the console and frontends. */
   folder?: string;
   /** Optional 1-based display order within a folder or add-on import. */
@@ -301,7 +289,7 @@ export interface AddonCatalogSubscription {
   refresh: Refresh;
   maxItems: number;
   enabled: boolean;
-  targets: CollectionSpec["targets"];
+  browseInApps: boolean;
   catalogCount: number;
   managedCount: number;
   removedCount: number;
@@ -355,7 +343,7 @@ export interface AddonCatalogImportRequest {
   refresh?: Refresh;
   maxItems?: number;
   enabled: boolean;
-  targets: CollectionSpec["targets"];
+  browseInApps: boolean;
   items: AddonCatalogImportItem[];
 }
 
@@ -370,6 +358,28 @@ export interface AddonCatalogImportResult {
   skipped?: AddonImportSkippedItem[];
   collectionIds?: string[];
   subscription: AddonCatalogSubscription;
+}
+
+/** How a row shows on its page: Pinned to a position, Show, Auto or Hide. */
+export type RowPlacementMode = "pinned" | "show" | "auto" | "hide";
+
+/** One row on a Recommendations page that draws from a collection. */
+export interface CollectionUse {
+  /** The page key: "home" or "library:<id>/<tab>". */
+  page: string;
+  /** The page in words: "Home", "Movies › Recommendations". */
+  pageName: string;
+  rowId: string;
+  rowName: string;
+  placement: RowPlacementMode;
+  /** 1-based position when the row is pinned. */
+  position?: number;
+  /** The row's schedule in plain words, when it has one. */
+  schedule?: string;
+}
+
+export interface CollectionUsage {
+  uses: CollectionUse[];
 }
 
 export interface CollectionPreview {
@@ -475,6 +485,8 @@ export interface Viewer {
   lastActive?: string;
   plays30d: number;
   hoursWatched30d: number;
+  /** The viewer's content-rating ceiling ("PG"); absent when there is none. */
+  ageLimit?: string;
 }
 
 interface ViewerActivity {
@@ -515,134 +527,8 @@ export interface TasteProfile {
   overrides: TasteOverride[];
 }
 
-type LayerName = "global" | "personalized" | "override";
-
-export interface HomeRow {
-  hubId: string;
-  title: string;
-  kind: string;
-  reason: string;
-  score: number;
-  pinned?: boolean;
-  hidden?: boolean;
-  source: "engine" | "owner" | "plex";
-  items: TitleCard[];
-  itemReasons?: Record<string, string>;
-  /** Provenance in the layered Home Designer. */
-  layer?: LayerName;
-  slot?: number;
-  anchorSlot?: number;
-  placement?: string;
-  hiddenCode?: string;
-  hiddenReason?: string;
-  policy?: RowPolicy;
-  policyLayer?: "global" | "override";
-}
-
-interface HomeContext {
-  device: string;
-  daypart: string;
-  weekend: boolean;
-}
-
-export interface ViewerHome {
-  rows: HomeRow[];
-  generatedAt: string;
-  context: HomeContext;
-  /** layout/preview: the previewed viewer, null for the typical viewer. */
-  viewer?: { id: number; title: string } | null;
-  /** Movies/TV: titles kept off this page because the Home leads with them. */
-  homeDeduped?: number;
-}
-
-export type BuiltinLayoutSection = "home";
-export type LibraryLayoutSection = `library:${number}`;
-export type LayoutSection = BuiltinLayoutSection | LibraryLayoutSection;
-export type LibraryMediaSurface = "movies" | "shows";
-export type RowSectionTag = LayoutSection | LibraryMediaSurface;
 export type Device = "tv" | "mobile" | "web" | "desktop";
 export type Daypart = "morning" | "afternoon" | "evening" | "late";
-
-export interface LayoutWhen {
-  days?: number[];
-  fromHour?: number;
-  toHour?: number;
-  devices?: string[];
-  dayparts?: Daypart[];
-  months?: number[];
-  startDate?: string;
-  endDate?: string;
-}
-
-export type RowStatus = "always" | "eligible" | "off";
-
-/** The owner's policy for a row (or a family of rows) on a page. */
-export interface RowPolicy {
-  previewOnFocus?: boolean;
-  rankedTop10?: boolean;
-  /** Keep titles that other rows on the page also show. */
-  showRepeats?: boolean;
-  /** Kind ("short-on-time"), "collection:<id>", a hub id, or a glob ("because.*"). */
-  row: string;
-  status: RowStatus;
-  /** Anchored slot, 1 = top. */
-  slot?: number;
-  /** Never above this slot. */
-  minSlot?: number;
-  /** Never below this slot. */
-  maxSlot?: number;
-  priority?: number;
-  maxPerPage?: number;
-  maxDaysPerWeek?: number;
-  when?: LayoutWhen;
-}
-
-export interface LayoutPage {
-  section: LayoutSection;
-  maxRows?: number;
-  deviceMaxRows?: Partial<Record<Device, number>>;
-  rows: RowPolicy[];
-  /** Keep what the viewer's Home leads with off this page (Movies/TV; default on). */
-  dedupeHome?: boolean;
-  tuning?: LayoutTuning;
-}
-
-/** The page's three dials, each 0..1 (0.5 = engine default); unset inherits. */
-export interface LayoutTuning {
-  discovery?: number;
-  freshness?: number;
-  variety?: number;
-}
-export type TuningDial = keyof LayoutTuning;
-
-interface ViewerLayout {
-  userId: number;
-  pages: LayoutPage[];
-}
-
-export interface HomeLayout {
-  global: LayoutPage[];
-  viewers: ViewerLayout[];
-  updatedAt?: string;
-  /**
-   * Collection row schedules by collection id. The server fills it on read;
-   * a save sends only changed entries (null clears) and stores them on the
-   * collections, never in the layout. Previews apply it.
-   */
-  collectionSchedules?: Record<string, TargetSchedule | null>;
-}
-
-export type RowGroup = "picks" | "explore" | "shows" | "household" | "collections" | "plex";
-
-export interface AvailableRow {
-  hubId: string;
-  title: string;
-  kind: string;
-  description: string;
-  /** Pages or media surfaces the row can appear on; empty or missing means every page. */
-  sections?: RowSectionTag[];
-  group?: RowGroup;
-}
 
 interface RankerFeature {
   name: string;
@@ -660,67 +546,6 @@ export interface RankerInsight {
   features: RankerFeature[] | null;
 }
 
-/** A library with its own `library:<id>` Recommended rows page. */
-export interface LayoutLibrary {
-  id: number;
-  name: string;
-  slug: string;
-  type: "movie" | "show" | "plugin";
-  section: LibraryLayoutSection;
-  customized: boolean;
-}
-
-export interface LayoutDefaultsMaxRows {
-  home: number;
-  library?: number;
-  [section: string]: number | undefined;
-}
-
-export interface LayoutDoc {
-  layout: HomeLayout;
-  availableRows: AvailableRow[];
-  defaults: { maxRows: LayoutDefaultsMaxRows };
-  libraries?: LayoutLibrary[];
-}
-
-export interface ViewerLibraryPage {
-  userId: number;
-  page: LayoutPage;
-}
-
-export interface LibraryLayoutDoc {
-  library: LayoutLibrary;
-  customized: boolean;
-  effectivePage: LayoutPage;
-  viewerPages: ViewerLibraryPage[];
-  defaults: { maxRows: number };
-  availableRows: AvailableRow[];
-  collectionSchedules?: Record<string, TargetSchedule | null>;
-  layout: HomeLayout;
-}
-
-interface LayoutImpact {
-  viewerId: number;
-  title: string;
-  overrides: number;
-  changed: boolean;
-  added: string[];
-  removed: string[];
-  moved: number;
-}
-
-export interface LayoutImpactResult {
-  viewers: LayoutImpact[];
-  summary: { viewers: number; withOverrides: number; changed: number };
-}
-
-/** Context of a Home preview. */
-export interface PreviewContext {
-  device: Device;
-  at: string;
-  section?: LayoutSection;
-}
-
 // ---- Insights ---------------------------------------------------------------
 
 export interface RowInsight {
@@ -735,5 +560,6 @@ export interface ActivityDay {
   date: string;
   plays: number;
   hours: number;
+  watchedMs?: number;
   uniqueViewers: number;
 }

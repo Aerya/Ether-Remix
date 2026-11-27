@@ -32,8 +32,8 @@ func (f fakeCatalog) Children(_ context.Context, key core.RatingKey) ([]core.Tit
 		return []core.Title{{Key: core.SeasonKey(key.TMDB(), 1), Type: core.TypeSeason, Title: "Season 1", Season: 1}}, nil
 	case core.KindSeason:
 		return []core.Title{
-			{Key: core.EpisodeKey(key.TMDB(), 1, 1), Type: core.TypeEpisode, Title: "Pilot"},
-			{Key: core.EpisodeKey(key.TMDB(), 1, 2), Type: core.TypeEpisode, Title: "Second"},
+			{Key: core.EpisodeKey(key.TMDB(), 1, 1), Type: core.TypeEpisode, Title: "Pilot", Season: 1, Episode: 1},
+			{Key: core.EpisodeKey(key.TMDB(), 1, 2), Type: core.TypeEpisode, Title: "Second", Season: 1, Episode: 2},
 		}, nil
 	}
 	return nil, core.ErrNotFound

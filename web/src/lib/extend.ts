@@ -113,6 +113,13 @@ export function invalidateRegistry(): void {
   for (const fn of listeners) fn();
 }
 
+export async function setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+  await apiFetch(`/plugins/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+  });
+  invalidateRegistry();
+}
+
 export interface RegistryState<M = unknown> {
   descriptors: Descriptor<M>[];
   loading: boolean;

@@ -100,6 +100,9 @@ func mediaSourceName(v frontend.ReleaseVariant) string {
 		quality = append(quality, "HDR")
 	}
 	parts := []string{strings.Join(quality, " ")}
+	if e := strings.TrimSpace(info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if audio := audioLabel(info); audio != "" {
 		parts = append(parts, audio)
 	}
@@ -338,7 +341,7 @@ func (i *instance) autoSwitchPlan(r *http.Request, scope frontend.VersionScope, 
 	}
 	alt := base
 	alt.Version, alt.ResolvedRelease = handle, release
-	alt.Intent.ExactVersion = true
+	alt.Intent.ExactVersion, alt.Intent.AutoVersion = true, true
 	plan, err := i.host.Sessions.Plan(r.Context(), alt)
 	if err != nil || plan.Estimated {
 		return base, frontend.PlayPlan{}, "", false
@@ -357,29 +360,42 @@ func (i *instance) issueReleaseHandle(r *http.Request, scope frontend.VersionSco
 	return handle
 }
 
+// authorizePlaybackItem verifies that key is visible to viewer on this surface
+// using the same single-lookup path as item detail (StoredItem when available,
+// avoiding full detail enrichment). When Experience is unset (minimal unit
+// hosts), it reports allowed so isolated handler tests keep their setup.
+func (i *instance) authorizePlaybackItem(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
+	if i.host.Experience == nil {
+		return frontend.Title{}, true
+	}
+	if key == 0 || v == nil {
+		return frontend.Title{}, false
+	}
+	detail, err := i.storedItem(r, v, key)
+	return detail.Title, err == nil
+}
+
+func (i *instance) storedItem(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.ItemDetail, error) {
+	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
+	if stored, ok := i.host.Experience.(interface {
+		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	}); ok {
+		return stored.StoredItem(i.identityContext(r), req)
+	}
+	return i.host.Experience.Item(i.identityContext(r), req)
+}
+
 // playbackTitle loads the title facts the variants service needs. It uses
 // StoredItem when available to avoid full detail enrichment on PlaybackInfo.
 func (i *instance) playbackTitle(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.Title, bool) {
 	if i.host.Experience == nil || key == 0 || v == nil {
 		return frontend.Title{}, false
 	}
-	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
-	type storedItemReader interface {
-		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
-	}
-	var (
-		detail frontend.ItemDetail
-		err    error
-	)
-	if stored, ok := i.host.Experience.(storedItemReader); ok {
-		detail, err = stored.StoredItem(i.identityContext(r), req)
-	} else {
-		detail, err = i.host.Experience.Item(i.identityContext(r), req)
-	}
-	if err != nil || detail.Title.Title == "" {
+	title, ok := i.authorizePlaybackItem(r, v, key)
+	if !ok || title.Title == "" {
 		return frontend.Title{}, false
 	}
-	return detail.Title, true
+	return title, true
 }
 
 // detailSources builds the MediaSources list for a single item page. With an

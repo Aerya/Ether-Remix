@@ -112,6 +112,7 @@ func TestProxyInjectsViewerHeadersAndHidesCredential(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/opds/catalog?q=hi", nil)
 	req.Header.Set("Authorization", "Bearer tok1")
 	req.Header.Set("X-Ether-Viewer", "999")
+	req.Header.Set("X-Ether-Origin", "https://spoof.invalid")
 	req.Header.Set("Cookie", "session=secret")
 	rec := httptest.NewRecorder()
 	inst.Handler().ServeHTTP(rec, req)
@@ -138,11 +139,14 @@ func TestProxyInjectsViewerHeadersAndHidesCredential(t *testing.T) {
 	if got.Headers[HeaderLibraries] != "1" {
 		t.Errorf("libraries = %q, want 1", got.Headers[HeaderLibraries])
 	}
+	if got.Headers[HeaderOrigin] != "http://example.com" {
+		t.Errorf("origin = %q, want http://example.com", got.Headers[HeaderOrigin])
+	}
 	for name, value := range got.Headers {
 		if isCredentialHeader(name) {
 			t.Errorf("credential header %q leaked to plugin", name)
 		}
-		if isEtherHeader(name) && name != HeaderViewer && name != HeaderViewerName && name != HeaderLibraries {
+		if isEtherHeader(name) && name != HeaderViewer && name != HeaderViewerName && name != HeaderLibraries && name != HeaderOrigin {
 			t.Errorf("inbound %s leaked to plugin", name)
 		}
 		if strings.Contains(value, "tok1") || strings.Contains(value, "secret") {

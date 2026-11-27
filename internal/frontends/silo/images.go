@@ -155,7 +155,9 @@ func (i *instance) storedCardGrants(r *http.Request, v *frontend.Viewer, credent
 		{Kind: frontend.ImageLogo, Path: title.LogoPath},
 	}
 	if art, ok := i.host.Experience.(frontend.ItemArtwork); ok {
-		listed, complete, err := art.ItemArtwork(r.Context(), v, device(r), title.Key)
+		listed, complete, err := art.ItemArtwork(frontend.WithPrimaryArtworkOnly(frontend.WithArtworkKinds(r.Context(), map[string]bool{
+			frontend.ImagePoster: true, frontend.ImageBackdrop: true, frontend.ImageLogo: true, frontend.ImageStill: true,
+		})), v, device(r), title.Key)
 		if err == nil && complete {
 			images = listed
 		}

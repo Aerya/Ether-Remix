@@ -8,15 +8,17 @@ import (
 
 // heroSource is an internal sidecar, never a client-supplied or wire row name.
 type heroSource struct {
-	kind           string
-	pinned         bool
+	kind   string
+	pinned bool
+	// hero is the owner's Hero row style: the row's titles lead the band.
+	hero           bool
 	previewDefault bool
 	previewPolicy  *bool
 }
 
 type heroCandidate struct {
-	hero                       object
-	personal, pinned, playable bool
+	hero                                  object
+	personal, pinned, playable, ownerHero bool
 }
 
 // heroesFromRows consumes the already-ranked, policy-checked visit. It does
@@ -64,6 +66,10 @@ func heroesFromRows(rows []object, provenance ...map[string]heroSource) ([]objec
 		}
 		return false
 	}
+	// Owner Hero rows fill the band first, in the row's own order.
+	for more := true; more; {
+		more = pick(func(c heroCandidate) bool { return c.ownerHero })
+	}
 	// Owner placements take precedence, with the candidate's honest reason.
 	pick(func(c heroCandidate) bool { return c.pinned })
 	if len(heroes) == 0 {
@@ -87,6 +93,10 @@ func heroesFromRows(rows []object, provenance ...map[string]heroSource) ([]objec
 	}
 	shelves := make([]object, 0, len(rows))
 	for _, row := range rows {
+		if row["kind"] == "surface" {
+			shelves = append(shelves, row)
+			continue
+		}
 		entries, _ := row["items"].([]object)
 		kept := make([]object, 0, len(entries))
 		for _, entry := range entries {
@@ -200,10 +210,20 @@ func heroFromEntry(row, entry object, source heroSource) (heroCandidate, bool) {
 			reason, personal = "forYou", true
 		}
 	}
+	label := ""
+	if reason == "" && source.hero {
+		// The owner chose this row as a hero: it is a featured pick, labelled
+		// with the row's own name.
+		reason = "featured"
+		label, _ = row["name"].(string)
+	}
 	if reason == "" {
 		return heroCandidate{}, false
 	}
 	hero := object{"title": title, "receiptToken": receipt, "reason": reason, "action": action}
+	if label != "" {
+		hero["label"] = label
+	}
 	enabled, _ := row["previewOnFocus"].(bool)
 	if source.previewDefault {
 		enabled = true
@@ -214,7 +234,7 @@ func heroFromEntry(row, entry object, source heroSource) (heroCandidate, bool) {
 	if enabled {
 		hero["previewOnFocus"] = true
 	}
-	return heroCandidate{hero: hero, personal: personal, pinned: source.pinned, playable: playable}, true
+	return heroCandidate{hero: hero, personal: personal, pinned: source.pinned, playable: playable, ownerHero: source.hero}, true
 }
 
 // heroFallback requests just the open slots through Experience, so selection,
@@ -258,7 +278,7 @@ func (i *instance) heroFallback(r *http.Request, viewer *frontend.Viewer, token 
 				entries = append(entries, object{"kind": "title", "title": title, "receiptToken": entry.Handle})
 			}
 		}
-		sources[row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
+		sources[row.ID] = heroSource{kind: row.Kind, pinned: row.Layout.Always, hero: row.Layout.Present.Layout == "hero", previewDefault: i.previewAvailable(), previewPolicy: row.Layout.PreviewOnFocusPolicy}
 		out = append(out, object{"id": row.ID, "purpose": row.Purpose, "previewOnFocus": row.PreviewOnFocus, "items": entries, "continuation": "exhausted"})
 	}
 	return out, nil

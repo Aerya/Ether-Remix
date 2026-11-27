@@ -54,6 +54,13 @@ type PersonCredit = core.PersonCredit
 type SearchCandidates = core.SearchCandidates
 type UncachedError = core.UncachedError
 
+// Owner row styles (Recommendations page rows).
+const (
+	RowStyleStandard = core.RowStyleStandard
+	RowStyleHero     = core.RowStyleHero
+	RowStyleWide     = core.RowStyleWide
+)
+
 // Playback protocols and media kinds.
 const (
 	ProtocolDASH    = core.ProtocolDASH
@@ -191,6 +198,31 @@ func LocalDownloadMessage(err error, lang string) string { return core.LocalDown
 // WithSearchClient attaches the client identifier for search-as-you-type single-flight.
 func WithSearchClient(ctx context.Context, clientID string) context.Context {
 	return core.WithSearchClient(ctx, clientID)
+}
+
+// WithSearchPending makes the search in ctx answer without waiting on
+// remote lookups; the returned collector reports whether one was still
+// running (core.WithSearchPending).
+func WithSearchPending(ctx context.Context) (context.Context, *core.SearchPending) {
+	return core.WithSearchPending(ctx)
+}
+
+// EnterSearch makes ctx the latest search of a viewer's client: a newer
+// query from the same client cancels it (core.EnterSearch).
+func EnterSearch(ctx context.Context, viewerID int64, client, query string) (context.Context, func()) {
+	return core.EnterSearch(ctx, viewerID, client, query)
+}
+
+// EnterSearchGeneration is EnterSearch for a client that numbers its
+// queries, so an older keystroke arriving late never supersedes a newer one.
+func EnterSearchGeneration(ctx context.Context, viewerID int64, client, query string, generation int64) (context.Context, func()) {
+	return core.EnterSearchGeneration(ctx, viewerID, client, query, generation)
+}
+
+// SearchWasSuperseded reports a search cancelled by a newer one from the
+// same client (core.SearchWasSuperseded); it answers empty, not an error.
+func SearchWasSuperseded(ctx context.Context) bool {
+	return core.SearchWasSuperseded(ctx)
 }
 
 // WithExplicitSearch marks a request as a viewer or owner typing a search,

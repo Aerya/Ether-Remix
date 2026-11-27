@@ -44,6 +44,7 @@ type hlsSegment struct {
 // hlsMedia is a parsed live media playlist, kept as blocks of lines so a
 // window can be cut from it without disturbing anything else.
 type hlsMedia struct {
+	base   *url.URL
 	header []string   // lines before the first segment's tags
 	blocks [][]string // each segment's tag lines followed by its URI line
 	segs   []hlsSegment
@@ -83,7 +84,7 @@ func parseHLSPDT(raw string) (time.Time, bool) {
 }
 
 func parseHLSMedia(b []byte, base *url.URL) *hlsMedia {
-	m := &hlsMedia{}
+	m := &hlsMedia{base: base}
 	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 	var cur []string
 	inSegs := false
@@ -368,6 +369,21 @@ type hlsList struct {
 	stalled     bool
 	failed      bool
 	initialized bool
+	// Keep the ended playlist fixed across reloads until the relay has
+	// drained this producer. Segment requests and playlist reloads can
+	// overlap, so neither is evidence of a new reader.
+	cut         int64
+	cutManifest hlsAlignedSnap
+	resumed     bool // resume on this floor during paired rendition alignment
+	// seqShift is added to the media sequence a reader sees. A demuxed
+	// audio rendition is renumbered onto its video's numbering at the
+	// aligned start: ffmpeg's HLS demuxer takes a live rendition whose
+	// first number is one below the others' to be a segment behind and
+	// skips its first segment, though providers number renditions
+	// independently (Pluto TV lists video 12 and audio 11 for the same
+	// moment). The relay then lost 5 s of audio, dropped its opening cut and
+	// waited a whole segment longer to start.
+	seqShift int64
 }
 
 func (g *inputGrant) hlsIfAny() *hlsInput {
@@ -469,7 +485,7 @@ func (h *hlsInput) getStartupCache(raw string, consume bool) (hlsCachedResource,
 func (h *hlsInput) ensureListLocked(raw string) *hlsList {
 	l := h.lists[raw]
 	if l == nil {
-		l = &hlsList{raw: raw, served: -1, firstServed: -1, floor: -1}
+		l = &hlsList{raw: raw, served: -1, firstServed: -1, floor: -1, cut: -1}
 		h.lists[raw] = l
 	}
 	return l
@@ -504,6 +520,12 @@ func (h *hlsInput) recordListLocked(l *hlsList, m *hlsMedia, now time.Time) {
 // and returns the playlist to serve (trimmed to the reserve window for a
 // Steady grant, or to an aligned demuxed floor).
 func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []UpstreamEvent) {
+	return h.mediaFor(raw, body, base, true)
+}
+
+// mediaFor is media; reader is false for the relay's own health poll, whose
+// rendering no reader sees.
+func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool) ([]byte, []UpstreamEvent) {
 	m := parseHLSMedia(body, base)
 	if !m.live() {
 		return body, nil
@@ -517,6 +539,9 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 		if h.demux.hasAnchor && h.isDemuxedAudioLocked(raw) {
 			if idx, ok := closestSegmentToPDT(m, h.demux.anchorPDT); ok {
 				l.floor = m.segs[idx].seq
+				if v := h.lists[h.demux.videoURL]; v != nil && v.floor >= 0 {
+					l.seqShift = v.floor - l.floor
+				}
 			}
 		}
 		if l.floor < 0 && reserve > 0 {
@@ -530,7 +555,11 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 	events := h.transitionsLocked(l, now)
 	h.prefetchLocked(l)
 	h.publishLocked()
-	floor := l.floor
+	floor, shift := l.floor, l.seqShift
+	var ended []byte
+	if reader && floor >= 0 && h.g.splitPrograms.Load() {
+		ended = l.endAtProgramCut(m)
+	}
 	startPoll := reserve > 0 && !h.polling[raw]
 	if startPoll {
 		h.polling[raw] = true
@@ -539,12 +568,179 @@ func (h *hlsInput) media(raw string, body []byte, base *url.URL) ([]byte, []Upst
 	if startPoll {
 		go h.poll(raw)
 	}
+	if !reader {
+		shift = 0
+	}
+	if ended != nil {
+		return ended, events
+	}
 	if floor >= 0 {
 		if out := m.window(floor); out != nil {
-			return out, events
+			return shiftMediaSequence(out, shift), events
 		}
 	}
-	return body, events
+	return shiftMediaSequence(body, shift), events
+}
+
+// shiftMediaSequence adds shift to a media playlist's media sequence (a
+// playlist without the tag starts at 0). A shift that would go negative is
+// not applied. A segment whose key takes its IV from the sequence number
+// (no IV attribute) gets that original IV written out, so decryption does
+// not follow the new numbering.
+func shiftMediaSequence(body []byte, shift int64) []byte {
+	if shift == 0 || len(body) == 0 {
+		return body
+	}
+	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "#EXTM3U" {
+		return body
+	}
+	at, seq := -1, int64(0)
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if v, ok := strings.CutPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"); ok {
+			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return body
+			}
+			at, seq = i, n
+			break
+		}
+		if !strings.HasPrefix(line, "#") && line != "" {
+			break
+		}
+	}
+	if seq+shift < 0 {
+		return body
+	}
+	out := make([]string, 0, len(lines)+8)
+	out = append(out, lines[0])
+	if at < 0 {
+		out = append(out, "#EXT-X-MEDIA-SEQUENCE:"+strconv.FormatInt(seq+shift, 10))
+	}
+	key := "" // the key in force when its IV is implicit
+	n := seq
+	for i, raw := range lines[1:] {
+		line := strings.TrimSpace(raw)
+		switch {
+		case i+1 == at:
+			raw = "#EXT-X-MEDIA-SEQUENCE:" + strconv.FormatInt(seq+shift, 10)
+		case strings.HasPrefix(line, "#EXT-X-KEY:"):
+			key = ""
+			if !strings.Contains(line, "METHOD=NONE") && !strings.Contains(line, ",IV=") && !strings.Contains(line, ":IV=") {
+				key = line
+			}
+		case line != "" && !strings.HasPrefix(line, "#"):
+			if key != "" {
+				out = append(out, key+",IV="+ivFromSequence(n))
+			}
+			n++
+		}
+		out = append(out, raw)
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+func (l *hlsList) endAtProgramCut(m *hlsMedia) []byte {
+	if l.cut < 0 {
+		cut := m.programCut(l.floor)
+		if cut >= 0 {
+			if ended := m.windowCut(l.floor, cut); ended != nil {
+				l.cut = cut
+				l.cutManifest = hlsAlignedSnap{body: shiftMediaSequence(ended, l.seqShift), base: m.base}
+			}
+		}
+	}
+	return l.cutManifest.body
+}
+
+func (h *hlsInput) endedManifest(raw string) (hlsAlignedSnap, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if l := h.lists[raw]; l != nil && l.cut >= 0 {
+		return l.cutManifest, true
+	}
+	return hlsAlignedSnap{}, false
+}
+
+func (h *hlsInput) programEnding() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, l := range h.lists {
+		if l.cut >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// advanceProgram is called after ingest has drained the old producer's
+// ended output. Advance all cut renditions together before opening the
+// replacement, and invalidate any aligned snapshot from the old program.
+func (h *hlsInput) advanceProgram() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	advanced := false
+	for _, l := range h.lists {
+		if l.cut >= 0 {
+			if l.served < l.cut-1 {
+				return false
+			}
+			advanced = true
+		}
+	}
+	if advanced {
+		for _, l := range h.lists {
+			if l.cut >= 0 {
+				l.floor, l.cut, l.resumed = l.cut, -1, true
+				l.cutManifest = hlsAlignedSnap{}
+			}
+		}
+		h.demux.gen++
+		h.demux.snap = nil
+	}
+	return advanced
+}
+
+// programCut is the first segment after floor that opens a new
+// discontinuity span (a provider's program change: an ad, a new encoder,
+// often new PIDs and a restarted clock), or -1. A provider that tags
+// (nearly) every segment with a discontinuity is not split.
+func (m *hlsMedia) programCut(floor int64) int64 {
+	discs := 0
+	for _, sg := range m.segs {
+		if sg.disc {
+			discs++
+		}
+	}
+	if discs*2 > len(m.segs) {
+		return -1
+	}
+	for _, sg := range m.segs {
+		if sg.seq > floor && sg.disc {
+			return sg.seq
+		}
+	}
+	return -1
+}
+
+// windowCut renders the segments from floor up to, not including, cut and
+// ends the playlist there, so its reader drains the program and exits.
+func (m *hlsMedia) windowCut(floor, cut int64) []byte {
+	n := 0
+	for _, sg := range m.segs {
+		if sg.seq >= floor && sg.seq < cut {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	out := m.windowLimit(floor, n)
+	if out == nil {
+		return nil
+	}
+	return append(out, "\n#EXT-X-ENDLIST\n"...)
 }
 
 const (
@@ -838,7 +1034,15 @@ func (h *hlsInput) applyDemuxedPair(
 	vMaxSegs, aMaxSegs := 0, 0
 	aligned := false
 	var alignedSkew time.Duration
-	if haveTimes {
+	if vl.resumed && al.resumed {
+		// Keep both renditions on the floors set by the producer handoff.
+		vl.resumed, al.resumed = false, false
+		aligned = true
+		source = "program"
+		if i := segIndex(vm, vl.floor); i >= 0 && vm.segs[i].hasPDT {
+			h.demux.anchorPDT, h.demux.hasAnchor = vm.segs[i].pdt, true
+		}
+	} else if haveTimes {
 		vMin, vMax, vOK := timelineSpan(vm, vTimes, vHas)
 		aMin, aMax, aOK := timelineSpan(am, aTimes, aHas)
 		if vOK && aOK {
@@ -930,6 +1134,11 @@ func (h *hlsInput) applyDemuxedPair(
 			}
 		}
 	}
+	al.seqShift = 0
+	if aligned && vl.floor >= 0 && al.floor >= 0 {
+		al.seqShift = vl.floor - al.floor
+	}
+	aShift := al.seqShift
 	vl.initialized = true
 	al.initialized = true
 	events = append(events, h.transitionsLocked(vl, now)...)
@@ -948,6 +1157,11 @@ func (h *hlsInput) applyDemuxedPair(
 			h.polling[aRaw] = true
 			startPolls = append(startPolls, aRaw)
 		}
+	}
+	var vEnded, aEnded []byte
+	if h.g.splitPrograms.Load() && vFloor >= 0 && aFloor >= 0 &&
+		vm.programCut(vFloor) >= 0 && am.programCut(aFloor) >= 0 {
+		vEnded, aEnded = vl.endAtProgramCut(vm), al.endAtProgramCut(am)
 	}
 	log := h.g.log
 	h.mu.Unlock()
@@ -969,7 +1183,22 @@ func (h *hlsInput) applyDemuxedPair(
 			aOut = out
 		}
 	}
-	return vOut, aOut, events
+	if vEnded != nil {
+		vOut = vEnded
+	}
+	if aEnded != nil {
+		return vOut, aEnded, events
+	}
+	return vOut, shiftMediaSequence(aOut, aShift), events
+}
+
+func segIndex(m *hlsMedia, seq int64) int {
+	for i, sg := range m.segs {
+		if sg.seq == seq {
+			return i
+		}
+	}
+	return -1
 }
 
 // failedFetch records a playlist fetch that failed.
@@ -1148,7 +1377,7 @@ func (h *hlsInput) poll(raw string) {
 			base := res.Request.URL
 			res.Body.Close()
 			if rerr == nil && len(b) <= relayManifestLimit {
-				_, events = h.media(raw, b, base)
+				_, events = h.mediaFor(raw, b, base, false)
 			} else {
 				events = h.failedFetch(raw)
 			}

@@ -119,11 +119,8 @@ export function ViewerPlayback({ viewer }: { viewer: Viewer }) {
               ? t("These choices replace the defaults for this viewer.")
               : tx("Follows {link}. Change anything below to give {name} their own.", {
                   link: (
-                    <Link
-                      to="/playback/subtitles"
-                      className="font-medium text-primary hover:underline"
-                    >
-                      {t("Playback › Audio & subtitles")}
+                    <Link to="/playback/audio" className="font-medium text-primary hover:underline">
+                      {t("Playback")}
                     </Link>
                   ),
                   name,

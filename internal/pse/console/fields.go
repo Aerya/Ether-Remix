@@ -2,6 +2,7 @@ package console
 
 import (
 	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
+	"github.com/braedonsaunders/ether/internal/pse/latestfilter"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 )
 
@@ -22,6 +23,7 @@ const (
 	KindMulti     = "multi"
 	KindCountries = "countries"
 	KindFilter    = "filter"
+	KindJSON      = "json" // JSON validé par une fonction dédiée (éditeur de règles de la carte)
 	KindURL       = "url"
 	KindFeeds     = "feeds"  // liste de flux : JSON [{name, url, key}], clés masquées à l'affichage
 	KindKey       = "key"    // clé d'API, masquée à l'affichage
@@ -204,6 +206,15 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "jellyfinlatest",
+		Title:       tx("Jellyfin : derniers ajouts de Films et Séries", "Jellyfin: Movies and Shows latest additions"),
+		Description: tx("Retire des titres de la rangée « Derniers ajouts » des bibliothèques Films et Séries dans Jellyfin et Plezy, par exemple quand une bibliothèque dédiée (Animés, Documentaires) existe déjà. Les règles sont celles de « Modifier la collection ». Plex et les autres bibliothèques ne changent pas. Aucune règle : comportement d'Ether.", "Removes titles from the Movies and Shows “Latest” row in Jellyfin and Plezy, e.g. when a dedicated library (Anime, Documentaries) already exists. Rules work like “Edit collection”. Plex and other libraries are unchanged. No rule: Ether's behaviour."),
+		Fields: []Field{
+			// JSON édité par l'éditeur de règles de la carte (GET/PUT /pse/jellyfin-latest).
+			{Key: latestfilter.Key, Kind: KindJSON, Default: "", Label: tx("Règles d'exclusion", "Exclusion rules")},
+		},
+	},
+	{
 		ID:          "lightlists",
 		Title:       tx("Listes légères", "Light lists"),
 		Description: tx("Une bibliothèque, une rangée ou une collection n'affiche que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue, aucun appel debrid. Les détails ne partent qu'à l'ouverture d'une fiche ou à la lecture.", "A library, row or collection only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid call. Details load only when a title is opened or played."),
@@ -247,6 +258,17 @@ var Features = communityFields([]Feature{
 				Help: tx("Complément facultatif à la synchronisation programmée : début, pause et fin de lecture. Nécessite le webhook de la même connexion Jellyfin, à renseigner ci-dessus. Ce bouton ne contrôle pas le retour Scrob → Remix.", "Optional addition to scheduled sync: playback start, pause and stop. Requires the same Jellyfin connection’s webhook, entered above. This switch does not control Scrob → Remix sync.")},
 			{Key: "PSE_SCROB_VIEWS", Advanced: true, Kind: KindToggle, Default: "off", Label: tx("Proposer des bibliothèques limitées à l’historique", "Offer history-only libraries"),
 				Help: tx("Ajoute « Vus et notés » dans les bibliothèques que Scrob peut importer : utile pour éviter de parcourir tout le catalogue. Facultatif ; les bibliothèques Films et Séries fonctionnent aussi. Ne contrôle aucun sens de synchronisation.", "Adds “Vus et notés” libraries for Scrob to import, avoiding a full-catalogue scan. Optional; Movies and Shows libraries also work. Does not control either sync direction.")},
+		},
+	},
+	{
+		ID:          "nuvio",
+		Title:       tx("Nuvio", "Nuvio"),
+		Description: tx("Chaque spectateur peut relier un profil Nuvio (Profil › Connexion et appareils) : reprise et historique synchronisés dans les deux sens, et installation de son lien Stremio dans Nuvio.", "Each viewer can link a Nuvio profile (Profile › Sign-in & devices): resume points and history synced both ways, and installation of their Stremio link in Nuvio."),
+		Fields: []Field{
+			{Key: "PSE_NUVIO_INTERVAL", Kind: KindDuration, Default: "5m", Placeholder: "5m", Label: tx("Fréquence de lecture de Nuvio", "How often Nuvio is read"),
+				Help: tx("Délai entre deux lectures de l'historique Nuvio des spectateurs reliés. Minimum 1m.", "Delay between two reads of linked viewers' Nuvio history. At least 1m.")},
+			{Key: "PSE_NUVIO_ANON_KEY", Advanced: true, Kind: KindKey, Default: "", Label: tx("Clé publique de Nuvio (remplacement)", "Nuvio public key (override)"),
+				Help: tx("La clé « anon » publique de Nuvio est intégrée ; ne la remplacez que si Nuvio la change.", "Nuvio's public “anon” key is built in; only override it if Nuvio changes it.")},
 		},
 	},
 	{

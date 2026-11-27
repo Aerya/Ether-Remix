@@ -27,10 +27,46 @@ func XtreamUsername(password string) string {
 // XtreamPasswordAlphabet avoids characters that are easy to confuse on a TV.
 const XtreamPasswordAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 
-// XtreamGrantCredential converts the short pair to a domain-separated internal
-// grant credential. Only its hash is persisted. All equivalent spellings share
-// one grant and playback slot; long app passwords retain their exact bytes.
-func XtreamGrantCredential(username, password string) (string, bool) {
+// AppLoginTokenIdentity authenticates a dedicated app login proven by a
+// salted hash, md5(password + salt) in hex, rather than the password itself.
+// Failed proofs charge the same verified-peer limiter as failed passwords.
+type AppLoginTokenIdentity interface {
+	AuthenticateAppToken(ctx context.Context, username, token, salt string) (*Viewer, error)
+}
+
+// AppLoginPasswordLength is the generated app password length for a surface.
+// Xtream keeps its short TV-typed form; other surfaces get 15 characters,
+// because their clients may prove the password with an md5 token that an
+// eavesdropper could attack offline.
+func AppLoginPasswordLength(surface string) int {
+	if surface == "xtream" {
+		return 10
+	}
+	return 15
+}
+
+// FormatAppLoginPassword groups a generated password for display: 4-4-2 for
+// the 10-character Xtream form, groups of five otherwise.
+func FormatAppLoginPassword(raw string) string {
+	if len(raw) == 10 {
+		return raw[:4] + "-" + raw[4:8] + "-" + raw[8:]
+	}
+	var b strings.Builder
+	for i := 0; i < len(raw); i += 5 {
+		if i > 0 {
+			b.WriteByte('-')
+		}
+		b.WriteString(raw[i:min(i+5, len(raw))])
+	}
+	return b.String()
+}
+
+// AppLoginCredential converts a generated app login pair to a domain-separated
+// internal grant credential. Only its hash is persisted. All equivalent
+// spellings (case, group dashes) share one grant and playback slot; anything
+// that is not a generated pair reports false, and long app passwords retain
+// their exact bytes.
+func AppLoginCredential(username, password string) (string, bool) {
 	if len(username) < 3 || len(username) > 12 || len(password) > 128 {
 		return "", false
 	}
@@ -41,7 +77,7 @@ func XtreamGrantCredential(username, password string) (string, bool) {
 		}
 	}
 	password = strings.ReplaceAll(strings.ToLower(password), "-", "")
-	if len(password) != 10 {
+	if len(password) != 10 && len(password) != 15 {
 		return "", false
 	}
 	for _, c := range password {
@@ -51,6 +87,11 @@ func XtreamGrantCredential(username, password string) (string, bool) {
 	}
 	sum := sha256.Sum256([]byte("ether:xtream-short:v1:" + username + ":" + password))
 	return core.GrantCredentialPrefix + base64.RawURLEncoding.EncodeToString(sum[:]), true
+}
+
+// XtreamGrantCredential is AppLoginCredential for the Xtream surface.
+func XtreamGrantCredential(username, password string) (string, bool) {
+	return AppLoginCredential(username, password)
 }
 
 // LibraryExportPage is a bounded, policy-filtered export batch. Next advances
@@ -90,6 +131,12 @@ type AppConnectionStatus interface {
 // URL authentication and item policy checks.
 type AppConnectionAdmission interface {
 	PrepareAppConnection(*http.Request, string, PlanRequest) error
+}
+
+// AppConnectionRenewal maintains an admitted slot during playback served
+// outside the lazy stream transport.
+type AppConnectionRenewal interface {
+	RenewAppConnection(*http.Request, string, PlanRequest) (context.Context, func(), error)
 }
 
 // AppConnectionLimits returns zero for unlimited, else the effective viewer/device cap.

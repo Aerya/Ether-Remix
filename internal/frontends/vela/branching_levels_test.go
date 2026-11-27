@@ -23,7 +23,7 @@ type branchingTabRowsExp struct {
 	lastChildQuery  frontend.ItemQuery
 }
 
-func (e *branchingTabRowsExp) PluginLibraryTabRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID, tabID string) ([]frontend.Row, error) {
+func (e *branchingTabRowsExp) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID, tabID string) ([]frontend.Row, error) {
 	e.lastTabID = tabID
 	return e.tabRows[viewID+":"+tabID], nil
 }
@@ -256,7 +256,7 @@ func TestVelaPluginLevelsCapabilitiesTabRowsCardChildCountsAndRoleFilter(t *test
 		t.Fatalf("rows?tab=concerts status = %d %v", status, rowsResp)
 	}
 	if exp.lastTabID != "concerts" {
-		t.Fatalf("PluginLibraryTabRows tabID = %q, want concerts", exp.lastTabID)
+		t.Fatalf("PluginLibraryRows tab = %q, want concerts", exp.lastTabID)
 	}
 	rows := rowsResp["items"].([]any)
 	if len(rows) != 1 {

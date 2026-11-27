@@ -20,7 +20,6 @@ func TestCheckMembersBatchParity(t *testing.T) {
 
 	ownerOnly := spec("Owner Movies", "movie", []core.CollectionSource{{Kind: "titles", Keys: []string{m1.String(), m2.String()}}})
 	ownerOnly.OwnerUserID = owner.ID
-	ownerOnly.Targets = core.CollectionTargets{HomeRow: true, Users: core.UserTargets{IDs: []int64{owner.ID}}}
 	cOwner, err := e.svc.CreateSpec(e.ctx, ownerOnly)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +27,6 @@ func TestCheckMembersBatchParity(t *testing.T) {
 	ownerKey := core.SmartKey(mustInt(t, cOwner.ID))
 
 	mixed := spec("Shared Mixed", "mixed", []core.CollectionSource{{Kind: "titles", Keys: []string{m1.String(), s1.String(), m2.String()}}})
-	mixed.Targets = core.CollectionTargets{HomeRow: true, Users: core.AllUsers()}
 	cMixed, err := e.svc.CreateSpec(e.ctx, mixed)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +56,9 @@ func TestCheckMembersBatchParity(t *testing.T) {
 		t.Fatalf("mixed shows section with movie key: col=%v matched=%v, want visible+unmatched", cols[mixedShows], matched[mixedShows])
 	}
 
-	// Non-owner must not see owner-only collection; missing key must fail membership.
+	// Collections are content: another viewer sees the Studio collection
+	// too (who sees a row is the page row's audience); a missing key must
+	// fail membership.
 	cols2, matched2, err := e.svc.CheckMembersBatch(e.ctx, other,
 		[]core.RatingKey{ownerKey, mixedKey},
 		map[core.RatingKey][]core.RatingKey{
@@ -68,8 +68,8 @@ func TestCheckMembersBatchParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cols2[ownerKey] != nil || matched2[ownerKey] {
-		t.Fatalf("non-owner saw owner-only collection: col=%v matched=%v", cols2[ownerKey], matched2[ownerKey])
+	if cols2[ownerKey] == nil || !matched2[ownerKey] {
+		t.Fatalf("another viewer lost a shared collection: col=%v matched=%v", cols2[ownerKey], matched2[ownerKey])
 	}
 	if cols2[mixedKey] == nil || matched2[mixedKey] {
 		t.Fatalf("missing member should fail match: col=%v matched=%v", cols2[mixedKey], matched2[mixedKey])

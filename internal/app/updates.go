@@ -9,12 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/updater"
+	"github.com/braedonsaunders/ether/release-notes"
 )
 
 // updateState wires the self-update manager into the app lifecycle.
@@ -186,16 +191,51 @@ func (a *App) runUpdates(ctx context.Context) {
 }
 
 func (a *App) updateStatus(context.Context) any {
+	return a.updateSnapshot()
+}
+
+func (a *App) updateSnapshot() updater.ManagerStatus {
 	if a.updates == nil || a.updates.mgr == nil {
-		return map[string]any{"enabled": false, "capability": updater.CapabilityDisabled, "state": updater.StateIdle}
+		return updater.ManagerStatus{Current: a.opts.Version, Capability: updater.CapabilityDisabled, State: updater.StateIdle}
 	}
 	return a.updates.mgr.Status()
+}
+
+type updateNotes struct {
+	Version   string                   `json:"version"`
+	Markdown  string                   `json:"markdown,omitempty"`
+	NotesURL  string                   `json:"notesUrl,omitempty"`
+	Unseen    bool                     `json:"unseen,omitempty"`
+	Installed *updater.InstalledUpdate `json:"installed,omitempty"`
+}
+
+const releaseNotesClient = "maintenance"
+const seenReleaseKey = "seenRelease"
+
+func notesVersion(version string) string {
+	return strings.TrimPrefix(version, "v")
+}
+
+func currentUpdateNotes(st updater.ManagerStatus) updateNotes {
+	notes := updateNotes{Version: st.Current}
+	if notesVersion(st.Current) == notesVersion(updater.Version) {
+		markdown := releasenotes.ForVersion(updater.Version)
+		if len(markdown) <= updater.MaxReleaseNotesBytes {
+			notes.Markdown = markdown
+		}
+	}
+	if st.Installed != nil && notesVersion(st.Installed.To) == notesVersion(st.Current) {
+		notes.Installed = st.Installed
+	}
+	return notes
 }
 
 // updatesHandler serves /ether/api/updates/ (owner auth, LAN and CSRF are
 // enforced by the admin handler):
 //
 //	GET  /                    status
+//	GET  /notes?version=      Markdown for this build or the signed available release
+//	POST /notes/dismiss      acknowledge the current build by version
 //	POST /check               check the feed now
 //	POST /apply               {"force": bool} — install as soon as idle (force: now)
 //	POST /dismiss-installed   hide the "Updated to X" note
@@ -210,8 +250,69 @@ func (a *App) updatesHandler() http.Handler {
 		writeJSON(w, code, map[string]any{"error": map[string]string{"code": kind, "message": msg}})
 	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, a.updateStatus(r.Context()))
+		writeJSON(w, http.StatusOK, a.updateSnapshot())
 	})
+	prefs := identity.NewPreferences(a.db, "owner-console")
+	ownerOnly := func(handler func(http.ResponseWriter, *http.Request, *core.Viewer)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			access, _ := admin.RequestAccess(r.Context())
+			if !access.Owner || access.OwnerID <= 0 {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "sign in with an owner account")
+				return
+			}
+			handler(w, r, &core.Viewer{ID: access.OwnerID, IsOwner: true})
+		}
+	}
+	mux.HandleFunc("GET /notes", ownerOnly(func(w http.ResponseWriter, r *http.Request, owner *core.Viewer) {
+		st := a.updateSnapshot()
+		version := notesVersion(r.URL.Query().Get("version"))
+		switch {
+		case version == "" || version == notesVersion(st.Current):
+			notes := currentUpdateNotes(st)
+			if notes.Markdown != "" || notes.Installed != nil {
+				raw, err := prefs.Get(r.Context(), owner, releaseNotesClient, seenReleaseKey)
+				var seen string
+				if errors.Is(err, frontend.ErrPreferencesNotFound) {
+					err = nil
+				} else if err == nil {
+					err = json.Unmarshal(raw, &seen)
+				}
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "notes_failed", "could not read release notes preference")
+					return
+				}
+				notes.Unseen = notesVersion(seen) != notesVersion(st.Current)
+			}
+			writeJSON(w, http.StatusOK, notes)
+		case st.Available != nil && version == notesVersion(st.Available.Version):
+			writeJSON(w, http.StatusOK, updateNotes{
+				Version: st.Available.Version, Markdown: st.Available.Notes, NotesURL: st.Available.NotesURL,
+			})
+		default:
+			writeError(w, http.StatusNotFound, "release_not_found", "release notes not found for this version")
+		}
+	}))
+	mux.HandleFunc("POST /notes/dismiss", ownerOnly(func(w http.ResponseWriter, r *http.Request, owner *core.Viewer) {
+		var body struct {
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		current := a.updateSnapshot().Current
+		if body.Version == "" || notesVersion(body.Version) != notesVersion(current) {
+			writeError(w, http.StatusConflict, "release_changed", "the running version changed")
+			return
+		}
+		raw, _ := json.Marshal(notesVersion(current))
+		if err := prefs.Put(r.Context(), owner, releaseNotesClient, seenReleaseKey, raw); err != nil {
+			writeError(w, http.StatusInternalServerError, "dismiss_failed", "could not save release notes preference")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	mux.HandleFunc("POST /check", func(w http.ResponseWriter, r *http.Request) {
 		if a.updates == nil || a.updates.mgr == nil {
 			writeError(w, http.StatusServiceUnavailable, "updates_disabled", updater.ErrUpdatesDisabled.Error())

@@ -1137,4 +1137,88 @@ describe("Play timeline drawer", () => {
     expect(await screen.findByText("ESPN", {}, WAIT)).toBeInTheDocument();
     expect(calls.some((u) => /\/titles\/0\b/.test(u))).toBe(false);
   });
+
+  it("renders plugin item artwork on Activity Viewing and omits clipped text in w-8 fallback thumbnails", async () => {
+    setToken("owner-tok");
+    const calls: string[] = [];
+    const pluginSummary = {
+      plays: 2,
+      watchedMs: 3_600_000,
+      bytes: 200_000_000,
+      completed: 2,
+      daily: [{ label: "2026-11-24", plays: 2, watchedMs: 3_600_000, bytes: 200_000_000 }],
+      hourly: [],
+      platforms: [],
+      titles: [
+        {
+          label: "Pink Floyd - S24E01 - Speak to Me",
+          key: "9005000000092613",
+          plays: 1,
+          watchedMs: 1_800_000,
+          bytes: 100_000_000,
+        },
+        {
+          label: "Unknown Plugin Track",
+          key: "9005000000092614",
+          plays: 1,
+          watchedMs: 1_800_000,
+          bytes: 100_000_000,
+        },
+      ],
+      users: [{ label: "Sam", key: "7", plays: 2, watchedMs: 3_600_000, bytes: 200_000_000 }],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith("/catalog/title/9005000000092613")) {
+          return new Response(
+            JSON.stringify({
+              key: "9005000000092613",
+              type: "episode",
+              title: "Speak to Me",
+              poster: "https://art.example/dsotm-cover.jpg",
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/catalog/title/9005000000092614")) {
+          return new Response(
+            JSON.stringify({
+              key: "9005000000092614",
+              type: "episode",
+              title: "Unknown Plugin Track",
+            }),
+            { status: 200 },
+          );
+        }
+        let v: unknown = { ok: true };
+        if (url.endsWith("/cluster/")) v = { mode: "solo" };
+        else if (url.endsWith("/users"))
+          v = { users: [{ id: 7, title: "Sam", username: "sam", isOwner: true }] };
+        else if (url.endsWith("/status/sessions")) v = { value: [] };
+        else if (url.endsWith("/status/hwaccel"))
+          v = { value: { hwaccel: { name: "none", encoders: [] } } };
+        else if (url.includes("/stats/summary")) v = pluginSummary;
+        else if (url.includes("/stats/history")) v = [];
+        return new Response(JSON.stringify(v), { status: 200 });
+      }),
+    );
+
+    const view = renderAt("/activity/viewing");
+    expect(
+      await screen.findByText("Pink Floyd - S24E01 - Speak to Me", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Unknown Plugin Track")).toBeInTheDocument();
+
+    await waitFor(() => {
+      const img = view.container.querySelector('img[src="https://art.example/dsotm-cover.jpg"]');
+      expect(img).not.toBeNull();
+    });
+    expect(calls.some((u) => u.endsWith("/catalog/title/9005000000092613"))).toBe(true);
+    // The fallback w-8 thumbnail for Unknown Plugin Track must not duplicate/clip the label text inside the thumb box.
+    expect(screen.getAllByText("Unknown Plugin Track")).toHaveLength(1);
+    view.unmount();
+  });
 });

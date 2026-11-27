@@ -110,7 +110,8 @@ func ValidateMediaProbeSource(src core.PlayableSource) error {
 			hasTarget = strings.TrimSpace(c.InfoHash) != "" ||
 				strings.TrimSpace(c.Magnet) != "" ||
 				strings.TrimSpace(c.TorrentURL) != "" ||
-				strings.TrimSpace(c.NZBURL) != ""
+				strings.TrimSpace(c.NZBURL) != "" ||
+				(c.PluginRelease != nil && strings.TrimSpace(c.PluginRelease.Plugin) != "" && strings.TrimSpace(c.PluginRelease.ID) != "")
 		}
 		if !hasTarget {
 			return &ValidationError{Fields: []FieldError{{Field: "release", Message: "release source requires infoHash, magnet, torrentUrl, nzbUrl, or candidate"}}}

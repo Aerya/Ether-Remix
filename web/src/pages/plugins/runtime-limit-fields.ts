@@ -7,6 +7,9 @@ export function deadlineHours(value?: string): number {
     0,
   );
 }
+/** Most titles one sync of a plugin list can read (plugins.MaxListItems). */
+export const MAX_LIST_ITEMS = 2000;
+
 export function runtimeLimitFields() {
   return [
     { key: "memoryBytes", label: t("Memory (MiB)"), scale: 1048576, fallback: 2048, max: 4096 },
@@ -38,6 +41,13 @@ export function runtimeLimitFields() {
       label: t("Catalogue items"),
       scale: 1,
       fallback: 2000000,
+    },
+    {
+      key: "listItems",
+      label: t("Titles per list"),
+      scale: 1,
+      fallback: MAX_LIST_ITEMS,
+      max: MAX_LIST_ITEMS,
     },
   ] satisfies {
     key: keyof RuntimeLimits;

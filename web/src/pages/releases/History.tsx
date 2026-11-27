@@ -430,7 +430,7 @@ function discoveryLabel(path: string) {
  * "Profile ≤2160 · Client ≤1080 · Effective ≤1080" for a decision, or
  * null when the configured ceiling was never recorded (legacy traces:
  * unknown is not "Any"). A recorded 0 is explicitly unlimited:
- * "Profile Any", the Quality page's word for no ceiling.
+ * "Profile Any", the Releases page's word for no ceiling.
  */
 export function resolutionCeilings(trace: ResolverTrace): string | null {
   if (trace.profileMaxHeight === undefined) return null;

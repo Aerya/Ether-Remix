@@ -60,6 +60,7 @@ func schemaType(typ reflect.Type) map[string]any {
 		case reflect.TypeFor[plugins.KindLibraryDecl]():
 			props["card"] = map[string]any{"enum": []string{"poster", "landscape", "square"}}
 			props["dateDisplay"] = map[string]any{"enum": []string{"year", "date"}}
+			props["experience"] = map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"}
 		case reflect.TypeFor[plugins.KindLibraryTab]():
 			props["kind"] = map[string]any{"enum": []string{"recommended", "library", "collections", "people", "view", "live"}}
 			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index", "lastViewed"}}
@@ -70,11 +71,8 @@ func schemaType(typ reflect.Type) map[string]any {
 		case reflect.TypeFor[plugins.KindLibraryShelf]():
 			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index", "lastViewed"}}
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
-		case reflect.TypeFor[plugins.ScreenSection]():
-			props["type"] = map[string]any{"enum": []string{"hero", "events", "table", "schedule", "leagues", "entities"}}
-		case reflect.TypeFor[plugins.ScreenEventQuery]():
-			props["state"] = map[string]any{"type": "array", "items": map[string]any{"enum": []string{"pre", "in", "post", "delayed", "postponed", "canceled"}}}
-			props["window"] = map[string]any{"enum": []string{"today", "week", "recent"}}
+		case reflect.TypeFor[plugins.KindSyncDecl]():
+			props["undo"] = map[string]any{"enum": []string{"snapshots", "ids"}}
 		}
 		return map[string]any{"type": "object", "properties": props}
 	case reflect.Slice, reflect.Array:

@@ -76,13 +76,11 @@ type AnimeCour interface {
 	LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error)
 }
 
-// LibraryProfiles answers which library a title belongs to and the quality
-// profile set on it (spec §419: a quality profile per library). A filter
-// library wins over the built-in Movies/TV Shows library; the lowest
-// library id breaks a tie between filter libraries. An empty name means the
-// library set no profile, so today's home/away defaults apply.
+// LibraryProfiles answers library membership for quality rules: whether a
+// title is in a library a rule names. Implementations cache per title and
+// read only the libraries asked about (one indexed read each on a miss).
 type LibraryProfiles interface {
-	QualityProfileForTitle(ctx context.Context, t *core.Title) string
+	InLibrary(ctx context.Context, t *core.Title, id core.LibraryID) bool
 }
 
 // Options tunes a Service. Zero values get sensible defaults.
@@ -186,6 +184,9 @@ type Trace struct {
 	TitleKey                  core.RatingKey   `json:"titleKey"`
 	TitleName                 string           `json:"titleName"`
 	Profile                   string           `json:"profile"`
+	ProfileSource             ProfileSource    `json:"profileSource,omitempty"`
+	ProfileRuleID             string           `json:"profileRuleId,omitempty"`
+	LimitRuleIDs              []string         `json:"limitRuleIds,omitempty"`
 	At                        time.Time        `json:"at"`
 	Candidates                []CandidateTrace `json:"candidates"`
 	Winner                    string           `json:"winner,omitempty"` // release id
@@ -218,6 +219,17 @@ type Trace struct {
 	// Unverified marks a winner played after every health check timed
 	// out without a confirmed failure (unverified.go).
 	Unverified bool `json:"unverified,omitempty"`
+	// Queries are the indexer requests this resolution made (capped),
+	// QueriesDropped counts the ones past the cap. A support capture
+	// exports them with the indexer names replaced.
+	Queries        []core.SearchQuery `json:"queries,omitempty"`
+	QueriesDropped int                `json:"queriesDropped,omitempty"`
+	// ClientID and UserID tie the resolution to the device and viewer
+	// that asked, so a support capture includes only that device's
+	// searches. Speculative marks warm-ups and detail discovery.
+	ClientID    string `json:"clientId,omitempty"`
+	UserID      int64  `json:"userId,omitempty"`
+	Speculative bool   `json:"speculative,omitempty"`
 }
 
 // DiscoveryTrace records only the origin and number of returned releases.
@@ -250,6 +262,23 @@ type searchCacheEntry struct {
 	refreshed time.Time
 	results   []core.Release
 	expires   time.Time
+	// req is the request the results answer, with the enrichment its
+	// writer applied.
+	req core.SearchRequest
+}
+
+// serves reports whether e answers req. Each part of the enrichment a
+// request carries (release numbering, cour mapping) must be the one the
+// results were searched with; a part it lacks takes what the entry has,
+// because the enriched search only adds queries.
+func (e searchCacheEntry) serves(req core.SearchRequest) bool {
+	if n := numberingEnrichment(req); n != "" && n != numberingEnrichment(e.req) {
+		return false
+	}
+	if c := courEnrichment(req); c != "" && c != courEnrichment(e.req) {
+		return false
+	}
+	return true
 }
 
 type inflight struct {
@@ -595,6 +624,29 @@ func (s *Service) forgetSourceResults(ctx context.Context) {
 	s.log.Info("sources changed: cleared cached searches and unavailable titles")
 }
 
+// VODCatalogChanged is called when an IPTV provider's VOD catalogue changed.
+// VOD items join search results, so cached searches and "not available"
+// answers may be stale; failed grabs, health failures and Usenet verdicts
+// are about indexer and Usenet releases and stay, so a catalogue change does
+// not make Ether re-grab NZBs it already knows are broken.
+func (s *Service) VODCatalogChanged(ctx context.Context) {
+	s.mu.Lock()
+	for k, e := range s.avail {
+		if !e.available {
+			s.forgetAvailabilityEpochLocked(k)
+			delete(s.avail, k)
+		}
+	}
+	clear(s.searchCache)
+	s.mu.Unlock()
+	if s.db != nil {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM resolver_availability WHERE available = 0`); err != nil {
+			s.log.Warn("forget unavailable titles", "err", err)
+		}
+	}
+	s.log.Info("IPTV VOD catalogue changed: cleared cached searches and unavailable titles")
+}
+
 func (s *Service) resolverCfg() config.Resolver {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
@@ -788,39 +840,23 @@ func (s *Service) ProfileFor(caps core.ClientCaps, user *core.User) core.Quality
 }
 
 func searchRequestFor(t *core.Title) core.SearchRequest {
-	season, episode := t.Season, t.Episode
-	if t.Key.Kind() == core.KindEpisode {
-		if season == 0 {
-			season = t.Key.Season()
-		}
-		if episode == 0 {
-			episode = t.Key.Episode()
-		}
-	}
 	if t.Type == core.TypeEpisode || t.Key.Kind() == core.KindEpisode {
-		ids := t.ShowIDs
-		// Episode external IDs describe the episode, not its series.
-		// The rating key provides a canonical series TMDB ID even when
-		// the cached ShowIDs only contain an IMDb or TVDB identifier.
-		if ids.TMDB == 0 && t.Key.Kind() == core.KindEpisode {
-			ids.TMDB = t.Key.TMDB()
-		}
 		title := t.ShowTitle
 		if title == "" {
 			title = t.Title
 		}
-		return core.SearchRequest{Type: core.TypeEpisode, IDs: ids, Title: title, OriginalTitle: t.ShowOriginalTitle, EnglishTitle: t.ShowEnglishTitle, Year: t.ShowYear, Season: season, Episode: episode, EpisodeTitle: t.Title,
-			AbsoluteEpisode: t.AbsoluteEpisode, Anime: isAnime(t), AlternativeTitles: t.ShowAlternativeTitles, Released: t.Released}
+		return core.SearchRequest{Type: core.TypeEpisode, IDs: t.ShowIDs, EpisodeSource: t.EpisodeOrder.Source, Title: title, OriginalTitle: t.ShowOriginalTitle, EnglishTitle: t.ShowEnglishTitle, Year: t.ShowYear, Season: t.Season, Episode: t.Episode, EpisodeTitle: t.Title,
+			AbsoluteEpisode: t.AbsoluteEpisode, Anime: isAnime(t), AlternativeTitles: t.ShowAlternativeTitles, Released: cmp.Or(t.EpisodeAirDate, t.Released)}
 	}
 	return core.SearchRequest{Type: core.TypeMovie, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, EnglishTitle: t.EnglishTitle, Year: t.Year, Anime: isAnime(t), AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 }
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
 	req := searchRequestFor(t)
-	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 {
+	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 && req.EpisodeSource != core.MetadataTVDB && req.IDs.TMDB > 0 {
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
-	if s != nil && s.animeCour != nil && req.Anime && req.Type == core.TypeEpisode && req.Season > 0 && req.Episode > 1 && req.IDs.TMDB > 0 {
+	if s != nil && s.animeCour != nil && req.EpisodeSource != core.MetadataTVDB && req.Anime && req.Type == core.TypeEpisode && req.Season > 0 && req.Episode > 1 && req.IDs.TMDB > 0 {
 		if m, ok, err := s.animeCour.LookupCour(ctx, req); err == nil && ok {
 			req.Cour, req.CourEpisode = m.Cour, m.Episode
 			req.CourTVDBSeason, req.CourTVDBEpisode = m.TVDBSeason, m.TVDBEpisode
@@ -895,11 +931,11 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")
 	}
-	media := titleMedia(req.Title)
 	q := s.qualityCfg()
-	libProfile := s.libProfileForTitle(ctx, req.Title)
-	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
-	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
+	inLib := s.membershipFor(ctx, req.Title)
+	dec := decideProfile(q, req.Client, req.User, titleTarget(req.Title, inLib))
+	req.Client = dec.caps
+	profile := dec.profile
 	profile.SelectionKey += quality.Signature(s.db)
 	videoOff, _ := s.transcodeSettingsFor(req.Client)
 	key := fmt.Sprintf("%s|pin:%s|vc:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), s.viewerChoiceFlightKey(req), videoOff)
@@ -940,8 +976,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 		s.flightMu.Unlock()
 
 		ctx = context.WithValue(ctx, observationTitleKey{}, req.Title)
-		// PSE-HOOK: Seedstrem playback-only and fallback — see docs/pse/FORK.fr.md
-		res, err := s.resolveWithLastResort(ctx, req, profile)
+		res, err := s.resolveWithLastResort(ctx, req, profile, q, dec)
 		f.res, f.err, f.abandoned = res, err, err != nil && ctx.Err() != nil
 		s.flightMu.Lock()
 		delete(s.flights, key)
@@ -951,7 +986,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	}
 }
 
-func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile) (resolved *core.Resolution, resolveErr error) {
+func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile, q config.Quality, dec profileDecision) (resolved *core.Resolution, resolveErr error) {
 	var fp string
 	if s.vault != nil {
 		fp = ProfileFingerprint(profile, wantedAudio(profile, req.User, s.catalogLanguage()))
@@ -992,12 +1027,21 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// An indexer that was paused or did not answer leaves the search
 	// incomplete; nothing found then does not prove the title unavailable.
 	ctx, coverage := core.WithSearchCoverage(ctx)
+	ctx, queryLog := core.WithSearchLog(ctx)
 	t := req.Title
 	hasExclude := len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0
-	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: hasExclude}
+	profSource, profRuleID, limitRuleIDs := dec.ruleDecision(q)
+	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name,
+		ProfileSource: profSource, ProfileRuleID: profRuleID, LimitRuleIDs: limitRuleIDs,
+		At: s.now(), Failover: hasExclude,
+		ClientID: req.Client.ClientID, Speculative: core.IsSpeculative(ctx) || core.SpeculativeIndexerWork(ctx)}
+	if req.User != nil {
+		trace.UserID = req.User.ID
+	}
 	trace.Limits = &TraceLimits{ProfileMinHeight: profile.MinHeight, ProfileMaxHeight: profile.MaxHeight, ProfileConfiguredMaxHeight: traceConfiguredMaxHeight(profile), ClientMaxHeight: req.Client.MaxHeight, ClientMaxBitrateKbps: req.Client.MaxBitrateKbps, AllowHDR: profile.AllowHDR, AllowDolbyVision: profile.AllowDolbyVision}
 	defer func() {
 		trace.TotalDuration = time.Since(started)
+		trace.Queries, trace.QueriesDropped = queryLog.Queries()
 		if resolved != nil {
 			failedReleases = rejectedAttemptedReleaseIDs(&trace, resolved.Release.ID)
 		}
@@ -1722,12 +1766,59 @@ func titleOriginalLanguage(t *core.Title) string {
 	return strings.TrimSpace(t.Language)
 }
 
+// searchCacheKey names a title's search. It leaves out the enrichment
+// (anime cour mapping, owner-chosen episode group) so that Play, the
+// console, the detail refill, the version picker and Forget, which do
+// not all know it, share one entry; the entry keeps its request
+// (searchCacheEntry.req) so an enriched caller can tell whether it
+// matches (searchCacheEntry.serves). The alias-only numbering search is a different search.
 func searchCacheKey(req core.SearchRequest) string {
-	key := fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
-	if req.Cour > 0 || req.CourTVDBSeason > 0 {
-		key += fmt.Sprintf("|cour:%d:%d|tvdb:%d:%d", req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode)
+	key := fmt.Sprintf("%s|%v|%s|%d|%d|%d|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.ReleaseAliasesOnly)
+	if req.EpisodeSource == core.MetadataTVDB {
+		key += "|tvdb:" + req.Released.UTC().Format(time.DateOnly)
 	}
 	return key
+}
+
+// numberingEnrichment and courEnrichment are what a request adds to its
+// title's plain request (searchRequestFor): release numbering aliases
+// (an owner-chosen episode group, XEM) and the anime cour mapping. ""
+// when the request has none.
+func numberingEnrichment(req core.SearchRequest) string {
+	aliases := core.EpisodeAliases(req)
+	if len(aliases) == 0 && len(req.ReleasePackTargets) == 0 && !req.ReleaseNumberingKnown {
+		return ""
+	}
+	return fmt.Sprintf("aliases:%v|packs:%v|known:%t", aliases, req.ReleasePackTargets, req.ReleaseNumberingKnown)
+}
+
+func courEnrichment(req core.SearchRequest) string {
+	if req.Cour <= 0 && req.CourTVDBSeason <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("cour:%d:%d|tvdb:%d:%d", req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode)
+}
+
+// withSearchEnrichment copies from's enrichment onto req.
+func withSearchEnrichment(req, from core.SearchRequest) core.SearchRequest {
+	req.AltSeason, req.AltEpisode = from.AltSeason, from.AltEpisode
+	req.ReleaseAliases, req.ReleasePackTargets, req.ReleaseNumberingKnown = from.ReleaseAliases, from.ReleasePackTargets, from.ReleaseNumberingKnown
+	req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode = from.Cour, from.CourEpisode, from.CourTVDBSeason, from.CourTVDBEpisode
+	return req
+}
+
+// cachedSearchRequest is t's plain search request with the enrichment of
+// its cached search, so readers that cannot afford the cour lookup or the
+// episode-group numbering judge the cached results as Play did.
+func (s *Service) cachedSearchRequest(t *core.Title) core.SearchRequest {
+	req := searchRequestFor(t)
+	s.mu.RLock()
+	e, ok := s.searchCache[searchCacheKey(req)]
+	s.mu.RUnlock()
+	if ok && !e.forgotten && s.now().Before(e.expires) {
+		req = withSearchEnrichment(req, e.req)
+	}
+	return req
 }
 
 type rescueSearcher interface {
@@ -1743,7 +1834,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.RLock()
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
-	if ok && s.now().Before(e.expires) {
+	if ok && s.now().Before(e.expires) && e.serves(req) {
 		return append([]core.Release(nil), e.results...), "cache"
 	}
 	rctx, coverage := core.WithSearchCoverage(ctx)
@@ -1763,7 +1854,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.Lock()
 	now := s.now()
 	boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now(), req: req}
 	s.mu.Unlock()
 	// Merge rescued results into the primary search cache entry so Play
 	// Version (Variants) and subsequent resolves see the full candidate set.
@@ -1791,7 +1882,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.RLock()
 		e, ok := s.searchCache[key]
 		s.mu.RUnlock()
-		if ok && s.now().Before(e.expires) {
+		if ok && s.now().Before(e.expires) && e.serves(req) {
 			return append([]core.Release(nil), e.results...)
 		}
 	}
@@ -1811,7 +1902,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.Lock()
 		now := s.now()
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
+		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now(), req: req}
 		s.mu.Unlock()
 		s.InvalidateDetailVariants()
 	}
@@ -1871,7 +1962,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 			select {
 			case <-bound:
 			case <-done:
-				if results, ok := s.peekSearchCache(key); ok {
+				if results, ok := s.peekSearchCacheFor(req); ok {
 					return results, true, nil
 				}
 				// A failed detail discovery is not a reason for speculative
@@ -1891,7 +1982,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 	s.mu.RLock()
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
-	if ok && !fresh && s.now().Before(e.expires) {
+	if ok && !fresh && s.now().Before(e.expires) && e.serves(req) {
 		cachedRes := append([]core.Release(nil), e.results...)
 		if ls != nil {
 			s.finishLiveSearch(ls, cachedRes)
@@ -2005,7 +2096,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	if len(results) == 0 && ttl > freshReleaseCooloff {
 		ttl = freshReleaseCooloff
 	}
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now, req: req}
 	s.mu.Unlock()
 	s.notifyLiveWaiters(key)
 	s.InvalidateDetailVariants()
@@ -2789,6 +2880,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 
 // metadataMatch is independent metadata evidence, separate from reported IDs.
 func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool, metadataMatch bool) string {
+	rel = pseTitleWithNumber(rel, sreq) // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	if releaseparse.IsPlaceholderResult(rel.Name) {
 		return "indexer placeholder"
 	}
@@ -2823,7 +2915,8 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 			}
 		}
 	}
-	titleOK := metadataMatch || miniseriesPart > 0 ||
+	canRecoverTitle := titleMismatchRecoverable(rel.Info.Title, t, sreq)
+	titleOK := (metadataMatch && canRecoverTitle) || miniseriesPart > 0 ||
 		releaseparse.TitleMatches(rel.Info, wantTitle) ||
 		(sreq.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, sreq.OriginalTitle)) ||
 		(!isEpisode && t.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.OriginalTitle)) ||
@@ -2873,7 +2966,7 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 	if titleOK && !idMatch && regionTagConflicts(rel.Info.Title, wantTitle, t.Countries) {
 		titleOK = false
 	}
-	if !titleOK && !idMatch {
+	if !titleOK && !(idMatch && canRecoverTitle) {
 		obf := releaseparse.IsObfuscated(rel.Info.Title)
 		if obf && !releaseparse.HasUsableInfo(rel.Info) {
 			return "obfuscated, no usable info"
@@ -2885,7 +2978,7 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 	}
 	if isEpisode {
 		releaseYear := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && (acceptYear == nil || !acceptYear(releaseYear)) {
+		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && !longRunningEpisodeYear(rel, t, sreq, releaseYear) && (acceptYear == nil || !acceptYear(releaseYear)) {
 			return "series year mismatch"
 		}
 		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !metadataMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {
@@ -3029,10 +3122,8 @@ func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
 	if _, _, ok := packNumbers(info, sreq); !ok {
 		return false
 	}
-	if info.Cour > 1 && sreq.Cour > 0 && info.Cour != sreq.Cour {
-		return false
-	}
-	if info.Cour > 1 && (sreq.Cour == 0 || sreq.CourEpisode <= 0) {
+	if info.Cour > 1 && (sreq.Cour != info.Cour || sreq.CourEpisode <= 0) &&
+		!releaseparse.SeasonNumberingUnderCour(info.Cour, info.CourRelative, sreq.Cour, sreq.Anime) {
 		return false
 	}
 	if info.Cour == 1 && sreq.Cour > 1 {
@@ -3432,7 +3523,7 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 			target.ShowTitles, target.SpecialTitles = specialShowTitles(sreq), sreq.SpecialTitles
 		}
 		target.AbsoluteEpisode = releaseparse.AnimeSearchEpisode(sreq)
-		target.Cour, target.CourEpisode = sreq.Cour, sreq.CourEpisode
+		target.Cour, target.CourEpisode, target.Anime = sreq.Cour, sreq.CourEpisode, sreq.Anime
 		if alternate {
 			target.Cour, target.CourEpisode = 0, 0
 		}
@@ -3444,7 +3535,7 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	if !sreq.Released.IsZero() {
 		airDate = sreq.Released.UTC().Format("2006-01-02")
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, AirDate: airDate, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Anime: sreq.Anime, Season: targetSeason, Episode: targetEpisode, AirDate: airDate, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
 	if alternate || len(aliases) > 0 {
 		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
 	}

@@ -7,13 +7,21 @@ import (
 	"time"
 )
 
+// playingReleasePollEvery paces the live read that notices an in-session
+// failover to another release.
+const playingReleasePollEvery = 2 * time.Second
+
 // Subscribe only after a viewer opens playback. The broker owns stop and remote
 // control events; disabling the frontend cancels every subscription.
 func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device, id, scope string, s *playSession) {
-	ctx, cancel := context.WithCancel(i.ctx)
-	events, err := i.host.Sessions.Events(ctx, frontend.EventScope{Viewer: viewer, Protocol: "vela", SessionID: id, Device: device})
-	if err != nil {
-		events = nil
+	base := i.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	var events <-chan frontend.Event
+	if s.archive == nil {
+		events, _ = i.host.Sessions.Events(ctx, frontend.EventScope{Viewer: viewer, Protocol: "vela", SessionID: id, Device: device})
 	}
 	go func() {
 		defer cancel()
@@ -32,6 +40,32 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 			}
 		}
 
+		var trickplayC <-chan time.Time
+		if _, ok := i.host.Sessions.(frontend.SessionTrickplay); ok {
+			s.mu.Lock()
+			eligible := s.isTrickplayEligibleLocked()
+			s.mu.Unlock()
+			if eligible {
+				tt := time.NewTicker(i.trickplayPollEvery())
+				defer tt.Stop()
+				trickplayC = tt.C
+			}
+		}
+
+		// An in-session failover swaps the release under the same session;
+		// a cheap live read notices it so the menu names what plays now.
+		var playingC <-chan time.Time
+		if _, ok := i.host.Sessions.(frontend.PlayingReleaseReader); ok && i.versionsAvailable() {
+			s.mu.Lock()
+			vod := s.item != 0 && s.channelID == ""
+			s.mu.Unlock()
+			if vod {
+				pt := time.NewTicker(playingReleasePollEvery)
+				defer pt.Stop()
+				playingC = pt.C
+			}
+		}
+
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
 		output := t.C
@@ -40,6 +74,12 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 
 			case <-liveEventC:
 				i.refreshSessionLiveEvent(ctx, viewer, s)
+
+			case <-playingC:
+				i.pollPlayingRelease(ctx, viewer, device, id, s)
+
+			case <-trickplayC:
+				i.pollSessionTrickplay(ctx, viewer, device, id, s)
 
 			case <-output:
 				s.mu.Lock()
@@ -57,6 +97,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				s.mu.Lock()
 				if changed && !s.commandActive && s.revision == revision && s.source == copy.source && s.seek == copy.seek && s.ended.IsZero() {
 					s.applyOutput(copy)
+					alignUnobservedLivePosition(s)
 					s.publish("plan")
 				}
 				s.mu.Unlock()
@@ -72,7 +113,23 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 					continue
 				}
 				if err != nil {
-					_ = i.host.Sessions.Stop(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: "vela"}, id)
+					_ = i.stopPlayback(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: "vela"}, id, s)
+				}
+				s.mu.Lock()
+				var archiveTune string
+				if s.archive != nil {
+					archiveTune = s.archive.tuneID
+				}
+				s.mu.Unlock()
+				if err == nil && archiveTune != "" {
+					_, lookupErr := i.host.LiveTV.Session(ctx, archiveTune, viewer)
+					if errors.Is(lookupErr, frontend.ErrNotFound) {
+						s.mu.Lock()
+						if s.archive.tuneID == archiveTune && !s.commandActive {
+							err = lookupErr
+						}
+						s.mu.Unlock()
+					}
 				}
 				s.mu.Lock()
 				ended := !s.ended.IsZero()
@@ -92,6 +149,10 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 					continue
 				}
 				if e.SessionID != id {
+					continue
+				}
+				if e.Type == "SessionOriginalChanged" {
+					i.pollOriginalRecovery(ctx, viewer, device, id, s)
 					continue
 				}
 				s.mu.Lock()

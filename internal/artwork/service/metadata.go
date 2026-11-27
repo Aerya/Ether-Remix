@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/lru"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -46,13 +47,17 @@ type MetadataQueue struct {
 	// persist reports whether an item's metadata may be written; nil
 	// writes everything. Titles with no stored row (search and list hits)
 	// keep theirs in memory only: a search page must not write rows.
-	persist func(context.Context, core.RatingKey) bool
-	memory  *lru.Cache[string, artworkMetadata] // unpersisted hashes, guarded by mu
+	persist      func(context.Context, core.RatingKey) bool
+	persistBatch func(context.Context, []core.RatingKey) map[core.RatingKey]bool
+	memory       *lru.Cache[string, artworkMetadata] // unpersisted hashes, guarded by mu
 }
 
 // memoryMetadataEntries bounds the hashes kept for titles with no row
-// (about 200 bytes each).
-const memoryMetadataEntries = 16 << 10
+// (about 200 bytes each). metadataCacheMax matches it for persisted rows.
+const (
+	memoryMetadataEntries = 16 << 10
+	metadataCacheMax      = 16 << 10
+)
 
 // PersistFor limits database writes to items persist accepts; the rest
 // keep their hashes in a bounded memory cache. Call before serving.
@@ -64,11 +69,276 @@ func (q *MetadataQueue) PersistFor(persist func(context.Context, core.RatingKey)
 	}
 }
 
+// PersistBatchFor supplies a batched counterpart to PersistFor so page reads
+// check persistence in chunked queries rather than one SELECT per image.
+func (q *MetadataQueue) PersistBatchFor(persistBatch func(context.Context, []core.RatingKey) map[core.RatingKey]bool) {
+	if q != nil {
+		q.mu.Lock()
+		q.persistBatch = persistBatch
+		q.mu.Unlock()
+	}
+}
+
+type preloadedPersistKey struct{}
+type preloadedMetadataMissKey struct{}
+type preloadedMetadataPartialKey struct{}
+
+type artworkMetadataLookup struct {
+	request frontend.ArtworkRequest
+	image   frontend.Image
+}
+
+func (q *MetadataQueue) checkPersistBatch(ctx context.Context, keys []core.RatingKey) map[core.RatingKey]bool {
+	unique := make([]core.RatingKey, 0, len(keys))
+	seen := make(map[core.RatingKey]bool, len(keys))
+	for _, k := range keys {
+		if k == 0 || seen[k] {
+			continue
+		}
+		seen[k] = true
+		unique = append(unique, k)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	q.mu.Lock()
+	persist := q.persist
+	persistBatch := q.persistBatch
+	q.mu.Unlock()
+	if persistBatch != nil {
+		return persistBatch(ctx, unique)
+	}
+	out := make(map[core.RatingKey]bool, len(unique))
+	if persist == nil {
+		for _, k := range unique {
+			out[k] = true
+		}
+		return out
+	}
+	for _, k := range unique {
+		out[k] = persist(ctx, k)
+	}
+	return out
+}
+
+// Preload resolves stored artwork metadata and stale-row persistence checks for
+// a batch of images in chunked queries so page listing never issues a query per
+// image or per title.
+func (q *MetadataQueue) Preload(ctx context.Context, items []artworkMetadataLookup) context.Context {
+	if q == nil || q.db == nil || q.active == nil || q.read == nil || q.ctx.Err() != nil || len(items) == 0 {
+		return ctx
+	}
+	now := time.Now().Unix()
+	touchWindow := int64(metadataTouchEvery / time.Second)
+	type staleEntry struct {
+		key string
+		req frontend.ArtworkRequest
+		md  artworkMetadata
+	}
+	type missEntry struct {
+		key string
+		req frontend.ArtworkRequest
+	}
+	var staleCached []staleEntry
+	var misses []missEntry
+	seen := make(map[string]bool, len(items))
+
+	q.mu.Lock()
+	for _, item := range items {
+		if item.request.Viewer == nil {
+			continue
+		}
+		key := artworkMetadataKey(item.request, item.image)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if cached, ok := q.cache[key]; ok && cached.thumbhash != "" {
+			if now-cached.usedAt >= touchWindow {
+				staleCached = append(staleCached, staleEntry{key: key, req: item.request, md: cached})
+			}
+			continue
+		}
+		if _, ok := q.memory.Get(key); ok {
+			continue
+		}
+		misses = append(misses, missEntry{key: key, req: item.request})
+	}
+	q.mu.Unlock()
+
+	if len(staleCached) == 0 && len(misses) == 0 {
+		return ctx
+	}
+
+	persistMap := map[core.RatingKey]bool{}
+	checkedMisses := map[string]bool{}
+	partialLoaded := map[string]artworkMetadata{}
+
+	var pluginKeys []core.RatingKey
+	for _, m := range misses {
+		if m.req.Item.IsPluginKey() {
+			pluginKeys = append(pluginKeys, m.req.Item)
+		}
+	}
+	if len(pluginKeys) > 0 {
+		checkCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		for k, v := range q.checkPersistBatch(checkCtx, pluginKeys) {
+			persistMap[k] = v
+		}
+		cancel()
+	}
+
+	var dbMisses []missEntry
+	for _, m := range misses {
+		if m.req.Item.IsPluginKey() {
+			if p, known := persistMap[m.req.Item]; known && !p {
+				checkedMisses[m.key] = true
+				continue
+			}
+		}
+		dbMisses = append(dbMisses, m)
+	}
+
+	var loaded []staleEntry
+	if len(dbMisses) > 0 {
+		loadCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		for part := range store.Chunks(dbMisses, 200) {
+			args := make([]any, len(part))
+			for i, m := range part {
+				args[i] = m.key
+			}
+			rows, err := q.db.QueryContext(loadCtx, `SELECT image_key,width,height,blurhash,thumbhash,used_at FROM artwork_image_metadata WHERE image_key IN (`+placeholders(len(part))+`)`, args...)
+			if err != nil {
+				continue
+			}
+			found := make(map[string]artworkMetadata, len(part))
+			for rows.Next() {
+				var k string
+				var md artworkMetadata
+				if err := rows.Scan(&k, &md.width, &md.height, &md.blurhash, &md.thumbhash, &md.usedAt); err == nil {
+					found[k] = md
+				}
+			}
+			rowsErr := rows.Err()
+			rows.Close()
+			if rowsErr != nil {
+				continue
+			}
+			for _, m := range part {
+				if md, ok := found[m.key]; ok && (md.blurhash != "" || md.thumbhash != "") {
+					loaded = append(loaded, staleEntry{key: m.key, req: m.req, md: md})
+				} else {
+					checkedMisses[m.key] = true
+				}
+			}
+		}
+		cancel()
+	}
+
+	var needPersist []core.RatingKey
+	for _, sc := range staleCached {
+		if sc.req.Item != 0 {
+			if _, known := persistMap[sc.req.Item]; !known {
+				needPersist = append(needPersist, sc.req.Item)
+			}
+		}
+	}
+	for _, ld := range loaded {
+		if ld.req.Item != 0 && now-ld.md.usedAt >= touchWindow {
+			if _, known := persistMap[ld.req.Item]; !known {
+				needPersist = append(needPersist, ld.req.Item)
+			}
+		}
+	}
+	if len(needPersist) > 0 {
+		checkCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		for k, v := range q.checkPersistBatch(checkCtx, needPersist) {
+			persistMap[k] = v
+		}
+		cancel()
+	}
+
+	q.mu.Lock()
+	for _, sc := range staleCached {
+		if sc.req.Item != 0 {
+			p, known := persistMap[sc.req.Item]
+			if !known {
+				continue
+			}
+			if !p {
+				delete(q.cache, sc.key)
+				q.memory.Add(sc.key, sc.md)
+				continue
+			}
+		}
+		md := sc.md
+		if cached, ok := q.cache[sc.key]; ok && cached.usedAt > md.usedAt {
+			md.usedAt = cached.usedAt
+		}
+		q.touch(sc.key, &md)
+		q.cache[sc.key] = md
+	}
+	for _, ld := range loaded {
+		if ld.req.Item != 0 && now-ld.md.usedAt >= touchWindow {
+			p, known := persistMap[ld.req.Item]
+			if !known {
+				continue
+			}
+			if !p {
+				delete(q.cache, ld.key)
+				q.memory.Add(ld.key, ld.md)
+				continue
+			}
+		}
+		md := ld.md
+		if cached, ok := q.cache[ld.key]; ok && cached.usedAt > md.usedAt {
+			md.usedAt = cached.usedAt
+		}
+		q.touch(ld.key, &md)
+		if len(q.cache) >= metadataCacheMax {
+			q.cache = map[string]artworkMetadata{}
+		}
+		q.cache[ld.key] = md
+		if md.thumbhash == "" {
+			partialLoaded[ld.key] = md
+		}
+	}
+	q.mu.Unlock()
+
+	if len(persistMap) > 0 {
+		ctx = context.WithValue(ctx, preloadedPersistKey{}, persistMap)
+	}
+	if len(checkedMisses) > 0 {
+		ctx = context.WithValue(ctx, preloadedMetadataMissKey{}, checkedMisses)
+	}
+	if len(partialLoaded) > 0 {
+		ctx = context.WithValue(ctx, preloadedMetadataPartialKey{}, partialLoaded)
+	}
+	return ctx
+}
+
 func (q *MetadataQueue) persistable(ctx context.Context, req frontend.ArtworkRequest) bool {
+	if req.Item == 0 {
+		return true
+	}
+	if preloaded, ok := ctx.Value(preloadedPersistKey{}).(map[core.RatingKey]bool); ok {
+		if v, found := preloaded[req.Item]; found {
+			return v
+		}
+	}
 	q.mu.Lock()
 	persist := q.persist
 	q.mu.Unlock()
-	return persist == nil || req.Item == 0 || persist(ctx, req.Item)
+	if persist == nil {
+		return true
+	}
+	if reqmemo.Active(ctx) {
+		v, _ := reqmemo.Do(ctx, "artwork:persist:"+req.Item.String(), func() (bool, error) {
+			return persist(ctx, req.Item), nil
+		})
+		return v
+	}
+	return persist(ctx, req.Item)
 }
 
 type artworkMetadata struct {
@@ -85,7 +355,7 @@ type artworkMetadataJob struct {
 }
 
 func NewMetadataQueue(ctx context.Context, db *sql.DB, active func(context.Context, int64) (*core.User, error), read func(context.Context, frontend.ArtworkRequest, frontend.Image, frontend.ArtworkTransform) ([]byte, string, error)) *MetadataQueue {
-	q := &MetadataQueue{ctx: ctx, db: db, active: active, read: read, jobs: make(chan artworkMetadataJob, 128), cache: map[string]artworkMetadata{}, pending: map[string]bool{}, retry: map[string]time.Time{}, touches: make(chan string, 256),
+	q := &MetadataQueue{ctx: ctx, db: db, active: active, read: read, jobs: make(chan artworkMetadataJob, 128), cache: map[string]artworkMetadata{}, pending: map[string]bool{}, retry: map[string]time.Time{}, touches: make(chan string, 2048),
 		memory: lru.New(lru.Options[string, artworkMetadata]{MaxEntries: memoryMetadataEntries})}
 	for i := 0; i < 2; i++ {
 		q.workers.Add(1)
@@ -172,6 +442,14 @@ func (q *MetadataQueue) stored(ctx context.Context, req frontend.ArtworkRequest,
 		return held, true
 	}
 	q.mu.Unlock()
+	if misses, ok := ctx.Value(preloadedMetadataMissKey{}).(map[string]bool); ok && misses[key] {
+		return artworkMetadata{}, false
+	}
+	if partial, ok := ctx.Value(preloadedMetadataPartialKey{}).(map[string]artworkMetadata); ok {
+		if m, found := partial[key]; found {
+			return m, true
+		}
+	}
 	if req.Item.IsPluginKey() && !q.persistable(ctx, req) {
 		return artworkMetadata{}, false
 	}
@@ -208,7 +486,7 @@ func (q *MetadataQueue) remember(ctx context.Context, req frontend.ArtworkReques
 		metadata.usedAt = cached.usedAt
 	}
 	q.touch(key, &metadata)
-	if len(q.cache) >= 4096 {
+	if len(q.cache) >= metadataCacheMax {
 		q.cache = map[string]artworkMetadata{}
 	}
 	q.cache[key] = metadata

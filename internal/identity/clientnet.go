@@ -35,3 +35,19 @@ func ParseProxyEntry(raw string) (netip.Prefix, error) { return clientnet.ParseP
 
 // ProxyPrefixes parses configured peer IPs and networks; invalid entries grant no trust.
 func ProxyPrefixes(cidrs []string) []netip.Prefix { return clientnet.ProxyPrefixes(cidrs) }
+
+// ValidateProxyEntry accepts an IP address, CIDR range or proxy host or container name.
+func ValidateProxyEntry(raw string) error { return clientnet.ValidateProxyEntry(raw) }
+
+// HasProxyHostNames reports whether a trusted-proxy list names a host, whose
+// resolved addresses can change without a configuration change.
+func HasProxyHostNames(entries []string) bool { return clientnet.HasProxyHostNames(entries) }
+
+// UntrustedForwarderSighting is an untrusted home-network peer that forwards
+// public client addresses, usually a reverse proxy that is not trusted yet.
+type UntrustedForwarderSighting = clientnet.UntrustedForwarderSighting
+
+// UntrustedForwarders lists recent untrusted forwarding peers not covered by trusted.
+func UntrustedForwarders(trusted ...netip.Prefix) []UntrustedForwarderSighting {
+	return clientnet.UntrustedForwarders(trusted...)
+}

@@ -40,50 +40,21 @@ const (
 	leanFamiliar
 )
 
-// resolveTuning resolves each dial: the viewer's page, then the global
-// page, then the default.
-func resolveTuning(d core.HomeLayout, user int64, target string) tuning {
+// resolveTuning resolves the page's dials (the default when unset).
+func resolveTuning(pl *pagePlan) tuning {
 	t := defaultTuning
-	g, viewer := pagesForTarget(d, user, target)
-	for _, p := range []*core.LayoutPage{g, viewer} {
-		if p == nil || p.Tuning == nil {
-			continue
-		}
-		set := func(dst *float64, v *float64) {
-			if v != nil && !math.IsNaN(*v) {
-				*dst = clamp(*v, 0, 1)
-			}
-		}
-		set(&t.discovery, p.Tuning.Discovery)
-		set(&t.freshness, p.Tuning.Freshness)
-		set(&t.variety, p.Tuning.Variety)
+	if pl == nil || pl.page.Tuning == nil {
+		return t
 	}
+	set := func(dst *float64, v *float64) {
+		if v != nil && !math.IsNaN(*v) {
+			*dst = clamp(*v, 0, 1)
+		}
+	}
+	set(&t.discovery, pl.page.Tuning.Discovery)
+	set(&t.freshness, pl.page.Tuning.Freshness)
+	set(&t.variety, pl.page.Tuning.Variety)
 	return t
-}
-
-// resolveDedupeHome resolves a page's DedupeHome switch (viewer page, then
-// global page; default on). Home never dedupes against itself.
-func resolveDedupeHome(d core.HomeLayout, user int64, target string) bool {
-	if target == "" || target == surfHome {
-		return false
-	}
-	on := true
-	g, v := pagesForTarget(d, user, target)
-	for _, p := range []*core.LayoutPage{g, v} {
-		if p != nil && p.DedupeHome != nil {
-			on = *p.DedupeHome
-		}
-	}
-	return on
-}
-
-func viewerPage(d core.HomeLayout, user int64, section string) *core.LayoutPage {
-	for _, v := range d.Viewers {
-		if v.UserID == user {
-			return pageFor(v.Pages, section)
-		}
-	}
-	return nil
 }
 
 // key is the tuning's memo-key form.

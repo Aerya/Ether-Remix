@@ -324,10 +324,7 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 			Refresh:        collections.RefreshDaily,
 			MaxItems:       250,
 			Enabled:        true,
-			Targets: core.CollectionTargets{
-				CollectionsTab: true,
-				Users:          core.UserTargets{IDs: []int64{1}},
-			},
+			BrowseInApps:   true,
 			Items: []core.AddonCatalogImportItem{
 				{Key: popMovieKey},
 				{Key: popSeriesKey},
@@ -367,8 +364,8 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 			t.Fatalf("managed[%d] = name:%q folder:%q order:%d, want %q / AIOMetadata / %d",
 				i, managed[i].Name, managed[i].Folder, managed[i].SortOrder, want, i+1)
 		}
-		if !slices.Equal(managed[i].Targets.Users.IDs, []int64{1}) {
-			t.Fatalf("managed[%d] users = %+v, want [1]", i, managed[i].Targets.Users)
+		if !managed[i].BrowseInApps {
+			t.Fatalf("managed[%d] is not browsable in apps", i)
 		}
 	}
 
@@ -397,22 +394,17 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 		FollowManifest: false,
 		Refresh:        collections.RefreshDaily,
 		Enabled:        true,
-		Targets:        core.CollectionTargets{CollectionsTab: true, Users: core.UserTargets{IDs: []int64{2}}},
+		BrowseInApps:   true,
 		Items:          []core.AddonCatalogImportItem{{Key: kidsPrev.Catalogs[0].Key}},
 	})
 	if err != nil || kidsApplied.Created != 1 {
 		t.Fatalf("kids apply = %+v err=%v", kidsApplied, err)
 	}
 
-	// Owner customizes "Popular (Series)" name AND changes targets.users on "IMDb Top 250" to [1, 3].
+	// Owner customizes "Popular (Series)" name.
 	customSeries := managed[1]
 	customSeries.Name = "My Favourite Shows"
 	if _, err := h.cols.UpdateSpec(ctx, customSeries.ID, customSeries); err != nil {
-		t.Fatal(err)
-	}
-	customIMDb := managed[2]
-	customIMDb.Targets.Users = core.UserTargets{IDs: []int64{1, 3}}
-	if _, err := h.cols.UpdateSpec(ctx, customIMDb.ID, customIMDb); err != nil {
 		t.Fatal(err)
 	}
 
@@ -476,9 +468,6 @@ func TestStremioAddonImportPagingIDMappingAndManifestSync(t *testing.T) {
 	imdbAfter := byID[managed[2].ID]
 	if imdbAfter.Name != "IMDb Classics" || imdbAfter.SortOrder != 1 {
 		t.Fatalf("renamed/reordered IMDb = name:%q order:%d", imdbAfter.Name, imdbAfter.SortOrder)
-	}
-	if !slices.Equal(imdbAfter.Targets.Users.IDs, []int64{1, 3}) {
-		t.Fatalf("owner targets.users clobbered on sync: %+v", imdbAfter.Targets.Users)
 	}
 	seriesAfter := byID[managed[1].ID]
 	if seriesAfter.Name != "My Favourite Shows" || seriesAfter.SortOrder != 2 {
@@ -611,12 +600,12 @@ func TestScheduledRunDueRespectsPerAddonBuildBudget(t *testing.T) {
 		items = append(items, core.AddonCatalogImportItem{Key: c.Key})
 	}
 	res, err := h.importer.Apply(ctx, core.AddonCatalogImportRequest{
-		URL:     h.srv.URL + "/bulk/manifest.json",
-		Folder:  "Bulk",
-		Refresh: collections.RefreshDaily,
-		Enabled: true,
-		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
-		Items:   items,
+		URL:          h.srv.URL + "/bulk/manifest.json",
+		Folder:       "Bulk",
+		Refresh:      collections.RefreshDaily,
+		Enabled:      true,
+		BrowseInApps: true,
+		Items:        items,
 	})
 	if err != nil || res.Created != 6 {
 		t.Fatalf("bulk apply = %+v err=%v", res, err)

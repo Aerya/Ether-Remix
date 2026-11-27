@@ -90,6 +90,9 @@ type ReleaseTarget struct {
 	// release's indexer-reported series IDs, retained for file validation.
 	ExpectedIDs IDs `json:"expectedIds,omitempty"`
 	ReportedIDs IDs `json:"reportedIds,omitempty"`
+	// Anime marks an anime request: its "Part N" files are read as counted
+	// within the cour unless its cour mapping says otherwise (additive).
+	Anime bool `json:"anime,omitempty"`
 }
 
 // ErrWrongContent is a request-specific release mismatch, never an account

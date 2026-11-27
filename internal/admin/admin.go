@@ -40,6 +40,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/plextv"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
@@ -200,13 +201,16 @@ type Deps struct {
 	// IsOwnerToken reports whether a bearer token (an owner credential or
 	// a console session) belongs to the owner.
 	IsOwnerToken func(ctx context.Context, token string) bool
+	// ResolveOwnerToken is the identity-aware form used by the console.
+	ResolveOwnerToken func(ctx context.Context, token string) (*core.User, error)
 
 	// Sessions backs console sign-in and sign-out.
 	Sessions Sessions
 
 	// Provider/integration testers used by the wizard and settings pages.
-	TestUsenet  func(ctx context.Context, p config.UsenetProvider) error
-	TestIndexer func(ctx context.Context, ix config.Indexer) error
+	TestProviderSpeed func(context.Context, string, string) speedtest.Result
+	TestUsenet        func(ctx context.Context, p config.UsenetProvider) error
+	TestIndexer       func(ctx context.Context, ix config.Indexer) error
 	// TestIndexerIdentity runs a single caps request through the resolved
 	// identity for ix under policy.
 	TestIndexerIdentity func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error)
@@ -280,25 +284,28 @@ type Deps struct {
 	// DiskUsage overrides free-space reporting (tests). Nil → OS statfs.
 	DiskUsage func(path string) (total, free int64, err error)
 
-	// ---- Personalization engine (viewers, Home Designer, insights) ----
+	// ---- Personalization engine (viewers, Recommendations, insights) ----
 
-	// Personalization backs /api/viewers/*, /api/layout and
-	// /api/insights/* (internal/personalize.Engine). Viewers are listed
-	// from Users.
+	// Personalization backs /api/viewers/*, /api/pages/*,
+	// /api/row-sources/* and /api/insights/* (internal/personalize.Engine).
+	// Viewers are listed from Users.
 	Personalization Personalization
-	// LayoutLibraries lists libraries that have Recommended layouts
-	// ("library:<id>"). Optional.
-	LayoutLibraries func(context.Context) ([]LayoutLibrary, error)
-	// PluginLibraryRows lists candidate row descriptors and live shelves for a
-	// plugin library's Recommended tab. Optional.
-	PluginLibraryRows func(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error)
+	// ActivityStats backs GET /api/insights/activity from observed playback
+	// telemetry (stats_plays) so Overview matches Activity › Viewing. Nil
+	// falls back to Personalization.Activity.
+	ActivityStats ActivityStats
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio
 	// AddonCatalogImports backs /api/collections/addon-imports*.
 	AddonCatalogImports AddonCatalogImporter
 	// CatalogHelper backs /api/catalog/*.
-	CatalogHelper CatalogHelper
+	CatalogHelper   CatalogHelper
+	TitleManagement CatalogTitleManagement
+	MetadataSources *core.MetadataSources
+	// PluginTitleDetail resolves plugin-library rating keys for
+	// GET /api/catalog/title/{key}. Optional; nil answers plugin keys 404.
+	PluginTitleDetail func(context.Context, core.RatingKey) (*core.Title, error)
 	// TitleSchedules backs the catalogue drawer's episode and release tabs;
 	// nil disables them.
 	TitleSchedules      TitleSchedules
@@ -374,6 +381,7 @@ type Handler struct {
 	linkPins       *pinHandles
 	authLimit      *authLimiter
 	loginBodySlots chan struct{}
+	proxyHintNames proxyHintCache
 }
 
 // NewHandler builds the admin handler. It panics when Deps.Config is nil.
@@ -511,6 +519,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("PUT /api/config/{section}", h.handlePutSection)
 	api("PATCH /api/config/{section}", h.handlePutSection)
 	api("GET /api/server/console-listener", h.handleConsoleListener)
+	api("GET /api/server/proxy-hint", h.handleProxyHint)
 
 	api("GET /api/setup/status", h.handleSetupStatus)
 	api("POST /api/setup/complete", h.handleSetupComplete)
@@ -523,12 +532,15 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/plex/status", h.handlePlexStatus)
 
 	api("POST /api/test/usenet", h.handleTestUsenet)
+	api("POST /api/test/{kind}/{id}/speed", h.handleProviderSpeed)
 	api("POST /api/test/indexer", h.handleTestIndexer)
 	api("POST /api/test/indexer-identity", h.handleTestIndexerIdentity)
 	api("POST /api/indexer/preview", h.handleIndexerPreview)
 	api("POST /api/test/debrid", h.handleTestDebrid)
 	api("POST /api/debrid/providers/{id}/key", h.handlePseDebridKey) // PSE-HOOK: affichage ponctuel réservé au propriétaire.
 	api("POST /api/test/tmdb", h.handleTestTMDB)
+	api("POST /api/test/tvdb", h.handleTestTVDB)
+	api("GET /api/metadata/sources", h.handleMetadataSources)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/subdl", h.handleTestSubDL)
 	api("POST /api/test/subsource", h.handleTestSubSource)

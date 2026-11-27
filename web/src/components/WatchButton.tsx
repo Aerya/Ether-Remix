@@ -76,7 +76,8 @@ export function WatchButton({
       });
       const player = result.players.find((candidate) => candidate.id === id);
       if (!player) throw new Error("Player unavailable");
-      const target = new URL(player.url);
+      // A player Ether serves on this same origin comes back as a path.
+      const target = new URL(player.url, window.location.href);
       const args = new URLSearchParams(target.hash.slice(1));
       args.set("console", window.location.origin + "/ether/");
       target.hash = args.toString();

@@ -950,3 +950,208 @@ func TestMetadataReleaseTitleRefillWarmsOnDetailOpen(t *testing.T) {
 		t.Fatalf("Play after detail warm made extra TMDB calls: total=%d", calls.Load())
 	}
 }
+
+func TestGenericAndFragmentTitlesBlockedFromIDRecovery(t *testing.T) {
+	mentalist := &core.Title{
+		Key: core.EpisodeKey(5920, 1, 3), Type: core.TypeEpisode,
+		ShowKey: core.ShowKey(5920), ShowTitle: "The Mentalist", ShowYear: 2008,
+		ShowIDs: core.IDs{TMDB: 5920, IMDB: "tt1196946", TVDB: 82459},
+		Season:  1, Episode: 3, Title: "Red Tide", Language: "en", Runtime: 43 * time.Minute,
+	}
+	starTrek := &core.Title{
+		Key: core.EpisodeKey(253, 1, 3), Type: core.TypeEpisode,
+		ShowKey: core.ShowKey(253), ShowTitle: "Star Trek", ShowYear: 1966,
+		ShowIDs: core.IDs{TMDB: 253, IMDB: "tt0060028", TVDB: 77526},
+		Season:  1, Episode: 3, Title: "Where No Man Has Gone Before", Language: "en", Runtime: 50 * time.Minute,
+	}
+	walkingDead := &core.Title{
+		Key: core.EpisodeKey(1402, 1, 3), Type: core.TypeEpisode,
+		ShowKey: core.ShowKey(1402), ShowTitle: "The Walking Dead", ShowYear: 2010,
+		ShowIDs: core.IDs{TMDB: 1402, IMDB: "tt1520211", TVDB: 153021},
+		Season:  1, Episode: 3, Title: "Tell It to the Frogs", Language: "en", Runtime: 45 * time.Minute,
+	}
+	showIt := &core.Title{
+		Key: core.EpisodeKey(777, 1, 3), Type: core.TypeEpisode,
+		ShowKey: core.ShowKey(777), ShowTitle: "It", ShowYear: 2020,
+		ShowIDs: core.IDs{TMDB: 777}, Season: 1, Episode: 3, Title: "Chapter Three", Language: "en", Runtime: 45 * time.Minute,
+	}
+
+	for _, tc := range []struct {
+		name       string
+		title      *core.Title
+		release    string
+		reported   bool
+		wantReject string
+		wantLookup int32
+	}{
+		{
+			name:       "stopword title with reported IDs stays rejected",
+			title:      mentalist,
+			release:    "The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB",
+			reported:   true,
+			wantReject: `title mismatch (parsed "The"; expected "The Mentalist")`,
+		},
+		{
+			name:       "stopword title never triggers metadata lookup or cache",
+			title:      mentalist,
+			release:    "The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB",
+			wantReject: `title mismatch (parsed "The"; expected "The Mentalist")`,
+		},
+		{
+			name:       "foreign article title blocked",
+			title:      mentalist,
+			release:    "Los.S01E03.1080p.WEB-DL.H264-GRP",
+			reported:   true,
+			wantReject: `title mismatch (parsed "Los"; expected "The Mentalist")`,
+		},
+		{
+			name:       "short title blocked",
+			title:      mentalist,
+			release:    "It.S01E03.1080p.WEB-DL.H264-GRP",
+			reported:   true,
+			wantReject: `title mismatch (parsed "It"; expected "The Mentalist")`,
+		},
+		{
+			name:       "strict leading fragment blocked with reported IDs",
+			title:      starTrek,
+			release:    "Star.S01E03.1080p.WEB-DL.H264-GRP",
+			reported:   true,
+			wantReject: `title mismatch (parsed "Star"; expected "Star Trek")`,
+		},
+		{
+			name:       "strict leading fragment blocked from metadata lookup",
+			title:      starTrek,
+			release:    "Star.S01E03.1080p.WEB-DL.H264-GRP",
+			wantReject: `title mismatch (parsed "Star"; expected "Star Trek")`,
+		},
+		{
+			name:       "article-stripped leading fragment blocked",
+			title:      walkingDead,
+			release:    "Walking.S01E03.1080p.WEB-DL.H264-GRP",
+			reported:   true,
+			wantReject: `title mismatch (parsed "Walking"; expected "The Walking Dead")`,
+		},
+		{
+			name:       "foreign alias still recovers via metadata",
+			title:      mentalist,
+			release:    "El.Mentalista.S01E03.1080p.WEB-DL.H264-GRP",
+			wantReject: "",
+			wantLookup: 1,
+		},
+		{
+			name:       "exact short title still matches directly",
+			title:      showIt,
+			release:    "It.S01E03.1080p.WEB-DL.H264-GRP",
+			wantReject: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := store.OpenTest(t)
+			var calls atomic.Int32
+			cfg := testCfg()
+			s := New(&fakeIndexer{}, nil, db, cfg, Options{
+				ReleaseTitleIDs: func(context.Context, core.MediaType, string) (core.IDs, error) {
+					calls.Add(1)
+					return tc.title.ShowIDs, nil
+				},
+			})
+			defer s.Close()
+
+			sreq := searchRequestFor(tc.title)
+			r := withParsed(rel("r", tc.release, 1500))
+			if tc.reported {
+				r.TitleIDs = tc.title.ShowIDs
+			}
+			profile := SelectProfile(cfg.Quality, webCaps(), nil)
+			var trace Trace
+			cands, _, err := s.rankCandidates(t.Context(), core.ResolveRequest{Title: tc.title, Client: webCaps()}, sreq, profile, []core.Release{r}, &trace, "")
+			if err != nil {
+				t.Fatalf("rankCandidates: %v", err)
+			}
+			if err := s.flushReleaseTitleWarm(t.Context()); err != nil {
+				t.Fatalf("flushReleaseTitleWarm: %v", err)
+			}
+			if calls.Load() != tc.wantLookup {
+				t.Fatalf("lookup calls=%d, want %d", calls.Load(), tc.wantLookup)
+			}
+			if tc.wantReject == "" {
+				if len(cands) != 1 {
+					t.Fatalf("candidates=%d, want 1 (trace=%+v)", len(cands), trace.Candidates)
+				}
+				return
+			}
+			if len(cands) != 0 {
+				t.Fatalf("candidates=%d, want 0", len(cands))
+			}
+			if len(trace.Candidates) != 1 || trace.Candidates[0].Reason != tc.wantReject {
+				t.Fatalf("trace=%+v, want reason %q", trace.Candidates, tc.wantReject)
+			}
+			if s.metadataTitleMatches(r, sreq) {
+				t.Fatal("blocked title matched metadata cache")
+			}
+			var count int
+			if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM resolver_release_titles`).Scan(&count); err != nil {
+				t.Fatalf("count: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("persisted rows=%d, want 0", count)
+			}
+		})
+	}
+
+	t.Run("2160p stopword release with reported IDs cannot outrank real Mentalist release", func(t *testing.T) {
+		cfg := testCfg()
+		s := New(&fakeIndexer{}, nil, nil, cfg, Options{})
+		defer s.Close()
+		sreq := searchRequestFor(mentalist)
+		bogus := withParsed(rel("bogus", "The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB", 3500))
+		bogus.TitleIDs = mentalist.ShowIDs
+		realRel := withParsed(rel("real", "The.Mentalist.S01E03.1080p.AMZN.WEB-DL.DDP5.1.H.264-GRP", 1800))
+		realRel.TitleIDs = mentalist.ShowIDs
+		profile := SelectProfile(cfg.Quality, webCaps(), nil)
+		cands, _, err := s.rankCandidates(t.Context(), core.ResolveRequest{Title: mentalist, Client: webCaps()}, sreq, profile, []core.Release{bogus, realRel}, nil, "")
+		if err != nil || len(cands) != 1 || cands[0].rel.ID != "real" {
+			t.Fatalf("cands=%+v err=%v, want [real]", cands, err)
+		}
+	})
+
+	t.Run("startup purges persisted generic rows while keeping valid aliases", func(t *testing.T) {
+		db := store.OpenTest(t)
+		now := time.Unix(1_800_000_000, 0)
+		exp := now.Add(12 * time.Hour).Unix()
+		for _, title := range []string{"the", "los", "in the", "it", "los simpsons"} {
+			if _, err := db.ExecContext(t.Context(),
+				`INSERT INTO resolver_release_titles(media_type, language, normalized_title, tmdb_id, imdb_id, tvdb_id, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?)`,
+				string(core.TypeShow), "en-US", title, 5920, "tt1196946", 82459, now.Unix(), exp); err != nil {
+				t.Fatalf("seed %q: %v", title, err)
+			}
+		}
+		s := New(&fakeIndexer{}, nil, db, testCfg(), Options{Now: func() time.Time { return now }})
+		defer s.Close()
+
+		var remaining []string
+		rows, err := db.QueryContext(t.Context(), `SELECT normalized_title FROM resolver_release_titles ORDER BY normalized_title`)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		for rows.Next() {
+			var title string
+			if err := rows.Scan(&title); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			remaining = append(remaining, title)
+		}
+		rows.Close()
+		if len(remaining) != 1 || remaining[0] != "los simpsons" {
+			t.Fatalf("remaining rows=%v, want [los simpsons]", remaining)
+		}
+		theRel := withParsed(rel("the", "The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB", 3500))
+		if s.metadataTitleMatches(theRel, searchRequestFor(mentalist)) {
+			t.Fatal("purged generic row still matched in memory")
+		}
+		validRel := withParsed(rel("valid", "Los.Simpsons.S01E03.1080p.WEB-DL.H264-GRP", 1500))
+		if !s.metadataTitleMatches(validRel, searchRequestFor(mentalist)) {
+			t.Fatal("valid persisted alias lost during startup cleanup")
+		}
+	})
+}

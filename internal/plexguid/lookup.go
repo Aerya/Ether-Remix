@@ -3,7 +3,6 @@ package plexguid
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,8 +11,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// ErrAmbiguous is returned when one Plex GUID is stored for more than one
-// local title, or the stored title's kind does not match the GUID kind.
+// ErrAmbiguous reports conflicting local mappings or provider IDs for one
+// Plex GUID, including a stored key whose kind disagrees with the GUID.
 var ErrAmbiguous = errors.New("plexguid: ambiguous identity")
 
 // ExactKey returns the single local title already stored for guid.
@@ -95,7 +94,7 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 			break
 		}
 		if !k.Valid() || k != keyFor(k.TMDB()) || cached != 0 {
-			err = fmt.Errorf("ambiguous Plex identity")
+			err = ErrAmbiguous
 			break
 		}
 		cached = k
@@ -136,7 +135,7 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 				continue
 			}
 			if found != 0 && found != k {
-				return 0, fmt.Errorf("ambiguous Plex identity")
+				return 0, ErrAmbiguous
 			}
 			found = k
 		}

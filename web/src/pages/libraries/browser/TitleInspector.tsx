@@ -17,6 +17,8 @@ import { useAsync } from "../../../lib/hooks";
 import { localToday } from "../../calendar/model";
 import { CatalogTags } from "./CatalogTags";
 import { TitleAvailability } from "./TitleAvailability";
+import { TitleEpisodeOrder } from "./TitleEpisodeOrder";
+import { TitleMetadataActions } from "./TitleMetadataActions";
 import { TitleCalendar } from "./TitleCalendar";
 import { NextEpisodeCard, TitleEpisodes } from "./TitleEpisodes";
 import { TitleReleases, milestone } from "./TitleReleases";
@@ -44,12 +46,18 @@ export function TitleInspector({
   watchlistAction,
   watchlistViewers,
   onLibraryChange,
+  onMatch,
+  openEpisodeOrder = false,
+  onEpisodeOrderSaved,
 }: {
   titleKey: string;
   onClose: () => void;
   watchlistAction?: ReactNode;
   watchlistViewers?: ReactNode;
   onLibraryChange?: () => void;
+  onMatch?: (key: string) => void;
+  openEpisodeOrder?: boolean;
+  onEpisodeOrderSaved?: () => void;
 }) {
   const state = useAsync(() => api.title(titleKey), [titleKey]);
   const title = state.data;
@@ -72,6 +80,8 @@ export function TitleInspector({
     (signal) => (isMovie ? titleScheduleApi.releases(titleKey, signal) : Promise.resolve(null)),
     [titleKey, isMovie],
   );
+  const [artworkRevision, setArtworkRevision] = useState(0);
+  const [orderOpen, setOrderOpen] = useState(openEpisodeOrder);
   const [tab, setTab] = useState<InspectorTab>("overview");
   const [focus, setFocus] = useState<EpisodeFocus | null>(null);
   const [availabilityKey, setAvailabilityKey] = useState<string | null>(null);
@@ -114,6 +124,33 @@ export function TitleInspector({
       documentTitle={(title?.key === titleKey ? title.title : null) ?? t("Title details")}
       size="lg"
       bodyClassName="overflow-y-auto p-0"
+      headerActions={
+        title && (isShow || isMovie) ? (
+          <TitleMetadataActions
+            key={title.key}
+            title={title}
+            onEpisodeOrder={title.episodeOrder ? () => setOrderOpen(true) : undefined}
+            onRefresh={async () => {
+              await Promise.all([
+                state.reload(),
+                schedule.reload(),
+                releases.reload(),
+                library.reload(),
+              ]);
+              setArtworkRevision((revision) => revision + 1);
+              onLibraryChange?.();
+            }}
+            onMatch={(key) => {
+              if (key === titleKey) {
+                void state.reload();
+              } else {
+                onMatch?.(key);
+              }
+              onLibraryChange?.();
+            }}
+          />
+        ) : null
+      }
       subtabs={
         tabs.length ? (
           <SubtabNav
@@ -125,6 +162,21 @@ export function TitleInspector({
         ) : undefined
       }
     >
+      {title?.episodeOrder && !state.error ? (
+        <TitleEpisodeOrder
+          key={titleKey}
+          details={title.episodeOrder}
+          titleKey={titleKey}
+          open={orderOpen}
+          onOpenChange={setOrderOpen}
+          onSaved={async () => {
+            setFocus(null);
+            setAvailabilityKey(null);
+            await Promise.all([state.reload(), schedule.reload()]);
+            if (onEpisodeOrderSaved) onEpisodeOrderSaved();
+          }}
+        />
+      ) : null}
       {state.error ? (
         <ErrorPanel className="m-5" error={state.error} onRetry={() => void state.reload()} />
       ) : !title ? (
@@ -150,7 +202,16 @@ export function TitleInspector({
         <Overview
           watchlistAction={watchlistAction}
           watchlistViewers={watchlistViewers}
-          title={title}
+          title={
+            artworkRevision
+              ? {
+                  ...title,
+                  poster: title.poster && appendArtworkRevision(title.poster, artworkRevision),
+                  backdrop:
+                    title.backdrop && appendArtworkRevision(title.backdrop, artworkRevision),
+                }
+              : title
+          }
           library={library.data ?? null}
           onLibraryReload={async () => {
             await library.reload();
@@ -168,6 +229,10 @@ export function TitleInspector({
       )}
     </Drawer>
   );
+}
+
+function appendArtworkRevision(url: string, revision: number) {
+  return url + (url.includes("?") ? "&" : "?") + "refresh=" + revision;
 }
 
 export function libraryReasonLine(item: TitleLibraryReason): string {

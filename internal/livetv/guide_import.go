@@ -34,36 +34,47 @@ type programmeKey struct {
 	start   int64
 }
 
-// writeProgrammes makes the source's stored programmes equal ps. Stored rows
-// are streamed once and compared with the incoming guide (already in memory
-// from the fetch), so the database side never holds the source's schedule
-// in RAM. Identical rows stay untouched; removed ones are deleted, new or
-// changed ones (end time or data, which carries the rating) are upserted, in
-// bounded batches.
-func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string, ps []Programme, saved func(int)) (importWrites, error) {
-	var w importWrites
-	type incoming struct {
-		end  int64
-		data []byte
-		seen bool
-	}
-	in := make(map[programmeKey]*incoming, len(ps))
-	order := make([]programmeKey, 0, len(ps))
-	for _, p := range ps {
-		b, err := json.Marshal(p)
+// programmePlan is an incoming guide encoded for writeProgrammes, prepared
+// before the import takes the writer.
+type programmePlan struct {
+	in    map[programmeKey]*programmeIn
+	order []programmeKey
+}
+
+type programmeIn struct {
+	end  int64
+	data []byte
+	seen bool
+}
+
+func planProgrammes(ps []Programme) (programmePlan, error) {
+	p := programmePlan{in: make(map[programmeKey]*programmeIn, len(ps)), order: make([]programmeKey, 0, len(ps))}
+	for _, pr := range ps {
+		b, err := json.Marshal(pr)
 		if err != nil {
-			return w, err
+			return p, err
 		}
-		k := programmeKey{p.ChannelID, p.Start.UnixMilli()}
-		if _, dup := in[k]; !dup {
-			order = append(order, k)
+		k := programmeKey{pr.ChannelID, pr.Start.UnixMilli()}
+		if _, dup := p.in[k]; !dup {
+			p.order = append(p.order, k)
 		}
-		in[k] = &incoming{end: p.End.UnixMilli(), data: b}
+		p.in[k] = &programmeIn{end: pr.End.UnixMilli(), data: b}
 	}
+	return p, nil
+}
+
+// writeProgrammes applies the source's planned guide and retains omitted
+// ended programmes inside their archive windows. It streams stored rows
+// once and compares them with the incoming guide already encoded in memory.
+// Identical rows stay untouched. Deletions and upserts run in bounded batches.
+func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string, plan programmePlan, now time.Time, archiveSince map[string]int64, saved func(int)) (importWrites, error) {
+	var w importWrites
+	in, order := plan.in, plan.order
 	rows, err := tx.QueryContext(ctx, `SELECT channel_id, start_ms, end_ms, data FROM livetv_programmes WHERE source_id=?`, sourceID)
 	if err != nil {
 		return w, err
 	}
+	nowMS := now.UnixMilli()
 	var gone []programmeKey
 	for rows.Next() {
 		var k programmeKey
@@ -78,6 +89,10 @@ func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string
 		cur, ok := in[k]
 		switch {
 		case !ok:
+			if since, archived := archiveSince[k.channel]; archived && end <= nowMS && end >= since {
+				w.ProgrammesKept++
+				continue
+			}
 			gone = append(gone, k)
 		case cur.end == end && bytes.Equal(cur.data, data):
 			cur.seen = true // identical: nothing to write
@@ -132,27 +147,31 @@ func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string
 
 // writeSourceChannels makes the source's stored channel rows equal cs (each
 // already encoded): unchanged rows stay untouched.
-func writeSourceChannels(ctx context.Context, tx *sql.Tx, d store.Dialect, batch int, sourceID string, ids []string, data [][]byte, saved func(int)) (importWrites, error) {
+// stored, when not nil, is the source's stored rows as tx holds them
+// (importSnapshot.sourceRows); otherwise they are read here.
+func writeSourceChannels(ctx context.Context, tx *sql.Tx, d store.Dialect, batch int, sourceID string, ids []string, data [][]byte, stored map[string][]byte, saved func(int)) (importWrites, error) {
 	var w importWrites
-	rows, err := tx.QueryContext(ctx, `SELECT id, data FROM livetv_channels WHERE `+store.JSONText(d, "data", "sourceId")+`=?`, sourceID)
-	if err != nil {
-		return w, err
-	}
-	stored := map[string][]byte{}
-	for rows.Next() {
-		var id string
-		var b []byte
-		if err := rows.Scan(&id, &b); err != nil {
-			rows.Close()
+	if stored == nil {
+		rows, err := tx.QueryContext(ctx, `SELECT id, data FROM livetv_channels WHERE `+store.JSONText(d, "data", "sourceId")+`=?`, sourceID)
+		if err != nil {
 			return w, err
 		}
-		stored[id] = b
-	}
-	if err := rows.Close(); err != nil {
-		return w, err
-	}
-	if err := rows.Err(); err != nil {
-		return w, err
+		stored = map[string][]byte{}
+		for rows.Next() {
+			var id string
+			var b []byte
+			if err := rows.Scan(&id, &b); err != nil {
+				rows.Close()
+				return w, err
+			}
+			stored[id] = b
+		}
+		if err := rows.Close(); err != nil {
+			return w, err
+		}
+		if err := rows.Err(); err != nil {
+			return w, err
+		}
 	}
 	keep := make(map[string]bool, len(ids))
 	var write []int

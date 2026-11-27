@@ -1,7 +1,7 @@
 package transcode
 
 import (
-	"github.com/braedonsaunders/ether/internal/mediaproc"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
 // Exercise the retained initial header against an independent, mid-file HEVC
@@ -80,5 +82,45 @@ func TestResumeWarmHEVC(t *testing.T) {
 	case <-child.encoder.done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("child outlived retirement")
+	}
+}
+
+// A resumed Matroska copy is served by its warm resume child: the player
+// abandons the parent's segments 0/1 and every segment from the resume point
+// on is delegated. The parent is what frontends observe, so the child's
+// delivery is the session's delivery, and its playhead is the session's
+// playhead. Before, the Plex timeline gate saw no delivery and dropped all
+// progress for the whole session (#780).
+func TestResumeChildDeliveryIsTheSessionsDelivery(t *testing.T) {
+	fr := newFakeRunner()
+	fr.segDelay = time.Millisecond
+	m := newTestManager(t, fr, config.Transcode{}, WithBuffering(24*time.Second, 2*time.Minute, 3*time.Minute))
+	info := mustParse(t, "mp4_h264_aac.json")
+	info.Duration = 10 * time.Minute
+	d := core.Decision{Kind: core.DecisionRemux, Container: ContainerMatroska, VideoCopy: true, AudioCopy: true, AudioStream: 1}
+	hs, err := m.StartHLS(t.Context(), core.HLSRequest{SessionID: "mkv-resume", InputURL: "http://127.0.0.1:1/source", Info: info, Decision: d, ResumeHint: 140 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := hs.(*Session)
+	s.mu.Lock()
+	child, at := s.resumeWarm, s.resumeWarmAt
+	s.mu.Unlock()
+	if child == nil {
+		t.Fatal("no warm resume session")
+	}
+	for n := at; n < at+3; n++ {
+		if r := get(t, s, n); r.Code != http.StatusOK {
+			t.Fatalf("segment %d: %d %s", n, r.Code, r.Body.String())
+		}
+	}
+	if !child.PlaybackDelivered() {
+		t.Fatal("the resume session did not record its delivery")
+	}
+	if !s.PlaybackDelivered() {
+		t.Fatal("delivery through the resume session is not the session's delivery")
+	}
+	if got, want := s.RequestedPosition(), s.segStart(at); got < want {
+		t.Fatalf("requested position = %s, want at least the resume point %s", got, want)
 	}
 }

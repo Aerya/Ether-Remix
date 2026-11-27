@@ -1318,3 +1318,68 @@ func mediaRequest(hs core.HLSSession, r *http.Request, n int) *http.Request {
 	r.URL = &u
 	return r
 }
+
+func TestArchivePublishesFullVODBeforeRemuxAndRetunesOnFarFetch(t *testing.T) {
+	fr := newFakeRunner()
+	fr.segDelay, fr.lastSeg = 50*time.Millisecond, 449
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, fr, config.Transcode{}, withNow(func() time.Time { return now }),
+		WithBuffering(24*time.Second, 4*time.Second, 4*time.Second))
+	req := core.HLSRequest{
+		SessionID: "archive-vod", InputURL: "http://127.0.0.1:1/range", ArchiveInput: true,
+		Info:            core.MediaInfo{Duration: 30 * time.Minute, Streams: []core.StreamInfo{{Type: "audio", Codec: "aac"}}},
+		Decision:        core.Decision{Kind: core.DecisionRemux, AudioCopy: true, AudioStream: 0, Container: ContainerMPEGTS},
+		SegmentDuration: 4 * time.Second,
+	}
+	var mu sync.Mutex
+	var offsets []time.Duration
+	active := 0
+	req.OpenArchiveRange = func(_ context.Context, offset time.Duration) (core.ArchiveRangeInput, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if active != 0 {
+			return core.ArchiveRangeInput{}, errors.New("previous archive input is still open")
+		}
+		active++
+		offsets = append(offsets, offset)
+		return core.ArchiveRangeInput{URL: req.InputURL, Release: func() {
+			mu.Lock()
+			defer mu.Unlock()
+			active--
+		}}, nil
+	}
+	s := startSession(t, m, req)
+	playlist := func() string {
+		rec := httptest.NewRecorder()
+		s.ServePlaylist(rec, httptest.NewRequest(http.MethodGet, "/index.m3u8", nil))
+		return rec.Body.String()
+	}
+	body := playlist()
+	if s.ArchiveRangeComplete() || strings.Count(body, "#EXTINF:") != 450 ||
+		!strings.Contains(body, "#EXT-X-PLAYLIST-TYPE:VOD\n") ||
+		!strings.HasSuffix(body, "#EXT-X-ENDLIST\n") {
+		t.Fatal("archive did not publish a full 450-segment VOD while the remux was running")
+	}
+	if near := get(t, s, 0); near.Code != http.StatusOK {
+		t.Fatalf("first segment status = %d", near.Code)
+	}
+	if far := get(t, s, 448); far.Code != http.StatusOK {
+		t.Fatalf("far segment status = %d", far.Code)
+	}
+	if seek := fr.lastStart(); hasArg(seek, "-ss") || argValue(seek, "-t") != "8.000" {
+		t.Fatal("the replacement should already start at the seek position and cover the remaining eight seconds")
+	}
+	waitFor(t, "archive connection released", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return active == 0
+	})
+	if buffered := get(t, s, 0); buffered.Code != http.StatusOK || playlist() != body {
+		t.Fatal("archive seek lost buffered media or changed the advertised timeline")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(offsets) != 2 || offsets[0] != 0 || offsets[1] != 448*4*time.Second {
+		t.Fatalf("archive opens at %v", offsets)
+	}
+}

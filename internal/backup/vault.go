@@ -24,12 +24,12 @@ import (
 
 const packPrefix = "cache/vault/packs/"
 const maxPackSize = 64 << 20
-const maxVaultBytes int64 = 64 << 30
-
-// MaxUploadBytes allows the vault and database independent restore budgets.
-const MaxUploadBytes = maxBundleFile + maxVaultBytes + 32<<20
+const packIndex = "vault-index.json"
+const packOverhead = 28 // AES-GCM tag and random nonce
+const packDigest = "ether.vault.sha256"
 
 var packName = regexp.MustCompile("^[0-9]{6}/[0-9a-f]{32}\\.pack$")
+var errMissingVaultPack = errors.New("incomplete backup bundle")
 
 func packRoot(conf []byte, dataDir string) (string, error) {
 	var c config.Config
@@ -43,7 +43,10 @@ func packRoot(conf []byte, dataDir string) (string, error) {
 	return filepath.Join(dir, "vault", "packs"), nil
 }
 
-func copyPack(src io.Reader, dst string, size int64) (string, error) {
+func copyPack(src io.Reader, dst string, size int64, space *stageSpace) (string, error) {
+	if e := space.check(size); e != nil {
+		return "", e
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return "", err
 	}
@@ -52,7 +55,7 @@ func copyPack(src io.Reader, dst string, size int64) (string, error) {
 		return "", e
 	}
 	h := sha256.New()
-	_, e = io.CopyN(io.MultiWriter(f, h), src, size)
+	_, e = io.CopyN(io.MultiWriter(space.writer(f), h), src, size)
 	if e == nil {
 		e = f.Sync()
 	}
@@ -63,29 +66,53 @@ func copyPack(src io.Reader, dst string, size int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), ce
 }
 
-func readManifest(f *os.File) (Manifest, error) {
+func readManifest(tr *tar.Reader) (Manifest, error) {
 	var m Manifest
-	gz, e := gzip.NewReader(f)
-	if e != nil {
-		return m, e
+	h, err := tr.Next()
+	if err != nil {
+		return m, err
 	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	h, e := tr.Next()
-	if e != nil {
-		return m, e
-	}
-	if h.Name != "manifest.json" || h.Size > 16<<20 {
-		return m, errors.New("invalid snapshot manifest")
-	}
-	e = json.NewDecoder(tr).Decode(&m)
-	return m, e
+	err = decodeManifest(h, tr, &m)
+	return m, err
 }
 
-// A companion contains ciphertext only. Its random key stays in the same
-// protected manifest as the DB checksums. Reusing the ciphertext by hard link
+func decodeManifest(h *tar.Header, r io.Reader, m *Manifest) error {
+	if h.Name != "manifest.json" || h.Typeflag != tar.TypeReg || h.Size > 16<<20 {
+		return errors.New("invalid snapshot manifest")
+	}
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(m); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return errors.New("invalid snapshot manifest")
+	}
+	if m.VaultPackCount < 0 {
+		return errors.New("invalid snapshot manifest")
+	}
+	return nil
+}
+
+func writeManifest(tw *tar.Writer, h *tar.Header, m Manifest) error {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	h.Size = int64(len(raw))
+	if err := tw.WriteHeader(h); err != nil {
+		return err
+	}
+	_, err = tw.Write(raw)
+	return err
+}
+
+// A companion contains ciphertext only. Its random key stays in the
+// local archive's vault index alongside the database manifest. Reusing the ciphertext by hard link
 // does not give another backup (or a copied pack alone) access to the record.
 type packRef struct {
+	Name   string `json:"name"`
 	Digest string `json:"sha256"`
 	Key    []byte `json:"key"`
 	Size   int64  `json:"size"`
@@ -98,7 +125,7 @@ func packCipher(key []byte) (cipher.AEAD, error) {
 	}
 	return cipher.NewGCMWithRandomNonce(block)
 }
-func sealPack(f *os.File, dst string, size int64) (packRef, error) {
+func sealPack(f *os.File, dst string, size int64, space *stageSpace) (packRef, error) {
 	ref := packRef{Size: size, Key: make([]byte, 32)}
 	if _, err := rand.Read(ref.Key); err != nil {
 		return ref, err
@@ -107,14 +134,14 @@ func sealPack(f *os.File, dst string, size int64) (packRef, error) {
 	if err != nil {
 		return ref, err
 	}
-	b := make([]byte, size)
+	b := make([]byte, size, size+int64(a.Overhead()))
 	if _, err = io.ReadFull(f, b); err != nil {
 		return ref, err
 	}
 	digest := sha256.Sum256(b)
 	ref.Digest = hex.EncodeToString(digest[:])
-	sealed := a.Seal(nil, nil, b, nil)
-	_, err = copyPack(bytes.NewReader(sealed), dst, int64(len(sealed)))
+	sealed := a.Seal(b[:0], nil, b, nil)
+	_, err = copyPack(bytes.NewReader(sealed), dst, int64(len(sealed)), space)
 	return ref, err
 }
 func unsealPack(path string, ref packRef) ([]byte, error) {
@@ -122,6 +149,9 @@ func unsealPack(path string, ref packRef) ([]byte, error) {
 		return nil, errors.New("invalid vault pack size")
 	}
 	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, errMissingVaultPack
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +160,18 @@ func unsealPack(path string, ref packRef) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, ref.Size+int64(a.Overhead())+1))
+	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) != ref.Size+int64(a.Overhead()) {
+	if st.Size() != ref.Size+int64(a.Overhead()) {
 		return nil, errors.New("invalid sealed pack size")
 	}
-	plain, err := a.Open(nil, nil, b, nil)
+	b := make([]byte, st.Size())
+	if _, err := io.ReadFull(f, b); err != nil {
+		return nil, err
+	}
+	plain, err := a.Open(b[:0], nil, b, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -148,48 +182,95 @@ func unsealPack(path string, ref packRef) ([]byte, error) {
 	return plain, nil
 }
 
+// walkPackIndex streams one reference at a time. The local index contains
+// keys and is never included in portable backups.
+func walkPackIndex(r io.Reader, count int, visit func(packRef) error) error {
+	dec := json.NewDecoder(r)
+	for range count {
+		var ref packRef
+		if err := dec.Decode(&ref); err != nil {
+			return err
+		}
+		if !packName.MatchString(ref.Name) || !validDigest(ref.Digest) ||
+			len(ref.Key) != 32 || ref.Size <= 0 || ref.Size > maxPackSize {
+			return errors.New("invalid vault manifest")
+		}
+		if err := visit(ref); err != nil {
+			return err
+		}
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return errors.New("invalid vault manifest")
+	}
+	return nil
+}
+
+func priorPacks(path string, visit func(packRef) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	m, err := readManifest(tr)
+	if err != nil || m.VaultPackCount == 0 {
+		return err
+	}
+	h, err := tr.Next()
+	if err != nil || h.Name != packIndex || h.Typeflag != tar.TypeReg {
+		return errors.New("invalid vault manifest")
+	}
+	return walkPackIndex(tr, m.VaultPackCount, visit)
+}
+
 // Each snapshot owns links to its packs. Pruning an older snapshot therefore
-// cannot strand a newer one. Open writer packs are append-only until sealed.
-func snapshotPacks(ctx context.Context, src, stage, dir string, m *Manifest) error {
-	snaps, e := listDir(dir)
-	if e != nil {
-		return e
+// cannot strand a newer one. Live writer packs are append-only.
+func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, index io.Writer, space *stageSpace) (int, error) {
+	snaps, err := listDir(dir)
+	if err != nil {
+		return 0, err
 	}
-	type saved struct {
-		ref  packRef
-		path string
+	type packVersion struct {
+		name string
+		size int64
 	}
-	byName := make(map[string][]saved)
+	type companion struct {
+		ref packRef
+		dir string
+	}
+	refs := make(map[packVersion]companion)
 	for _, snap := range snaps {
 		path := filepath.Join(dir, snap.Name)
-		if _, err := os.Stat(path + ".packs"); errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		old, err := readManifest(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
-		for name, ref := range old.VaultPacks {
-			if packName.MatchString(name) {
-				byName[name] = append(byName[name], saved{ref, filepath.Join(path+".packs", filepath.FromSlash(name))})
+		_ = priorPacks(path, func(ref packRef) error {
+			key := packVersion{ref.Name, ref.Size}
+			if _, ok := refs[key]; !ok {
+				refs[key] = companion{ref: ref, dir: path + ".packs"}
 			}
+			return nil
+		})
+		// A shared backup directory can alternate between nodes with their
+		// own packs. Look back through retention there to reuse their bytes.
+		if !shared && len(refs) != 0 {
+			break
 		}
 	}
-	var total int64
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, e error) error {
-		if errors.Is(e, fs.ErrNotExist) {
+	enc := json.NewEncoder(space.writer(index))
+	count := 0
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, e error) error {
+		if errors.Is(e, fs.ErrNotExist) && path == src {
 			return nil
 		}
 		if e != nil {
 			return e
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		rel, e := filepath.Rel(src, path)
 		if e != nil {
@@ -204,127 +285,145 @@ func snapshotPacks(ctx context.Context, src, stage, dir string, m *Manifest) err
 			return e
 		}
 		size := st.Size()
-		total += size
-		if size > maxPackSize || total > maxVaultBytes {
+		if size == 0 {
+			return nil
+		}
+		if size > maxPackSize {
 			return errors.New("vault snapshot exceeds pack limits")
 		}
 		dst := filepath.Join(stage, rel)
+		if e = space.check(0); e != nil {
+			return e
+		}
 		if e = os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 			return e
 		}
-		var ref packRef
-		for _, candidate := range byName[name] {
-			if candidate.ref.Size != size || !validDigest(candidate.ref.Digest) {
-				continue
-			}
-			st, err := os.Lstat(candidate.path)
-			if err == nil && st.Mode().IsRegular() && os.Link(candidate.path, dst) == nil {
-				ref = candidate.ref
-				break
-			}
+		prior, reused := refs[packVersion{name, size}]
+		ref := prior.ref
+		if reused {
+			from := filepath.Join(prior.dir, rel)
+			st, err := os.Lstat(from)
+			reused = err == nil && st.Mode().IsRegular() &&
+				st.Size() == size+packOverhead && os.Link(from, dst) == nil
 		}
-		if ref.Digest == "" {
-			f, e := os.Open(path)
-			if errors.Is(e, fs.ErrNotExist) {
-				return nil
-			}
-			if e != nil {
-				return e
+		if !reused {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
 			}
 			defer f.Close()
-			ref, e = sealPack(f, dst, size)
-			if e != nil {
-				return e
+			ref, err = sealPack(f, dst, size, space)
+			if err != nil {
+				return err
 			}
 		}
-		if m.VaultPacks == nil {
-			m.VaultPacks = map[string]packRef{}
+		ref.Name = name
+		if err := enc.Encode(ref); err != nil {
+			return err
 		}
-		m.VaultPacks[name] = ref
+		count++
 		return nil
 	})
+	return count, err
 }
 
-// Protected local snapshot companions travel only in the encrypted DB bundle.
-func exportSnapshot(f *os.File, w io.Writer) error {
-	m, e := readManifest(f)
-	if e != nil {
-		return e
-	}
-	if _, e = f.Seek(0, 0); e != nil {
-		return e
-	}
-	if len(m.VaultPacks) == 0 {
-		_, e = io.Copy(w, f)
-		return e
-	}
-	gz, e := gzip.NewReader(f)
-	if e != nil {
-		return e
+// Protected local snapshot companions travel only inside the encrypted bundle.
+func exportSnapshot(ctx context.Context, f *os.File, w io.Writer) error {
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	h, err := tr.Next()
+	if err != nil {
+		return err
+	}
+	var m Manifest
+	if err := decodeManifest(h, tr, &m); err != nil {
+		return err
+	}
+	if m.VaultPackCount == 0 {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, f)
+		return err
+	}
 	out := gzip.NewWriter(w)
 	tw := tar.NewWriter(out)
+	if err := writeManifest(tw, h, m); err != nil {
+		return err
+	}
+	count := m.VaultPackCount
 	for {
-		h, e := tr.Next()
-		if e == io.EOF {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		h, err := tr.Next()
+		if err == io.EOF {
 			break
 		}
-		if e != nil {
-			return e
+		if err != nil {
+			return err
 		}
-		if e = tw.WriteHeader(h); e != nil {
-			return e
-		}
-		if _, e = io.Copy(tw, tr); e != nil {
-			return e
+		switch h.Name {
+		case packIndex:
+			if count == 0 || h.Typeflag != tar.TypeReg {
+				return errors.New("invalid vault manifest")
+			}
+			err := walkPackIndex(tr, count, func(ref packRef) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				payload, err := unsealPack(filepath.Join(f.Name()+".packs", filepath.FromSlash(ref.Name)), ref)
+				if err != nil {
+					return err
+				}
+				if err := tw.WriteHeader(&tar.Header{
+					Name: packPrefix + ref.Name, Size: ref.Size, Mode: 0600,
+					PAXRecords: map[string]string{packDigest: ref.Digest},
+				}); err != nil {
+					return err
+				}
+				_, err = tw.Write(payload)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			count = 0
+		default:
+			if err := tw.WriteHeader(h); err != nil {
+				return err
+			}
+			if _, err := io.Copy(tw, tr); err != nil {
+				return err
+			}
 		}
 	}
-	for name, ref := range m.VaultPacks {
-		if !packName.MatchString(name) {
-			return errors.New("invalid vault pack name")
-		}
-		payload, e := unsealPack(filepath.Join(f.Name()+".packs", filepath.FromSlash(name)), ref)
-		if errors.Is(e, fs.ErrNotExist) {
-			continue
-		}
-		if e != nil {
-			return e
-		}
-		e = tw.WriteHeader(&tar.Header{Name: packPrefix + name, Size: int64(len(payload)), Mode: 0600})
-		if e == nil {
-			_, e = tw.Write(payload)
-		}
-		if e != nil {
-			return e
-		}
+	if count != 0 {
+		return errors.New("invalid vault manifest")
 	}
-	if e = tw.Close(); e != nil {
-		return e
+	if err := tw.Close(); err != nil {
+		return err
 	}
 	return out.Close()
 }
 
-func restoreLocalPacks(bundle, stage string, m Manifest) error {
-	for name, ref := range m.VaultPacks {
-		if !packName.MatchString(name) || !validDigest(ref.Digest) {
-			return errors.New("invalid vault manifest")
+func restoreLocalPacks(ctx context.Context, tr io.Reader, bundle, stage string, count int, space *stageSpace) error {
+	return walkPackIndex(tr, count, func(ref packRef) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		payload, e := unsealPack(filepath.Join(bundle+".packs", filepath.FromSlash(name)), ref)
-		if errors.Is(e, fs.ErrNotExist) {
-			continue
+		rel := filepath.FromSlash(ref.Name)
+		payload, err := unsealPack(filepath.Join(bundle+".packs", rel), ref)
+		if err != nil {
+			return err
 		}
-		if e != nil {
-			return e
-		}
-		dst := filepath.Join(stage, packPrefix, filepath.FromSlash(name))
-		_, e = copyPack(bytes.NewReader(payload), dst, int64(len(payload)))
-		if e != nil {
-			return e
-		}
-	}
-	return nil
+		_, err = copyPack(bytes.NewReader(payload), filepath.Join(stage, packPrefix, rel), ref.Size, space)
+		return err
+	})
 }
 
 func installVault(staged, dataDir string) error {
@@ -362,6 +461,12 @@ func installVault(staged, dataDir string) error {
 		if e = os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 			return e
 		}
+		// Staging is normally on the same filesystem as the vault.
+		// Linking avoids reserving a second full copy during restore.
+		if os.Link(path, dst) == nil {
+			syncDir(filepath.Dir(dst))
+			return nil
+		}
 		f, e := os.Open(path)
 		if e != nil {
 			return e
@@ -383,19 +488,23 @@ func installVault(staged, dataDir string) error {
 		if ce != nil {
 			return ce
 		}
-		return os.Rename(tmp.Name(), dst)
+		if e = os.Rename(tmp.Name(), dst); e != nil {
+			return e
+		}
+		syncDir(filepath.Dir(dst))
+		return nil
 	})
 }
 
-func extractPack(tr *tar.Reader, h *tar.Header, stage string, packs map[string]string, total *int64) error {
+func extractPack(tr *tar.Reader, h *tar.Header, stage string, space *stageSpace) error {
 	name := strings.TrimPrefix(h.Name, packPrefix)
-	*total += h.Size
-	if !packName.MatchString(name) || h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > maxPackSize || *total > maxVaultBytes {
+	want := h.PAXRecords[packDigest]
+	if !packName.MatchString(name) || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > maxPackSize || !validDigest(want) {
 		return errors.New("invalid vault pack entry")
 	}
-	digest, e := copyPack(tr, filepath.Join(stage, packPrefix, filepath.FromSlash(name)), h.Size)
-	if e == nil {
-		packs[name] = digest
+	digest, err := copyPack(tr, filepath.Join(stage, packPrefix, filepath.FromSlash(name)), h.Size, space)
+	if err == nil && digest != want {
+		return errors.New("vault checksum mismatch")
 	}
-	return e
+	return err
 }

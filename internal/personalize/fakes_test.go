@@ -607,11 +607,17 @@ type fakeCollections struct {
 	calls int
 }
 
-func (f *fakeCollections) HomeRowsFor(context.Context, *core.User, core.HubContext) ([]core.CollectionRow, error) {
+func (f *fakeCollections) LayoutRow(_ context.Context, _ *core.User, _ core.HubContext, id string) (*core.CollectionRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return f.rows, nil
+	for i := range f.rows {
+		if f.rows[i].CollectionID == id {
+			r := f.rows[i]
+			return &r, nil
+		}
+	}
+	return nil, core.ErrNotFound
 }
 
 // harness wires an engine to a real in-memory state store.

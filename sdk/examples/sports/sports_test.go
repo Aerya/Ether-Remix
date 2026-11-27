@@ -269,3 +269,49 @@ func TestIconAndCopyRules(t *testing.T) {
 		}
 	}
 }
+
+// TestScreenDocumentsInstall compiles the Sports screen documents exactly as
+// install does (manifest, package files, English strings), so a document
+// that ships is one Ether serves and Vela's schema accepts.
+func TestScreenDocumentsInstall(t *testing.T) {
+	raw, err := os.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := plugins.ParseManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := man.Validate(); err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	files := map[string][]byte{}
+	err = filepath.WalkDir(".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel := filepath.ToSlash(p)
+		if strings.HasPrefix(rel, "screens/") || strings.HasPrefix(rel, "surfaces/") || strings.HasPrefix(rel, "assets/") || strings.HasPrefix(rel, "i18n/") {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			files[rel] = b
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var en map[string]string
+	if b, err := os.ReadFile("i18n/en.json"); err == nil {
+		_ = json.Unmarshal(b, &en)
+	}
+	docs, err := plugins.CompileScreenDocuments(man, files, func(k string) (string, bool) { v, ok := en[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("screen documents: %v", err)
+	}
+	if len(docs.Screens["sports"]["index"]) == 0 || len(docs.Screens["sports"]["game"]) == 0 {
+		t.Fatalf("missing pages: %+v", docs.Screens)
+	}
+}

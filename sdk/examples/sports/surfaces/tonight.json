@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "kind": "screen",
+  "renderer": 19,
+  "requires": ["shelf"],
+  "screen": "sports.tonight",
+  "page": "main",
+  "version": "2.0.0",
+  "title": "{s:title}",
+  "presentation": "homeRow",
+  "refresh": 300,
+  "sources": { "tonight": { "from": "liveEvents", "feed": "sports", "query": { "window": "today", "favorites": true }, "sort": "start", "limit": 12 } },
+  "strings": { "title": "Tonight", "live": "Live", "final": "Final", "subtitle": "Your teams today" },
+  "tokens": {
+    "card": "color-mix(in srgb, $ui.page 8%, $ui.raised 92%)",
+    "cardHover": "color-mix(in srgb, $ui.raised 94%, $ui.ink 6%)",
+    "hairline": "color-mix(in srgb, $ui.ink 8%, transparent)",
+    "radiusCard": "min($ui.radiusCard, 18px)",
+    "gutter": "max(28px, 4vw)"
+  },
+  "motion": { "pop": { "keyframes": "doc:pop", "duration": 1360, "easing": "ease-out", "still": { "keyframes": "none", "duration": 0 } } },
+  "keyframes": { "pop": { "0%": { "scale": 1 }, "12%": { "scale": 1.16, "color": "$ui.accent" }, "48%": { "scale": 1.16, "color": "$ui.accent" }, "100%": { "scale": 1 } } },
+  "tree": {
+    "type": "box",
+    "testId": "sports-tonight",
+    "when": [{ "test": "src.tonight.events" }],
+    "style": { "font-family": "$ui.font", "gap": "12px", "padding-bottom": "28px" },
+    "children": [
+      {
+        "type": "box",
+        "style": { "padding": "0px $gutter" },
+        "small": { "padding": "0px 18px" },
+        "children": [{ "type": "use", "template": "vela:heading", "with": { "text": "{s:title}", "aside": "{s:subtitle}" } }]
+      },
+      {
+        "type": "shelf",
+        "over": "src.tonight.events",
+        "as": "g",
+        "key": "{g.id}",
+        "itemWidth": { "default": "260px", "small": "220px", "tv": "300px" },
+        "gap": "12px",
+        "item": {
+          "type": "box",
+          "role": "button",
+          "label": "{g.sides.0.short} – {g.sides.1.short}",
+          "testId": "sports-tonight-{g.id}",
+          "press": { "action": "navigate", "args": { "screen": "sports", "page": "game", "event": "{g.$key}" } },
+          "style": {
+            "padding": "12px 14px",
+            "gap": "8px",
+            "border-radius": "$radiusCard",
+            "background-color": "$card",
+            "border": "1px solid $hairline",
+            "transition": "scale 160ms, background-color 160ms"
+          },
+          "hover": { "background-color": "$cardHover", "scale": "1.03" },
+          "focus": { "background-color": "$cardHover", "scale": "1.03" },
+          "children": [
+            {
+              "type": "box",
+              "style": { "flex-direction": "row", "align-items": "center", "gap": "6px" },
+              "children": [
+                {
+                  "type": "use",
+                  "template": "vela:liveBadge",
+                  "with": { "small": "true" },
+                  "when": [{ "test": "g.phase", "is": "eq", "value": "live" }, { "test": "g.spoiler", "not": true }]
+                },
+                {
+                  "type": "text",
+                  "text": "{g.league.label} · {g.detail}",
+                  "when": [{ "test": "g.phase", "is": "ne", "value": "upcoming" }],
+                  "style": { "font-size": "12px", "font-weight": "600", "color": "$ui.inkSecondary", "line-clamp": "1" }
+                },
+                {
+                  "type": "text",
+                  "text": "{g.league.label} · {g.start|start}",
+                  "when": [{ "test": "g.phase", "is": "eq", "value": "upcoming" }],
+                  "style": { "font-size": "12px", "font-weight": "600", "color": "$ui.inkSecondary", "line-clamp": "1" }
+                }
+              ]
+            },
+            {
+              "type": "repeat",
+              "over": "g.sides",
+              "as": "side",
+              "when": [{ "test": "g.sides" }],
+              "item": {
+                "type": "box",
+                "style": { "flex-direction": "row", "align-items": "center", "gap": "8px" },
+                "children": [
+                  {
+                    "type": "use",
+                    "template": "vela:crest",
+                    "with": { "logo": "{side.logo}", "abbr": "{side.abbr}", "color": "{side|crest}", "size": "22px" }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{side.short}",
+                    "style": { "font-size": "14px", "font-weight": "600", "color": "$ui.ink", "flex": "1", "line-clamp": "1" },
+                    "states": [{ "when": [{ "test": "side.loser" }], "style": { "opacity": "0.6" } }]
+                  },
+                  {
+                    "type": "text",
+                    "text": "{side.score}",
+                    "when": [{ "test": "g.scored" }],
+                    "onChange": { "value": "{side.score}", "motion": "pop" },
+                    "style": { "font-size": "15px", "font-weight": "800", "color": "$ui.ink", "font-variant-numeric": "tabular-nums" }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "text",
+              "text": "{g.title}",
+              "when": [{ "test": "g.sides", "not": true }, { "test": "g.title" }],
+              "style": { "font-size": "14px", "font-weight": "650", "color": "$ui.ink", "line-clamp": "2" }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

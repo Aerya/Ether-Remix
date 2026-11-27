@@ -6,12 +6,7 @@
 export type MaybePromise<T> = T | Promise<T>;
 
 export type PluginKind =
-  | "source"
-  | "integration"
-  | "notification_channel"
-  | "livetv_source"
-  | "extension"
-  | "content";
+  "source" | "integration" | "notification_channel" | "livetv_source" | "extension" | "content";
 
 export type Capability =
   | "stream_source"
@@ -48,7 +43,13 @@ export type LegacyEtherEventName =
   | "collection.rebuilt"
   | "server.health_changed";
 
-export type EtherEventName = LegacyEtherEventName | (string & {});
+export type ViewerWatchEventName =
+  | "viewer.watch.scrobbled"
+  | "viewer.watch.watched"
+  | "viewer.watch.unwatched"
+  | "viewer.watch.progress";
+
+export type EtherEventName = LegacyEtherEventName | ViewerWatchEventName | (string & {});
 
 export type EventFieldType =
   | "string"
@@ -275,6 +276,14 @@ export interface SourceMeta {
   class: "debrid" | "usenet" | "indexer" | "direct";
   abilities?: string[];
   limits?: Record<string, unknown>;
+  /** Opts a stream_source plugin in to category searches answered by the `sourceSearch` route (GET /ether/search). */
+  search?: SourceSearchMeta;
+}
+
+/** Newznab categories (3000 audio, 7000 books; a top category covers its subcategories) and optional typed lookups ("album") a source plugin answers. */
+export interface SourceSearchMeta {
+  categories: number[];
+  lookups?: string[];
 }
 
 export interface ChannelsMeta {
@@ -390,10 +399,7 @@ export type SlotKind =
   | "command";
 
 type ActionSlot =
-  | "actionMenu.title"
-  | "actionMenu.viewer"
-  | "actionMenu.collection"
-  | "actionMenu.release";
+  "actionMenu.title" | "actionMenu.viewer" | "actionMenu.collection" | "actionMenu.release";
 export type SlotMeta = { key: string; label: string } & (
   | { slot: ActionSlot; action: string; route?: never }
   | { slot: Exclude<SlotKind, ActionSlot>; route: string; action?: never }
@@ -427,48 +433,65 @@ export interface Contributes {
   liveFeeds?: LiveFeedMeta[];
   setup?: SetupMeta;
   screens?: ScreenMeta[];
-}
-
-export type ScreenSectionType = "hero" | "events" | "table" | "schedule" | "leagues" | "entities";
-
-export type ScreenEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
-
-export type ScreenEventWindow = "today" | "week" | "recent";
-
-export interface ScreenEventQuery {
-  feed?: string;
-  state?: ScreenEventState[];
-  league?: string;
-  favorites?: boolean;
-  window?: ScreenEventWindow;
-  category?: string;
-}
-
-export interface ScreenLeagueMeta {
-  id: string;
-  name: string;
-  abbr?: string;
-  logo?: string;
-}
-
-export interface ScreenSectionMeta {
-  id?: string;
-  type: ScreenSectionType;
-  title?: string;
-  feed?: string;
-  league?: string;
-  entityKind?: string;
-  limit?: number;
-  query?: ScreenEventQuery;
-  leagues?: ScreenLeagueMeta[];
+  surfaces?: SurfaceMeta[];
 }
 
 export interface ScreenMeta {
   id: string;
   title: string;
   icon?: string;
-  feed?: string;
-  sections: ScreenSectionMeta[];
+  frontends?: string[];
+  /**
+   * The screen's documents by page id: "index" is the landing page; each
+   * names a package file, or variants for older Vela renderers. See
+   * docs/plugin-screens.md.
+   */
+  pages?: Record<string, string | string[]>;
+  /** "navigation" (a top-level section, default) or "hidden" (reachable by navigate only). */
+  placement?: "navigation" | "hidden";
+  /** Hidden from viewers whose maximum content rating is lower. */
+  contentRating?: string;
+  /** Suggests the owner's per-app switch; omitted means shown. */
+  default?: boolean;
+  /** Plugin-handled actions the documents call. */
+  actions?: Record<string, ScreenActionMeta>;
+}
+
+export interface ScreenActionArgMeta {
+  type: "string" | "int" | "bool" | "date" | "ref" | "strings";
+  max?: number;
+  min?: number;
+  enum?: string[];
+  required?: boolean;
+}
+
+export interface ScreenActionMeta {
+  args?: Record<string, ScreenActionArgMeta>;
+  /** Asked before the action is sent ($t: keys allowed). */
+  confirm?: string;
+  /** normal: 10 calls per 10 s per viewer; low: 2. */
+  rate?: "normal" | "low";
+}
+
+/** A document drawn in a host slot: a player overlay, a toast, a Home row or a title panel. */
+export interface SurfaceMeta {
+  id: string;
+  presentation: "playerOverlay" | "toast" | "homeRow" | "titlePanel";
+  title: string;
+  /** playerOverlay only. */
+  anchor?: "topLeft" | "topRight" | "bottom";
+  /** playerOverlay only: always shown, only with the player controls, or a viewer switch. */
+  visibility?: "always" | "chrome" | "toggle";
+  /** The overlay's switch in the player menu (required for player overlays). */
+  setting?: { id: string; label: string; default: boolean };
+  /** Where it applies; may only name this plugin's feeds and kinds. */
+  when?: { event?: { feed: string }; kind?: "channel" | "programme" | "title"; titleKind?: string };
+  /** toast only: seconds on screen, 8..30. */
+  ttl?: number;
+  contentRating?: string;
+  default?: boolean;
+  /** A package file, or variants for older renderers. */
+  document: string | string[];
   frontends?: string[];
 }
 
@@ -480,13 +503,7 @@ export interface LiveFeedMeta {
   entityKinds?: string[];
 }
 
-export type LiveEventState =
-  | "pre"
-  | "in"
-  | "post"
-  | "delayed"
-  | "postponed"
-  | "canceled";
+export type LiveEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
 
 export interface LiveEventLeague {
   id: string;
@@ -583,12 +600,16 @@ export interface LiveEvent {
   spoiler?: boolean;
   /** RFC3339 timestamp. */
   updatedAt?: string;
+  /** How big the event is (0..1); ranks featured lists. Optional. */
+  prominence?: number;
 }
 
 export interface LiveEventTable {
   title: string;
   columns: string[];
   rows: string[][];
+  /** The entity (a team) each row is about, in row order, so Ether can mark favourites. */
+  rowEntityIds?: string[];
 }
 
 export interface LiveEventPlay {
@@ -597,6 +618,10 @@ export interface LiveEventPlay {
   text: string;
   emphasis?: "score" | "key" | "normal";
   competitorId?: string;
+  /** Wall-clock time of the play (RFC3339), so a timeshifted overlay shows the score of the picture. */
+  at?: string;
+  /** Every competitor's score after the play, by competitor id. */
+  score?: Record<string, string>;
 }
 
 export interface LiveEventProbabilityPoint {
@@ -682,9 +707,18 @@ export type MediaRole =
   | "collection";
 
 export type MediaBrowserItemType =
-  | "Movie" | "Series" | "Season" | "Episode" | "Video"
-  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
-  | "Book" | "PhotoAlbum" | "Photo";
+  | "Movie"
+  | "Series"
+  | "Season"
+  | "Episode"
+  | "Video"
+  | "MusicArtist"
+  | "MusicAlbum"
+  | "Audio"
+  | "AudioBook"
+  | "Book"
+  | "PhotoAlbum"
+  | "Photo";
 
 /**
  * How a library is seen per protocol. Each app block overrides how that app
@@ -721,6 +755,8 @@ export interface KindLevel {
   role?: MediaRole | (string & {});
   playable?: boolean;
   container?: boolean;
+  /** A list level (a playlist): a root of its own whose items name other items as their ordered children. */
+  members?: boolean;
 }
 
 export interface KindField {
@@ -793,7 +829,12 @@ export interface KindLibraryShelf {
   /** OR values for `facet`. */
   values?: string[];
   /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
-  filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  filters?:
+    Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  /** What the shelf is for, so apps draw it their own way and keep its titles out of other rows: "recentContexts" (Jump back in) or "liked" (Liked songs). */
+  purpose?: "recentContexts" | "liked";
+  /** The shelf's default look; an owner's look on a Recommendations page wins. "tracks" draws a track list. */
+  layout?: "standard" | "hero" | "wide" | "tiles" | "tracks";
 }
 
 export interface KindLibraryDecl {
@@ -802,6 +843,8 @@ export interface KindLibraryDecl {
   card?: "poster" | "landscape" | "square";
   /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
   dateDisplay?: "year" | "date";
+  /** How apps present the library: "watch" (films and TV), "listen" (a listening app: library sidebar, now-playing bar, queue), "read", "gallery", "live", or another id (apps that do not know it present it as watch). Defaults by media class: listen for music, audiobooks and podcasts; read for books; gallery for photos; watch otherwise. */
+  experience?: "watch" | "listen" | "read" | "gallery" | "live" | (string & {});
   /** Up to 50 sub-tabs shown inside the library; defaults to Recommended + Library. */
   tabs?: KindLibraryTab[];
   /** Up to 40 default Recommended shelves evaluated in order when present. */
@@ -838,9 +881,96 @@ export interface MediaKindMeta {
     /** On-demand background slice expansion when a viewer opens a bucket or person. */
     expand?: KindBrowseExpand;
   };
-  sync: { mode: "pull" | "push"; refresh?: string };
+  sync: { mode: "pull" | "push"; refresh?: string; undo?: "snapshots" | "ids" };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
+  /** The catalogue provider implements lyrics() (POST /ether/v1/kinds/{kind}/lyrics). */
+  lyrics?: boolean;
+  /** The catalogue provider implements related() for these purposes (POST /ether/v1/kinds/{kind}/related). */
+  related?: { similar?: boolean; continuation?: boolean };
+  /** Playlist import: the catalogue provider reads playlist links from these sites (importLink(), POST /ether/v1/kinds/{kind}/import) and identifies tracks (identify(), POST .../identify; needed for M3U/CSV files). */
+  import?: { links?: string[]; identify?: boolean };
+}
+
+/** One track of a playlist being imported, as the link or file gave it. */
+export interface ImportTrack {
+  title: string;
+  artist: string;
+  album?: string;
+  isrc?: string;
+  durationSec?: number;
+}
+
+/** A playlist link to read (one of the sites the kind declares). Answer 404 for a link you do not read. */
+export interface KindImportRequest {
+  kind: string;
+  url: string;
+}
+
+/** The link's playlist: its name and tracks in order (at most 500 are used). */
+export interface KindImport {
+  name: string;
+  description?: string;
+  tracks: ImportTrack[];
+  /** How many tracks the source playlist has, when it says. */
+  total?: number;
+  /** The source shared fewer tracks than the playlist has (Vela tells the viewer). */
+  truncated?: boolean;
+}
+
+/** Tracks to find among your items (ISRC first, then artist + title + duration). */
+export interface KindIdentifyRequest {
+  kind: string;
+  tracks: ImportTrack[];
+}
+
+/**
+ * Items to store (parents before children, like live-search results) and one match per track you
+ * answered, by its index: the matched item's id and how ("isrc" or "title"), or candidates when
+ * several releases fit equally, or neither when you found nothing. Leave out tracks you ran out of
+ * time for; Ether asks for them again.
+ */
+export interface KindIdentify {
+  items: KindItem[];
+  matches: Array<{ index: number; id?: string; by?: "isrc" | "title"; candidates?: string[] }>;
+}
+
+/** Items related to one stored item: "similar" (a detail row) or "continuation" (what plays after it). */
+export interface KindRelatedRequest {
+  kind: string;
+  item: KindItem;
+  purpose: "similar" | "continuation";
+  limit: number;
+}
+
+/** Items to store (with any parents they need), `order` naming those to show, and a row label. */
+export interface KindRelated {
+  label?: string;
+  items: KindItem[];
+  order?: string[];
+}
+
+/** One stored playable item whose lyrics Ether wants. */
+export interface KindLyricsRequest {
+  kind: string;
+  item: KindItem;
+}
+
+/** Timed LRC lines ("[mm:ss.xx] words", enhanced "<mm:ss.xx>word" stamps for word timing), plain text, or instrumental; source for attribution. */
+export interface KindLyrics {
+  syncedLyrics?: string;
+  plainLyrics?: string;
+  instrumental?: boolean;
+  source?: string;
+  /** Structured timed lines (milliseconds); used instead of syncedLyrics when present: word timing, translation and romanization lines. */
+  lines?: Array<{
+    startMs: number;
+    endMs?: number;
+    text: string;
+    words?: Array<{ startMs: number; endMs?: number; text: string }>;
+    translation?: string;
+    romanization?: string;
+  }>;
 }
 
 export interface FrontendAdapterMeta {
@@ -850,10 +980,12 @@ export interface FrontendAdapterMeta {
   pathPrefix: string;
   defaultPort?: number;
   clients?: string[];
-  auth?: "ether_token" | "basic" | "none_lan";
+  auth?: "ether_token" | "basic" | "none_lan" | "query_credentials";
   libraries?: string[];
   /** Optional adapter subpaths (such as "/search", "/rest/search3", or "/graphql") allowed to call ai.complete when permissions.ai is "complete+search". */
   searchPaths?: string[];
+  /** Path to an SVG or PNG inside the package, shown as the adapter's mark on the Apps page. Without one the plugin's icon stands in. */
+  icon?: string;
 }
 
 export interface SetupStep {
@@ -888,6 +1020,10 @@ export interface KindItem {
   art?: Array<{ role: string; url: string; width?: number; height?: number }>;
   fields?: Record<string, unknown>;
   hints?: Record<string, unknown>;
+  /** The work this item is a copy of, the same on every release that carries it (music: "isrc:<ISRC>"). Apps group duplicates by it. */
+  recording?: string;
+  /** A list item's ordered children: external ids of other items of the kind (at most 500). Only on a members level. */
+  members?: string[];
   etag?: string;
 }
 
@@ -909,6 +1045,21 @@ export interface KindPage {
 
 export type KindBrowseTotalMode = "cheap" | "none" | "exact";
 
+/** One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807). */
+export interface KindBrowseFacetAlt {
+  field: string;
+  values: string[];
+}
+
+/**
+ * One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+ * Pass either `{field, values}` for one field or `{any: [{field, values}, ...]}`
+ * to OR alternatives across fields (ANDed with the rest of the query).
+ */
+export type KindBrowseFacetGroup =
+  | { field: string; values: string[]; any?: KindBrowseFacetAlt[] }
+  | { any: KindBrowseFacetAlt[]; field?: string; values?: string[] };
+
 export interface KindBrowseRequest {
   kind: string;
   parentId?: string;
@@ -923,7 +1074,13 @@ export interface KindBrowseRequest {
   allFacets?: Record<string, string[]>;
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
+  /** Any-of facet groups ANDed together (single-field `{field, values}` or cross-field `{any: [...]}`). */
+  anyGroups?: KindBrowseFacetGroup[];
+  /** Field presence/absence filter: `true` keeps items with no value, `false` keeps items with at least one (#807). */
+  empty?: Record<string, boolean>;
   query?: string;
+  /** Same text matching as `query`; items that match are dropped (#807). */
+  excludeQuery?: string;
   /**
    * Controls whether kinds.browse computes KindPage.total:
    * - "cheap" (default): return total only when O(1) (tallies, cached count, or single-page result)
@@ -960,6 +1117,11 @@ export interface KindChangePage {
   complete: boolean;
 }
 
+export interface NZBIdentity {
+  indexerId: string;
+  guid: string;
+}
+
 export interface SourceQuery {
   kind:
     | "indexer_search"
@@ -969,10 +1131,13 @@ export interface SourceQuery {
     | "debrid_check"
     | "debrid_acquire"
     | "release_files"
-    | "usenet_check";
+    | "usenet_check"
+    | "nzb_request";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. Source plugins that declared the category answer it too. */
   category?: string;
+  /** indexer_search with category: a typed lookup (e.g. `{type: "album", fields: {artist, title}}`) for source plugins that declared its type; other indexers search `query` alone. */
+  lookup?: SourceLookup;
   /** Quality profile name to score video release names against on indexer_search; empty uses default. */
   profile?: string;
   /** indexer_search only: when true, start the fan-out and return immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. */
@@ -996,10 +1161,13 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  /** @deprecated Use torrentRef for an Ether torrent descriptor reference. */
   torrentUrl?: string;
-  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  /** @deprecated Use nzbRef. Accepts an ether-nzb: reference or legacy download link. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
+  nzbIdentity?: NZBIdentity;
   /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
   /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
@@ -1103,10 +1271,12 @@ export interface DebridServiceRef {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
+  /** @deprecated Opaque ether-torrent: reference. Use torrentRef. */
   torrentUrl?: string;
-  /** Key-less Usenet NZB download link; Ether strips same-origin indexer API keys and re-attaches them at fetch time using indexerId so candidates are safe to cache in KV. */
+  /** @deprecated Opaque ether-nzb: reference. Use nzbRef. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
   title?: string;
@@ -1128,6 +1298,20 @@ export interface SourceCandidate {
   fileCount?: number;
   /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
   usenetCheck?: UsenetCheckResult;
+  /** A release a source plugin answered for a declared category search. No infoHash or nzbUrl: hand the candidate back to release_files to list its files and in a release source to open it. */
+  pluginRelease?: PluginReleaseRef;
+}
+
+/** A source plugin's release: the plugin id and the lazy stream id it answered the search with. */
+export interface PluginReleaseRef {
+  plugin: string;
+  id: string;
+}
+
+/** A typed lookup on a category search. */
+export interface SourceLookup {
+  type: string;
+  fields?: Record<string, string>;
 }
 
 export interface KindMatchRequest {
@@ -1182,13 +1366,21 @@ export interface PlayableSource {
   expiresAt?: number;
   container?: {
     format?: string;
-    volumes: Array<{ url?: string; headers?: Record<string, string>; keepHeadersOnRedirect?: string[]; blobRef?: string; size: number }>;
+    volumes: Array<{
+      url?: string;
+      headers?: Record<string, string>;
+      keepHeadersOnRedirect?: string[];
+      blobRef?: string;
+      size: number;
+    }>;
     member?: string;
     memberIndex?: number;
     passwordSecret?: string;
   };
   release?: {
     nzbUrl?: string;
+    nzbRef?: string;
+    torrentRef?: string;
     magnet?: string;
     infoHash?: string;
     torrentUrl?: string;
@@ -1220,13 +1412,21 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
-/** Options for minting a scoped frontend adapter stream URL (#576, #661). */
+/** Options for minting a scoped frontend adapter stream URL (#576, #661, #772). */
 export interface StreamUrlOptions {
   partIndex?: number;
   source?: string;
+  /** Return an absolute URL (`<origin>/ether/v1/kind-media/<token>`) using the active request origin or the adapter's first published address; default stays root-relative. */
+  absolute?: boolean;
 }
 
-export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+export interface PendingReply {
+  pending: true;
+  retryInMs?: number;
+  job?: string;
+  sources?: never;
+  matches?: never;
+}
 
 export interface KindResolveResponse {
   pending?: boolean;
@@ -1428,8 +1628,37 @@ export interface StreamResponse {
   streams: StreamItem[];
 }
 
+/** GET /ether/open/{streamId}. For a release answered on a category search, `file` or `fileIndex` name the file to open (from `releaseFiles`); neither lets the plugin choose. */
 export interface OpenStreamRequest {
   streamId: string;
+  file?: string;
+  fileIndex?: number;
+}
+
+/** GET /ether/search: the requested categories the plugin declared, the lookup only for a declared type, and why Ether searches (playback, detail, warmup, ...) when known. */
+export interface SourceSearchRequest {
+  query: string;
+  categories: number[];
+  lookup?: SourceLookup;
+  purpose?: string;
+}
+
+/** Answers in the stream route's shape: lazy streams (`ether.lazy`, `ether.id`, `ether.releaseName`) or torrents (`infoHash`). */
+export type SourceSearchResponse = StreamResponse;
+
+/** GET /ether/files/{id} for a lazy release a search answered. */
+export interface ReleaseFilesRequest {
+  id: string;
+}
+
+export interface PluginReleaseFile {
+  path: string;
+  size?: number;
+}
+
+/** A release's files in the order `fileIndex` counts. */
+export interface ReleaseFilesResponse {
+  files: PluginReleaseFile[];
 }
 
 export interface OpenStreamResponse {
@@ -1575,13 +1804,7 @@ export type ViewSpecBlock =
       kind: "text";
       content: ViewSpecValue;
       tone?:
-        | "default"
-        | "negative"
-        | "positive"
-        | "warning"
-        | "muted"
-        | "strong"
-        | ViewSpecFieldRef;
+        "default" | "negative" | "positive" | "warning" | "muted" | "strong" | ViewSpecFieldRef;
       when?: ViewSpecFieldRef;
     }
   | {
@@ -1664,6 +1887,26 @@ export interface ActionResponse {
   refresh?: boolean;
   open?: string;
   proposal?: ActionProposal;
+}
+
+/** Payload shared by the viewer.watch.* event subscriptions. */
+export interface ViewerWatchEventPayload {
+  viewerId?: number;
+  username?: string;
+  titleKey: string;
+  titleName: string;
+  mediaType: string;
+  watched: boolean;
+  state: "watched" | "unwatched" | "progress";
+  source: "playback" | "manual" | "plugin" | "import";
+  surface?: string;
+  itemRef?: string;
+  tmdbId?: number;
+  tvdbId?: number;
+  imdbId?: string;
+  season?: number;
+  episode?: number;
+  positionMs?: number;
 }
 
 export interface EtherEvent<P = Record<string, unknown>> {
@@ -1776,8 +2019,23 @@ export interface FrontendBlob {
   memberIndex?: number;
 }
 
+/** Frontend adapters: Ether serves one of your playable items' bytes (with ranges) at the adapter URL. */
+export interface FrontendMedia {
+  itemRef: string;
+  partIndex?: number;
+  source?: string;
+}
+
+/** Frontend adapters: Ether serves one of your items' stored artwork at the adapter URL. */
+export interface FrontendArt {
+  itemRef: string;
+  role?: string;
+}
+
 export interface RawResponse {
   blob?: FrontendBlob;
+  media?: FrontendMedia;
+  art?: FrontendArt;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

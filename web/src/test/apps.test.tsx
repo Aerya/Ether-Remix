@@ -1,9 +1,11 @@
 import { ConfirmRoot } from "@braedonsaunders/appkit-ui";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setToken } from "../lib/api";
 import Apps from "../pages/apps/Apps";
 import {
+  appBrandMark,
   classifyAppAddresses,
   ServerAddressPanel,
   type HubFrontendInfo,
@@ -153,9 +155,90 @@ function renderApps(entry: string) {
 
 describe("Apps connection hub", () => {
   beforeEach(() => {
+    setToken("");
     apiFetch.mockReset();
     apiBlob.mockReset();
     apiBlob.mockRejectedValue(new Error("QR unavailable"));
+  });
+
+  afterEach(() => {
+    setToken("");
+    vi.restoreAllMocks();
+  });
+
+  it("draws a plugin adapter's served icon like Silo and Vela, and the plug without one", () => {
+    const icon = "/ether/api/plugins/ether.music/icon?adapter=subsonic&v=1.4.0-1";
+    const { container, unmount } = render(<>{appBrandMark("plugin:ether.music:subsonic", icon)}</>);
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(icon);
+    expect(img?.className).toContain("size-7 rounded-md");
+    fireEvent.error(img!);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("svg")).not.toBeNull();
+    unmount();
+    const plain = render(<>{appBrandMark("plugin:ether.music:subsonic")}</>);
+    expect(plain.container.querySelector("img")).toBeNull();
+    expect(plain.container.querySelector("svg")).not.toBeNull();
+    plain.unmount();
+    // A Subsonic adapter without its own icon shows the OpenSubsonic mark, not the plugin's icon.
+    const proto = render(
+      <>
+        {appBrandMark(
+          "plugin:ether.music:subsonic",
+          "/ether/api/plugins/ether.music/icon?v=1",
+          "subsonic",
+        )}
+      </>,
+    );
+    expect(proto.container.querySelector("img")?.getAttribute("src")).toMatch(/opensubsonic/);
+  });
+
+  it("loads /ether/api plugin adapter icons through apiBlob when an owner token is active", async () => {
+    setToken("owner-session-token");
+    const icon = "/ether/api/plugins/ether.music/icon?adapter=subsonic&v=1.4.0-1";
+    const createdUrl = "blob:http://localhost/subsonic-icon";
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue(createdUrl);
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    let resolveBlob!: (b: Blob) => void;
+    apiBlob.mockImplementationOnce(
+      () =>
+        new Promise<Blob>((resolve) => {
+          resolveBlob = resolve;
+        }),
+    );
+
+    const { container, unmount } = render(
+      <>{appBrandMark("plugin:ether.music:subsonic", icon, "subsonic")}</>,
+    );
+
+    // While loading, never mount an unauthenticated <img src="/ether/api/plugins/...">; show fallback mark.
+    expect(container.querySelector("img")?.getAttribute("src")).toMatch(/opensubsonic/);
+    expect(apiBlob).toHaveBeenCalledWith(icon, expect.any(AbortSignal));
+
+    resolveBlob(new Blob(["svg"], { type: "image/svg+xml" }));
+    await waitFor(() =>
+      expect(container.querySelector("img")?.getAttribute("src")).toBe(createdUrl),
+    );
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith(createdUrl);
+
+    // Failed authenticated fetch falls back cleanly without mounting the raw API URL.
+    apiBlob.mockRejectedValueOnce(new Error("404"));
+    const failed = render(<>{appBrandMark("plugin:ether.music:subsonic", icon)}</>);
+    await waitFor(() => expect(apiBlob).toHaveBeenCalledTimes(2));
+    expect(failed.container.querySelector("img")).toBeNull();
+    expect(failed.container.querySelector("svg")).not.toBeNull();
+    failed.unmount();
+
+    // External URLs bypass apiBlob even when a token is active.
+    const ext = "https://cdn.example/adapter.png";
+    const external = render(<>{appBrandMark("plugin:ether.music:subsonic", ext)}</>);
+    expect(external.container.querySelector("img")?.getAttribute("src")).toBe(ext);
+    expect(apiBlob).toHaveBeenCalledTimes(2);
+    external.unmount();
   });
 
   it("always prioritizes dedicated listener ports over shared-port paths", () => {

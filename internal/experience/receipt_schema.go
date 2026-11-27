@@ -62,4 +62,29 @@ func init() {
  IF NOT EXISTS(SELECT 1 FROM capability_headers h WHERE h.namespace='experience.receipt' AND h.digest=NEW.hash AND h.shard=(NEW.viewer_id % 64) AND h.viewer_id=NEW.viewer_id AND h.surface=NEW.protocol AND h.device_id=NEW.device_id AND h.expires=NEW.expires*1000) OR (SELECT COUNT(*) FROM capability_headers WHERE namespace='experience.receipt' AND shard=(NEW.viewer_id % 64) AND viewer_id=NEW.viewer_id AND surface=NEW.protocol AND expires>live_after)>100000 OR (SELECT COUNT(*) FROM capability_headers WHERE namespace='experience.receipt' AND shard=(NEW.viewer_id % 64) AND expires>live_after)>400000 THEN RAISE EXCEPTION 'receipt admission required'; END IF;
  RETURN NEW; END $$;
 `)
+	// The quota backstop ran per inserted row: two COUNT(*) scans over every
+	// live receipt header on the viewer's shard, for each of a Home page's
+	// ~240 receipts. On the lab (31k live headers) that held the SQLite
+	// writer, and on PostgreSQL the shard admission lock, for over a second
+	// per page, so playback opens queued behind it. The row trigger now only
+	// proves the exact header exists (one primary-key probe). Go admission
+	// (capability.AdmitPageHeadersInTx) counts both quotas once per batch,
+	// under the same shard lock and in the same transaction. SQLite has one
+	// writing process, so that count is the whole guarantee. PostgreSQL may
+	// have nodes on different versions, so its backstop stays, run once per
+	// statement over that statement's distinct scopes.
+	store.Register("experience_receipts_retention", 2, `DROP TRIGGER experience_receipt_admit;
+ CREATE TRIGGER experience_receipt_admit BEFORE INSERT ON experience_receipts BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM capability_headers h WHERE h.namespace='experience.receipt' AND h.digest=NEW.hash AND h.shard=(NEW.viewer_id % 64) AND h.viewer_id=NEW.viewer_id AND h.surface=NEW.protocol AND h.device_id=NEW.device_id AND h.expires=NEW.expires*1000) THEN RAISE(ABORT,'receipt admission required') END; END;
+`)
+	store.RegisterDialect("experience_receipts_retention", 2, store.Postgres, `CREATE OR REPLACE FUNCTION experience_receipt_admit_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ PERFORM pg_advisory_xact_lock(CAST(`+capability.AdmissionLockSQL(ReceiptCapabilityNamespace, "NEW.viewer_id")+` AS BIGINT));
+ IF NOT EXISTS(SELECT 1 FROM capability_headers h WHERE h.namespace='experience.receipt' AND h.digest=NEW.hash AND h.shard=(NEW.viewer_id % 64) AND h.viewer_id=NEW.viewer_id AND h.surface=NEW.protocol AND h.device_id=NEW.device_id AND h.expires=NEW.expires*1000) THEN RAISE EXCEPTION 'receipt admission required'; END IF;
+ RETURN NEW; END $$;
+ CREATE FUNCTION experience_receipt_quota_fn() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE live_after BIGINT; BEGIN
+ live_after := CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)*1000;
+ IF EXISTS(SELECT 1 FROM (SELECT DISTINCT viewer_id, protocol FROM admitted) s WHERE (SELECT COUNT(*) FROM capability_headers WHERE namespace='experience.receipt' AND shard=(s.viewer_id % 64) AND viewer_id=s.viewer_id AND surface=s.protocol AND expires>live_after)>100000 OR (SELECT COUNT(*) FROM capability_headers WHERE namespace='experience.receipt' AND shard=(s.viewer_id % 64) AND expires>live_after)>400000) THEN RAISE EXCEPTION 'receipt admission required'; END IF;
+ RETURN NULL; END $$;
+ CREATE TRIGGER experience_receipt_quota AFTER INSERT ON experience_receipts REFERENCING NEW TABLE AS admitted FOR EACH STATEMENT EXECUTE FUNCTION experience_receipt_quota_fn();
+`)
 }

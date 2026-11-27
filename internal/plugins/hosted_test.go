@@ -82,6 +82,10 @@ func (h *memHost) FoldersStat(context.Context, string, string) (FolderEntry, err
 func (h *memHost) PublishEvent(context.Context, string, json.RawMessage, events.Correlation) error {
 	return ErrPermissionDenied
 }
+func (h *memHost) ScreensInvalidate(context.Context) (int, error) { return 0, ErrPermissionDenied }
+func (h *memHost) ScreensPutRecords(context.Context, json.RawMessage) (int, error) {
+	return 0, ErrPermissionDenied
+}
 func (h *memHost) AIComplete(context.Context, AICompleteRequest) (AICompleteResponse, error) {
 	return AICompleteResponse{}, ErrNotConfigured
 }

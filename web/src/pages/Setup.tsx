@@ -17,6 +17,7 @@ import { useAppOptional } from "../app-context";
 import { RestartButton } from "../components/RestartDrawer";
 import { EtherMark } from "../components/brand";
 import { IntegrationAppCard } from "../components/IntegrationAppCard";
+import { MetadataKeyFields } from "../components/MetadataKeyFields";
 import {
   EmbyMark,
   householdIcon,
@@ -34,6 +35,12 @@ import {
   TestButton,
   type TestState,
 } from "../components/fields";
+import { useAsync } from "../lib/hooks";
+import {
+  builtinMetadataSources,
+  metadataSources,
+  type BuiltinMetadataSource,
+} from "../lib/metadataSources";
 import { loadLocale, localized, rememberLocale, t, tn, tx } from "../i18n";
 import { api, apiFetch, newId, setToken } from "../lib/api";
 import { usePageTitle } from "../lib/document-title";
@@ -65,6 +72,8 @@ export type WizardStepId =
 /** Survives a remount after the owner account is created so the visit does not start over. */
 export const SETUP_STEP_KEY = "ether.setup.step";
 
+const SETUP_METADATA_SOURCES = ["tmdb", "tvdb"] as const;
+
 const STEP_COPY = localized(() => ({
   languageTitle: t("Language"),
   languageHeading: t("Choose a language"),
@@ -81,7 +90,7 @@ const STEP_COPY = localized(() => ({
   cacheTitle: t("Cache"),
   cacheHeading: t("Cache folder and disk budget"),
   catalogTitle: t("Catalogue"),
-  catalogHeading: t("Catalogue and extras"),
+  catalogHeading: t("Where should Ether get movie and TV details?"),
 }));
 
 const FALLBACK_APPS = [
@@ -353,8 +362,7 @@ export function canAdvance(
     indexers: Indexer[];
     providerTests: Record<string, TestState>;
     indexerTests: Record<string, TestState>;
-    /** The TMDB key was tested or is already saved (false blocks the last step). */
-    tmdbReady?: boolean;
+    metadataReady?: boolean;
     /** Debrid accounts and their tests (absent on servers without debrid). */
     debrid?: DebridProvider[];
     debridTests?: Record<string, TestState>;
@@ -398,8 +406,7 @@ export function canAdvance(
       });
     }
     case "catalog":
-      // Without TMDB there is no catalogue to browse. Finishing later is a separate button.
-      return opts.tmdbReady !== false;
+      return opts.metadataReady !== false;
     default:
       return true;
   }
@@ -438,8 +445,11 @@ export default function Setup() {
   const [providerTests, setProviderTests] = useState<Record<string, TestState>>({});
   const [indexerTests, setIndexerTests] = useState<Record<string, TestState>>({});
   const [debridTests, setDebridTests] = useState<Record<string, TestState>>({});
-  // A build with a bundled TMDB key needs none from the owner.
-  const [tmdbBundled, setTmdbBundled] = useState(false);
+  const [metadataConfigured, setMetadataConfigured] = useState(false);
+  const [tmdbEnabled, setTmdbEnabled] = useState<boolean | null>(null);
+  const [metadataKeys, setMetadataKeys] = useState<Partial<Record<BuiltinMetadataSource, string>>>(
+    {},
+  );
   useEffect(() => {
     void api
       .bootstrap()
@@ -526,7 +536,7 @@ export default function Setup() {
           );
         }
         const catalogStep = status.steps.find((item) => item.id === "catalog");
-        setTmdbBundled(Boolean(catalogStep?.complete));
+        setMetadataConfigured(Boolean(catalogStep?.complete));
         setCacheVolume(status.cacheVolume ?? "");
         setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
         if (status.setupComplete && status.cacheRestartRequired) setCacheRestartRequired(true);
@@ -709,13 +719,29 @@ export default function Setup() {
         ...m,
         [key]: r.ok
           ? { status: "ok", durationMs: r.durationMs }
-          : { status: "fail", message: r.error ?? t("failed") },
+          : {
+              status: "fail",
+              message:
+                kind === "opt" ? t("Could not verify the API key.") : (r.error ?? t("failed")),
+            },
       }));
     } catch (e) {
-      setMap((m) => ({ ...m, [key]: { status: "fail", message: (e as Error).message } }));
+      setMap((m) => ({
+        ...m,
+        [key]: {
+          status: "fail",
+          message: kind === "opt" ? t("Could not verify the API key.") : (e as Error).message,
+        },
+      }));
     }
   };
 
+  const metadata = useAsync(
+    (signal) => (stepId === "catalog" ? metadataSources(signal) : Promise.resolve([])),
+    [stepId],
+  );
+  const tmdb = metadata.data?.find((source) => source.id === "tmdb");
+  const tvdbConfigured = Boolean(cfg?.catalog.tvdbKey?.trim());
   const advanceOk = useMemo(
     () =>
       cfg
@@ -732,8 +758,13 @@ export default function Setup() {
             indexerTests,
             debrid: cfg.debrid?.providers ?? [],
             debridTests,
-            tmdbReady:
-              optTests.tmdb?.status === "ok" || cfg.catalog.tmdbKey === "••••" || tmdbBundled,
+            metadataReady: Object.values(metadataKeys).some((key) => key?.trim())
+              ? SETUP_METADATA_SOURCES.every(
+                  (source) => !metadataKeys[source]?.trim() || optTests[source]?.status === "ok",
+                )
+              : tmdbEnabled === false
+                ? tvdbConfigured
+                : tmdbEnabled === true || metadataConfigured,
             skipped,
             readyMade,
             savedIndexers: savedIndexerURLs.current ?? {},
@@ -747,7 +778,10 @@ export default function Setup() {
       indexerTests,
       debridTests,
       optTests,
-      tmdbBundled,
+      metadataConfigured,
+      metadataKeys,
+      tmdbEnabled,
+      tvdbConfigured,
       skipped,
       localDone,
       localUsername,
@@ -806,7 +840,10 @@ export default function Setup() {
   const providers = cfg.usenet.providers ?? [];
   const indexers = cfg.indexers ?? [];
   const setProviders = (list: UsenetProvider[]) =>
-    setCfg({ ...cfg, usenet: { providers: list.map((p, i) => ({ ...p, priority: i })) } });
+    setCfg({
+      ...cfg,
+      usenet: { ...cfg.usenet, providers: list.map((p, i) => ({ ...p, priority: i })) },
+    });
   const setIndexers = (list: Indexer[]) =>
     setCfg({ ...cfg, indexers: list.map((x, i) => ({ ...x, priority: i })) });
   const patchProvider = (i: number, p: Partial<UsenetProvider>) =>
@@ -836,7 +873,7 @@ export default function Setup() {
     navigate("/server");
   };
 
-  const next = async (opts?: { force?: boolean }) => {
+  const next = async (opts?: { force?: boolean; skipMetadata?: boolean }) => {
     setSaving(true);
     setError(null);
     try {
@@ -851,6 +888,18 @@ export default function Setup() {
         setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
       }
       let draft = cfg;
+      if (stepId === "catalog") {
+        const catalog = { ...cfg.catalog };
+        if (tmdbEnabled !== null) catalog.tmdbDisabled = !tmdbEnabled;
+        for (const source of opts?.skipMetadata ? [] : SETUP_METADATA_SOURCES) {
+          const key = metadataKeys[source]?.trim();
+          if (key && optTests[source]?.status === "ok") {
+            catalog[builtinMetadataSources[source].key] = key;
+            if (source === "tmdb") catalog.tmdbDisabled = false;
+          }
+        }
+        draft = { ...cfg, catalog };
+      }
       if (stepId === "language" && languageChoice) {
         const baseline = languageBaseline.current;
         const edited = !baseline || !sameHouseholdLanguage(languageChoice, baseline);
@@ -915,7 +964,7 @@ export default function Setup() {
   const finish = async (force: boolean) => {
     const status = await api.setupComplete(force);
     const catalog = status.steps.find((item) => item.id === "catalog");
-    if (catalog) setTmdbBundled(Boolean(catalog.complete));
+    if (catalog) setMetadataConfigured(Boolean(catalog.complete));
     setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
     sessionStorage.removeItem(SETUP_STEP_KEY);
     sessionStorage.removeItem("ether.setup.skipped");
@@ -928,13 +977,7 @@ export default function Setup() {
   const passwordLongEnough = localPassword.length >= MIN_LOCAL_PASSWORD;
   const passwordsMatch = passwordLongEnough && localPassword === localPasswordAgain;
 
-  if (finished)
-    return (
-      <SetupReady
-        initialConfig={cfg}
-        tmdbAvailable={tmdbBundled || Boolean(cfg.catalog?.tmdbKey?.trim())}
-      />
-    );
+  if (finished) return <SetupReady initialConfig={cfg} metadataAvailable={metadataConfigured} />;
 
   if (finishReview)
     return (
@@ -995,6 +1038,7 @@ export default function Setup() {
               const accountDone = s.id === "account" && (localDone || plexSigned);
               const recorded = s.id !== "account" && (!(s.id in serverSteps) || serverSteps[s.id]);
               const done = i < step && (accountDone || recorded);
+              const label = later ? `${s.title}. ${t("Plex later")}` : s.title;
               return (
                 <li key={i} className="min-w-0 flex-1">
                   <button
@@ -1002,7 +1046,8 @@ export default function Setup() {
                     disabled={i > step}
                     onClick={() => setStep(i)}
                     aria-current={i === step ? "step" : undefined}
-                    title={later ? `${s.title}. ${t("Plex later")}` : s.title}
+                    title={label}
+                    aria-label={s.id === "language" ? s.heading : label}
                     className={cn(
                       "w-full min-w-0 text-left disabled:cursor-not-allowed",
                       i <= step ? "text-fg" : "text-fg-subtle",
@@ -1020,7 +1065,7 @@ export default function Setup() {
                       ) : (
                         <span className="shrink-0 tabular-nums">{i + 1}.</span>
                       )}
-                      <span className="min-w-0 whitespace-normal leading-snug">
+                      <span className="hidden min-w-0 break-words whitespace-normal leading-snug sm:block">
                         {s.title}
                         {later ? (
                           <span className="mt-0.5 block font-normal text-fg-muted">
@@ -1038,7 +1083,7 @@ export default function Setup() {
       }
       footer={
         <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               className="px-4 py-2"
               variant="ghost"
@@ -1047,7 +1092,7 @@ export default function Setup() {
             >
               {t("Back")}
             </Button>
-            {stepId === "sources" || stepId === "indexers" || stepId === "catalog" ? (
+            {stepId === "sources" || stepId === "indexers" ? (
               <label className="flex items-center gap-2 text-xs text-fg-muted">
                 <Checkbox
                   checked={Boolean(skipped[stepId])}
@@ -1057,6 +1102,15 @@ export default function Setup() {
               </label>
             ) : null}
             <span className="flex-1" />
+            {stepId === "catalog" ? (
+              <Button
+                variant="ghost"
+                disabled={saving}
+                onClick={() => void next({ skipMetadata: true })}
+              >
+                {t("Skip for now")}
+              </Button>
+            ) : null}
             <Button
               className="px-4 py-2 shrink-0"
               disabled={!advanceOk || saving}
@@ -1069,7 +1123,7 @@ export default function Setup() {
                   : t("Save and continue")}
             </Button>
           </div>
-          {(stepId === "sources" || stepId === "indexers" || stepId === "catalog") && !advanceOk ? (
+          {(stepId === "sources" || stepId === "indexers") && !advanceOk ? (
             <div className="text-right">
               <Button
                 className="px-4 py-2"
@@ -1077,9 +1131,7 @@ export default function Setup() {
                 disabled={saving || (!localDone && !plexSigned)}
                 onClick={() => void next({ force: true })}
               >
-                {stepId === "catalog"
-                  ? t("Finish now, add the TMDB key later")
-                  : t("Finish now, add sources later")}
+                {t("Finish now, add sources later")}
               </Button>
             </div>
           ) : null}
@@ -1786,68 +1838,51 @@ export default function Setup() {
 
       {stepId === "catalog" ? (
         <div className="space-y-6">
-          <section
-            className="space-y-3 rounded-xl border border-border bg-surface p-4"
-            aria-labelledby="setup-tmdb"
-          >
-            <div>
-              <h3 id="setup-tmdb" className="text-sm font-semibold text-fg">
-                {t("Movie and TV catalogue")}
-              </h3>
-              <p className="text-sm text-fg-muted">
-                {tx(
-                  "Ether builds your library from TMDB, so a TMDB API key is required. It is free: {link}, then paste it here and test it.",
-                  {
-                    link: (
-                      <a
-                        href="https://www.themoviedb.org/settings/api"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
-                      >
-                        {t("get one at themoviedb.org")} <ExternalLink size={13} />
-                      </a>
-                    ),
-                  },
-                )}
-              </p>
-            </div>
-            <Field label={t("TMDB API key")} hint={t("Your v3 API key or v4 read access token.")}>
-              <div className="space-y-2">
-                <SecretInput
-                  ariaLabel={t("TMDB API key")}
-                  value={cfg.catalog.tmdbKey}
-                  onChange={(v) => setCfg({ ...cfg, catalog: { ...cfg.catalog, tmdbKey: v } })}
-                />
-                <TestButton
-                  state={optTests.tmdb ?? { status: "idle" }}
-                  onTest={() =>
-                    void runTest("opt", "tmdb", () => api.testTMDB(cfg.catalog.tmdbKey))
-                  }
-                />
-              </div>
-            </Field>
-          </section>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {SETUP_METADATA_SOURCES.map((source) => {
+              const provider = builtinMetadataSources[source];
+              const value = metadataKeys[source] ?? cfg.catalog[provider.key];
+              return (
+                <section
+                  key={source}
+                  className="space-y-3 rounded-xl border border-border bg-surface p-4"
+                >
+                  <div>
+                    <h3 className="text-sm font-semibold text-fg">{provider.name}</h3>
+                    <p className="text-sm text-fg-muted">{provider.description()}</p>
+                  </div>
+                  {source === "tmdb" && tmdb?.keySource === "built-in" ? (
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span>{t("Use built-in TMDB")}</span>
+                      <Switch
+                        aria-label={t("Use built-in TMDB")}
+                        checked={tmdbEnabled ?? tmdb.enabled}
+                        disabled={saving}
+                        onChange={(event) => setTmdbEnabled(event.currentTarget.checked)}
+                      />
+                    </div>
+                  ) : null}
+                  <MetadataKeyFields
+                    source={source}
+                    value={value}
+                    test={optTests[source] ?? { status: "idle" }}
+                    disabled={saving}
+                    allowEmptyTest={
+                      source === "tmdb" &&
+                      tmdb?.keySource === "built-in" &&
+                      (tmdbEnabled ?? tmdb.enabled)
+                    }
+                    onChange={(key) => {
+                      setMetadataKeys((current) => ({ ...current, [source]: key }));
+                      setOptTests((current) => ({ ...current, [source]: { status: "idle" } }));
+                    }}
+                    onTest={() => void runTest("opt", source, () => provider.test(value.trim()))}
+                  />
+                </section>
+              );
+            })}
+          </div>
           <StarterBundlesCard />
-          <p className="text-sm text-fg-muted">
-            {tn(
-              cfg.catalog.tmdbKey.trim() && cfg.catalog.tmdbKey !== "••••"
-                ? 0
-                : tmdbBundled
-                  ? 0
-                  : 1,
-              "{n} required field left",
-              "{n} required fields left",
-              {
-                n:
-                  cfg.catalog.tmdbKey.trim() && cfg.catalog.tmdbKey !== "••••"
-                    ? 0
-                    : tmdbBundled
-                      ? 0
-                      : 1,
-              },
-            )}
-          </p>
           <Alert variant="info">
             <AlertDescription>
               {t(

@@ -46,7 +46,11 @@ func (s PartSources) prepareKind(ctx context.Context, viewer *core.User, key cor
 // Prepare bounds acquisition while leaving shared source flights and normal
 // admission/supersession with Playback. A successful wait is followed by normal
 // admission; an error never falls through to a second acquisition attempt.
-func (s PartSources) Prepare(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+//
+// exact opens release itself or fails: a restart of a playback that already
+// chose a release must not land on another one (core.ExactVariantPlayback).
+// Without exact, a release that cannot open falls back to the normal choice.
+func (s PartSources) Prepare(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if s.Playback == nil {
 		return nil, core.ErrNotAvailable
 	}
@@ -56,10 +60,24 @@ func (s PartSources) Prepare(ctx context.Context, viewer *core.User, key core.Ra
 	if key.IsPluginKey() && s.KindSource != nil {
 		return s.prepareKind(ctx, viewer, key, caps, release)
 	}
+	if exact && release == "" {
+		return nil, core.ErrNotAvailable
+	}
+	exactPlayback, canExact := s.Playback.(core.ExactVariantPlayback)
+	exact = exact && canExact
 	if p, ok := s.Playback.(core.PlaybackPrepareWithin); ok {
-		if _, err := p.PrepareWithin(ctx, wait, viewer, key, caps, release, false); err != nil {
+		if _, err := p.PrepareWithin(ctx, wait, viewer, key, caps, release, exact); err != nil {
 			return nil, err
 		}
+	}
+	if exact {
+		ps, err := exactPlayback.PrepareExactVariant(ctx, viewer, key, caps, release)
+		// A restart keeps the release being watched, not a new pick: it
+		// still moves off that release once it is proven unreadable.
+		if binder, ok := s.Playback.(core.SourceBinder); ok && err == nil && ps != nil {
+			binder.BindSource(ps.ID, core.SourceBindingRemembered)
+		}
+		return ps, err
 	}
 	if release != "" {
 		if p, ok := s.Playback.(core.VariantPlayback); ok {

@@ -79,3 +79,19 @@ type VersionChoices interface {
 type VersionSwitcher interface {
 	SwitchVersion(ctx context.Context, a SessionAccess, sessionID, versionHandle string, position time.Duration) (PlayPlan, error)
 }
+
+// ListedVersionHandles names configured version slots on list rows without
+// a database write or an offer check per row. ListedHandle derives the same
+// id Issue would; ResolveListed authorizes one such id for its known parent
+// at play time (the offer check Issue skipped) and records it so later
+// lookups resolve it like any issued handle.
+type ListedVersionHandles interface {
+	ListedHandle(VersionScope, core.RatingKey, string) string
+	ResolveListed(context.Context, VersionScope, core.RatingKey, string) (VersionTarget, error)
+}
+
+// OfflineVersionHandles validates the listed identity without following a
+// live playback session's replacement release.
+type OfflineVersionHandles interface {
+	ResolveOfflineVersion(context.Context, VersionScope, core.RatingKey, string) (VersionTarget, error)
+}

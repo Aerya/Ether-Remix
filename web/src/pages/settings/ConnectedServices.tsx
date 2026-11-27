@@ -7,6 +7,10 @@ import {
   catalogueGroups,
 } from "../libraries/CatalogueSources";
 import { useStreamEvent } from "../../lib/stream";
+import { isPluginDescriptor, setPluginEnabled, textOf, useRegistry } from "../../lib/extend";
+import { InstalledPluginDrawer } from "../plugins/InstalledPluginDrawer";
+import { AddSubtitleProvider } from "./AddSubtitleProvider";
+import { SubtitleCheck } from "./SubtitleCheck";
 import { IntegrationSetupFooter } from "../../components/IntegrationSetupFooter";
 import { Badge, Button, SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import {
@@ -29,14 +33,16 @@ import { TestButton, type TestState } from "../../components/fields";
 import { IntegrationAppCard } from "../../components/IntegrationAppCard";
 import { PseScrobCard } from "../../pse/ScrobCard"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 import { secretConfigured } from "../../components/IntegrationAccount";
-import { MDBListMark, SimklMark, TraktMark, TmdbMark } from "../../components/integration-brands";
+import { MDBListMark, SimklMark, TraktMark } from "../../components/integration-brands";
 import { useOwnerViewerPath } from "../../components/pickers";
 import { SaveBar } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
-import { localized, t, tn, tx } from "../../i18n";
+import { localized, t, tn } from "../../i18n";
 import { api, apiFetch, ApiError, errorMessage, type TestFn } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
+import { MetadataCatalogue } from "./MetadataCatalogue";
+import { builtinMetadataSources, metadataSources } from "../../lib/metadataSources";
 import { TmdbCatalogueSettings } from "./TmdbCatalogueSettings";
 import { NewReleasesSettings } from "../libraries/browser/NewReleasesSettings";
 import type { AvailabilityConfig } from "../../lib/types";
@@ -508,7 +514,8 @@ export function ConnectedServices({
   const config = useAsync(() => api.getConfig(), []);
   const ratings = useAsync(() => apiFetch<RatingSettings>("/discovery/ratings/settings"), []);
   const cfg = config.data;
-  const catalogSetupStatus = useAsync(() => api.setupStatus(), []);
+  const sources = useAsync(metadataSources, []);
+  const tmdb = sources.data?.find((source) => source.id === "tmdb");
   // i18n: memo holds no copy — only stable config keys and stored values.
   const stored = useMemo(() => {
     if (!cfg) return null;
@@ -520,7 +527,6 @@ export function ConnectedServices({
     } as Record<string, Obj>;
   }, [cfg]);
   const { draft, setDraft, dirty, reset } = useSectionDrafts(stored);
-  const [tmdbSetup, setTmdbSetup] = useState(false);
   const [ratingsSetup, setRatingsSetup] = useState(false);
   const [posterFlags, setPosterFlags] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -692,7 +698,6 @@ export function ConnectedServices({
           savedLabels.push(s.label);
         }
         toast.success(t("Settings saved"), { description: savedLabels.join(", ") });
-        setTmdbSetup(false);
         void refreshDashboard();
       } catch (e) {
         setError(e);
@@ -856,95 +861,8 @@ export function ConnectedServices({
       }
     });
   };
-  const tmdbTest = (
-    <TestButton
-      label={t("Test TMDB key")}
-      state={tests.catalog ?? { status: "idle" }}
-      onTest={() => {
-        setTests((prev) => ({ ...prev, catalog: { status: "running" } }));
-        api.testTMDB(String(draft.catalog?.tmdbKey ?? "")).then(
-          (r) =>
-            setTests((prev) => ({
-              ...prev,
-              catalog: r.ok
-                ? { status: "ok", durationMs: r.durationMs }
-                : { status: "fail", message: r.error ?? t("failed") },
-            })),
-          (e) =>
-            setTests((prev) => ({
-              ...prev,
-              catalog: { status: "fail", message: (e as Error).message },
-            })),
-        );
-      }}
-    />
-  );
-  const usingBundledKey =
-    !secretConfigured(stored?.catalog?.tmdbKey) &&
-    catalogSetupStatus.data?.steps.some((step) => step.id === "catalog" && step.complete) === true;
-  const tmdbForm = (
-    <SettingsSection
-      title={undefined}
-      description={
-        usingBundledKey
-          ? t("Ether includes a TMDB key. Add your own only if you want to use your own quota.")
-          : t("Ether uses this key to name titles, fetch artwork and fill the catalogue.")
-      }
-    >
-      {!usingBundledKey ? (
-        <p className="px-5 py-4 text-sm text-fg-muted">
-          {tx("Create a free API key in your {link} account settings, then paste it below.", {
-            link: (
-              <a
-                href="https://www.themoviedb.org/settings/api"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-primary underline"
-              >
-                themoviedb.org
-              </a>
-            ),
-          })}
-        </p>
-      ) : null}
-      <SchemaField
-        def={{
-          key: "tmdbKey",
-          label: usingBundledKey ? t("Your own TMDB key (optional)") : t("TMDB API key"),
-          kind: "secret",
-          help: t("Your personal TMDB v3 API key or v4 read-access token."),
-        }}
-        value={draft.catalog?.tmdbKey}
-        path="catalog.tmdbKey"
-        error={errors["catalog.tmdbKey"]}
-        onChange={(v) => setDraft({ ...draft, catalog: { ...draft.catalog, tmdbKey: v } })}
-      />
-    </SettingsSection>
-  );
   return (
     <>
-      <Drawer
-        open={tmdbSetup}
-        onClose={() => {
-          setTmdbSetup(false);
-          reset();
-        }}
-        title={t("Set up {app}", { app: "TMDB" })}
-        description={t("Save and enable turns this on. Cancel leaves it off.")}
-        footer={
-          <IntegrationSetupFooter
-            disabled={locked}
-            onCancel={() => {
-              setTmdbSetup(false);
-              reset();
-            }}
-            onSave={() => void save()}
-          />
-        }
-      >
-        {tmdbForm}
-        {tmdbTest}
-      </Drawer>
       <Drawer
         open={ratingsSetup}
         onClose={() => setRatingsSetup(false)}
@@ -1016,19 +934,7 @@ export function ConnectedServices({
       </Drawer>
       {tab === "tmdb" || visited.has("tmdb") ? (
         <div hidden={tab !== "tmdb"}>
-          <IntegrationTab
-            id="tmdb"
-            test={tmdbTest}
-            name="TMDB"
-            enabled
-            ready={
-              secretConfigured(stored?.catalog?.tmdbKey) ||
-              catalogSetupStatus.data?.steps.some(
-                (step) => step.id === "catalog" && step.complete,
-              ) === true
-            }
-          >
-            {tmdbForm}
+          <IntegrationTab id="tmdb" name="TMDB" enabled ready={Boolean(tmdb?.configured)}>
             <TmdbCatalogueSettings
               draft={draft.catalog ?? {}}
               onChange={(catalog) => setDraft({ ...draft, catalog })}
@@ -1063,7 +969,27 @@ export function ConnectedServices({
             <ServiceOverview
               posterCards={posterCards}
               posterSavedNote={posterSavedNote}
-              onTmdbSetup={() => setTmdbSetup(true)}
+              tmdbBundled={tmdb?.keySource === "built-in"}
+              onMetadataSave={(patch) =>
+                enqueue(async () => {
+                  const res = await api.putSection("catalog", patch);
+                  const section = asObj(res.value);
+                  const latest = model.current.draft;
+                  if (latest)
+                    applySection("catalog", section, {
+                      ...latest,
+                      catalog: {
+                        ...section,
+                        ...latest.catalog,
+                        ...Object.fromEntries(
+                          Object.keys(patch).map((field) => [field, section[field]]),
+                        ),
+                      },
+                    });
+                  await sources.reload();
+                  void refreshDashboard();
+                })
+              }
               onRatingsSetup={toggleRatings}
               draft={draft}
               stored={stored}
@@ -1098,18 +1024,17 @@ export function ConnectedServices({
               disabled={locked}
               test={testButton}
               href={
-                s.tab === "introdb" ||
-                s.tab === "opensubtitles" ||
-                s.tab === "subdl" ||
-                s.tab === "subsource"
+                s.tab === "introdb"
                   ? "/playback/extras"
-                  : s.tab === "llm"
-                    ? "/home"
-                    : s.tab === "trakt"
-                      ? ownerPath === "/viewers"
-                        ? "/viewers"
-                        : `${ownerPath}/sign-in?signin=sync`
-                      : "/viewers"
+                  : s.tab === "opensubtitles" || s.tab === "subdl" || s.tab === "subsource"
+                    ? "/playback/subtitles"
+                    : s.tab === "llm"
+                      ? "/recommendations"
+                      : s.tab === "trakt"
+                        ? ownerPath === "/viewers"
+                          ? "/viewers"
+                          : `${ownerPath}/sign-in?signin=sync`
+                        : "/viewers"
               }
               usage={
                 s.tab === "introdb"
@@ -1257,10 +1182,12 @@ function ServiceOverview({
   onToggle,
   posterCards,
   posterSavedNote,
-  onTmdbSetup,
+  tmdbBundled,
+  onMetadataSave,
   onRatingsSetup,
 }: {
-  onTmdbSetup: (next: boolean) => void;
+  tmdbBundled: boolean;
+  onMetadataSave: (patch: Record<string, string | boolean>) => Promise<void>;
   onRatingsSetup: (next: boolean) => void;
   posterCards: ReactNode;
   posterSavedNote?: ReactNode;
@@ -1271,25 +1198,37 @@ function ServiceOverview({
   locked: boolean;
   onToggle: (service: Service, next: boolean) => void;
 }) {
-  const navigate = useNavigate();
-  const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
+  const catalogue = useAsync(
+    (signal) => librariesApi.catalogueSources(signal, { includeDisabled: true }),
+    [],
+  );
   const [addingSource, setAddingSource] = useState(false);
+  const [managingCatalogue, setManagingCatalogue] = useState<string | null>(null);
+  const [togglingCatalogue, setTogglingCatalogue] = useState<string | null>(null);
+  const subtitlePlugins = useRegistry("subtitleProvider").descriptors.filter(isPluginDescriptor);
+  const [addingSubtitles, setAddingSubtitles] = useState(false);
+  const [checkingSubtitles, setCheckingSubtitles] = useState<{ id: string; name: string } | null>(
+    null,
+  );
   const [ownerPostersSaved, setOwnerPostersSaved] = useState(false);
   useStreamEvent("plugins.changed", () => {
     void catalogue.reload();
   });
-  const { health } = useApp();
-  const catalogHealth = health.find((item) => item.id === "catalog");
   const service = (tab: Service["tab"]) => SERVICES.find((s) => s.tab === tab)!;
   const saved = (tab: Service["tab"]) => stored?.[service(tab).configKey] ?? {};
   const on = (tab: Service["tab"]) => flagOf(saved(tab), service(tab).flag);
   const switchesHeld = locked || busyId !== null;
-  const tmdbKey = stored?.catalog?.tmdbKey;
-  const setup = useAsync(() => api.setupStatus(), []);
-  const tmdbAvailable =
-    secretConfigured(tmdbKey) ||
-    setup.data?.steps.some((step) => step.id === "catalog" && step.complete);
-
+  async function toggleCatalogue(id: string, enabled: boolean) {
+    setTogglingCatalogue(id);
+    try {
+      await setPluginEnabled(id, enabled);
+      await catalogue.reload();
+    } catch (error) {
+      toast.error(t("Couldn't save the change"), { description: errorMessage(error) });
+    } finally {
+      setTogglingCatalogue(null);
+    }
+  }
   return (
     <>
       <IntegrationGroup
@@ -1301,46 +1240,35 @@ function ServiceOverview({
           </Button>
         }
       >
-        <IntegrationAppCard
-          identity={{ id: "tmdb", name: "TMDB" }}
-          logo={<TmdbMark />}
-          description={t("Names titles, fetches artwork and fills the catalogue.")}
-          status={
-            tmdbAvailable ? (
-              catalogHealth ? (
-                <LevelBadge level={catalogHealth.level} />
-              ) : (
-                <Badge variant="success">{t("Key saved")}</Badge>
-              )
-            ) : (
-              <Badge variant="warning">{t("Needs an API key")}</Badge>
-            )
-          }
-          action={
-            <>
-              <div className="w-full text-sm text-fg-muted">
-                {catalogue.data
-                  ?.filter((source) => source.group === "builtin")
-                  .map((source) => (
-                    <p key={source.id}>
-                      {source.name}
-                      {source.itemCount !== undefined
-                        ? ` · ${tn(source.itemCount, "{count} title", "{count} titles")}`
-                        : ""}
-                    </p>
-                  ))}
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => (tmdbAvailable ? navigate("/services/tmdb") : onTmdbSetup(true))}
-              >
-                {tmdbAvailable ? t("Manage TMDB") : t("Set up TMDB")}
-              </Button>
-            </>
-          }
-        />
-        {catalogueGroups((catalogue.data ?? []).filter((source) => source.group !== "builtin")).map(
+        {(["tmdb", "tvdb"] as const).map((source) => (
+          <MetadataCatalogue
+            key={source}
+            identity={{ id: source, name: builtinMetadataSources[source].name }}
+            source={source}
+            storedKey={String(stored?.catalog?.[builtinMetadataSources[source].key] ?? "")}
+            bundled={source === "tmdb" && tmdbBundled}
+            enabled={
+              source === "tmdb"
+                ? stored?.catalog?.tmdbDisabled !== true
+                : secretConfigured(stored?.catalog?.tvdbKey)
+            }
+            onSetEnabled={async (enabled) => {
+              await onMetadataSave(
+                source === "tmdb" ? { tmdbDisabled: !enabled } : { tvdbKey: "" },
+              );
+              void catalogue.reload();
+            }}
+            locked={switchesHeld}
+            onSave={async (key) => {
+              await onMetadataSave({
+                [builtinMetadataSources[source].key]: key,
+                ...(source === "tmdb" ? { tmdbDisabled: false } : {}),
+              });
+              void catalogue.reload();
+            }}
+          />
+        ))}
+        {catalogueGroups((catalogue.data ?? []).filter((source) => source.pluginId)).map(
           (source) => (
             <IntegrationAppCard
               key={source.id}
@@ -1352,53 +1280,71 @@ function ServiceOverview({
                   <SourceIcon source={source} />
                 )
               }
-              description={tn(source.entries.length, "{count} catalogue", "{count} catalogues")}
+              description={[
+                tn(source.entries.length, "{count} catalogue", "{count} catalogues"),
+                ...source.entries.map(sourceName),
+                source.libraries.length
+                  ? t("Used by: {libraries}", {
+                      libraries: source.libraries.map((lib) => lib.name).join(", "),
+                    })
+                  : t("No libraries use this source yet."),
+              ].join(" · ")}
+              enabled={source.enabled}
+              busy={togglingCatalogue === source.id}
+              disabled={switchesHeld || togglingCatalogue !== null}
+              onToggle={(enabled) => void toggleCatalogue(source.id, enabled)}
               status={
-                <LevelBadge
-                  level={
-                    source.health === "unknown" ? "unknown" : source.health === "ok" ? "ok" : "warn"
-                  }
-                  label={
-                    source.health === "unknown"
-                      ? t("Not loaded yet")
-                      : source.health === "ok"
-                        ? t("Healthy")
-                        : source.lastError || t("Needs attention")
-                  }
-                />
-              }
-              configureHref={
-                source.pluginId
-                  ? `/plugins/installed?plugin=${encodeURIComponent(source.pluginId)}&tab=setup`
-                  : undefined
-              }
-              details={
                 <>
-                  <div className="w-full space-y-1 text-sm text-fg-muted">
-                    <p>{source.entries.map(sourceName).join(" · ")}</p>
-                    {source.entries
-                      .filter((entry) => entry.lastError)
-                      .map((entry) => (
-                        <p key={entry.id} className="text-danger">
-                          {sourceName(entry)}: {entry.lastError}
-                        </p>
-                      ))}
-                    <p>
-                      {source.libraries.length
-                        ? t("Used by: {libraries}", {
-                            libraries: source.libraries.map((lib) => lib.name).join(", "),
-                          })
-                        : t("No libraries use this source yet.")}
-                    </p>
-                  </div>
+                  {!source.enabled ? <Badge variant="secondary">{t("Off")}</Badge> : null}
+                  <LevelBadge
+                    level={
+                      source.health === "unknown"
+                        ? "unknown"
+                        : source.health === "ok"
+                          ? "ok"
+                          : "warn"
+                    }
+                    label={
+                      source.health === "unknown"
+                        ? t("Not loaded yet")
+                        : source.health === "ok"
+                          ? t("Healthy")
+                          : source.lastError || t("Needs attention")
+                    }
+                  />
                 </>
               }
+              configureLabel={
+                source.enabled
+                  ? t("Manage {app}", { app: source.name })
+                  : t("Set up {app}", { app: source.name })
+              }
+              onConfigure={() => setManagingCatalogue(source.id)}
+              details={source.entries
+                .filter((entry) => entry.lastError)
+                .map((entry) => (
+                  <p key={entry.id} className="text-danger">
+                    {sourceName(entry)}: {entry.lastError}
+                  </p>
+                ))}
             />
           ),
         )}
       </IntegrationGroup>
       {catalogue.error ? (
         <ErrorPanel error={catalogue.error} onRetry={() => void catalogue.reload()} />
+      ) : null}
+      {managingCatalogue ? (
+        <InstalledPluginDrawer
+          pluginId={managingCatalogue}
+          initialTab="setup"
+          onClose={() => setManagingCatalogue(null)}
+          onChanged={() => void catalogue.reload()}
+          onRemoved={() => {
+            setManagingCatalogue(null);
+            void catalogue.reload();
+          }}
+        />
       ) : null}
       {addingSource ? (
         <AddCatalogueSource
@@ -1493,15 +1439,34 @@ function ServiceOverview({
           />
         </IntegrationGroup>
       </>
-      <IntegrationGroup title={t("Playback extras")}>
+      <IntegrationGroup
+        title={t("Subtitle providers")}
+        setting="subtitle-providers"
+        footer={
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Button variant="secondary" onClick={() => setAddingSubtitles(true)}>
+              <Plus size={14} />
+              {t("Add subtitle provider")}
+            </Button>
+            <p className="text-sm text-fg-muted">
+              {t("Every provider that is on is searched, and the best match for the file is used.")}
+            </p>
+          </div>
+        }
+      >
         <IntegrationAppCard
           identity={{ id: "opensubtitles", name: "OpenSubtitles" }}
           description={t("Fetch subtitles when a release doesn't include them.")}
-          status={switchStatus(
-            on("opensubtitles"),
-            Boolean(saved("opensubtitles").apiKey),
-            t("Needs an API key"),
-          )}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(
+                on("opensubtitles"),
+                Boolean(saved("opensubtitles").apiKey),
+                t("Needs an API key"),
+              )}
+            </>
+          }
           enabled={on("opensubtitles")}
           busy={locked || busyId === "opensubtitles"}
           disabled={switchesHeld}
@@ -1514,7 +1479,12 @@ function ServiceOverview({
         <IntegrationAppCard
           identity={{ id: "subdl", name: "SubDL" }}
           description={t("Fetch subtitles from SubDL when a release doesn't include them.")}
-          status={switchStatus(on("subdl"), Boolean(saved("subdl").apiKey), t("Needs an API key"))}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(on("subdl"), Boolean(saved("subdl").apiKey), t("Needs an API key"))}
+            </>
+          }
           enabled={on("subdl")}
           busy={locked || busyId === "subdl"}
           disabled={switchesHeld}
@@ -1525,11 +1495,16 @@ function ServiceOverview({
         <IntegrationAppCard
           identity={{ id: "subsource", name: "SubSource" }}
           description={t("Fetch subtitles from SubSource when a release doesn't include them.")}
-          status={switchStatus(
-            on("subsource"),
-            Boolean(saved("subsource").apiKey),
-            t("Needs an API key"),
-          )}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(
+                on("subsource"),
+                Boolean(saved("subsource").apiKey),
+                t("Needs an API key"),
+              )}
+            </>
+          }
           enabled={on("subsource")}
           busy={locked || busyId === "subsource"}
           disabled={switchesHeld}
@@ -1537,6 +1512,48 @@ function ServiceOverview({
           configureHref="/services/subsource"
           configureLabel={on("subsource") ? t("Manage SubSource") : t("Set up SubSource")}
         />
+        {subtitlePlugins.map((provider) => {
+          const name = textOf(provider.label) || provider.owner;
+          const isStremio = Boolean((provider.meta as { stremio?: boolean } | undefined)?.stremio);
+          return (
+            <IntegrationAppCard
+              key={provider.id}
+              identity={{ id: provider.id, name }}
+              logo={
+                provider.icon && /^(https?:|\/|data:)/.test(provider.icon) ? (
+                  <img src={provider.icon} alt="" />
+                ) : undefined
+              }
+              description={t(
+                "Offered beside your other subtitle providers; a file downloads only when picked.",
+              )}
+              status={
+                <>
+                  <Badge variant="secondary">{isStremio ? t("Stremio add-on") : t("Plugin")}</Badge>
+                  <Badge variant="success">{t("On")}</Badge>
+                </>
+              }
+              action={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={t("Check subtitles from {name}", { name })}
+                  onClick={() => setCheckingSubtitles({ id: provider.owner, name })}
+                >
+                  {t("Check subtitles")}
+                </Button>
+              }
+              configureHref={`/plugins/installed?plugin=${encodeURIComponent(provider.owner)}&tab=setup`}
+              configureLabel={t("Open plugin")}
+            />
+          );
+        })}
+      </IntegrationGroup>
+      {addingSubtitles ? <AddSubtitleProvider onClose={() => setAddingSubtitles(false)} /> : null}
+      {checkingSubtitles ? (
+        <SubtitleCheck provider={checkingSubtitles} onClose={() => setCheckingSubtitles(null)} />
+      ) : null}
+      <IntegrationGroup title={t("Playback extras")}>
         <IntegrationAppCard
           identity={{ id: "introdb", name: "TheIntroDB" }}
           description={t("Intro and credits markers so viewers can skip them.")}
@@ -1596,14 +1613,17 @@ function IntegrationGroup({
   title,
   children,
   footer,
+  setting,
 }: {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Stable key a link elsewhere in the console can point at (`settingHref`). */
+  setting?: string;
 }) {
   const cards = flattenCards(children).filter(isValidElement);
   return (
-    <section aria-label={title} className="space-y-3 pt-6 first:pt-0">
+    <section aria-label={title} data-setting={setting} className="space-y-3 pt-6 first:pt-0">
       <h2 className="text-sm font-semibold text-fg">{title}</h2>
       <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {cards.map((child, index) => {

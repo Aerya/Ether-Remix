@@ -168,7 +168,7 @@ func (b *Broker) OpenSidecar(ctx context.Context, access frontend.SessionAccess,
 		return nil, core.StreamInfo{}, err
 	}
 	if b.deps.Lookup != nil {
-		if _, err := b.deps.Lookup(ctx, viewer, core.Device{}, binding.Key); err != nil {
+		if _, err := b.deps.Lookup(core.WithLiveApp(ctx, string(access.Protocol)), viewer, core.Device{}, binding.Key); err != nil {
 			return nil, core.StreamInfo{}, core.ErrNotFound
 		}
 	}

@@ -76,6 +76,9 @@ func (i *instance) registerRoutes() error {
 	if err := i.router.Handle(http.MethodGet, "/{credential}/stream/{type}/{id}", http.HandlerFunc(i.stream)); err != nil {
 		return err
 	}
+	if err := i.registerPSEFilesOnlyRoutes(); err != nil { // PSE-HOOK: lien Stremio fichiers seuls — voir docs/pse/FORK.fr.md
+		return err
+	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		if err := i.router.Handle(method, "/sessions/lazy/{rest...}", http.HandlerFunc(i.serveLazy)); err != nil {
 			return err
@@ -198,22 +201,22 @@ func (i *instance) manifest(w http.ResponseWriter, r *http.Request) {
 			catalogs = append(catalogs, map[string]any{"type": typ, "id": "ether-" + row.id, "name": row.name, "extra": []any{map[string]any{"name": "skip"}}})
 		}
 	}
-	// One catalog per published plugin library whose presentation is a valid
+	// One catalog per published library whose presentation is a valid
 	// Stremio type (spec §6.4). The library's catalog id is ether-lib-<id>;
-	// its metas address plugin items as pk: ItemRefs.
+	// plugin items are addressed as pk: ItemRefs.
 	catalogs = append(catalogs, i.libraryCatalogs(r, viewer)...)
+	catalogs = append(catalogs, i.pseThemeCatalogs(r, viewer)...) // PSE-HOOK: catalogues des bibliothèques Remix — voir docs/pse/FORK.fr.md
 	writeJSON(w, map[string]any{
 		"id": "org.ether.viewer", "version": "1.0.0", "name": "Ether",
-		"types": []string{"movie", "series", "channel", "tv"}, "resources": []string{"catalog", "meta", "stream"},
-		"idPrefixes": []string{"tmdb:", "tt", "pk:"},
+		"types": []string{"movie", "series", "channel", "tv"}, "resources": pseManifestResources([]string{"catalog", "meta", "stream"}), // PSE-HOOK: ressources player et library pour Nuvio — voir docs/pse/FORK.fr.md
+		"idPrefixes": []string{"tmdb:", "tt", "pk:", catalogKeyPrefix},
 		"catalogs":   catalogs,
 	})
 }
 
-// libraryCatalogs lists catalogs for plugin libraries the viewer may open and
-// whose Stremio presentation type is one Stremio accepts. Built-in movies and
-// TV shows keep their existing ether-movies/ether-series aliases and are not
-// repeated here.
+// libraryCatalogs lists one ether-lib-<id> catalog for every library the
+// viewer may open whose Stremio presentation type is one Stremio accepts,
+// built-in and plugin alike.
 func (i *instance) libraryCatalogs(r *http.Request, viewer *frontend.Viewer) []any {
 	if i.host.Experience == nil {
 		return nil
@@ -224,9 +227,6 @@ func (i *instance) libraryCatalogs(r *http.Request, viewer *frontend.Viewer) []a
 	}
 	out := make([]any, 0, len(views))
 	for _, view := range views {
-		if view.LibraryID <= 2 {
-			continue
-		}
 		typ := stremioLibraryType(view)
 		if typ == "" {
 			continue

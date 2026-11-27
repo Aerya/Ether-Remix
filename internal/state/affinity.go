@@ -43,11 +43,18 @@ func (s *State) Familiar(ctx context.Context, userID int64, keys []core.RatingKe
 				WHEN EXISTS (SELECT 1 FROM state_watch WHERE rating_key=? AND ` + touched + `) THEN 1 ELSE 0 END AS level`,
 				[]any{int64(k), userID, int64(k), int64(k)}})
 		case core.KindShow:
-			lo, hi := int64(core.EpisodeKey(k.TMDB(), 0, 0)), int64(core.EpisodeKey(k.TMDB()+1, 0, 0))
-			probes = append(probes, probe{`SELECT CAST(? AS BIGINT) AS k, CASE
-				WHEN EXISTS (SELECT 1 FROM state_watch WHERE user_id=? AND rating_key>=? AND rating_key<? AND ` + touched + `) THEN 2
-				WHEN EXISTS (SELECT 1 FROM state_watch WHERE rating_key>=? AND rating_key<? AND ` + touched + `) THEN 1 ELSE 0 END AS level`,
-				[]any{int64(k), userID, lo, hi, lo, hi}})
+			var lo, hi core.RatingKey
+			if !k.Allocated() {
+				lo, hi = core.EpisodeKey(k.TMDB(), 0, 0), core.EpisodeKey(k.TMDB()+1, 0, 0)
+			}
+			probes = append(probes, probe{`SELECT CAST(? AS BIGINT) AS k,CASE
+ WHEN EXISTS (SELECT 1 FROM state_watch WHERE user_id=? AND rating_key>=? AND rating_key<? AND ` + touched + `
+ UNION ALL SELECT 1 FROM catalog_allocated_child a JOIN state_watch w ON w.rating_key=a.key
+ WHERE a.show_key=? AND a.kind=4 AND w.user_id=? AND ` + touched + `) THEN 2
+ WHEN EXISTS (SELECT 1 FROM state_watch WHERE rating_key>=? AND rating_key<? AND ` + touched + `
+ UNION ALL SELECT 1 FROM catalog_allocated_child a JOIN state_watch w ON w.rating_key=a.key
+ WHERE a.show_key=? AND a.kind=4 AND ` + touched + `) THEN 1 ELSE 0 END AS level`,
+				[]any{k, userID, lo, hi, k, userID, lo, hi, k}})
 		}
 	}
 	for start := 0; start < len(probes); start += 100 {

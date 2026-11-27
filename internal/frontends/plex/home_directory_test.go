@@ -62,12 +62,12 @@ func TestHomeDirectoryPartition(t *testing.T) {
 				continue
 			}
 			for _, row := range []string{"home.trending", "home.top10"} {
-				if seen[prefix+"."+row] != dir {
+				if seen[row+"@"+dir] != dir {
 					t.Fatalf("pin=%s row %s: %v", pin, row, seen)
 				}
 			}
 		}
-		if seen["movie.popular"] != "" || seen["tv.popular"] != "" {
+		if seen["movie.popular@1"] != "" || seen["tv.popular@2"] != "" {
 			t.Fatalf("pin=%s library recommendations leaked into Home: %v", pin, seen)
 		}
 		if strings.Contains(pin, "playlists") && seen["home.playlists"] != "playlists" {
@@ -236,7 +236,7 @@ func TestPinnedMovieAndShowHomeNoDuplicatesAndStrictType(t *testing.T) {
 
 		seen := map[string]string{}
 		for _, h := range movieHubs {
-			if strings.HasPrefix(h.HubIdentifier, "movie.inprogress.") || strings.HasPrefix(h.HubIdentifier, "home.") {
+			if strings.HasPrefix(h.HubIdentifier, "movie.inprogress.") || (strings.HasPrefix(h.HubIdentifier, "home.") && !strings.HasSuffix(h.HubIdentifier, "@1")) {
 				t.Fatalf("%s returned unexpected hub %s", endpoints[0], h.HubIdentifier)
 			}
 			seen[h.HubIdentifier] = endpoints[0]
@@ -254,7 +254,7 @@ func TestPinnedMovieAndShowHomeNoDuplicatesAndStrictType(t *testing.T) {
 			}
 		}
 		for _, h := range showHubs {
-			if strings.HasPrefix(h.HubIdentifier, "tv.inprogress.") || strings.HasPrefix(h.HubIdentifier, "home.") {
+			if strings.HasPrefix(h.HubIdentifier, "tv.inprogress.") || (strings.HasPrefix(h.HubIdentifier, "home.") && !strings.HasSuffix(h.HubIdentifier, "@2")) {
 				t.Fatalf("%s returned unexpected hub %s", endpoints[1], h.HubIdentifier)
 			}
 			if prior := seen[h.HubIdentifier]; prior != "" {

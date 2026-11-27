@@ -114,7 +114,9 @@ func (c Continue) filterHidden(ctx context.Context, viewer *core.User, items []c
 	for _, item := range items {
 		key := item.Key
 		if item.Type == core.TypeEpisode {
-			key = core.ShowKey(item.Key.TMDB())
+			if show := seriesOfTitle(item); show != 0 {
+				key = show
+			}
 		}
 		keys = append(keys, key)
 	}

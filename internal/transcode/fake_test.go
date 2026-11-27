@@ -284,6 +284,8 @@ type fakeProc struct {
 
 	mu      sync.Mutex
 	paused  bool
+	parked  bool
+	last    int // newest segment written
 	resumed chan struct{}
 	pauses  int
 	killed  bool
@@ -336,6 +338,34 @@ func (p *fakeProc) simulateHTTP(cmd Command) {
 		p.err = errors.New("signal: killed")
 	default:
 	}
+}
+
+// awaitResume blocks while the process is suspended. It reports false when
+// the process is killed instead.
+func (p *fakeProc) awaitResume() bool {
+	p.mu.Lock()
+	resumed := p.resumed
+	p.parked = p.paused
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.parked = false
+		p.mu.Unlock()
+	}()
+	select {
+	case <-p.kill:
+		return false
+	case <-resumed:
+		return true
+	}
+}
+
+// isParked reports that the suspended process has stopped writing: the
+// segment it was producing when the pause landed is published.
+func (p *fakeProc) isParked() (bool, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.parked, p.last
 }
 
 func (p *fakeProc) isPaused() bool {
@@ -437,14 +467,9 @@ func (p *fakeProc) simulate(cmd Command, delay time.Duration, lastSeg, failAfter
 			p.err = errors.New("exit status 1")
 			return
 		}
-		p.mu.Lock()
-		resumed := p.resumed
-		p.mu.Unlock()
-		select {
-		case <-p.kill:
+		if !p.awaitResume() {
 			p.err = errors.New("signal: killed")
 			return
-		case <-resumed:
 		}
 		select {
 		case <-p.kill:
@@ -460,6 +485,9 @@ func (p *fakeProc) simulate(cmd Command, delay time.Duration, lastSeg, failAfter
 		if !p.publish(playlist, []byte(list.String())) {
 			return
 		}
+		p.mu.Lock()
+		p.last = n
+		p.mu.Unlock()
 		if cmd.Stdout != nil {
 			fmt.Fprintf(cmd.Stdout, "frame=%d\nout_time_us=%d\nspeed=4.0x\nprogress=continue\n", n*96, n*4000000)
 		}
@@ -555,14 +583,9 @@ func (p *fakeProc) simulateChunks(cmd Command, delay, gop, end, audioEnd time.Du
 			p.err = errors.New("exit status 1")
 			return
 		}
-		p.mu.Lock()
-		resumed := p.resumed
-		p.mu.Unlock()
-		select {
-		case <-p.kill:
+		if !p.awaitResume() {
 			p.err = errors.New("signal: killed")
 			return
-		case <-resumed:
 		}
 		select {
 		case <-p.kill:
@@ -595,6 +618,9 @@ func (p *fakeProc) simulateChunks(cmd Command, delay, gop, end, audioEnd time.Du
 		if !p.publish(playlist, []byte(list.String())) {
 			return
 		}
+		p.mu.Lock()
+		p.last = int(t / fakeChunkSeg)
+		p.mu.Unlock()
 		if cmd.Stdout != nil {
 			fmt.Fprintf(cmd.Stdout, "frame=%d\nout_time_us=%d\nspeed=4.0x\nprogress=continue\n", n*96, t.Microseconds())
 		}
@@ -711,14 +737,9 @@ func (p *fakeProc) simulateDASH(cmd Command, delay, end time.Duration, hold bool
 			p.err = errors.New("exit status 1")
 			return
 		}
-		p.mu.Lock()
-		resumed := p.resumed
-		p.mu.Unlock()
-		select {
-		case <-p.kill:
+		if !p.awaitResume() {
 			p.err = errors.New("signal: killed")
 			return
-		case <-resumed:
 		}
 		select {
 		case <-p.kill:

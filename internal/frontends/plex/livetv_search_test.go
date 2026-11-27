@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
 )
@@ -618,5 +619,215 @@ func TestLibrarySearchIncludesLiveTVChannelsOnNowAndHonorsPolicy(t *testing.T) {
 				t.Fatalf("policy %+v leaked Live TV in %s: channel=%#v onNow=%#v", pol, target, c, onNow)
 			}
 		}
+	}
+}
+
+// Channel-name matches on /library/search must surface the matched channel's
+// on-now airing first (above library title matches), label it with the channel
+// identity for Plex for iOS/Apple TV (which skip SearchResult.Channel), keep
+// the Channel element, and omit future airings of that channel — while
+// programme-title matches keep normal ranking and future airings (#764).
+func TestLibrarySearchChannelMatchRankingAndLaterAirings(t *testing.T) {
+	f, service, _ := liveFixture(t)
+	ctx := context.Background()
+
+	// Seed library titles matching both the channel query ("Red zone") and the
+	// programme query ("Every Sunday Afternoon").
+	for _, item := range []core.Title{
+		{Key: core.ShowKey(76401), Type: core.TypeShow, Title: "Red Zone", Year: 2024, SearchScore: 1.0},
+		{Key: core.ShowKey(76402), Type: core.TypeShow, Title: "The Red Zone", Year: 2021, SearchScore: 0.9669},
+		{Key: core.MovieKey(76403), Type: core.TypeMovie, Title: "Every Sunday Afternoon", Year: 2023, SearchScore: 1.0},
+	} {
+		f.catalog.titles[item.Key] = item
+	}
+
+	// Import NFL RedZone (on-now + 3 future airings whose summary also mentions
+	// RedZone) and ESPN Sports (episodic on-now + future airing).
+	src := livetv.Source{
+		Name: "Sports IPTV",
+		Playlist: "#EXTM3U\n" +
+			"#EXTINF:-1 tvg-id=\"redzone\" tvg-chno=\"195\" group-title=\"Sports\",NFL RedZone\nhttp://127.0.0.1:9/redzone.m3u8\n" +
+			"#EXTINF:-1 tvg-id=\"espn\" tvg-chno=\"206\" group-title=\"Sports\",ESPN Sports\nhttp://127.0.0.1:9/espn.m3u8\n",
+		Guide: `<tv>` +
+			`<channel id="redzone"><display-name>NFL RedZone</display-name></channel>` +
+			`<channel id="espn"><display-name>ESPN Sports</display-name></channel>` +
+			`<programme channel="redzone" start="20261018110000 +0000" stop="20261018130000 +0000"><title>Every Sunday Afternoon</title><desc>Every touchdown from every game on NFL RedZone.</desc></programme>` +
+			`<programme channel="redzone" start="20261018150000 +0000" stop="20261018170000 +0000"><title>Every Sunday Afternoon</title><desc>Encore coverage on NFL RedZone.</desc></programme>` +
+			`<programme channel="redzone" start="20261019110000 +0000" stop="20261019130000 +0000"><title>Every Sunday Afternoon</title><desc>Next day replay on NFL RedZone.</desc></programme>` +
+			`<programme channel="redzone" start="20261020110000 +0000" stop="20261020130000 +0000"><title>Every Sunday Afternoon</title><desc>Week recap on NFL RedZone.</desc></programme>` +
+			`<programme channel="espn" start="20261018110000 +0000" stop="20261018130000 +0000"><title>SportsCenter</title><desc>Live sports news on ESPN.</desc><category>Series</category></programme>` +
+			`<programme channel="espn" start="20261018160000 +0000" stop="20261018180000 +0000"><title>SportsCenter</title><desc>Evening edition on ESPN.</desc><category>Series</category></programme>` +
+			`</tv>`,
+	}
+	if _, err := service.ImportSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	var redzoneID, espnID string
+	cs, err := service.Channels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		switch c.Name {
+		case "NFL RedZone":
+			redzoneID = c.ID
+		case "ESPN Sports":
+			espnID = c.ID
+		}
+	}
+	if redzoneID == "" || espnID == "" {
+		t.Fatalf("missing imported channels: %+v", cs)
+	}
+	search := service.Frontend().(frontend.LiveTVSearch)
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		hits, e := search.SearchLiveTV(ctx, &ownerUser, "red zone", 10)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !hits.Partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("search index did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	wantSource := "server://" + f.srv.identity().MachineIdentifier + liveProviderPath
+	iosHeaders := map[string]string{
+		"Accept":          "application/json",
+		"X-Plex-Token":    ownerToken,
+		"X-Plex-Product":  "Plex for iOS",
+		"X-Plex-Platform": "iOS",
+	}
+
+	// 1. Channel-name fuzzy match ("Red zone" -> "NFL RedZone"):
+	//    - on-now airing ranks FIRST (ahead of "Red Zone" and "The Red Zone")
+	//    - carries channel identity on title + Media[0] guide fields
+	//    - keeps the Channel element
+	//    - returns only the on-now airing, omitting the 3 future airings
+	rec := f.request(t, http.MethodGet, "/library/search?query="+url.QueryEscape("Red zone")+"&searchTypes=movies,tv,livetv&limit=30", iosHeaders)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("red zone search: %d %s", rec.Code, rec.Body.String())
+	}
+	mc := decodeJSON(t, rec)
+	results, _ := mc["SearchResult"].([]any)
+	if len(results) < 3 {
+		t.Fatalf("expected channel airing, channel element, and library matches, got %#v", results)
+	}
+	first := results[0].(map[string]any)
+	firstMD, _ := first["Metadata"].(map[string]any)
+	if firstMD == nil || firstMD["source"] != wantSource {
+		t.Fatalf("expected on-now Live TV airing first, got %#v", first)
+	}
+	if firstMD["title"] != "NFL RedZone" {
+		t.Fatalf("expected channel name in on-now title, got %#v", firstMD["title"])
+	}
+	if firstMD["tagline"] != "Every Sunday Afternoon" || !strings.Contains(firstMD["summary"].(string), "Every Sunday Afternoon") {
+		t.Fatalf("expected programme title preserved in tagline/summary, got tagline=%#v summary=%#v", firstMD["tagline"], firstMD["summary"])
+	}
+	mediaList, _ := firstMD["Media"].([]any)
+	if len(mediaList) != 1 {
+		t.Fatalf("expected single Media on on-now airing, got %#v", firstMD["Media"])
+	}
+	media := mediaList[0].(map[string]any)
+	if media["channelTitle"] != "NFL RedZone" ||
+		media["channelCallSign"] != "NFL RedZone" ||
+		media["channelIdentifier"] != redzoneID ||
+		media["channelVcn"] != "195" ||
+		media["onAir"] != true ||
+		!strings.Contains(media["channelThumb"].(string), signedLogoPrefix) {
+		t.Fatalf("expected PMS guide channel identity on Media[0], got %#v", media)
+	}
+	firstScore := first["score"].(float64)
+
+	var redzoneAirings, redzoneChannels, libMatches int
+	for _, rawHit := range results {
+		hit := rawHit.(map[string]any)
+		if chHit, ok := hit["Channel"].(map[string]any); ok && chHit["id"] == redzoneID {
+			redzoneChannels++
+			continue
+		}
+		if md, ok := hit["Metadata"].(map[string]any); ok {
+			if md["source"] == wantSource {
+				redzoneAirings++
+			} else {
+				libMatches++
+				if sc := hit["score"].(float64); sc >= firstScore {
+					t.Fatalf("library hit %q score %v must rank below matched channel score %v", md["title"], sc, firstScore)
+				}
+			}
+		}
+	}
+	if redzoneAirings != 1 {
+		t.Fatalf("channel-name match must return only the on-now airing (got %d airings): %#v", redzoneAirings, results)
+	}
+	if redzoneChannels != 1 {
+		t.Fatalf("channel-name match must keep the Channel element (got %d)", redzoneChannels)
+	}
+	if libMatches < 2 {
+		t.Fatalf("expected library matches to remain in results (got %d)", libMatches)
+	}
+
+	// 2. Episodic on-now airing on a channel-name match carries grandparentTitle
+	//    and omits future airings of that channel.
+	epRec := f.request(t, http.MethodGet, "/library/search?query=ESPN&searchTypes=movies,tv,livetv&limit=30", map[string]string{
+		"Accept":          "application/json",
+		"X-Plex-Token":    ownerToken,
+		"X-Plex-Product":  "Plex for Apple TV",
+		"X-Plex-Platform": "tvOS",
+	})
+	if epRec.Code != http.StatusOK {
+		t.Fatalf("espn search: %d %s", epRec.Code, epRec.Body.String())
+	}
+	epResults, _ := decodeJSON(t, epRec)["SearchResult"].([]any)
+	if len(epResults) < 2 {
+		t.Fatalf("expected episodic airing and channel element, got %#v", epResults)
+	}
+	epFirstMD, _ := epResults[0].(map[string]any)["Metadata"].(map[string]any)
+	if epFirstMD == nil || epFirstMD["type"] != "episode" || epFirstMD["title"] != "ESPN Sports" || epFirstMD["grandparentTitle"] != "SportsCenter" {
+		t.Fatalf("unexpected episodic on-now airing: %#v", epFirstMD)
+	}
+	epAirings := 0
+	for _, rawHit := range epResults {
+		if md, ok := rawHit.(map[string]any)["Metadata"].(map[string]any); ok && md["source"] == wantSource {
+			epAirings++
+		}
+	}
+	if epAirings != 1 {
+		t.Fatalf("episodic channel-name match must omit future airings (got %d)", epAirings)
+	}
+
+	// 3. Programme-title match ("Every Sunday Afternoon") does NOT match any
+	//    channel name: library title ranks normally first, airing keeps the
+	//    programme title, and future airings stay.
+	progRec := f.request(t, http.MethodGet, "/library/search?query="+url.QueryEscape("Every Sunday Afternoon")+"&searchTypes=movies,tv,livetv&limit=30", iosHeaders)
+	if progRec.Code != http.StatusOK {
+		t.Fatalf("programme search: %d %s", progRec.Code, progRec.Body.String())
+	}
+	progResults, _ := decodeJSON(t, progRec)["SearchResult"].([]any)
+	if len(progResults) < 5 {
+		t.Fatalf("expected library match plus on-now and future airings, got %#v", progResults)
+	}
+	progFirstMD, _ := progResults[0].(map[string]any)["Metadata"].(map[string]any)
+	if progFirstMD == nil || progFirstMD["source"] == wantSource || progFirstMD["title"] != "Every Sunday Afternoon" {
+		t.Fatalf("programme-title search must keep normal ranking with library match first, got %#v", progResults[0])
+	}
+	var progLiveAirings, progOnAir int
+	for _, rawHit := range progResults {
+		md, ok := rawHit.(map[string]any)["Metadata"].(map[string]any)
+		if !ok || md["source"] != wantSource {
+			continue
+		}
+		progLiveAirings++
+		if md["title"] != "Every Sunday Afternoon" {
+			t.Fatalf("programme-title match should keep programme title, got %#v", md["title"])
+		}
+		if ml, _ := md["Media"].([]any); len(ml) == 1 && ml[0].(map[string]any)["onAir"] == true {
+			progOnAir++
+		}
+	}
+	if progLiveAirings != 4 || progOnAir != 1 {
+		t.Fatalf("programme-title match must keep on-now + future airings (got total=%d onAir=%d)", progLiveAirings, progOnAir)
 	}
 }

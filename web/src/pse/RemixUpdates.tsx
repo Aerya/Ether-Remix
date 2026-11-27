@@ -28,12 +28,16 @@ export const REMIX_UPDATES = [
   {
     id: "2026-11-24-guided-setup",
     version: "current",
-    date: "2026-11-24",
+    date: "2026-11-27",
     title: [
       "Un assistant pour composer votre configuration",
       "An assistant to build your configuration",
     ],
     items: [
+      [
+        "Le parcours rejoint la version stable avec Stremio/Nuvio, les exclusions des derniers ajouts Jellyfin/Emby et les découvertes musicales Digarr/AudioMuse. Les connexions et jetons se configurent dans leurs éditeurs ; les intentions ne les activent pas.",
+        "The journey joins stable with Stremio/Nuvio, Jellyfin/Emby latest-item exclusions and Digarr/AudioMuse music discovery. Connections and tokens are configured in their editors; intentions do not enable them.",
+      ],
       [
         "Le démarrage rapide devient un questionnaire en huit étapes : contenus, langues, découvertes, usages, sources, bibliothèques, affiches et récapitulatif. Les éditeurs utiles s’ouvrent dans un autre onglet ; les connexions restent à tester.",
         "Quick setup becomes an eight-step questionnaire: content, languages, discovery, usage, sources, libraries, artwork and review. Relevant editors open in another tab; connections still need testing.",
@@ -45,14 +49,106 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-27-digarr-discovery",
+    version: "0.2.37-remix.156.1",
+    date: "2026-11-27",
+    title: ["Découvertes musicales Digarr", "Digarr music discovery"],
+    items: [
+      [
+        "Playlists → Digarr : recommandations par spectateur avec un jeton personnel en lecture seule, recherche des albums correspondants et création de playlists personnelles. Connecteur facultatif ; la lecture dépend des sources musicales configurées.",
+        "Playlists → Digarr: per-viewer recommendations with a personal read-only token, matching album search and personal playlist creation. Optional connector; playback depends on configured music sources.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-27-upstream-plugin-libraries",
+    version: "0.2.37-remix.154.1",
+    date: "2026-11-27",
+    title: ["Bibliothèques de plugins et synchronisation Ether", "Plugin libraries and Ether sync"],
+    items: [
+      [
+        "Les plugins peuvent remplacer leurs bibliothèques après confirmation explicite. La synchronisation Ether préserve les réglages de rafraîchissement, les quotas et la cadence des plugins Remix.",
+        "Plugins can replace their libraries after explicit confirmation. Ether sync preserves Remix plugin refresh settings, quotas and scheduling.",
+      ],
+      [
+        "Jellyfin et Emby : la rangée À suivre respecte la série demandée, y compris pour les épisodes issus des plugins.",
+        "Jellyfin and Emby: Next Up respects the requested series, including plugin episodes.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-26-upstream-recommendations",
+    version: "0.2.37-remix.153.1",
+    date: "2026-11-26",
+    title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
+    items: [
+      [
+        "Nuvio : chaque spectateur peut relier son profil Nuvio (Profil › Connexion et appareils › Nuvio). La reprise et l'historique se synchronisent dans les deux sens (toutes les 5 minutes, réglable), et le lien Stremio du spectateur s'installe dans Nuvio en un clic. L'addon Ether déclare aussi les ressources Stremio « player » et « library » : Nuvio TV (1.2.0-beta.2 ou plus) y signale la lecture, la liste de suivi et les titres vus.",
+        "Nuvio: each viewer can link their Nuvio profile (Profile › Sign-in & devices › Nuvio). Resume points and history sync both ways (every 5 minutes, adjustable), and the viewer's Stremio link installs into Nuvio in one click. The Ether addon also declares the Stremio “player” and “library” resources: Nuvio TV (1.2.0-beta.2 or later) reports playback, watchlist and watched titles through them.",
+      ],
+      [
+        "Stremio : deux liens au choix par profil. « Avec les catalogues du profil » publie aussi une rangée par collection des bibliothèques Remix accordées (contrôle parental et langue respectés) ; « Uniquement les fichiers » ne publie aucun catalogue et ne sert qu’à lire. Les liens déjà installés gagnent les catalogues Remix.",
+        "Stremio: two links per profile. “With the profile's catalogues” also publishes one row per collection of the granted Remix libraries (parental controls and language respected); “Files only” publishes no catalogue and only serves playback. Already installed links gain the Remix catalogues.",
+      ],
+      [
+        "Stremio et Nuvio : liste de versions réglée par lien. Dans Se connecter, choisissez l'affichage (Direct, Compact ou Détaillé) et le nombre de versions par qualité (4K, 1080p, 720p) : Ether propose le flux Auto puis les meilleures releases classées de chaque qualité, avec service débrideur, langues, taille, débit et indexeur. Ether lance la recherche avant de répondre. Les liens déjà installés ne changent pas.",
+        "Stremio and Nuvio: version list set per link. Under Connect, pick the display (Direct, Compact or Detailed) and the number of versions per quality (4K, 1080p, 720p): Ether offers the Auto stream then the best ranked releases of each quality, with debrid service, languages, size, bitrate and indexer. Ether runs the search before answering. Already installed links do not change.",
+      ],
+      [
+        "Lecture : les épisodes d'une série dont le titre finit par un nombre (ex. Blade Runner 2099) s'ouvrent ; le fichier n'est plus refusé comme « autre contenu ».",
+        "Playback: episodes of a show whose title ends with a number (e.g. Blade Runner 2099) open; the file is no longer refused as “different content”.",
+      ],
+      [
+        "Recherche : un titre qui finit par un nombre à quatre chiffres (ex. Blade Runner 2099) trouve de nouveau ses releases ; ce nombre n'est plus pris pour une année de sortie.",
+        "Search: a title ending with a four-digit number (e.g. Blade Runner 2099) finds its releases again; that number is no longer taken for a release year.",
+      ],
+      [
+        "Stremio et Nuvio : quand aucune source n'existe pour un titre (ex. film tout juste sorti en salle), la liste de flux reste vide au lieu de proposer une lecture qui reste bloquée en mise en mémoire tampon.",
+        "Stremio and Nuvio: when no source exists for a title (e.g. a film just out in cinemas), the stream list stays empty instead of offering playback that stays stuck buffering.",
+      ],
+      [
+        "Lecture : un profil limité aux bibliothèques Remix (ex. enfants) peut lire leurs titres dans Stremio, Nuvio et Jellyfin ; ils étaient visibles mais refusés (erreur 503).",
+        "Playback: a viewer limited to Remix libraries (e.g. kids) can play their titles in Stremio, Nuvio and Jellyfin; they were visible but refused (503 error).",
+      ],
+      [
+        "L’accueil et les rangées des bibliothèques se règlent dans Recommandations. Les anciens placements, modèles de disposition et droits d’accès sont conservés.",
+        "Home and library rows are edited in Recommendations. Existing placements, layout templates and access restrictions are retained.",
+      ],
+      [
+        "Les imports Xperience/Jukebox conservent leurs rangées ; les catalogues se synchronisent en arrière-plan avec leur compteur et leur limite.",
+        "Xperience/Jukebox imports retain their rows; catalogue sync runs in the background with item counts and limits.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-26-playable-rebuild",
+    version: "0.2.37-remix.144.1",
+    date: "2026-11-26",
+    title: ["Recalcul fiable des gros catalogues", "Reliable large catalogue rebuilds"],
+    items: [
+      [
+        "Les profils qualité disposent d’un délai de recalcul indépendant. Le catalogue lisible précédent reste disponible jusqu’à la publication complète ; une interruption ne laisse plus une table partiellement reconstruite.",
+        "Quality profiles have an independent rebuild timeout. The previous playable catalogue remains available until the complete result is published; interruptions no longer leave a partially rebuilt table.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-24-remix-media-logo",
-    version: "0.2.37-remix.139.1",
+    version: "0.2.37-remix.143.1",
     date: "2026-11-24",
     title: ["Le logo Remix-Media dans la console", "Remix-Media logo in the console"],
     items: [
       [
         "Le logo rejoint l’en-tête et le lien Remix du pied de menu. Le numéro de version ouvre le nouveau dépôt ; le crédit et le lien du projet originel Ether restent disponibles.",
         "The logo appears in the header and the Remix footer link. The version number opens the new repository; the original Ether project credit and link remain available.",
+      ],
+      [
+        "Lire la version : le montage (Director’s Cut, Extended…) apparaît aussi dans le libellé de la version Auto et des alternatives, pas seulement dans les autres versions.",
+        "Play version: the cut (Director’s Cut, Extended…) also appears in the Auto and alternative version labels, not only in other versions.",
+      ],
+      [
+        "Jellyfin : des règles d'exclusion, éditées comme dans « Modifier la collection » (genre, pays, langue…), retirent des titres (ex. animation, documentaires, émissions) des derniers ajouts de Films et Séries ; un modèle par défaut est proposé.",
+        "Jellyfin: exclusion rules, edited like “Edit collection” (genre, country, language…), remove titles (e.g. animation, documentaries, shows) from Movies and Shows latest additions; a default template is offered.",
       ],
     ],
   },

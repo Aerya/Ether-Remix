@@ -2,6 +2,7 @@ package experience
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -65,6 +66,9 @@ func (a AdditionalRows) Rows(ctx context.Context, req frontend.RowRequest) ([]fr
 		}
 		entries, err := liveEntries(ctx, req.Viewer, a.Live, now, now.Add(24*time.Hour), nil, capN+1)
 		if err != nil {
+			if errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrNotAvailable) {
+				return rows, nil
+			}
 			return nil, err
 		}
 		more := len(entries) > capN

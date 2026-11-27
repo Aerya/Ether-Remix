@@ -52,6 +52,8 @@ type DirectStream struct {
 }
 
 type session struct {
+	archiveInput        bool // staged relay grants have a finite upstream
+	catchUp             *catchUpSession
 	broadcastPolicy     broadcastViewerPolicy
 	broadcast           *broadcastLease
 	ephemeral           bool
@@ -80,8 +82,11 @@ type session struct {
 	// owned is the Ether-owned client timeline of a Direct (passthrough or
 	// relay) session; ServePlaylist and ServeRelaySegment read it.
 	owned *ownedLease
-	dash  core.DASHSession
-	http  core.HTTPSession
+	// sharedInput points to the shared relay's grant owner while this viewer
+	// holds its lease. Input readers can resolve it while already holding mu.
+	sharedInput atomic.Pointer[session]
+	dash        core.DASHSession
+	http        core.HTTPSession
 	// httpStart is closed when an in-flight ensureHTTP StartHLS finishes.
 	// Waiters re-check liveHTTP instead of starting a second encoder.
 	httpStart chan struct{}
@@ -120,6 +125,7 @@ type session struct {
 	user        core.User
 	caps        core.ClientCaps
 	last        time.Time
+	lastControl time.Time
 	closed      bool
 }
 
@@ -274,6 +280,12 @@ func (s *Service) observeSession(p *core.PlaySession, ended bool, problem string
 
 func (s *Service) sessionSnapshotLocked(ss *session, now time.Time) core.PlaySession {
 	p := ss.view
+	if archive := ss.catchUp; archive != nil {
+		p.Decision = archive.info.Decision.Kind
+		p.DecisionVideoCopy = archive.info.Decision.VideoCopy
+		p.DecisionAudioCopy = archive.info.Decision.AudioCopy
+		p.Info.Duration = archive.info.End.Sub(archive.info.Start)
+	}
 	if p.LiveChannel != nil {
 		ch := *p.LiveChannel
 		p.LiveChannel = &ch
@@ -326,8 +338,9 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 	broadcast := ss.broadcast
 	ss.broadcast = nil
 	owned := ss.owned
-	ss.owned = nil
+	ss.publishOwnedLocked(nil)
 	dash := ss.dash
+	archive := ss.catchUp
 	httpStream := ss.http
 	ss.dash = nil
 	ss.http = nil
@@ -343,12 +356,14 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 		end = ss.last
 	}
 	snap := s.sessionSnapshotLocked(ss, end)
+	ss.catchUp = nil
 	snap.LastActive = end
 	ss.mu.Unlock()
 	if broadcast != nil {
 		broadcast.close()
 	}
 	s.revokeInput(ss)
+	archive.close(s)
 	owned.close()
 	if dash != nil {
 		dash.Close()
@@ -533,7 +548,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		if max := s.sourceConnectionLimit(c.SourceID); max > 0 {
 			playing := map[string]bool{}
 			for _, other := range s.sessions {
-				if other.info.Channel.SourceID == c.SourceID {
+				if !other.archiveInput && other.info.Channel.SourceID == c.SourceID {
 					playing[other.info.Channel.ID] = true
 				}
 			}
@@ -688,6 +703,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
 	return info, nil
 }
@@ -887,6 +903,7 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
 	return info, nil
 }
@@ -952,8 +969,8 @@ func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*ses
 	return ss, nil
 }
 
-// Only media consumption renews the lease. Subscription/timeline polling and
-// a repeatedly requested manifest can otherwise preserve a failed tune forever.
+// Media consumption renews the lease and records playback evidence. Playlist
+// polls do neither.
 func (s *Service) touchMedia(ss *session) {
 	ss.mu.Lock()
 	first := !ss.consumed
@@ -999,7 +1016,11 @@ func (s *Service) Session(ctx context.Context, id string, u *core.User) (Session
 	ephemeral := ss.ephemeral
 	ss.mu.Unlock()
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
+	if info.Channel.Archive != nil {
+		info.Channel.Archive = &ChannelArchive{Days: info.Channel.Archive.Days, Mode: info.Channel.Archive.Mode}
+	}
 	if ephemeral {
 		return info, nil
 	}
@@ -1089,11 +1110,12 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 	ss.inputURL, ss.inputSource, ss.inputHeaders = stage.inputURL, stage.inputSource, stage.inputHeaders
 	ss.sniffedManifest = stage.sniffedManifest
 	ss.info.MediaInfo, ss.info.ActiveSourceID = stage.info.MediaInfo, stage.info.ActiveSourceID
-	ss.relayInfo, ss.owned = stage.relayInfo, stage.owned
+	ss.relayInfo = stage.relayInfo
+	ss.publishOwnedLocked(stage.owned)
 	ss.startDeadline = stage.startDeadline
 	ss.broadcast = stage.broadcast
 	s.transferInput(stage, ss)
-	if ss.owned != nil && ss.owned.relay != nil {
+	if ss.owned != nil && ss.owned.relay != nil && !ss.owned.relay.shared {
 		ss.owned.relay.bind(ss)
 	}
 	ss.mu.Unlock()
@@ -1132,7 +1154,12 @@ func (s *Service) ServePlaylist(w http.ResponseWriter, r *http.Request, id strin
 	ss.mu.Lock()
 	ss.consumed = true
 	shared := ss.broadcast != nil
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		s.serveCatchUp(w, r, ss, archive, nil)
+		return
+	}
 	if shared {
 		s.serveBroadcastPlaylist(w, r, ss)
 		return
@@ -1451,7 +1478,8 @@ func (s *Service) passthroughToRelay(ctx context.Context, ss *session) (*ownedLe
 		return nil, core.ErrNotFound
 	}
 	old := ss.owned
-	ss.owned, ss.relayInfo, ss.info.MediaInfo = next, &output, info
+	ss.relayInfo, ss.info.MediaInfo = &output, info
+	ss.publishOwnedLocked(next)
 	ss.mu.Unlock()
 	old.close()
 	s.sessionLog(ss).Info("live playback path selected", "path", "relay", "reason", "provider variants need remux")
@@ -1470,7 +1498,12 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 	shared := ss.broadcast != nil
 	fmp4 := broadcastUsesFMP4(ss.caps)
 	lease := ss.owned
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		s.serveCatchUp(w, r, ss, archive, &n)
+		return
+	}
 	if shared {
 		if n == transcode.InitSegment {
 			s.serveBroadcastInit(w, r, ss)
@@ -1539,7 +1572,12 @@ func (s *Service) sessionLivenessLocked(ss *session, now time.Time) core.Session
 		in.LastMediaAt = ss.last
 		in.MediaBytes = max(int64(1), ss.bytesServed)
 	}
-	return core.EvaluateSessionLiveness(in, now)
+	liveness := core.EvaluateSessionLiveness(in, now)
+	// Player observations renew the lease independently of media reads.
+	if !ss.closed && !ss.lastControl.IsZero() && now.Sub(ss.lastControl) <= in.IdleTimeout {
+		liveness.Expired = false
+	}
+	return liveness
 }
 
 // ViewingSessions reports one trusted reservation unit per live viewer. It is
@@ -1688,7 +1726,7 @@ func (s *Service) sourceConnectionsInUse(sourceID string) int {
 	playing := map[string]bool{}
 	s.mu.Lock()
 	for _, other := range s.sessions {
-		if other.info.Channel.SourceID == sourceID {
+		if !other.archiveInput && other.info.Channel.SourceID == sourceID {
 			playing[other.info.Channel.ID] = true
 		}
 	}
@@ -1696,7 +1734,7 @@ func (s *Service) sourceConnectionsInUse(sourceID string) int {
 		playing[chID] = true
 	}
 	s.mu.Unlock()
-	return len(playing) + s.inputRelay.taps.externalCount(sourceID)
+	return max(len(playing), s.inputRelay.taps.open(sourceID)) + s.inputRelay.taps.externalCount(sourceID)
 }
 
 func (s *Service) providerConnectionCapError(sourceID string, maxConns, inUse int, cause error) error {

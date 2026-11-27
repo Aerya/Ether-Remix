@@ -22,7 +22,7 @@ type ClientCapabilityOverride struct {
 	AudioCodecs         []string `json:"audioCodecs,omitempty"`
 	Containers          []string `json:"containers,omitempty"`
 	SubtitleCodecs      []string `json:"subtitleCodecs,omitempty"`
-	DolbyVisionProfiles []int    `json:"dolbyVisionProfiles,omitempty"`
+	DolbyVisionProfiles []int    `json:"dolbyVisionProfiles,omitzero"` // nil inherits; an empty list disables Dolby Vision
 	MaxHeight           int      `json:"maxHeight,omitempty"`
 	MaxBitrateKbps      int      `json:"maxBitrateKbps,omitempty"`
 	HDR10               *bool    `json:"hdr10,omitempty"`

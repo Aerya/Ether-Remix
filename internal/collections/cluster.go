@@ -40,6 +40,13 @@ func (s *Service) changed(id int64) {
 	s.notify("collection:" + strconv.FormatInt(id, 10))
 }
 
+// TitleMatchesChanged invalidates the affected collection memberships.
+func (s *Service) TitleMatchesChanged(ids []int64) {
+	for _, id := range ids {
+		s.changed(id)
+	}
+}
+
 func (s *Service) applyRemote(_ context.Context, hints []string, all bool) {
 	if all {
 		s.idx.invalidate()

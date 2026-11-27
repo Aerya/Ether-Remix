@@ -4,66 +4,63 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/extend"
 )
 
-func TestRowKindRegistryMatchesStaticKinds(t *testing.T) {
+func TestRowSourceRegistry(t *testing.T) {
 	reg := NewRowKindRegistry()
-	ds := reg.RowDescriptors(nil)
-	if len(ds) != len(kinds) {
-		t.Fatalf("row descriptors = %d, want %d", len(ds), len(kinds))
+	srcs := reg.Sources()
+	if len(srcs) < len(kinds) {
+		t.Fatalf("sources = %d, want at least the %d built-in kinds", len(srcs), len(kinds))
 	}
-	for i, k := range kinds {
-		if ds[i].Kind != k.kind || ds[i].Title != k.title || ds[i].Group != k.group {
-			t.Fatalf("descriptor %d = %+v, want kind %s", i, ds[i], k.kind)
+	seen := map[string]bool{}
+	for _, s := range srcs {
+		if s.Kind == "" || s.Title == "" || s.Group == "" {
+			t.Fatalf("incomplete source %+v", s)
 		}
-	}
-	// Dynamic extras follow, sorted by title.
-	extra := []core.RowDescriptor{{HubID: "collection:2", Title: "Zulu", Kind: "collection:2"}, {HubID: "collection:1", Title: "Alpha", Kind: "collection:1"}}
-	out := reg.RowDescriptors(append([]core.RowDescriptor(nil), extra...))
-	if out[len(out)-2].Title != "Alpha" || out[len(out)-1].Title != "Zulu" {
-		t.Fatalf("extras not sorted: %v", out[len(out)-2:])
-	}
-}
-
-func TestRowSourceDescriptors(t *testing.T) {
-	ds := BuiltinRowDescriptors()
-	if len(ds) != len(kinds) {
-		t.Fatalf("descriptors = %d, want %d", len(ds), len(kinds))
-	}
-	for _, d := range ds {
-		if err := d.Validate(); err != nil {
-			t.Errorf("%s: %v", d.ID, err)
+		if seen[s.Kind] {
+			t.Fatalf("source %s registered twice", s.Kind)
 		}
-		if d.Kind != extend.KindRowSource {
-			t.Errorf("%s kind = %s", d.ID, d.Kind)
-		}
-		meta, err := extend.MetaOf[extend.RowSourceMeta](d)
-		if err != nil || meta.HubID == "" || meta.RowKind != d.ID {
-			t.Errorf("%s meta = %+v err %v", d.ID, meta, err)
-		}
+		seen[s.Kind] = true
 	}
-}
-
-type fakeRowKind struct{}
-
-func (fakeRowKind) Kind() string { return "plugin:test/row" }
-func (fakeRowKind) Descriptor() core.RowDescriptor {
-	return core.RowDescriptor{HubID: "plugin:test/row", Title: "Fake row", Kind: "plugin:test/row", Group: "picks"}
-}
-
-func TestRuntimeRowKindRegistration(t *testing.T) {
-	reg := NewRowKindRegistry()
-	if err := reg.Register(fakeRowKind{}); err != nil {
+	trending, ok := reg.Source(KindTrending)
+	if !ok || trending.Personal || !trending.Split || trending.Title != "Trending" {
+		t.Fatalf("trending = %+v", trending)
+	}
+	if err := trending.ValidateParams(map[string]string{"window": "day"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.Register(fakeRowKind{}); err == nil {
-		t.Fatal("duplicate row kind accepted")
+	if trending.ValidateParams(map[string]string{"window": "month"}) == nil || trending.ValidateParams(map[string]string{"colour": "red"}) == nil {
+		t.Fatal("trending accepted a bad option")
 	}
-	if _, ok := reg.Lookup("plugin:test/row"); !ok {
-		t.Fatal("runtime row kind missing")
+	because, _ := reg.Source(KindBecause)
+	if !because.Personal || because.ValidateParams(map[string]string{"count": "2"}) != nil || because.ValidateParams(map[string]string{"count": "9"}) == nil {
+		t.Fatalf("because-you-watched = %+v", because)
 	}
-	if got := len(reg.RowDescriptors(nil)); got != len(kinds)+1 {
-		t.Fatalf("row descriptors = %d, want %d", got, len(kinds)+1)
+	coll, _ := reg.Source(SourceCollection)
+	if coll.ValidateParams(nil) == nil {
+		t.Fatal("a collection row needs its collection")
+	}
+	airing, _ := reg.Source(KindAiringToday)
+	if !hasCaps([]string{core.CapCharts, core.CapEpisodes}, airing.Needs) || hasCaps([]string{core.CapCharts, core.CapMovies}, airing.Needs) {
+		t.Fatalf("airing needs = %v", airing.Needs)
+	}
+
+	// Runtime sources register and unregister.
+	fake := staticSource{core.RowSourceInfo{Kind: "plugin:x/y", Title: "Plugin list", Group: groupPlugins}}
+	if err := reg.Register(fake); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(fake); err == nil {
+		t.Fatal("duplicate registration accepted")
+	}
+	if _, ok := reg.Source("plugin:x/y"); !ok {
+		t.Fatal("runtime source missing")
+	}
+	reg.Unregister("plugin:x/y")
+	if _, ok := reg.Source("plugin:x/y"); ok {
+		t.Fatal("runtime source still registered")
+	}
+	if len(reg.Descriptors()) != len(reg.Sources()) {
+		t.Fatal("extend descriptors don't match the sources")
 	}
 }

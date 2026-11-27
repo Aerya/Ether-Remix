@@ -619,30 +619,16 @@ func (a *App) onSafetyPolicyUpdated(userID int64, p safety.Policy) {
 }
 
 func (a *App) onStateEvent(ev state.Event) {
-	if a == nil || a.eventBus == nil || ev.Imported || ev.Account || ev.UserID <= 0 || ev.Key == 0 {
+	if a == nil || a.eventBus == nil || ev.UserID <= 0 || ev.Key == 0 {
 		return
 	}
 	switch ev.Kind {
-	case state.EventCompleted, state.EventScrobble, state.EventUnscrobble:
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		username := a.lookupUsername(ctx, ev.UserID)
-		titleName, mt, _ := a.lookupTitleInfo(ctx, ev.Key)
-		watched := ev.Kind != state.EventUnscrobble
-		source := string(ev.Kind)
-		if ev.Origin.Surface != "" {
-			source = string(ev.Origin.Surface)
-		}
-		a.publishEvent(events.EventViewerWatchScrobbled, events.ViewerWatchScrobbledPayload{
-			ViewerID:  ev.UserID,
-			Username:  username,
-			TitleKey:  ev.Key.String(),
-			TitleName: titleName,
-			MediaType: mt,
-			Watched:   watched,
-			Source:    source,
-		}, events.WithSource("state"))
+	case state.EventCompleted, state.EventScrobble, state.EventUnscrobble, state.EventProgress:
+		a.publishViewerWatchEvent(ev)
 	case state.EventRated:
+		if ev.Imported || ev.Account {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		username := a.lookupUsername(ctx, ev.UserID)

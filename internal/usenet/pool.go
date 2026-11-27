@@ -251,36 +251,9 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 		if err := p.sem.Acquire(ctx, prio); err != nil {
 			return nil, err
 		}
-		if err := p.brk.idleAllowed(); err != nil {
-			p.sem.Release(prio)
-			return nil, err
-		}
-		c, err := p.takeIdle()
-		if err != nil {
-			p.sem.Release(prio)
-			return nil, err
-		}
-		if c != nil {
-			return c, nil
-		}
-		// A waiter may have queued before a different command opened the
-		// breaker. Recheck before dialing; idle sockets already returned above.
-		if err := p.brk.allow(); err != nil {
-			p.sem.Release(prio)
-			return nil, err
-		}
-		probe, err := p.brk.admit()
-		if err != nil {
-			p.sem.Release(prio)
-			return nil, err
-		}
-		c, err = p.dialNew(ctx, probe)
+		c, _, err := p.checkout(ctx)
 		if err == nil {
-			c.recoveryProbe = probe
 			return c, nil
-		}
-		if probe {
-			p.brk.releaseProbe()
 		}
 		p.sem.Release(prio)
 		if !errors.Is(err, errAtLimit) || try >= 3 {
@@ -293,6 +266,34 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 		// still tearing down a socket we closed: wait for a slot (and the
 		// dial pause) instead of failing.
 	}
+}
+
+// checkout uses a slot already held by the caller. The slot remains the
+// caller's responsibility even if checkout fails.
+func (p *pool) checkout(ctx context.Context) (*Conn, bool, error) {
+	if err := p.brk.idleAllowed(); err != nil {
+		return nil, false, err
+	}
+	c, err := p.takeIdle()
+	if c != nil || err != nil {
+		return c, false, err
+	}
+	if err := p.brk.allow(); err != nil {
+		return nil, false, err
+	}
+	probe, err := p.brk.admit()
+	if err != nil {
+		return nil, false, err
+	}
+	c, err = p.dialNew(ctx, probe)
+	if err != nil {
+		if probe {
+			p.brk.releaseProbe()
+		}
+		return nil, false, err
+	}
+	c.recoveryProbe = probe
+	return c, true, nil
 }
 
 // errAtLimit marks a dial refused because the account is at its server-side

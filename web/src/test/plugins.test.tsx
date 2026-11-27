@@ -396,6 +396,57 @@ describe("Server › Plugins (WS10a)", () => {
     });
   });
 
+  it("offers to rebuild a library whose levels an update changed, then installs with replaceLibraries", async () => {
+    const installBodies: Record<string, unknown>[] = [];
+    customIntercept = async (url, init) => {
+      if (url.pathname === "/ether/api/plugins/install" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        installBodies.push(body);
+        if (!body.replaceLibraries) {
+          return Response.json(
+            {
+              error: {
+                code: "library_levels_changed",
+                confirmation: "reviewed-manifest",
+                message: "Some fields need attention.",
+                fields: [
+                  {
+                    field: "ether.contributes.mediaKinds.sport.levels[1]",
+                    message: "level game was removed",
+                  },
+                ],
+              },
+            },
+            { status: 409 },
+          );
+        }
+      }
+      return null;
+    };
+
+    renderPlugins("/plugins");
+    await screen.findByText("Pluto TV");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /From a link/i }));
+    fireEvent.change(await screen.findByLabelText("Plugin address"), {
+      target: { value: "https://plugins.example.test/iptv/manifest.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review permissions/i }));
+    await screen.findByTestId("permission-sheet");
+    fireEvent.click(screen.getByRole("button", { name: /^Install$/i }));
+
+    expect(await screen.findByText("Rebuild the changed library?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild and install" }));
+
+    expect(await screen.findByRole("tablist", { name: "Plugin sections" })).toBeTruthy();
+    expect(installBodies).toHaveLength(2);
+    expect(installBodies[0]!.replaceLibraries).toBeUndefined();
+    expect(installBodies[1]).toMatchObject({
+      replaceLibraries: true,
+      rebuildConfirmation: "reviewed-manifest",
+    });
+  });
+
   it("pairs and revokes a remote sidecar", async () => {
     let revoked = false;
     customIntercept = async (url, init) => {

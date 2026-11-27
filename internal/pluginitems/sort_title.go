@@ -110,6 +110,17 @@ func appendFoldedWordPrefix(where *strings.Builder, args *[]any, terms []string)
 	appendFoldedWordPrefixCol(where, args, "f.v_fold", terms)
 }
 
+func appendFoldedWordPrefixDialect(where *strings.Builder, args *[]any, isPG bool, terms []string) {
+	if len(terms) == 0 {
+		return
+	}
+	if isPG {
+		// Match plugin_item_fields_fold(field, left(v_fold, 256), v_int, item_ref).
+		where.WriteString(` AND left(f.v_fold, 256) > ''`)
+	}
+	appendFoldedWordPrefixCol(where, args, "f.v_fold", terms)
+}
+
 func appendFoldedWordPrefixCol(where *strings.Builder, args *[]any, col string, terms []string) {
 	if len(terms) == 0 {
 		return

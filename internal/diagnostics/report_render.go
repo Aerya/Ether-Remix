@@ -232,14 +232,20 @@ func reportOverview(rows []reportRow, findings []Finding) []string {
 	if len(sentences) > 5 {
 		sentences = sentences[:5]
 	}
-	count := 0
+	count, unattributed := 0, 0
 	for _, row := range rows {
 		if row.event.Kind == KindRequest {
 			count++
+			if row.event.Uncorrelated {
+				unattributed++
+			}
 		}
 	}
 	if len(sentences) == 0 {
 		sentences = append(sentences, fmt.Sprintf("The recording retained %d requests.", count))
+	}
+	if unattributed > 0 {
+		sentences = append(sentences, fmt.Sprintf("Ether could not attribute %d of %d requests to the selected device.", unattributed, count))
 	}
 	if len(sentences) < 2 {
 		if len(findings) == 0 {
@@ -264,6 +270,9 @@ func reportClient(e exportEvent) string {
 	}
 	if e.AppVersion != "" {
 		name += " " + e.AppVersion
+	}
+	if e.Uncorrelated {
+		name += " (device unknown)"
 	}
 	return name
 }

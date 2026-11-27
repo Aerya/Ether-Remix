@@ -243,6 +243,12 @@ var stableMediaValue = regexp.MustCompile(`(@|/)(type|year|videoCodec|audioCodec
 // PMS's stream titles, audio profiles and BIF indexes.
 var detailPMSOnlyRE = regexp.MustCompile(`(@|/)(Chapter|Extras/Video|Extras/Metadata|canAutoSync|hasScalingMatrix|scanType|audioProfile|loudnessAnalysisVersion|skipCount|viewCount|lastViewedAt|viewOffset|hasThumbnail|has64bitOffsets|optimizedForStreaming|librarySectionKey|librarySectionID|librarySectionTitle)$`)
 
+// unprobedListMediaRE is what a list row (hub, children listing) omits from
+// its Media while the title is unprobed: the fixture's playback answers with
+// an estimate, and Ether does not invent picture, sound, bitrate or size on
+// list rows (PMS has probed every file). Detail Media still carries them.
+var unprobedListMediaRE = regexp.MustCompile(`Media(\[\])?/@?(aspectRatio|audioChannels|audioCodec|audioProfile|bitrate|height|videoCodec|videoFrameRate|videoProfile|videoResolution|width|Part(\[\])?/@?(size|videoProfile|audioProfile))$`)
+
 // TestDetailConformsToPMS renders the detail page PMS recorded for the
 // same title (with a related hub) and requires PMS's structure and types.
 func TestDetailConformsToPMS(t *testing.T) {
@@ -272,6 +278,7 @@ func TestDetailConformsToPMS(t *testing.T) {
 				for _, d := range conformplex.Compare(ref, ours).Differences {
 					switch {
 					case d.Kind == pmsconform.KindMissing && (pmsOnlyRE.MatchString(d.Path) || detailPMSOnlyRE.MatchString(d.Path)):
+					case d.Kind == pmsconform.KindMissing && strings.Contains(d.Path, "/Related/Hub") && unprobedListMediaRE.MatchString(d.Path):
 					case d.Kind == pmsconform.KindExtra && etherOnlyRE.MatchString(d.Path):
 					case d.Kind == pmsconform.KindValue && artworkTypeGapRE.MatchString(d.Path):
 					case d.Kind == pmsconform.KindValue && !strings.HasSuffix(d.Path, "#order") && !stableMediaValue.MatchString(d.Path):
@@ -357,6 +364,7 @@ func TestTVConformsToPMS(t *testing.T) {
 					for _, d := range conformplex.Compare(ref, ours).Differences {
 						switch {
 						case d.Kind == pmsconform.KindMissing && (pmsOnlyRE.MatchString(d.Path) || tvPMSOnlyRE.MatchString(d.Path)):
+						case d.Kind == pmsconform.KindMissing && strings.HasSuffix(template, "/children") && unprobedListMediaRE.MatchString(d.Path):
 						case d.Kind == pmsconform.KindExtra && etherOnlyRE.MatchString(d.Path):
 						case d.Kind == pmsconform.KindValue && artworkTypeGapRE.MatchString(d.Path):
 						case d.Kind == pmsconform.KindValue && !strings.HasSuffix(d.Path, "#order") && !stableMediaValue.MatchString(d.Path):

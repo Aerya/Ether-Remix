@@ -71,7 +71,7 @@ func (c *Catalog) CrowdRecommendations(ctx context.Context, key core.RatingKey, 
 		out, err := c.titlesByKeys(ctx, keys)
 		return out, false, err
 	}
-	if !fetch || c.tmdb() == nil {
+	if !fetch || !c.TMDBConfigured() {
 		if keys == nil {
 			return nil, false, nil
 		}
@@ -261,6 +261,14 @@ func keyList(titles []core.Title) []core.RatingKey {
 // titlesByKeys loads mirrored titles in the given order (released, not
 // adult), in batches, consulting the in-memory movie cache first.
 func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
+	return c.titlesByKeysMode(ctx, keys, false)
+}
+
+func (c *Catalog) titlesByKeysMode(ctx context.Context, keys []core.RatingKey, includeUnairedChildren bool) ([]core.Title, error) {
+	allow := func(t *core.Title) bool {
+		return !t.Adult && (includeUnairedChildren && (t.Type == core.TypeEpisode || t.Type == core.TypeSeason) ||
+			c.upcomingMovie(t) || (selectedEpisodeReleased(t, c.now()) && (c.config().ReleaseMode != config.ModeDigital || c.homeVisible(t))))
+	}
 	out := make([]core.Title, 0, len(keys))
 	if len(keys) == 0 {
 		return out, nil
@@ -277,7 +285,7 @@ func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]co
 		}
 		if cacheStoredTitle(k.Kind()) {
 			if ent, ok := c.titleCache[k]; ok && ent.gen == gen && ent.minute == minBucket {
-				if !ent.st.t.Adult && (c.upcomingMovie(&ent.st.t) || (ent.st.t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(&ent.st.t)))) {
+				if allow(&ent.st.t) {
 					byKey[k] = cloneTitle(ent.st.t)
 				}
 				continue
@@ -297,19 +305,19 @@ func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]co
 		for j, k := range part {
 			args[j] = int64(k)
 		}
-		ts, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
+		query := c.queryTitles
+		if includeUnairedChildren {
+			query = c.queryPagedTitles
+		}
+		ts, err := query(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
 		if err != nil {
 			return nil, err
 		}
-		if c.writeGen.Load() == gen {
-			c.cacheMu.Lock()
-			for _, t := range ts {
-				c.putSnapshotLocked(t.Key, gen, minBucket, storedTitle{t: cloneTitle(t)})
-			}
-			c.cacheMu.Unlock()
-		}
+
 		for _, t := range ts {
-			byKey[t.Key] = t
+			if allow(&t) {
+				byKey[t.Key] = t
+			}
 		}
 	}
 	for _, k := range keys {
@@ -317,6 +325,10 @@ func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]co
 			out = append(out, t)
 		}
 	}
+	if err := c.ProjectEpisodeTitles(ctx, out); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 

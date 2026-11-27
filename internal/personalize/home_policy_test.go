@@ -158,8 +158,7 @@ func TestRestrictedSectionHomeLeadUsesVisibleHome(t *testing.T) {
 	sciFiFan(h, 1)
 	h.rebuild(*viewer)
 	hc := hubContext(testNow, core.DeviceTV)
-	layout := h.e.layoutForContext(ctx)
-	legacy := h.e.homeLeadFor(ctx, viewer, hc, layout, 12, false, nil)
+	legacy := h.e.homeLeadFor(ctx, viewer, hc, 12, false, nil)
 	var blocked core.RatingKey
 	for key := range legacy.keys {
 		blocked = key
@@ -168,11 +167,11 @@ func TestRestrictedSectionHomeLeadUsesVisibleHome(t *testing.T) {
 	if blocked == 0 {
 		t.Fatal("fixture has no Home lead")
 	}
-	filtered := h.e.homeLeadFor(ctx, viewer, hc, layout, 12, false, func(_ context.Context, _ *core.User, title *core.Title) bool { return tasteKey(title.Key) != blocked })
+	filtered := h.e.homeLeadFor(ctx, viewer, hc, 12, false, func(_ context.Context, _ *core.User, title *core.Title) bool { return tasteKey(title.Key) != blocked })
 	if filtered.keys[blocked] {
 		t.Fatal("restricted Home lead retained a denied title")
 	}
-	again := h.e.homeLeadFor(ctx, viewer, hc, layout, 12, false, nil)
+	again := h.e.homeLeadFor(ctx, viewer, hc, 12, false, nil)
 	if !reflect.DeepEqual(legacy, again) {
 		t.Fatal("restricted lead changed unrestricted Home")
 	}

@@ -199,6 +199,10 @@ type ReleaseUsage struct {
 // unlimited). Existing entries are discovered on access; Run accounts for the
 // remaining disk contents after listening. logger may be nil (slog.Default()).
 func Open(dir string, budget int64, logger *slog.Logger) (*Cache, error) {
+	return openLocal(dir, budget, logger, time.Now)
+}
+
+func openLocal(dir string, budget int64, logger *slog.Logger, now func() time.Time) (*Cache, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -213,7 +217,7 @@ func Open(dir string, budget int64, logger *slog.Logger) (*Cache, error) {
 		budget:     max(budget, 0),
 		rels:       make(map[string]*release),
 		pins:       make(map[string]map[string]struct{}),
-		now:        time.Now,
+		now:        now,
 		touchEvery: defaultTouchEvery,
 		protectTTL: defaultProtectTTL,
 		pinNote:    make(chan struct{}, 1),

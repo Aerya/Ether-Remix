@@ -37,6 +37,31 @@ var (
 	seasonKeyEnd    = int64(core.KindSeason+1) * 1_000_000_000_000_000
 )
 
+// Stored episode key pages include the allocated range.
+func (c *Catalog) storedEpisodeKeyEnd() int64 {
+	if c.canProjectAlternateOrders() {
+		return core.AllocatedEpisodeBase + core.AllocatedKeyMaxSeq
+	}
+	return episodeKeyEnd
+}
+
+func (c *Catalog) storedChildCursorShow(ctx context.Context, after core.RatingKey) (int64, error) {
+	if after == 0 {
+		return showKeyStart + 1, nil
+	}
+	if !after.Allocated() {
+		return int64(core.ShowKey(after.TMDB())), nil
+	}
+	parents, err := c.ChildAncestry(ctx, []core.RatingKey{after})
+	if err != nil {
+		return 0, err
+	}
+	if lineage := parents[after]; lineage.ShowKey != 0 {
+		return int64(lineage.ShowKey), nil
+	}
+	return showKeyStart + 1, nil
+}
+
 // storedShowScoped reports whether f narrows the admitted series by library,
 // tab or preview rules, a catalogue source or a collection. Scoped key-order
 // episode and season reads drive from the admitted series in key order rather
@@ -371,19 +396,19 @@ func (c *Catalog) StoredEpisodesByKey(ctx context.Context, show core.Filter, aft
 		if err != nil {
 			return nil, err
 		}
-		showLo := showKeyStart + 1
-		if lo > episodeKeyStart {
-			showLo = max(showLo, int64(core.ShowKey(core.RatingKey(lo).TMDB())))
+		showLo, err := c.storedChildCursorShow(ctx, after)
+		if err != nil {
+			return nil, err
 		}
-		q := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles t CROSS JOIN catalog_titles e WHERE t.key>=? AND t.key<? AND e.show_key=t.key AND e.key>? AND e.key<? AND ` + where + ` ORDER BY t.key ASC, e.key ASC LIMIT ?`
-		return c.queryPagedTitles(ctx, q, append(append([]any{showLo, showKeyEnd, lo, episodeKeyEnd}, args...), limit)...)
+		q := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles t CROSS JOIN catalog_titles e WHERE t.key>=? AND t.key<? AND e.show_key=t.key AND e.key>? AND e.key<? AND (t.key>? OR e.key>?) AND ` + where + ` ORDER BY t.key ASC, e.key ASC LIMIT ?`
+		return c.queryPagedTitles(ctx, q, append(append([]any{showLo, showKeyEnd, episodeKeyStart, c.storedEpisodeKeyEnd(), showLo, lo}, args...), limit)...)
 	}
 	where, args, err := c.storedEpisodesProbeWhere(show)
 	if err != nil {
 		return nil, err
 	}
 	q := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key LIMIT ?`
-	return c.queryPagedTitles(ctx, q, append(append([]any{lo, episodeKeyEnd}, args...), limit)...)
+	return c.queryPagedTitles(ctx, q, append(append([]any{lo, c.storedEpisodeKeyEnd()}, args...), limit)...)
 }
 
 // CountStoredEpisodes counts StoredEpisodesByKey's whole set. Like a browse
@@ -445,12 +470,12 @@ func (c *Catalog) CountStoredEpisodes(ctx context.Context, show core.Filter) (in
 		if !bySeries {
 			if scoped {
 				if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t CROSS JOIN catalog_titles e WHERE t.key>? AND t.key<? AND e.show_key=t.key AND e.key>? AND e.key<? AND `+where,
-					append([]any{showKeyStart, showKeyEnd, episodeKeyStart, episodeKeyEnd}, args...)...).Scan(&total); err != nil {
+					append([]any{showKeyStart, showKeyEnd, episodeKeyStart, c.storedEpisodeKeyEnd()}, args...)...).Scan(&total); err != nil {
 					return 0, err
 				}
 			} else {
 				if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles e WHERE e.key>? AND e.key<? AND `+where,
-					append([]any{episodeKeyStart, episodeKeyEnd}, args...)...).Scan(&total); err != nil {
+					append([]any{episodeKeyStart, c.storedEpisodeKeyEnd()}, args...)...).Scan(&total); err != nil {
 					return 0, err
 				}
 			}
@@ -605,14 +630,14 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 			return core.Page{}, werr
 		}
 		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles t CROSS JOIN catalog_titles e WHERE t.key>? AND t.key<? AND e.show_key=t.key AND e.key>? AND e.key<? AND ` + where + ` ORDER BY t.key ASC, e.key ASC LIMIT ? OFFSET ?`
-		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{showKeyStart, showKeyEnd, episodeKeyStart, episodeKeyEnd}, args...), limit, offset)...)
+		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{showKeyStart, showKeyEnd, episodeKeyStart, c.storedEpisodeKeyEnd()}, args...), limit, offset)...)
 	case keyOrder:
 		where, args, werr := c.storedEpisodesProbeWhere(q.Filter)
 		if werr != nil {
 			return core.Page{}, werr
 		}
 		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key ASC LIMIT ? OFFSET ?`
-		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{episodeKeyStart, episodeKeyEnd}, args...), limit, offset)...)
+		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{episodeKeyStart, c.storedEpisodeKeyEnd()}, args...), limit, offset)...)
 	case !smallScoped && len(q.SecondarySorts) == 0 && q.Desc && (q.Sort == core.SortReleased || q.Sort == core.SortAdded || q.Sort == core.SortUpdated):
 		where, args, werr := c.storedEpisodesProbeWhere(q.Filter)
 		if werr != nil {
@@ -639,7 +664,7 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 		qargs := args
 		if smallScoped {
 			from = ` FROM catalog_titles t CROSS JOIN catalog_titles e WHERE t.key>? AND t.key<? AND e.show_key=t.key AND e.key>? AND e.key<? AND `
-			qargs = append([]any{showKeyStart, showKeyEnd, episodeKeyStart, episodeKeyEnd}, args...)
+			qargs = append([]any{showKeyStart, showKeyEnd, episodeKeyStart, c.storedEpisodeKeyEnd()}, args...)
 		}
 		sqlQ := `SELECT ` + prefixedCols("e") + from + where + ` ORDER BY ` + order + `, e.key ASC LIMIT ? OFFSET ?`
 		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{}, qargs...), limit, offset)...)
@@ -770,7 +795,7 @@ func (c *Catalog) StoredSeasonsByKey(ctx context.Context, show core.Filter, afte
 	scoped := storedShowScoped(show)
 	q := `SELECT ` + prefixedCols("s") + ` FROM catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE s.key>? AND s.key<? AND ` + where + ` ORDER BY s.key ASC LIMIT ?`
 	if scoped {
-		q = `SELECT ` + prefixedCols("s") + ` FROM catalog_titles t CROSS JOIN catalog_titles s WHERE t.key>=? AND t.key<? AND s.show_key=t.key AND s.key>? AND s.key<? AND ` + where + ` ORDER BY t.key ASC, s.key ASC LIMIT ?`
+		q = `SELECT ` + prefixedCols("s") + ` FROM catalog_titles t CROSS JOIN catalog_titles s WHERE t.key>=? AND t.key<? AND s.show_key=t.key AND s.key>? AND s.key<? AND (t.key>? OR s.key>?) AND ` + where + ` ORDER BY t.key ASC, s.key ASC LIMIT ?`
 	}
 	now := c.now()
 	var out []core.Title
@@ -778,11 +803,11 @@ func (c *Catalog) StoredSeasonsByKey(ctx context.Context, show core.Filter, afte
 		need := limit - len(out)
 		var qargs []any
 		if scoped {
-			showLo := showKeyStart + 1
-			if lo > seasonKeyStart {
-				showLo = max(showLo, int64(core.ShowKey(core.RatingKey(lo).TMDB())))
+			showLo, err := c.storedChildCursorShow(ctx, after)
+			if err != nil {
+				return nil, err
 			}
-			qargs = append(append([]any{showLo, showKeyEnd, lo, seasonKeyEnd}, args...), need)
+			qargs = append(append([]any{showLo, showKeyEnd, seasonKeyStart, seasonKeyEnd, showLo, lo}, args...), need)
 		} else {
 			qargs = append(append([]any{lo, seasonKeyEnd}, args...), need)
 		}
@@ -799,10 +824,11 @@ func (c *Catalog) StoredSeasonsByKey(ctx context.Context, show core.Filter, afte
 			}
 		}
 		nextLo := int64(batch[len(batch)-1].Key)
-		if len(batch) < need || nextLo <= lo {
+		if len(batch) < need || nextLo == lo {
 			break
 		}
 		lo = nextLo
+		after = core.RatingKey(nextLo)
 	}
 	if out == nil {
 		out = []core.Title{}

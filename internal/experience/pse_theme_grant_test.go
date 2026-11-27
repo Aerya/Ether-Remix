@@ -25,6 +25,12 @@ func TestResolveExternalThemeGrant(t *testing.T) {
 	s := &Service{d: ServiceDeps{
 		Active:       func(context.Context, int64) (*core.User, error) { return user, nil },
 		ByExternalID: func(context.Context, string, string) (*core.Title, error) { return result, nil },
+		ResolveEpisode: func(_ context.Context, key core.RatingKey, season, episode int) (core.RatingKey, error) {
+			if key == show.Key && season == ep.Season && episode == ep.Episode {
+				return ep.Key, nil
+			}
+			return 0, core.ErrNotFound
+		},
 		Get: func(_ context.Context, _ *core.User, k core.RatingKey) (*core.Title, error) {
 			if t := titles[k]; t != nil {
 				return t, nil

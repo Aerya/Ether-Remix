@@ -30,6 +30,7 @@ func (s *Session) startResumeWarm(ctx context.Context, req core.HLSRequest) {
 	}
 	req.SessionID = s.id + "-resume-" + randomHex(4)
 	req.ResumeHint = 0
+	req.WaitForEncoder = false
 	// The parent's work ticket keeps its source lease alive until the child is
 	// fully drained. A lease cannot be claimed by two encoder lifetimes.
 	req.InputLease = nil

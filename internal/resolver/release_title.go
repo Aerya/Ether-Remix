@@ -138,8 +138,39 @@ func releaseTitleWarmAllowed(ctx context.Context, req core.ResolveRequest) bool 
 	return true
 }
 
+func isLeadingFragmentOfWanted(parsed string, t *core.Title, sreq core.SearchRequest) bool {
+	check := func(want string) bool {
+		return want != "" && releaseparse.TitleLeadingFragment(parsed, want)
+	}
+	if check(sreq.Title) || check(sreq.OriginalTitle) || check(sreq.EnglishTitle) {
+		return true
+	}
+	if t == nil {
+		return false
+	}
+	if sreq.Type == core.TypeEpisode {
+		return check(t.ShowTitle) || check(t.ShowOriginalTitle) || check(t.ShowEnglishTitle)
+	}
+	return check(t.Title) || check(t.OriginalTitle) || check(t.EnglishTitle)
+}
+
+// titleMismatchRecoverable reports whether a release's parsed title is
+// specific enough to be readmitted via reported IDs or independent metadata
+// lookup when plain title matching fails. Generic titles (empty, stopwords
+// only, or too short) and strict leading fragments of the wanted title ("The"
+// vs "The Mentalist", "Star" vs "Star Trek") never identify an alternate title.
+func titleMismatchRecoverable(parsed string, t *core.Title, sreq core.SearchRequest) bool {
+	return !releaseparse.TitleTooGeneric(parsed) && !isLeadingFragmentOfWanted(parsed, t, sreq)
+}
+
+// canLookupReleaseTitle guards metadata release-title lookups and caching:
+// obfuscated hashes, generic titles, and strict leading fragments are skipped.
+func canLookupReleaseTitle(parsed string, t *core.Title, sreq core.SearchRequest) bool {
+	return !releaseparse.IsObfuscated(parsed) && titleMismatchRecoverable(parsed, t, sreq)
+}
+
 func (s *Service) titleMismatchIdentityOnly(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string) bool {
-	if releaseparse.IsObfuscated(rel.Info.Title) {
+	if !canLookupReleaseTitle(rel.Info.Title, t, sreq) {
 		return false
 	}
 	acceptYear := func(y int) bool { return t != nil && s.seriesYearAccepted(t.ShowKey, y) }
@@ -186,11 +217,11 @@ func (s *Service) prepareReleaseTitlesBound(ctx context.Context, t *core.Title, 
 			return matched
 		}
 		// Only the title mismatch gate may be relaxed by this evidence.
-		if !strings.HasPrefix(rejectIdentity(rel, t, req, s.catalogLanguage()), "title mismatch") || releaseparse.IsObfuscated(rel.Info.Title) {
+		if !strings.HasPrefix(rejectIdentity(rel, t, req, s.catalogLanguage()), "title mismatch") || !canLookupReleaseTitle(rel.Info.Title, t, req) {
 			continue
 		}
 		key := s.releaseTitleKey(rel, req)
-		if key.title == "" || seen[key] {
+		if key.title == "" || releaseparse.TitleTooGeneric(key.title) || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -220,6 +251,9 @@ func (s *Service) prepareReleaseTitlesBound(ctx context.Context, t *core.Title, 
 }
 
 func (s *Service) fetchReleaseTitle(ctx context.Context, key releaseTitleKey, rawTitle string, expectedIDs core.IDs) (core.IDs, error) {
+	if releaseparse.IsObfuscated(rawTitle) || releaseparse.TitleTooGeneric(rawTitle) || releaseparse.TitleTooGeneric(key.title) {
+		return core.IDs{}, nil
+	}
 	ids, err := s.releaseTitles.flights.Do(ctx, key, func(ctx context.Context) (core.IDs, error) {
 		if ids, ok := s.cachedReleaseTitle(key); ok {
 			return ids, nil
@@ -254,6 +288,9 @@ func (s *Service) fetchReleaseTitle(ctx context.Context, key releaseTitleKey, ra
 }
 
 func (s *Service) storeReleaseTitleMem(key releaseTitleKey, ids core.IDs, expires time.Time, persisted bool, now time.Time) {
+	if key.title == "" || releaseparse.TitleTooGeneric(key.title) || releaseparse.IsObfuscated(key.title) {
+		return
+	}
 	capEntries := s.releaseTitleCap()
 	s.releaseTitles.mu.Lock()
 	defer s.releaseTitles.mu.Unlock()
@@ -279,7 +316,7 @@ func (s *Service) storeReleaseTitleMem(key releaseTitleKey, ids core.IDs, expire
 }
 
 func (s *Service) ensureReleaseTitlePersisted(ctx context.Context, key releaseTitleKey, ids core.IDs) {
-	if s.db == nil || ids == (core.IDs{}) {
+	if s.db == nil || ids == (core.IDs{}) || key.title == "" || releaseparse.TitleTooGeneric(key.title) || releaseparse.IsObfuscated(key.title) {
 		return
 	}
 	now := s.now()
@@ -307,7 +344,7 @@ func (s *Service) persistReleaseTitle(ctx context.Context, key releaseTitleKey, 
 }
 
 func (s *Service) saveReleaseTitleDB(ctx context.Context, key releaseTitleKey, ids core.IDs, now, expires time.Time) {
-	if s.db == nil || ids == (core.IDs{}) || key.title == "" {
+	if s.db == nil || ids == (core.IDs{}) || key.title == "" || releaseparse.TitleTooGeneric(key.title) || releaseparse.IsObfuscated(key.title) {
 		return
 	}
 	wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -381,21 +418,39 @@ func (s *Service) loadReleaseTitles(ctx context.Context) {
 		verdict releaseTitleVerdict
 	}
 	var loaded []row
+	var drop []releaseTitleKey
 	for rows.Next() {
 		var kind, lang, title, imdb string
 		var tmdb, tvdb, expiresUnix int64
 		if rows.Scan(&kind, &lang, &title, &tmdb, &imdb, &tvdb, &expiresUnix) == nil {
+			key := releaseTitleKey{kind: core.MediaType(kind), language: lang, title: title}
+			if releaseparse.TitleTooGeneric(title) || releaseparse.IsObfuscated(title) {
+				drop = append(drop, key)
+				continue
+			}
 			ids := core.IDs{TMDB: tmdb, IMDB: imdb, TVDB: tvdb}
-			if ids == (core.IDs{}) || title == "" {
+			if ids == (core.IDs{}) {
 				continue
 			}
 			loaded = append(loaded, row{
-				key:     releaseTitleKey{kind: core.MediaType(kind), language: lang, title: title},
+				key:     key,
 				verdict: releaseTitleVerdict{ids: ids, expires: time.Unix(expiresUnix, 0), persisted: true},
 			})
 		}
 	}
 	rows.Close()
+	if len(drop) > 0 {
+		wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		for _, k := range drop {
+			if wctx.Err() != nil {
+				break
+			}
+			_, _ = s.db.ExecContext(wctx,
+				`DELETE FROM resolver_release_titles WHERE media_type=? AND language=? AND normalized_title=?`,
+				string(k.kind), k.language, k.title)
+		}
+		cancel()
+	}
 	if len(loaded) == 0 {
 		return
 	}
@@ -497,11 +552,11 @@ func (s *Service) queueReleaseTitleWarm(t *core.Title, req core.SearchRequest, r
 	seen := map[releaseTitleKey]bool{}
 	queued := 0
 	for _, rel := range results {
-		if releaseparse.IsObfuscated(rel.Info.Title) {
+		if !canLookupReleaseTitle(rel.Info.Title, t, req) {
 			continue
 		}
 		key := s.releaseTitleKey(rel, req)
-		if key.title == "" || seen[key] {
+		if key.title == "" || releaseparse.TitleTooGeneric(key.title) || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -676,7 +731,14 @@ func (s *Service) flushReleaseTitleWarm(ctx context.Context) error {
 }
 
 func (s *Service) metadataTitleMatches(rel core.Release, req core.SearchRequest) bool {
-	ids, ok := s.cachedReleaseTitle(s.releaseTitleKey(rel, req))
+	if !canLookupReleaseTitle(rel.Info.Title, nil, req) {
+		return false
+	}
+	key := s.releaseTitleKey(rel, req)
+	if releaseparse.TitleTooGeneric(key.title) {
+		return false
+	}
+	ids, ok := s.cachedReleaseTitle(key)
 	if !ok {
 		return false
 	}

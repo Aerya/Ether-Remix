@@ -119,6 +119,20 @@ func (s scorecardSessionWrapper) TrickplaySheet(ctx context.Context, a frontend.
 	}
 	return tiles.TrickplaySheet(ctx, a, item, index)
 }
+func (s scorecardSessionWrapper) SessionTrickplayOffer(ctx context.Context, a frontend.SessionAccess, sessionID string) (frontend.TrickplayOffer, error) {
+	tp, ok := s.embeddedScorecardSessions.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplayOffer{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplayOffer(ctx, a, sessionID)
+}
+func (s scorecardSessionWrapper) SessionTrickplaySheet(ctx context.Context, a frontend.SessionAccess, sessionID string, width, index int, unchanged func(frontend.TrickplayOffer) bool) (frontend.TrickplaySheetResult, error) {
+	tp, ok := s.embeddedScorecardSessions.(frontend.SessionTrickplay)
+	if !ok {
+		return frontend.TrickplaySheetResult{}, core.ErrNotFound
+	}
+	return tp.SessionTrickplaySheet(ctx, a, sessionID, width, index, unchanged)
+}
 func (s scorecardSessionWrapper) TrickplayAvailable(id string) bool {
 	if tp, ok := s.embeddedScorecardSessions.(interface{ TrickplayAvailable(string) bool }); ok {
 		return tp.TrickplayAvailable(id)
@@ -321,9 +335,9 @@ func (s scorecardSessionWrapper) NewDownloadQueuePersistence(queue frontend.Down
 	}
 	return nil
 }
-func (s scorecardSessionWrapper) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, wait time.Duration) (*core.PlaySession, error) {
+func (s scorecardSessionWrapper) PrepareSource(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool, wait time.Duration) (*core.PlaySession, error) {
 	if rt := s.runtime(); rt != nil {
-		return rt.PrepareSource(ctx, viewer, key, caps, release, wait)
+		return rt.PrepareSource(ctx, viewer, key, caps, release, exact, wait)
 	}
 	return nil, core.ErrNotAvailable
 }
@@ -453,6 +467,13 @@ func (s scorecardSessionWrapper) StreamDecision(ctx context.Context, a frontend.
 		return reader.StreamDecision(ctx, a, id)
 	}
 	return core.Decision{}, core.ErrNotAvailable
+}
+
+func (s scorecardSessionWrapper) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
+	if reader, ok := s.embeddedScorecardSessions.(frontend.PlayingReleaseReader); ok {
+		return reader.PlayingRelease(ctx, a, id)
+	}
+	return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
 }
 
 func (s scorecardSessionWrapper) AudioFallbackAvailable() bool {

@@ -1,16 +1,15 @@
 package livetv
 
 import (
-	"regexp"
 	"time"
-)
 
-var diagnosticURL = regexp.MustCompile(`[a-z]+://[^\s'"]+`)
+	"github.com/braedonsaunders/ether/internal/logredact"
+)
 
 // sanitizeDiagnostics drops URLs (relay grants, provider tokens) from decoder
 // diagnostics and bounds their length for the log.
 func sanitizeDiagnostics(s string) string {
-	s = diagnosticURL.ReplaceAllString(s, "[url]")
+	s = logredact.Source(s)
 	if len(s) > 900 {
 		s = s[:900] + "…"
 	}

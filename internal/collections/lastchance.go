@@ -61,7 +61,7 @@ func (s *Service) computeLastChanceMap(ctx context.Context, user *core.User, wan
 			return nil, ctx.Err()
 		}
 		sp := row.spec
-		if !visible(row, user) || sp.Rotate == nil || sp.Rotate.Size <= 0 || (!sp.Targets.CollectionsTab && !sp.Targets.HomeRow && !sp.Targets.SectionRow) || !sp.Targets.Schedule.Allows("", now) {
+		if !visible(row, user) || sp.Rotate == nil || sp.Rotate.Size <= 0 {
 			continue
 		}
 		if (wantKind == core.KindMovie && sp.MediaType == MediaShow) || (wantKind == core.KindShow && sp.MediaType == MediaMovie) {

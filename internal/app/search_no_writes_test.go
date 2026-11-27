@@ -104,14 +104,23 @@ func TestSearchPagesWriteNoRows(t *testing.T) {
 	queries := []string{"quiet harbour", "northern lights", "glass river", "paper moon", "salt road"}
 	var shown []core.Title
 	for _, q := range queries {
-		hints := call("/Search/Hints?searchTerm="+url.QueryEscape(q)+"&Limit=20", "", signed.AccessToken)
+		// Search never waits on TMDB: its hits answer once its detached
+		// search has finished.
+		var hints *httptest.ResponseRecorder
 		var page struct {
 			SearchHints []struct {
 				Name            string
 				PrimaryImageTag string
 			}
 		}
-		if hints.Code != 200 || json.Unmarshal(hints.Body.Bytes(), &page) != nil || len(page.SearchHints) == 0 {
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			hints = call("/Search/Hints?searchTerm="+url.QueryEscape(q)+"&Limit=20", "", signed.AccessToken)
+			if hints.Code != 200 || json.Unmarshal(hints.Body.Bytes(), &page) != nil || len(page.SearchHints) > 0 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if hints.Code != 200 || len(page.SearchHints) == 0 {
 			t.Fatalf("%q hints %d %s", q, hints.Code, hints.Body)
 		}
 		for _, h := range page.SearchHints {
@@ -119,7 +128,14 @@ func TestSearchPagesWriteNoRows(t *testing.T) {
 				t.Errorf("%q: hit %q has no poster", q, h.Name)
 			}
 		}
-		items := call("/Users/"+signed.User.ID+"/Items?searchTerm="+url.QueryEscape(q)+"&Recursive=true&IncludeItemTypes=Movie&Fields=PrimaryImageAspectRatio", "", signed.AccessToken)
+		var items *httptest.ResponseRecorder
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			items = call("/Users/"+signed.User.ID+"/Items?searchTerm="+url.QueryEscape(q)+"&Recursive=true&IncludeItemTypes=Movie&Fields=PrimaryImageAspectRatio", "", signed.AccessToken)
+			if items.Code != 200 || strings.Contains(items.Body.String(), `"Primary"`) || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 		if items.Code != 200 || !strings.Contains(items.Body.String(), `"Primary"`) {
 			t.Fatalf("%q items %d %s", q, items.Code, items.Body)
 		}

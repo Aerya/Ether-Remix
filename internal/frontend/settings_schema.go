@@ -35,7 +35,7 @@ type SettingsSection struct {
 
 // SettingsField is one setting. Kind is one of: serverName (read-only name
 // from General settings), port, bool, number, viewer (the DLNA browse-as
-// picker), rowKinds (personalized row kind switches), string, wordmark, or
+// picker), string, wordmark, or
 // note (static text named by Key, for example "addon", "files" or "playlist").
 type SettingsField struct {
 	Key     string   `json:"key"`
@@ -50,13 +50,6 @@ type SettingsField struct {
 func Int(n int) *int { return &n }
 
 func intp(n int) *int { return &n }
-
-// homeRowKinds are the personalized row kinds Jellyfin and Emby apps can
-// show, in display order.
-var homeRowKinds = []string{
-	"because-you-watched", "trending", "top-10", "fans-also-loved",
-	"new-releases", "hidden-gems", "more-from-person", "popular-on-server",
-}
 
 // MediaBrowserSchema is the settings schema the Jellyfin and Emby frontends
 // share; quickConnect adds Jellyfin's Quick Connect switch.
@@ -74,9 +67,7 @@ func MediaBrowserSchema(quickConnect bool) SettingsSchema {
 		SignInHelp: true,
 		Sections: []SettingsSection{
 			{Key: "home", Fields: []SettingsField{
-				{Key: "homeRows", Kind: "bool"},
-				{Key: "homeRowCount", Kind: "number", More: true, Min: intp(0), Max: intp(12)},
-				{Key: "homeRowKinds", Kind: "rowKinds", More: true, Options: append([]string(nil), homeRowKinds...)},
+				{Key: "homeRowCount", Kind: "number", Min: intp(0), Max: intp(12)},
 			}},
 			{Key: "find", Fields: find},
 		},
@@ -241,21 +232,6 @@ func (f SettingsField) validateValue(v any) error {
 		}
 		if f.Max != nil && n > float64(*f.Max) {
 			return fmt.Errorf("invalid %s", f.Key)
-		}
-	case "rowKinds":
-		list, ok := v.([]any)
-		if !ok {
-			return fmt.Errorf("invalid %s", f.Key)
-		}
-		allowed := map[string]bool{}
-		for _, o := range f.Options {
-			allowed[o] = true
-		}
-		for _, item := range list {
-			kind, ok := item.(string)
-			if !ok || (len(allowed) > 0 && !allowed[kind]) {
-				return fmt.Errorf("invalid %s", f.Key)
-			}
 		}
 	}
 	return nil

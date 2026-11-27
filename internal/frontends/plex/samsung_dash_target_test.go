@@ -174,6 +174,9 @@ func testSamsungDASHMediaEndToEnd(t *testing.T, directPlay string, copyAudio boo
 		!strings.Contains(body, `maxSegmentDuration="PT10S"`) || !strings.Contains(body, `minBufferTime="PT10S"`) {
 		t.Fatalf("want PMS-shaped single-video DASH despite ABR enabled: %s", body)
 	}
+	// The muxed fixture can include encoder padding (e.g. 8.005s).
+	// Validate against the probed duration instead of assuming exact lavfi input time.
+	wantDuration := "MPD.mediaPresentationDuration=" + fmt.Sprintf("PT0H0M%gS", info.Duration.Seconds())
 	facts := summarizeDASHResponse(manifest.Body.Bytes())
 	if facts == nil {
 		t.Fatal("missing manifest projection")
@@ -181,7 +184,7 @@ func testSamsungDASHMediaEndToEnd(t *testing.T, directPlay string, copyAudio boo
 	for _, fact := range facts.Manifest {
 		t.Log(fact)
 	}
-	for _, want := range []string{"MPD.profiles=urn:mpeg:dash:profile:isoff-live:2011", "MPD.type=static", "MPD.mediaPresentationDuration=PT0H0M8S", "SegmentTemplate.timescale=1", "SegmentTemplate.startNumber=0", "Representation.mimeType=video/mp4", "Representation.mimeType=audio/mp4", "Representation.codecs=" + wantCodecs, "AudioChannelConfiguration.schemeIdUri=" + map[bool]string{true: "tag:dolby.com,2014:dash:audio_channel_configuration:2011", false: "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"}[copyAudio], "AudioChannelConfiguration.value=" + map[bool]string{true: "F801", false: "2"}[copyAudio], "xml.escapedAmpersand=true"} {
+	for _, want := range []string{"MPD.profiles=urn:mpeg:dash:profile:isoff-live:2011", "MPD.type=static", wantDuration, "SegmentTemplate.timescale=1", "SegmentTemplate.startNumber=0", "Representation.mimeType=video/mp4", "Representation.mimeType=audio/mp4", "Representation.codecs=" + wantCodecs, "AudioChannelConfiguration.schemeIdUri=" + map[bool]string{true: "tag:dolby.com,2014:dash:audio_channel_configuration:2011", false: "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"}[copyAudio], "AudioChannelConfiguration.value=" + map[bool]string{true: "F801", false: "2"}[copyAudio], "xml.escapedAmpersand=true"} {
 		if !strings.Contains(strings.Join(facts.Manifest, "\n"), want) {
 			t.Errorf("missing manifest fact %s", want)
 		}

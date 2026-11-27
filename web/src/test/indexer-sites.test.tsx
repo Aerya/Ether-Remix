@@ -1,7 +1,12 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import type { Indexer } from "../lib/types";
 import { calls, renderApp } from "./harness";
+
+// Load the lazy route before DOM assertions start their timeout.
+beforeAll(async () => {
+  await import("../pages/sources/Sources");
+});
 
 const WAIT = { timeout: 4000 };
 

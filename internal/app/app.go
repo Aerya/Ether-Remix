@@ -45,6 +45,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/loudness"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/mdblist"
 	"github.com/braedonsaunders/ether/internal/migrate"
@@ -65,7 +66,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/recommend"
 	"github.com/braedonsaunders/ether/internal/remote"
 	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/segcache"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/sessions"
@@ -164,22 +167,27 @@ type App struct {
 	// availabilityLive publishes availability to background workers (the
 	// personalization builder) that start before buildAvailability runs.
 	availabilityLive atomic.Pointer[availability.Service]
-	opts             Options
-	log              *slog.Logger
-	logs             *admin.LogBuffer
-	playLogs         *stats.SessionLogSink
-	support          *diagnostics.Recorder
-	cfg              *config.Store
-	proxyMu          sync.Mutex
-	pluginLiveTVMu   sync.Mutex
-	prowlarrMu       sync.Mutex
-	apiKeysMu        sync.Mutex
-	apiKeys          *identity.APIKeys
-	prowlarrState    string
-	prowlarrKept     bool
-	proxyGen         uint64
-	proxyReady       bool
-	proxyPrefixes    []netip.Prefix
+	// built is closed once build has constructed every service, releasing
+	// background builders (personalization) that read them.
+	built          chan struct{}
+	opts           Options
+	log            *slog.Logger
+	logs           *admin.LogBuffer
+	playLogs       *stats.SessionLogSink
+	support        *diagnostics.Recorder
+	cfg            *config.Store
+	proxyMu        sync.Mutex
+	pluginLiveTVMu sync.Mutex
+	prowlarrMu     sync.Mutex
+	apiKeysMu      sync.Mutex
+	apiKeys        *identity.APIKeys
+	prowlarrState  string
+	prowlarrKept   bool
+	proxyGen       uint64
+	proxyReady     bool
+	proxyPrefixes  []netip.Prefix
+	proxyEntries   []string
+	proxyNamed     bool
 	// seenFamilies records a client family policy once per process. Playback
 	// does not take a write lock to refresh last_seen.
 	seenFamilies sync.Map
@@ -205,11 +213,16 @@ type App struct {
 	// (heartbeated; see rolling.go).
 	draining atomic.Bool
 
-	tmdb        *tmdb.Client
-	libraries   *libraries.Service
-	catalog     *catalog.Catalog
-	collections *collections.Service
-	images      *artwork.Images
+	tmdb            *tmdb.Client
+	libraries       *libraries.Service
+	libProfiles     *libraryProfiles
+	catalog         *catalog.Catalog
+	metadataSources *core.MetadataSources
+	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
+	titleRefresh     *titleRefresher
+	titleRefreshOnce sync.Once
+	collections      *collections.Service
+	images           *artwork.Images
 	// titlePosterRenderer draws generated posters (titlePosters).
 	titlePosterOnce     sync.Once
 	titlePosterRenderer *artwork.Renderer
@@ -230,6 +243,7 @@ type App struct {
 	cacheConfig         atomic.Pointer[config.Cache]
 	engine              *stream.Engine
 	vault               vault.Store
+	providerSpeedRuns   sync.Map
 	indexers            *newznab.Manager
 	sites               *cardigann.Service // built-in indexer sites from owner-installed definitions
 	addons              *stremio.Service   // Stremio stream addons configured as indexers
@@ -327,6 +341,8 @@ type App struct {
 	extendRT           *extendRuntime
 	streamRT           *consoleStreamRuntime
 	pluginsRT          *pluginRuntime
+	loudness           *loudness.Service
+	screenPublish      *screens.PublishStore
 	agentRT            *agentRuntime
 	eventBus           *events.Bus
 	eventRegistry      *events.Registry
@@ -334,7 +350,6 @@ type App struct {
 	flowsRT            *flowsRuntime
 	liveEvents         *liveevents.Hub
 	liveWatchMatcher   *liveevents.WatchMatcher
-	liveTicker         *liveevents.TickerService
 	liveAlertEngine    *liveevents.AlertEngine
 	liveAlertScheduler *liveevents.AlertScheduler
 	pluginLiveOnce     sync.Once
@@ -519,6 +534,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.log.Info("startup phase", "phase", name, "duration", time.Since(phaseStart))
 		phaseStart = time.Now()
 	}
+	a.closers = append(a.closers, func() { a.db.Close() })
 	// The rest of construction writes through the gate in startup steps
 	// (restored-dump import, credential sealing, seeding). Hold the gate
 	// in maintenance mode until New returns so anything already writing
@@ -536,7 +552,6 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.log.Info("database: using PostgreSQL", "url", dbCfg.Redacted().URL)
 		a.warnNewerSchema(ctx)
 	}
-	a.closers = append(a.closers, func() { a.db.Close() })
 	if err := a.buildCluster(dialect); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("cluster: %w", err)
@@ -644,6 +659,9 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, err
 	}
+	if a.built != nil {
+		close(a.built)
+	}
 	phase("service construction")
 	a.connectClusterHooks()
 	a.initUpdates()
@@ -664,7 +682,10 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	// so a listing fetched by either is cached for the other.
 	ua := httpclient.FormatUserAgent(a.opts.Version)
 	a.guides = resolver.NewTrashGuides(resolver.TrashOptions{UserAgent: ua})
-	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{UserAgent: ua})
+	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{
+		UserAgent: ua,
+		Client:    (&safefetch.Guard{}).Client(&http.Client{Timeout: 30 * time.Second}),
+	})
 	a.qualitySync = resolver.NewQualitySyncer(resolver.QualitySyncDeps{
 		Guides:      a.guides,
 		Dictionarry: a.dictionarry,
@@ -677,6 +698,11 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	if a.safety, err = safety.New(ctx, a.db); err != nil {
 		return fmt.Errorf("safety: %w", err)
 	}
+	if err := a.migrateQualityRules(ctx); err != nil {
+		return err
+	}
+	cfg = a.cfg.Get()
+	cfg.Cache = cfg.EffectiveCache()
 	// Identity precedes model construction: background builders receive a fully
 	// initialized auth service. Scorer consumers are built inside the model's
 	// dependency phase before its workers start.
@@ -899,7 +925,6 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.catalog.RunTail(ctx) })
 	if parityRunCatalogueWorkers() {
 		background.start(func() { a.cluster.RunAsLeader(ctx, "catalogue sync", a.catalog.Run) })
-		background.start(func() { a.cluster.RunAsLeader(ctx, "trending charts", a.catalog.RunTrends) })
 	}
 	background.start(func() { a.cluster.RunAsLeader(ctx, "release availability", a.availability.Run) })
 	background.start(func() { a.cluster.RunAsLeader(ctx, "collection refresh", a.collections.Run) })
@@ -1173,14 +1198,10 @@ func appendUnique(xs []string, more ...string) []string {
 }
 
 // startupNextStep returns a single actionable startup message for the next
-// missing configuration step, or "" when setup, TMDB, and a playback source
-// are all ready.
+// missing configuration step, or "" when setup and a playback source are ready.
 func startupNextStep(cfg config.Config, uiURL string) string {
 	if !cfg.SetupComplete {
 		return fmt.Sprintf("Open %s to finish setup", uiURL)
-	}
-	if tmdb.ResolveKey(cfg.Catalog) == "" {
-		return "Add a TMDB API key in Integrations"
 	}
 	if !hasPlaybackSource(cfg) {
 		return "Add a debrid or Usenet account in Sources"

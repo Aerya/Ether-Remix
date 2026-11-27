@@ -100,7 +100,7 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 help: {
                   source:
-                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
+                    "IP addresses, CIDR ranges or host names of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. A Docker container name such as nginx-proxy-manager also works and keeps working when the container gets a new address. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
                 placeholder: "192.168.1.5, 10.0.0.0/8",
@@ -2084,7 +2084,7 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 help: {
                   source:
-                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
+                    "IP addresses, CIDR ranges or host names of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. A Docker container name such as nginx-proxy-manager also works and keeps working when the container gets a new address. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
                 placeholder: "192.168.1.5, 10.0.0.0/8",

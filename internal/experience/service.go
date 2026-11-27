@@ -50,6 +50,7 @@ type ServiceDeps struct {
 	BeginPeopleRead     func(context.Context, *core.User) (PeopleRead, error)
 	NotInterestedSource func(context.Context, *core.User) ([]frontend.NotInterestedEntry, error)
 	ByExternalID        func(context.Context, string, string) (*core.Title, error)
+	ResolveEpisode      func(context.Context, core.RatingKey, int, int) (core.RatingKey, error)
 	// KeysByProviderID resolves one external provider id ("tmdb", "imdb",
 	// "tvdb", case-insensitive) to candidate rating keys via indexed lookup,
 	// never scanning the catalogue.
@@ -189,19 +190,28 @@ type ServiceDeps struct {
 	// visibility counts, metadata and fallback artwork from the indexed
 	// catalog_franchises summary table. Optional; tests with fake
 	// core.Collections leave it nil.
-	Franchises FranchiseStore
-	Playlists  core.Playlists
+	Franchises             FranchiseStore
+	CollectionMemberCounts func(context.Context, core.Filter, []int64) (map[int64]int, error)
+	Playlists              core.Playlists
 	// Scheduled lists metadata-only future episodes for one season. Nil means
 	// the host has not opted in. Callers must not resolve a release from it.
 	Scheduled func(context.Context, core.RatingKey) ([]core.Title, error)
 	// Grouped reports shows whose episode order is not the canonical season
 	// tree. Future episodes stay off those shows.
-	Grouped  func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
-	State    core.State
-	Search   Search
-	Rows     *RowsService
-	Layout   core.NeutralHomeLayoutSource
-	Protocol core.Protocol
+	Grouped func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
+	State   core.State
+	// HistoryPlays lists a viewer's completed plugin plays in [from, to),
+	// oldest first (listening recaps). Optional.
+	HistoryPlays func(ctx context.Context, userID int64, from, to time.Time, limit int) ([]core.HistoryPlay, error)
+	// Per-viewer duplicate preferences (optional): a preferred release per
+	// recording and the releases the viewer hid in its favour.
+	RecordingPreferences   func(ctx context.Context, userID int64, library core.LibraryID, recordings []string) (map[string]core.RatingKey, error)
+	SetRecordingPreference func(ctx context.Context, userID int64, library core.LibraryID, recording string, preferred core.RatingKey, hide []core.RatingKey) error
+	HiddenRecordingCopies  func(ctx context.Context, userID int64) ([]core.RatingKey, error)
+	Search                 Search
+	Rows                   *RowsService
+	Layout                 core.NeutralHomeLayoutSource
+	Protocol               core.Protocol
 	// Favorites manages the stable, per-viewer Favorites playlist mapping.
 	Favorites      func(context.Context, *core.User, core.RatingKey, bool) (bool, error)
 	IsFavorite     func(context.Context, *core.User, core.RatingKey) (bool, error)
@@ -210,6 +220,10 @@ type ServiceDeps struct {
 	// whether that is all of them, so a favorites filter seeks those titles
 	// instead of walking the library. Optional.
 	FavoriteTitleKeys func(context.Context, *core.User, int) ([]core.RatingKey, bool, error)
+	// FavoritePage reads one page of a viewer's liked titles of one role:
+	// keys in order, when each was liked, the next cursor and the total.
+	// Optional; without it FavoriteTitles is unavailable.
+	FavoritePage func(ctx context.Context, viewer *core.User, role, cursor string, limit int) (keys []core.RatingKey, likedAt []time.Time, next string, total int, err error)
 	// CountWatched counts the titles matching a filter that a viewer has
 	// played, from their watch rows. Optional; without it a played filter's
 	// total is counted over the whole type.
@@ -262,6 +276,7 @@ type Service struct {
 	cursors       *episodeCursors
 	pluginCursors *pluginCursorCache
 	searchGate    *descriptiveGate
+	imports       *importJobs
 }
 
 func (s *Service) ensureSearchGate() *descriptiveGate {
@@ -595,6 +610,13 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 		if lib.Source == core.LibraryPlugin {
+			// A catalogue (TMDB) person is credited on no plugin item: plugin
+			// people carry their own ids. Answer empty instead of the whole
+			// library, which put every audiobook on an actor's page and merged
+			// a plugin movie library into their filmography.
+			if wantsCataloguePerson(q.Filter) {
+				return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+			}
 			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
 		}
 		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
@@ -1654,6 +1676,17 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		}
 		return nil
 	}
+	if key.Kind() == core.KindSmart && frontend.CollectionCardArtwork(ctx) {
+		checker, ok := s.d.Collections.(collectionCardHeaders)
+		if !ok {
+			return core.ErrNotFound
+		}
+		card := readCollectionCard(ctx, checker, v, key)
+		if card == nil || !s.d.Visibility.CollectionAllowed(v, card) {
+			return core.ErrNotFound
+		}
+		return nil
+	}
 	if key.Kind() == core.KindSmart && s.d.Collections != nil {
 		// Artwork needs only a visible collection with one visible member;
 		// loading every member (a genre collection holds thousands) per
@@ -1669,7 +1702,7 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		if !s.d.Visibility.CollectionAllowed(u, c) || (c.OwnerUserID != 0 && c.OwnerUserID != u.ID) {
 			return core.ErrNotFound
 		}
-		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c, nil)
+		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c)
 		if err != nil {
 			return err
 		}
@@ -1818,7 +1851,8 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		}
 		return core.Page{Items: items[start:end], Total: total}, nil
 	}
-	if _, err = s.item(ctx, v, key); err != nil {
+	parent, err := s.item(ctx, v, key)
+	if err != nil {
 		return core.Page{}, err
 	}
 	if q.FilterByProviderIDs {
@@ -1867,7 +1901,7 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 			}
 		}
 	}
-	out, err = s.appendScheduled(ctx, v, key, out, q)
+	out, err = s.appendScheduled(ctx, v, parent, out, q)
 	if err != nil {
 		return core.Page{}, err
 	}
@@ -1964,21 +1998,41 @@ func (s *Service) rootWindow(ctx context.Context, v *core.User, device core.Devi
 const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
+	page, _, err := s.search(ctx, viewer, device, query, q, false)
+	return page, err
+}
+
+// search is Search; unified leaves descriptive (AI) results to the caller
+// (UnifiedSearch) and reports whether the results hold a confident match:
+// a title, franchise or person the query names, in the catalogue or a
+// plugin library.
+func (s *Service) search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery, unified bool) (outPage frontend.SearchPage, outConfident bool, outErr error) {
 	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
 	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
 		ctx = core.WithSearchClient(ctx, device.ID)
 	}
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
-		return frontend.SearchPage{}, err
+		return frontend.SearchPage{}, false, err
 	}
+	// A newer query from this viewer's client (the next keystroke) cancels
+	// this search and drops the remote lookups only it still wanted.
+	ctx, leave := core.EnterSearch(ctx, v.ID, core.SearchClientFrom(ctx), query)
+	defer leave()
+	defer func() {
+		if outErr != nil && core.SearchWasSuperseded(ctx) {
+			// The viewer typed on: answer empty, never an error a client
+			// might retry (the retry would supersede the newer search).
+			outPage, outConfident, outErr = frontend.SearchPage{Page: core.Page{Items: []core.Title{}}, Continuation: frontend.ContinuationExhausted}, false, nil
+		}
+	}()
 	if !s.requestedTypesServable(ctx, v, q) {
-		return frontend.SearchPage{}, nil
+		return frontend.SearchPage{}, false, nil
 	}
 
 	// PSE-HOOK: recherche d'un profil limité aux thèmes Remix Jellyfin — voir docs/pse/FORK.fr.md
 	if page, ok, err := s.pseJellyfinThemeOnlySearch(ctx, viewer, device, v, query, q); ok || err != nil {
-		return page, err
+		return page, ok, err
 	}
 	var types []core.MediaType
 	show := false
@@ -1986,7 +2040,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	if s.d.PluginLibraries != nil {
 		views, err := s.storedViews(ctx, v)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			return frontend.SearchPage{}, false, err
 		}
 		for _, view := range views {
 			if view.KindKey != "" {
@@ -2035,7 +2089,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		limit = 50
 	}
 	if offset >= 1000 {
-		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, nil
+		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, false, nil
 	}
 	end := min(offset+limit, 1000)
 	// The candidate window grows with the page asked for, so a first page
@@ -2043,15 +2097,33 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	window := min(max(2*end, searchWindowMin), 1000)
 	// The window is ranked and filtered here, so the catalogue returns it
 	// as rows with the facts the filters read; only the page is read in full.
+	ctx, pending := core.WithSearchPending(ctx)
 	findCtx, cand := ctx, s.searchCandidates(ctx, v, q)
 	if cand != nil {
 		findCtx = core.WithSearchCandidates(ctx, cand)
 	}
+	// Title search answers from the catalogue Ether holds: a provider's
+	// live search (TMDB) still runs, detached, and answers the next search.
+	findCtx = s.NoProviderWait(findCtx)
+	// Plugin libraries are searched alongside the catalogue, never after
+	// it, and never wait on a plugin's remote catalogue: what a plugin is
+	// still fetching arrives on the next ask (SearchPage.Pending).
+	var (
+		pluginHits []core.Title
+		pluginBest float64
+		pluginErr  error
+		pluginDone = make(chan struct{})
+	)
+	go func() {
+		defer close(pluginDone)
+		pluginHits, pluginBest, pluginErr = s.pluginSearchItems(ctx, v, query, q, window)
+	}()
 	var items []core.Title
 	if len(types) > 0 {
 		candidates, err := s.d.Search.Find(findCtx, v, query, types, window)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			<-pluginDone
+			return frontend.SearchPage{}, false, err
 		}
 		items = make([]core.Title, 0, len(candidates))
 		for _, title := range candidates {
@@ -2060,20 +2132,22 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 			ok, e := s.matchesUserQuery(ctx, v, title, q)
 			if e != nil {
-				return frontend.SearchPage{}, e
+				<-pluginDone
+				return frontend.SearchPage{}, false, e
 			}
 			if ok {
 				items = append(items, title)
 			}
 		}
 	}
-	pluginHits, err := s.pluginSearchItems(ctx, v, query, q, window)
-	if err != nil {
-		return frontend.SearchPage{}, err
+	<-pluginDone
+	if pluginErr != nil {
+		return frontend.SearchPage{}, false, pluginErr
 	}
+	confident := pluginBest >= pluginNamedScore || namesTitle(query, items)
 	aiMerged := false
-	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" {
-		if !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || HasTitleMatch(pluginHits) || len(types) == 0 {
+	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" && !unified {
+		if confident || !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || len(types) == 0 {
 			if prev, superseded := s.ensureSearchGate().supersede(v, core.SearchClientFrom(ctx), query); superseded {
 				if ctrl, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearchController); ok {
 					ctrl.CancelDescribeSearch(v, prev)
@@ -2084,7 +2158,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			search.gate = s.ensureSearchGate()
 			_, aiRaw, handled, err := search.resolveDescriptive(ctx, v, query, types, false)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			if handled && len(aiRaw) > 0 {
 				aiItems := make([]core.Title, 0, len(aiRaw))
@@ -2094,7 +2168,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 					}
 					ok, e := s.matchesUserQuery(ctx, v, title, q)
 					if e != nil {
-						return frontend.SearchPage{}, e
+						return frontend.SearchPage{}, false, e
 					}
 					if ok {
 						aiItems = append(aiItems, title)
@@ -2104,10 +2178,12 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 				aiMerged = true
 			}
 		}
-	} else if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	} else if !unified && s.d.Protocol != "vela" && len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 && !core.IsShortSearch(query) {
+		// Vela asks for description matches itself (mode "descriptive", or
+		// one list with mode "auto"): its title search never returns them.
 		items, err = s.vibeMembers(ctx, v, query, q)
 		if err != nil {
-			return frontend.SearchPage{}, err
+			return frontend.SearchPage{}, false, err
 		}
 	}
 	if len(pluginHits) > 0 {
@@ -2124,7 +2200,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 	}
 	if err = s.sortTitles(ctx, items, q); err != nil {
-		return frontend.SearchPage{}, err
+		return frontend.SearchPage{}, false, err
 	}
 	start := min(offset, len(items))
 	stop := min(end, len(items))
@@ -2147,13 +2223,13 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		if !hasPlugin {
 			full, err := s.d.Search.Details(findCtx, page)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			page = full
 		} else if len(tmdbSub) > 0 {
 			fullSub, err := s.d.Search.Details(findCtx, tmdbSub)
 			if err != nil {
-				return frontend.SearchPage{}, err
+				return frontend.SearchPage{}, false, err
 			}
 			byKey := make(map[core.RatingKey]core.Title, len(fullSub))
 			for _, t := range fullSub {
@@ -2170,7 +2246,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			page = merged
 		}
 	}
-	return frontend.SearchPage{Page: core.Page{Items: page, Total: len(items)}, TotalExact: false, Continuation: continuation}, nil
+	return frontend.SearchPage{Page: core.Page{Items: page, Total: len(items)}, TotalExact: false, Continuation: continuation, Pending: pending.Pending()}, confident, nil
 }
 
 // searchCandidates is the candidate window a search asks the catalogue for
@@ -2633,6 +2709,17 @@ func (s *Service) SetUnplayed(ctx context.Context, v *core.Viewer, k core.Rating
 	return s.setPlayed(ctx, v, k, false)
 }
 
+func (s *Service) SetOfflineProgress(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sample frontend.OfflineProgress) error {
+	writer, ok := s.d.State.(frontend.OfflineProgressState)
+	if !ok {
+		return core.ErrNotAvailable
+	}
+	return s.mutate(ctx, viewer, key, func(u *core.User) error {
+		_, err := writer.ApplyOfflineProgress(ctx, u.ID, key, sample)
+		return err
+	})
+}
+
 var _ frontend.ReadingProgressWriter = (*Service)(nil)
 
 func (s *Service) SetReadingProgress(ctx context.Context, v *core.Viewer, k core.RatingKey, progress frontend.ReadingProgress) error {
@@ -2986,8 +3073,14 @@ func (s *Service) Ancestors(ctx context.Context, viewer *core.Viewer, device cor
 	var keys []core.RatingKey
 	if t.ShowKey != 0 {
 		keys = append(keys, t.ShowKey)
-		if t.Type == core.TypeEpisode && t.Season > 0 {
-			keys = append(keys, core.SeasonKey(t.Key.TMDB(), t.Season))
+		if t.Type == core.TypeEpisode {
+			parent := t.ParentKey
+			if parent == 0 {
+				parent = t.Key.Parent()
+			}
+			if parent != 0 {
+				keys = append(keys, parent)
+			}
 		}
 	}
 	out := make([]core.Title, 0, len(keys))
@@ -3240,6 +3333,16 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	}
 	if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 		found := containsMediaType(q.Types, t.Type)
+		// A plugin level answers the type its declared role or MediaBrowser
+		// type names (Plex type=8/9/10 ask artist/album/track), the same
+		// mapping the plugin store applied when it chose levels; a music
+		// artist projects as core "show", so the core type alone emptied
+		// every typed plugin listing that is re-checked here (#777).
+		for _, want := range q.Types {
+			if t.MediaRole != "" && strings.EqualFold(string(want), string(t.MediaRole)) || t.MBItemType != "" && strings.EqualFold(string(want), t.MBItemType) {
+				found = true
+			}
+		}
 		for _, kind := range q.UnservedTypes {
 			if strings.EqualFold(kind, string(t.Type)) || strings.EqualFold(kind, t.MBItemType) {
 				found = true
@@ -3726,4 +3829,31 @@ func (s *Service) IssueRowReceipts(ctx context.Context, req frontend.RowRequest,
 	}
 	req.Viewer = v
 	return s.d.Rows.IssueRowReceipts(ctx, req, s.d.Protocol, rows)
+}
+
+// wantsCataloguePerson reports a filter that asks for a catalogue (TMDB)
+// person's works: Filter.Person (Jellyfin, Emby, Vela) or a required credit
+// that names only catalogue people (Plex's /library/people/{id}/media). No
+// plugin item carries such a credit, and a plugin library drops filters it
+// has not declared, so it would otherwise list everything.
+func wantsCataloguePerson(f core.Filter) bool {
+	if f.Person != 0 && !core.IsPluginPersonID(f.Person) {
+		return true
+	}
+	for _, c := range f.Credits {
+		if c.Exclude || len(c.People) == 0 || len(c.Names) > 0 {
+			continue
+		}
+		plugin := false
+		for _, id := range c.People {
+			if core.IsPluginPersonID(id) {
+				plugin = true
+				break
+			}
+		}
+		if !plugin {
+			return true
+		}
+	}
+	return false
 }

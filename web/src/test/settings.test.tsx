@@ -1,6 +1,6 @@
 import { systemMessageKey, type MessageCatalog } from "@braedonsaunders/appkit-i18n";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { loadLocale } from "../i18n";
 import de from "../i18n/locales/de.json";
 import { calls, renderApp } from "./harness";
@@ -11,6 +11,11 @@ const german = (source: string) => {
   if (typeof entry !== "string") throw new Error(`no German copy for ${source}`);
   return entry;
 };
+
+// Load the lazy route before DOM assertions start their timeout.
+beforeAll(async () => {
+  await import("../pages/settings/pages");
+});
 
 const WAIT = { timeout: 4000 };
 
@@ -195,7 +200,6 @@ describe("Settings", () => {
     const required = await screen.findByRole("region", { name: "Catalogues" }, WAIT);
     expect(screen.queryByRole("region", { name: "Essentials" })).toBeNull();
     expect(within(required).getByRole("listitem", { name: "TMDB" })).toBeInTheDocument();
-    // The label follows the setup status, which loads after the page.
     expect(await screen.findByRole("button", { name: "Manage TMDB" }, WAIT)).toBeEnabled();
     const artwork = screen.getByRole("region", { name: "Artwork and ratings" });
     const posters = await within(artwork).findByRole("listitem", { name: "PostersPlus" }, WAIT);
@@ -228,7 +232,8 @@ describe("Settings", () => {
     expect(screen.getByRole("listitem", { name: "TheIntroDB" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save Simkl settings" })).toBeNull();
     expect(screen.queryByRole("switch", { name: "Prowlarr enabled" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "TMDB enabled" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "TMDB enabled" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "TheTVDB enabled" })).not.toBeChecked();
   });
 
   it("keeps the TheIntroDB key, health and test on its integration tab", async () => {
@@ -247,16 +252,26 @@ describe("Settings", () => {
   });
 
   it("saves and tests the TMDB key from Integrations", async () => {
-    const { fake } = renderApp("/services/tmdb");
-    fireEvent.change(await screen.findByLabelText("Your own TMDB key (optional)", {}, WAIT), {
+    const { fake } = renderApp("/services/overview");
+    fireEvent.click(await screen.findByRole("button", { name: "Manage TMDB" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "Manage TMDB" });
+    fireEvent.change(within(drawer).getByLabelText("TMDB API key"), {
       target: { value: "tmdb-key" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Test TMDB key" }));
-    await waitFor(() => expect(calls(fake, "POST", "/test/tmdb")).toHaveLength(1), WAIT);
-    expect(calls(fake, "POST", "/test/tmdb")[0]!.body).toEqual({ key: "tmdb-key" });
-    fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/catalog")).toHaveLength(1), WAIT);
-    expect(calls(fake, "PUT", "/config/catalog")[0]!.body).toMatchObject({ tmdbKey: "tmdb-key" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Test" }));
+    await waitFor(
+      () => expect(calls(fake, "POST", "/test/tmdb")[0]?.body).toEqual({ key: "tmdb-key" }),
+      WAIT,
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    await waitFor(
+      () =>
+        expect(calls(fake, "PUT", "/config/catalog")[0]?.body).toMatchObject({
+          tmdbKey: "tmdb-key",
+          tmdbDisabled: false,
+        }),
+      WAIT,
+    );
   });
 
   it("keeps a Trakt draft when another integration is toggled", async () => {
@@ -613,8 +628,9 @@ describe("Settings", () => {
     expect(live().personalize.postPlay).toBe(!upNext);
   });
 
-  it("keeps personal touches on Home › Tuning for everyone, not for one viewer", async () => {
-    renderApp("/home");
+  it("keeps personal touches on Recommendations › Tuning for everyone, not for one viewer", async () => {
+    renderApp("/recommendations");
+    fireEvent.click(await screen.findByRole("button", { name: /Page settings/ }, WAIT));
     fireEvent.click(await screen.findByRole("tab", { name: "Tuning" }, WAIT));
     expect(
       await screen.findByLabelText("Match and finish time on details", {}, WAIT),
@@ -634,6 +650,24 @@ describe("Settings", () => {
     expect(await screen.findByRole("heading", { name: "Connection checks" }, WAIT)).toBeVisible();
     expect(screen.getByLabelText("Allow remote access")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Secure connections" })).toBeNull();
+  });
+
+  it("offers to trust a reverse proxy that forwards visitor addresses, saving only on Save", async () => {
+    const { fake } = renderApp("/apps/overview", { untrustedProxy: true });
+    expect(
+      await screen.findByText("A reverse proxy is not trusted yet", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/npm \(172\.18\.0\.2\) is forwarding visitor addresses/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Trust npm" }));
+    await waitFor(() =>
+      expect(screen.queryByText("A reverse proxy is not trusted yet")).toBeNull(),
+    );
+    expect(calls(fake, "PUT", "/config/server")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/server")).toHaveLength(1), WAIT);
+    expect(calls(fake, "PUT", "/config/server")[0]!.body).toMatchObject({
+      trustedProxyCIDRs: ["npm"],
+    });
   });
 
   it("rejects non-URL junk in Custom server URLs with a translated message while accepting Tailscale CGNAT URLs", async () => {
@@ -741,15 +775,12 @@ describe("Settings", () => {
     });
   });
 
-  it("turns personalized Jellyfin home rows off without forgetting the count", async () => {
+  it("sets how many Home rows Jellyfin shows; the rows themselves come from Recommendations", async () => {
     const { fake } = renderApp("/apps/jellyfin", {}, (f) => {
       f.state.config.frontends = { jellyfin: { enabled: true } };
     });
-    const rows = await screen.findByRole("switch", { name: "Personalized rows" }, WAIT);
-    expect(rows).toBeChecked();
-    fireEvent.click(rows);
-    fireEvent.click(screen.getByRole("button", { name: "More options: Home" }));
-    fireEvent.change(await screen.findByRole("spinbutton", { name: "How many rows" }), {
+    expect(screen.queryByRole("switch", { name: "Personalized rows" })).toBeNull();
+    fireEvent.change(await screen.findByRole("spinbutton", { name: "Home rows shown" }, WAIT), {
       target: { value: "2" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
@@ -757,15 +788,17 @@ describe("Settings", () => {
       () => expect(calls(fake, "PUT", "/frontends/jellyfin/settings")).toHaveLength(1),
       WAIT,
     );
-    expect(calls(fake, "PUT", "/frontends/jellyfin/settings")[0]!.body).toMatchObject({
-      homeRows: false,
-      homeRowCount: 2,
-    });
+    const body = calls(fake, "PUT", "/frontends/jellyfin/settings")[0]!.body as Record<
+      string,
+      unknown
+    >;
+    expect(body).toMatchObject({ homeRowCount: 2 });
+    expect(body).not.toHaveProperty("homeRows");
   });
 
   it("does not keep the old Connectivity URL", async () => {
     renderApp("/remote-access/secure");
-    expect(await screen.findByRole("link", { name: "Home" }, WAIT)).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Recommendations" }, WAIT)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Apps" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Connectivity" })).not.toBeInTheDocument();
   });

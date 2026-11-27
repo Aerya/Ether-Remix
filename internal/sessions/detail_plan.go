@@ -82,6 +82,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 		}
 	}
 	b.stampViewerTranscoding(viewer, &req.Caps)
+	req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, viewer, nil)
 	if limit := b.deps.BitrateLimit(viewer); limit > 0 {
 		if req.Caps.MaxBitrateKbps == 0 || limit < req.Caps.MaxBitrateKbps {
 			req.Caps.MaxBitrateKbps = limit

@@ -18,7 +18,7 @@ import (
 func TestPreferencePreviewAndPlaybackAgreeWithoutSaving(t *testing.T) {
 	f := newConsoleFixture(t)
 	defer f.svc.Close()
-	p, _, _ := f.svc.consoleProfile("")
+	p, _, _ := f.svc.consoleProfile(context.Background(), "", nil)
 	p.ReleaseRules = []core.ReleaseRule{{ID: "group", Name: "Prefer 720", Action: "prefer", Conditions: []core.ReleaseCondition{{Field: "height", Operator: "range", Min: 720, Max: 720}}}}
 	p = rulesFirst(p)
 	body, _ := json.Marshal(map[string]any{"profile": p, "key": matrixTitle().Key.String()})
@@ -48,7 +48,7 @@ func TestPreferencePreviewAndPlaybackAgreeWithoutSaving(t *testing.T) {
 	if n := len(f.svc.Pins()); n != 0 {
 		t.Fatalf("preview changed pins: %d", n)
 	}
-	saved, _, _ := f.svc.consoleProfile("")
+	saved, _, _ := f.svc.consoleProfile(context.Background(), "", nil)
 	if len(saved.ReleaseRules) > 0 {
 		t.Fatal("preview saved the draft")
 	}
@@ -61,7 +61,7 @@ func TestPreferencePreviewAndPlaybackAgreeWithoutSaving(t *testing.T) {
 func TestPreferencePreviewRejectsInvalidDraftAndMissingLanguage(t *testing.T) {
 	f := newConsoleFixture(t)
 	defer f.svc.Close()
-	p, _, _ := f.svc.consoleProfile("")
+	p, _, _ := f.svc.consoleProfile(context.Background(), "", nil)
 	p.ReleaseRules = []core.ReleaseRule{{ID: "lang", Name: "Norwegian", Action: "require", Conditions: []core.ReleaseCondition{{Field: "language", Operator: "equals", Value: "no"}}}}
 	body, _ := json.Marshal(map[string]any{"profile": p, "names": []string{"Film.2026.1080p.NORDIC.WEB-DL"}})
 	var preview struct {
@@ -80,7 +80,7 @@ func TestPreferencePreviewRejectsInvalidDraftAndMissingLanguage(t *testing.T) {
 func TestFilenamePreviewDoesNotInventUsenet(t *testing.T) {
 	f := newConsoleFixture(t)
 	defer f.svc.Close()
-	p, _, _ := f.svc.consoleProfile("")
+	p, _, _ := f.svc.consoleProfile(context.Background(), "", nil)
 	p.ReleaseRules = []core.ReleaseRule{{ID: "proto", Name: "Usenet", Action: "require", Conditions: []core.ReleaseCondition{{Field: "protocol", Operator: "equals", Value: "usenet"}}}}
 	body, _ := json.Marshal(map[string]any{"profile": p, "names": []string{"Film.2026.1080p.WEB-DL"}})
 	var preview struct {
@@ -172,7 +172,7 @@ func TestOriginalAudioPreviewMatchesResolve(t *testing.T) {
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	p, _, _ := svc.consoleProfile("")
+	p, _, _ := svc.consoleProfile(context.Background(), "", nil)
 	p.ReleaseRules = rules
 	p = rulesFirst(p)
 	body, _ := json.Marshal(map[string]any{"profile": p, "key": title.Key.String()})

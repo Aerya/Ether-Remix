@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -36,15 +37,14 @@ func (c *Catalog) AiredShowEpisodes(ctx context.Context, shows []core.RatingKey)
 	const chunk = 200
 	for start := 0; start < len(unique); start += chunk {
 		part := unique[start:min(start+chunk, len(unique))]
-		args := make([]any, 0, len(part)+1)
-		args = append(args, now)
-		for _, k := range part {
-			args = append(args, int64(k))
+		orders, err := c.readShowOrders(ctx, part)
+		if err != nil {
+			return nil, err
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT show_key, key
-FROM catalog_titles
-WHERE `+airedTypeColumn(c.db)+`='episode' AND adult=0 AND release_known=1 AND released_ts<=?
-AND season>=0 AND episode>0 AND show_key IN (`+placeholders(len(part))+`)`, args...)
+		scope, args := episodeScope(part, orders)
+		args = append(args, now, time.Unix(now, 0).UTC().Format(time.DateOnly))
+		rows, err := c.db.QueryContext(ctx, scope+`SELECT e.show_key,e.key FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key
+ WHERE t.adult=0 AND e.season>=0 AND e.episode>0 AND `+scopedAired, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -66,10 +66,19 @@ AND season>=0 AND episode>0 AND show_key IN (`+placeholders(len(part))+`)`, args
 		// total. Two show_key-indexed reads joined here: a correlated
 		// NOT EXISTS let SQLite scan every season row (2 minutes on a
 		// 50k-title library).
-		keyArgs := args[1:]
+		var keyArgs []any
+		for _, key := range part {
+			choice := orders[key]
+			if choice.order.Source == "" || !providerLayout(&choice.title, choice.order) {
+				keyArgs = append(keyArgs, key)
+			}
+		}
+		if len(keyArgs) == 0 {
+			continue
+		}
 		stored := map[[2]int64]bool{}
 		rows, err = c.db.QueryContext(ctx, `SELECT DISTINCT show_key, season FROM catalog_titles
-WHERE `+airedTypeColumn(c.db)+`='episode' AND show_key IN (`+placeholders(len(part))+`)`, keyArgs...)
+WHERE `+airedTypeColumn(c.db)+`='episode' AND key<5000000000000000 AND show_key IN (`+placeholders(len(keyArgs))+`)`, keyArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +96,7 @@ WHERE `+airedTypeColumn(c.db)+`='episode' AND show_key IN (`+placeholders(len(pa
 			return nil, err
 		}
 		rows, err = c.db.QueryContext(ctx, `SELECT show_key, season, child_count, release_known, released_ts FROM catalog_titles
-WHERE `+airedTypeColumn(c.db)+`='season' AND show_key IN (`+placeholders(len(part))+`)`, keyArgs...)
+WHERE `+airedTypeColumn(c.db)+`='season' AND key<3900000000000000 AND show_key IN (`+placeholders(len(keyArgs))+`)`, keyArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +106,7 @@ WHERE `+airedTypeColumn(c.db)+`='season' AND show_key IN (`+placeholders(len(par
 				rows.Close()
 				return nil, err
 			}
-			if season <= 0 || count <= 0 || known != 1 || released > now || stored[[2]int64{showKey, season}] {
+			if season <= 0 || season >= 1000 || count <= 0 || known != 1 || released > now || stored[[2]int64{showKey, season}] {
 				continue
 			}
 			sk := core.RatingKey(showKey)

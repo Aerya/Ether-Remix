@@ -321,11 +321,16 @@ export function StreamRulesFields({
   value,
   onChange,
   disabled,
+  part,
 }: {
   value: StreamRules;
   onChange: (next: StreamRules) => void;
   disabled?: boolean;
+  /** Only the audio rows or only the subtitle rows; both when omitted. */
+  part?: "audio" | "subtitles";
 }) {
+  const audio = part !== "subtitles";
+  const subtitles = part !== "audio";
   const set = <K extends keyof StreamRules>(k: K, v: StreamRules[K]) =>
     onChange({ ...value, [k]: v });
   const appearance = value.subtitleAppearance ?? DEFAULT_SUBTITLE_APPEARANCE;
@@ -337,222 +342,236 @@ export function StreamRulesFields({
         title={t("Languages")}
         description={t("Plex track changes are remembered for later episodes of the same show.")}
       >
-        <SettingsRow
-          setting="audio-languages"
-          title={t("Audio languages")}
-          description={t("Tried in order from first to last.")}
-          control={
-            <div className="w-72 max-w-full">
-              <OrderedLanguagePicker
-                ariaLabel={t("Audio languages")}
-                value={value.audioLanguages}
-                onChange={(v) => set("audioLanguages", v)}
-                disabled={disabled}
-              />
-            </div>
-          }
-        />
-        <SettingsRow
-          setting="prefer-the-original-language"
-          title={t("Prefer the original language")}
-          description={t("Play a title's original language before dubs.")}
-          control={
-            <Switch
-              aria-label={t("Prefer the original language")}
-              checked={value.preferOriginal}
-              disabled={disabled}
-              onChange={(e) => set("preferOriginal", e.target.checked)}
-            />
-          }
-        />
-        <SettingsRow
-          setting="subtitle-languages"
-          title={t("Subtitle languages")}
-          description={t("Tried in order from first to last.")}
-          control={
-            <div className="w-72 max-w-full">
-              <OrderedLanguagePicker
-                ariaLabel={t("Subtitle languages")}
-                value={value.subtitleLanguages}
-                onChange={(v) => set("subtitleLanguages", v)}
-                disabled={disabled}
-              />
-            </div>
-          }
-        />
-        <SettingsRow
-          setting="show-subtitles"
-          title={t("Show subtitles")}
-          control={
-            <div className="w-64">
-              <Select
-                aria-label={t("Show subtitles")}
-                value={value.subtitleMode}
-                disabled={disabled}
-                onChange={(e) => set("subtitleMode", e.target.value)}
-              >
-                {SUBTITLE_MODES.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          }
-        />
-        <SettingsRow
-          setting="subtitle-style"
-          title={t("Subtitle style")}
-          control={
-            <div className="w-64">
-              <Select
-                aria-label={t("Subtitle style")}
-                value={value.subtitleStyle}
-                disabled={disabled}
-                onChange={(e) => set("subtitleStyle", e.target.value)}
-              >
-                {SUBTITLE_STYLES.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          }
-        />
-      </SettingsSection>
-      <SettingsSection
-        title={t("Subtitle appearance")}
-        description={t("Size, colour, background and position, in apps that can style subtitles.")}
-      >
-        <MoreOptions
-          setting="subtitle-appearance"
-          label={t("More options: {title}", { title: t("Subtitle appearance") })}
-        >
-          <SettingsRow
-            setting="size"
-            title={t("Size")}
-            control={
-              <div className="w-64">
-                <Select
-                  aria-label={t("Size")}
-                  value={appearance.fontSize}
-                  disabled={disabled}
-                  onChange={(e) => setAppearance({ fontSize: e.target.value })}
-                >
-                  {SUBTITLE_SIZES.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            }
-          />
-          <SettingsRow
-            setting="text-colour"
-            title={t("Text colour")}
-            description={t("A hex colour, such as #ffffff.")}
-            control={
-              <div className="w-40">
-                <Input
-                  aria-label={t("Text colour")}
-                  value={appearance.fontColor}
-                  disabled={disabled}
-                  placeholder="#ffffff"
-                  onChange={(e) => setAppearance({ fontColor: e.target.value })}
-                />
-              </div>
-            }
-          />
-          <SettingsRow
-            setting="background"
-            title={t("Background")}
-            control={
-              <div className="flex w-72 items-center gap-2">
-                <Select
-                  aria-label={t("Background")}
-                  value={appearance.backgroundStyle}
-                  disabled={disabled}
-                  onChange={(e) => setAppearance({ backgroundStyle: e.target.value })}
-                >
-                  {SUBTITLE_BACKGROUNDS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-                <Input
-                  aria-label={t("Background colour")}
-                  value={appearance.backgroundColor}
-                  disabled={disabled}
-                  placeholder="#000000"
-                  onChange={(e) => setAppearance({ backgroundColor: e.target.value })}
-                />
-              </div>
-            }
-          />
-          <SettingsRow
-            setting="position"
-            title={t("Position")}
-            control={
-              <div className="w-64">
-                <Select
-                  aria-label={t("Position")}
-                  value={appearance.position}
-                  disabled={disabled}
-                  onChange={(e) => setAppearance({ position: e.target.value })}
-                >
-                  {SUBTITLE_POSITIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            }
-          />
-        </MoreOptions>
-      </SettingsSection>
-      <SettingsSection
-        title={t("Audio processing")}
-        description={t(
-          "Needs server audio transcoding. Dialogue boost applies to sources with six or more channels.",
-        )}
-      >
-        <MoreOptions
-          setting="audio-processing"
-          label={t("More options: {title}", { title: t("Audio processing") })}
-        >
-          {(
-            [
-              ["loudness", t("Normalize loudness")],
-              ["nightMode", t("Night mode compression")],
-              ["dialogueBoost", t("Boost centre-channel dialogue")],
-            ] as const
-          ).map(([key, label]) => (
+        {audio ? (
+          <>
             <SettingsRow
-              key={key}
-              setting={
-                {
-                  loudness: "normalize-loudness",
-                  nightMode: "night-mode-compression",
-                  dialogueBoost: "boost-centre-channel-dialogue",
-                }[key]
+              setting="audio-languages"
+              title={t("Audio languages")}
+              description={t("Tried in order from first to last.")}
+              control={
+                <div className="w-72 max-w-full">
+                  <OrderedLanguagePicker
+                    ariaLabel={t("Audio languages")}
+                    value={value.audioLanguages}
+                    onChange={(v) => set("audioLanguages", v)}
+                    disabled={disabled}
+                  />
+                </div>
               }
-              title={label}
+            />
+            <SettingsRow
+              setting="prefer-the-original-language"
+              title={t("Prefer the original language")}
+              description={t("Play a title's original language before dubs.")}
               control={
                 <Switch
-                  aria-label={label}
-                  checked={value[key]}
+                  aria-label={t("Prefer the original language")}
+                  checked={value.preferOriginal}
                   disabled={disabled}
-                  onChange={(e) => set(key, e.target.checked)}
+                  onChange={(e) => set("preferOriginal", e.target.checked)}
                 />
               }
             />
-          ))}
-        </MoreOptions>
+          </>
+        ) : null}
+        {subtitles ? (
+          <>
+            <SettingsRow
+              setting="subtitle-languages"
+              title={t("Subtitle languages")}
+              description={t("Tried in order from first to last.")}
+              control={
+                <div className="w-72 max-w-full">
+                  <OrderedLanguagePicker
+                    ariaLabel={t("Subtitle languages")}
+                    value={value.subtitleLanguages}
+                    onChange={(v) => set("subtitleLanguages", v)}
+                    disabled={disabled}
+                  />
+                </div>
+              }
+            />
+            <SettingsRow
+              setting="show-subtitles"
+              title={t("Show subtitles")}
+              control={
+                <div className="w-64">
+                  <Select
+                    aria-label={t("Show subtitles")}
+                    value={value.subtitleMode}
+                    disabled={disabled}
+                    onChange={(e) => set("subtitleMode", e.target.value)}
+                  >
+                    {SUBTITLE_MODES.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              }
+            />
+            <SettingsRow
+              setting="subtitle-style"
+              title={t("Subtitle style")}
+              control={
+                <div className="w-64">
+                  <Select
+                    aria-label={t("Subtitle style")}
+                    value={value.subtitleStyle}
+                    disabled={disabled}
+                    onChange={(e) => set("subtitleStyle", e.target.value)}
+                  >
+                    {SUBTITLE_STYLES.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              }
+            />
+          </>
+        ) : null}
       </SettingsSection>
+      {subtitles ? (
+        <SettingsSection
+          title={t("Subtitle appearance")}
+          description={t(
+            "Size, colour, background and position, in apps that can style subtitles.",
+          )}
+        >
+          <MoreOptions
+            setting="subtitle-appearance"
+            label={t("More options: {title}", { title: t("Subtitle appearance") })}
+          >
+            <SettingsRow
+              setting="size"
+              title={t("Size")}
+              control={
+                <div className="w-64">
+                  <Select
+                    aria-label={t("Size")}
+                    value={appearance.fontSize}
+                    disabled={disabled}
+                    onChange={(e) => setAppearance({ fontSize: e.target.value })}
+                  >
+                    {SUBTITLE_SIZES.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              }
+            />
+            <SettingsRow
+              setting="text-colour"
+              title={t("Text colour")}
+              description={t("A hex colour, such as #ffffff.")}
+              control={
+                <div className="w-40">
+                  <Input
+                    aria-label={t("Text colour")}
+                    value={appearance.fontColor}
+                    disabled={disabled}
+                    placeholder="#ffffff"
+                    onChange={(e) => setAppearance({ fontColor: e.target.value })}
+                  />
+                </div>
+              }
+            />
+            <SettingsRow
+              setting="background"
+              title={t("Background")}
+              control={
+                <div className="flex w-72 items-center gap-2">
+                  <Select
+                    aria-label={t("Background")}
+                    value={appearance.backgroundStyle}
+                    disabled={disabled}
+                    onChange={(e) => setAppearance({ backgroundStyle: e.target.value })}
+                  >
+                    {SUBTITLE_BACKGROUNDS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                  <Input
+                    aria-label={t("Background colour")}
+                    value={appearance.backgroundColor}
+                    disabled={disabled}
+                    placeholder="#000000"
+                    onChange={(e) => setAppearance({ backgroundColor: e.target.value })}
+                  />
+                </div>
+              }
+            />
+            <SettingsRow
+              setting="position"
+              title={t("Position")}
+              control={
+                <div className="w-64">
+                  <Select
+                    aria-label={t("Position")}
+                    value={appearance.position}
+                    disabled={disabled}
+                    onChange={(e) => setAppearance({ position: e.target.value })}
+                  >
+                    {SUBTITLE_POSITIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              }
+            />
+          </MoreOptions>
+        </SettingsSection>
+      ) : null}
+      {audio ? (
+        <SettingsSection
+          title={t("Audio processing")}
+          description={t(
+            "Needs server audio transcoding. Dialogue boost applies to sources with six or more channels.",
+          )}
+        >
+          <MoreOptions
+            setting="audio-processing"
+            label={t("More options: {title}", { title: t("Audio processing") })}
+          >
+            {(
+              [
+                ["loudness", t("Normalize loudness")],
+                ["nightMode", t("Night mode compression")],
+                ["dialogueBoost", t("Boost centre-channel dialogue")],
+              ] as const
+            ).map(([key, label]) => (
+              <SettingsRow
+                key={key}
+                setting={
+                  {
+                    loudness: "normalize-loudness",
+                    nightMode: "night-mode-compression",
+                    dialogueBoost: "boost-centre-channel-dialogue",
+                  }[key]
+                }
+                title={label}
+                control={
+                  <Switch
+                    aria-label={label}
+                    checked={value[key]}
+                    disabled={disabled}
+                    onChange={(e) => set(key, e.target.checked)}
+                  />
+                }
+              />
+            ))}
+          </MoreOptions>
+        </SettingsSection>
+      ) : null}
     </>
   );
 }

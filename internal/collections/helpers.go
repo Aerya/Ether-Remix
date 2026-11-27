@@ -163,7 +163,7 @@ func (s *Service) Lookup(ctx context.Context, kind, q, region string) ([]core.Lo
 		if q == "" {
 			return []core.LookupResult{}, nil
 		}
-		if s.api.c == nil {
+		if !s.api.configured() {
 			return nil, errNoTMDB
 		}
 		if n, err := strconv.ParseInt(q, 10, 64); err == nil && n > 0 {

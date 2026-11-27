@@ -11,7 +11,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/cardigann"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
@@ -93,7 +92,6 @@ func (a *App) extensionHandlers() map[string]http.Handler {
 	m["server/restart"] = a.restartHandler()
 	m["cluster"] = a.clusterHandler()
 	if a.resolver != nil {
-		ua := httpclient.FormatUserAgent(a.opts.Version)
 		var syncQuality func(ctx context.Context) (resolver.QualitySyncReport, error)
 		if a.qualitySync != nil {
 			syncQuality = a.qualitySync.Sync
@@ -107,8 +105,8 @@ func (a *App) extensionHandlers() map[string]http.Handler {
 				}
 			},
 			Logger:      a.log.With("component", "release-console"),
-			Guides:      resolver.NewTrashGuides(resolver.TrashOptions{UserAgent: ua}),
-			Dictionarry: resolver.NewDictionarry(resolver.DictionarryOptions{UserAgent: ua}),
+			Guides:      a.guides,
+			Dictionarry: a.dictionarry,
 			SaveConfig:  a.saveValidated,
 			SyncQuality: syncQuality,
 		})

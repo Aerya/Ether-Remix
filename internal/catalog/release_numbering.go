@@ -2,14 +2,48 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // ReleaseEpisodeLayout reads only one show's indexed local rows. It never
 // fetches metadata, and incomplete seasons remain explicitly unknown.
 func (c *Catalog) ReleaseEpisodeLayout(ctx context.Context, show core.RatingKey) (core.EpisodeLayout, error) {
+	t, err := c.storedTitle(ctx, show)
+	if errors.Is(err, core.ErrNotFound) {
+		return c.canonicalReleaseEpisodeLayout(ctx, show)
+	}
+	if err != nil {
+		return core.EpisodeLayout{}, err
+	}
+	effective, err := c.effectiveEpisodeOrder(ctx, t)
+	if err != nil {
+		return core.EpisodeLayout{}, err
+	}
+	if !providerLayout(t, effective.Order) {
+		return c.canonicalReleaseEpisodeLayout(ctx, show)
+	}
+	chosen, _, err := c.readEpisodeLayout(ctx, t, effective.Order)
+	if err != nil {
+		return core.EpisodeLayout{}, err
+	}
+	out := core.EpisodeLayout{Numbers: map[core.EpisodeNumber]int{}, Seasons: map[int]bool{}, Complete: chosen.Complete}
+	for n := range chosen.Seasons {
+		if n > 0 {
+			out.Seasons[n] = true
+		}
+	}
+	for _, ep := range chosen.Episodes {
+		if ep.Season > 0 && ep.Absolute > 0 {
+			out.Numbers[core.EpisodeNumber{Season: ep.Season, Episode: ep.Episode}] = ep.Absolute
+		}
+	}
+	return out, nil
+}
+
+func (c *Catalog) canonicalReleaseEpisodeLayout(ctx context.Context, show core.RatingKey) (core.EpisodeLayout, error) {
 	out := core.EpisodeLayout{Numbers: map[core.EpisodeNumber]int{}, Seasons: map[int]bool{}, Complete: map[int]bool{}}
-	rows, err := c.db.QueryContext(ctx, `SELECT season,child_count FROM catalog_titles WHERE show_key=? AND type='season' AND season>0 ORDER BY season LIMIT 1001`, show)
+	rows, err := c.db.QueryContext(ctx, `SELECT season,child_count FROM catalog_titles WHERE show_key=? AND type='season' AND key<3900000000000000 AND season>0 ORDER BY season LIMIT 1001`, show)
 	if err != nil {
 		return out, err
 	}
@@ -34,7 +68,7 @@ func (c *Catalog) ReleaseEpisodeLayout(ctx context.Context, show core.RatingKey)
 		out.Seasons = nil
 		return out, nil
 	}
-	rows, err = c.db.QueryContext(ctx, `SELECT season,episode FROM catalog_titles WHERE show_key=? AND type='episode' AND season>0 ORDER BY season,episode LIMIT 20001`, show)
+	rows, err = c.db.QueryContext(ctx, `SELECT season,episode FROM catalog_titles WHERE show_key=? AND type='episode' AND key<5000000000000000 AND season>0 ORDER BY season,episode LIMIT 20001`, show)
 	if err != nil {
 		return out, err
 	}

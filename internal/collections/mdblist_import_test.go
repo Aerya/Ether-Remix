@@ -121,8 +121,8 @@ func TestMDBListMatchingDigitalGateAndImportMembership(t *testing.T) {
 
 	created, err := svc.CreateSpec(ctx, core.CollectionSpec{
 		Name: "Next Up & Picks", MediaType: "mixed", Sort: "source", Refresh: "daily", Enabled: true,
-		Sources: []core.CollectionSource{{Kind: "mdblist", URL: "https://mdblist.com/lists/alice/next-up"}},
-		Targets: core.CollectionTargets{CollectionsTab: true, HomeRow: true, Users: core.AllUsers()},
+		Sources:      []core.CollectionSource{{Kind: "mdblist", URL: "https://mdblist.com/lists/alice/next-up"}},
+		BrowseInApps: true,
 	})
 	if err != nil {
 		t.Fatal(err)

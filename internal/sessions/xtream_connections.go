@@ -110,18 +110,34 @@ func xtreamBinding(r *http.Request, target string) (string, string, error) {
 // PrepareAppConnection preserves multi-view below the cap. At the cap a new
 // primary request switches the oldest stream on this same login and peer.
 func (s *lazyStreams) PrepareAppConnection(r *http.Request, credential string, req frontend.PlanRequest) error {
-	if s.protocol != "xtream" || req.Viewer == nil || req.Protocol != s.protocol {
-		return core.ErrUnauthorized
-	}
-	ref, v, err := s.grants.GrantReference(r.Context(), "xtream", credential)
-	if err != nil || v == nil || v.ID != req.Viewer.ID {
-		return core.ErrUnauthorized
+	ref, v, err := s.xtreamConnectionGrant(r.Context(), credential, req)
+	if err != nil {
+		return err
 	}
 	peer, target, err := xtreamBinding(r, fmt.Sprint(req.Item)+"/"+req.Channel)
 	if err != nil {
 		return err
 	}
 	return s.admitXtream(r.Context(), ref, v.ID, peer, target, req.Device.ID, xtreamConnectionTTL, true)
+}
+
+func (s *lazyStreams) RenewAppConnection(r *http.Request, credential string, req frontend.PlanRequest) (context.Context, func(), error) {
+	ref, viewer, err := s.xtreamConnectionGrant(r.Context(), credential, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.acquireXtreamConnection(r, ref, viewer.ID, fmt.Sprint(req.Item)+"/"+req.Channel)
+}
+
+func (s *lazyStreams) xtreamConnectionGrant(ctx context.Context, credential string, req frontend.PlanRequest) (string, *core.Viewer, error) {
+	if s.protocol != "xtream" || req.Viewer == nil || req.Protocol != s.protocol {
+		return "", nil, core.ErrUnauthorized
+	}
+	ref, v, err := s.grants.GrantReference(ctx, "xtream", credential)
+	if err != nil || v == nil || v.ID != req.Viewer.ID {
+		return "", nil, core.ErrUnauthorized
+	}
+	return ref, v, nil
 }
 
 // AppConnectionLimit exposes the same effective cap used by durable admission.

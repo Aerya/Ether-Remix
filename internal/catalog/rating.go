@@ -372,7 +372,7 @@ func tvCertifications(cr *tmdb.ContentRatings) []contentrating.Certification {
 // It returns how many titles it checked.
 func (c *Catalog) RefreshRatings(ctx context.Context, limit int) (int, error) {
 	src, ok := c.tmdb().(ratingsTMDB)
-	if !ok || limit <= 0 || c.getMeta(ctx, ratingModelKey) == ratingModel {
+	if !ok || !c.TMDBConfigured() || limit <= 0 || c.getMeta(ctx, ratingModelKey) == ratingModel {
 		return 0, nil
 	}
 	if err := c.rankRatings(ctx); err != nil {

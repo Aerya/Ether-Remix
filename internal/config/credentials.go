@@ -124,7 +124,7 @@ func collectProtected(v any, parent string, out *[]string) {
 
 func secretField(k string) bool {
 	switch strings.ToLower(k) {
-	case "urltemplate", "token", "apikey", "password", "clientsecret", "username", "tmdbkey":
+	case "urltemplate", "token", "apikey", "password", "clientsecret", "username", "tmdbkey", "tvdbkey":
 		return true
 	}
 	return false

@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
 )
 
@@ -101,6 +102,8 @@ func (g *LiveTVGuideSource) CurrentProgramme(ctx context.Context, viewer *core.U
 
 func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 	return GuideCandidate{
+		ProgrammeID:   e.Programme.ID,
+		ArchiveDays:   e.ArchiveDays,
 		ChannelID:     e.ChannelID,
 		ChannelName:   e.ChannelName,
 		ChannelNumber: e.ChannelNumber,
@@ -263,7 +266,7 @@ func (m *WatchMatcher) WatchTargets(ctx context.Context, ev core.LiveEvent, view
 	ecw := eventChannelWindowOK(ev, now)
 
 	cacheKey := watchCacheKey(ev, guideRev, favRev, ecw)
-	if cached, ok := m.getWatchCached(cacheKey); ok {
+	if cached, ok := m.getWatchCached(cacheKey, now); ok {
 		return cached, nil
 	}
 
@@ -334,7 +337,7 @@ func (m *WatchMatcher) WatchTargetsBatch(ctx context.Context, events []core.Live
 		seenID[ev.ID] = struct{}{}
 		ecw := eventChannelWindowOK(ev, now)
 		ck := watchCacheKey(ev, guideRev, favRev, ecw)
-		if cached, ok := m.getWatchCached(ck); ok {
+		if cached, ok := m.getWatchCached(ck, now); ok {
 			out[ev.ID] = cached
 			continue
 		}
@@ -573,14 +576,29 @@ func (m *WatchMatcher) LiveEventForChannel(ctx context.Context, viewer *core.Use
 	return progKey, cloneLiveEventRef(ref), nil
 }
 
-func (m *WatchMatcher) getWatchCached(key string) ([]core.WatchTarget, bool) {
+func (m *WatchMatcher) getWatchCached(key string, now time.Time) ([]core.WatchTarget, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v, ok := m.watchCache[key]
-	if !ok {
+	if !ok || watchProgrammeFlagsChanged(v, now) {
 		return nil, false
 	}
 	return cloneWatchTargets(v), true
+}
+
+func watchProgrammeFlagsChanged(targets []core.WatchTarget, now time.Time) bool {
+	for _, target := range targets {
+		if p := target.Programme; p != nil {
+			catchUp, startOver := frontend.ArchiveFlags(p.ArchiveDays, p.Start, p.End, now)
+			if p.CatchUp != catchUp || p.StartOver != startOver || !catchUp && !p.End.After(now) {
+				return true
+			}
+		}
+		if watchProgrammeFlagsChanged(target.Alternates, now) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *WatchMatcher) putWatchCached(key string, targets []core.WatchTarget) {

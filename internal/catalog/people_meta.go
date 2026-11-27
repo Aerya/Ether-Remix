@@ -53,7 +53,7 @@ func (c *Catalog) PersonMetadata(ctx context.Context, personID int64, prefetch b
 
 func (c *Catalog) ensurePersonMetadata(ctx context.Context, personID int64) {
 	client := c.tmdb()
-	if personID <= 0 || client == nil {
+	if personID <= 0 || !c.TMDBConfigured() {
 		return
 	}
 	pd, ok := client.(personDetailsSource)

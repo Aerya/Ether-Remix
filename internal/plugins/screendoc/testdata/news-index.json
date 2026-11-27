@@ -1,0 +1,321 @@
+{
+ "schema": 1,
+ "kind": "screen",
+ "renderer": 19,
+ "requires": [
+  "grid",
+  "player"
+ ],
+ "screen": "news",
+ "page": "index",
+ "version": "1.0.0",
+ "title": "{s:title}",
+ "presentation": "section",
+ "refresh": 120,
+ "params": {
+  "topic": {
+   "type": "string",
+   "enum": [
+    "top",
+    "local",
+    "tech"
+   ],
+   "default": "top"
+  }
+ },
+ "sources": {
+  "front": {
+   "from": "plugin",
+   "route": "front",
+   "args": {
+    "topic": "{param.topic}"
+   },
+   "scope": "shared",
+   "maxAgeSec": 120
+  },
+  "mine": {
+   "from": "plugin",
+   "route": "following",
+   "scope": "viewer",
+   "lazy": true
+  },
+  "watch": {
+   "from": "items",
+   "kind": "clips",
+   "sort": "released",
+   "limit": 20
+  },
+  "liveNews": {
+   "from": "channels",
+   "group": "news"
+  }
+ },
+ "actions": {
+  "follow-topic": {}
+ },
+ "strings": {
+  "title": "News",
+  "top": "Top stories",
+  "local": "Local",
+  "tech": "Tech",
+  "breaking": "BREAKING",
+  "watchLive": "Live news",
+  "clips": "Clips",
+  "following": "Following",
+  "follow": "Follow {arg.topic}",
+  "unfollow": "Following {arg.topic}"
+ },
+ "templates": {
+  "story": {
+   "type": "box",
+   "role": "button",
+   "label": "{st.title}",
+   "press": {
+    "action": "navigate",
+    "args": {
+     "page": "story",
+     "story": "{st.$key}"
+    }
+   },
+   "style": {
+    "gap": "8px",
+    "border-radius": "$ui.radiusCard"
+   },
+   "focus": {
+    "scale": "1.03"
+   },
+   "children": [
+    {
+     "type": "image",
+     "src": "{st.image}",
+     "alt": "",
+     "fade": true,
+     "style": {
+      "aspect-ratio": "16 / 9",
+      "border-radius": "$ui.radiusCard",
+      "object-fit": "cover"
+     },
+     "fallback": {
+      "type": "box",
+      "style": {
+       "aspect-ratio": "16 / 9",
+       "border-radius": "$ui.radiusCard",
+       "background-color": "$ui.raised"
+      }
+     }
+    },
+    {
+     "type": "text",
+     "text": "{st.section} · {st.published|time}",
+     "style": {
+      "font-size": "12px",
+      "color": "$ui.inkQuiet"
+     }
+    },
+    {
+     "type": "text",
+     "text": "{st.title}",
+     "style": {
+      "font-size": "16px",
+      "font-weight": "700",
+      "line-clamp": "3"
+     }
+    }
+   ]
+  }
+ },
+ "tree": {
+  "type": "sections",
+  "gap": "28px",
+  "children": [
+   {
+    "type": "box",
+    "when": [
+     {
+      "test": "src.front.breaking.title"
+     }
+    ],
+    "style": {
+     "flex-direction": "row",
+     "gap": "10px",
+     "padding": "10px 28px",
+     "background-color": "$ui.alert"
+    },
+    "children": [
+     {
+      "type": "text",
+      "text": "{s:breaking}",
+      "style": {
+       "font-weight": "800",
+       "color": "#ffffff"
+      }
+     },
+     {
+      "type": "text",
+      "text": "{src.front.breaking.title}",
+      "style": {
+       "flex": "1",
+       "color": "#ffffff",
+       "line-clamp": "1"
+      }
+     }
+    ]
+   },
+   {
+    "type": "box",
+    "style": {
+     "flex-direction": "row",
+     "gap": "20px",
+     "padding": "0 28px"
+    },
+    "small": {
+     "flex-direction": "column",
+     "padding": "0 18px"
+    },
+    "children": [
+     {
+      "type": "repeat",
+      "over": "src.front.lead",
+      "as": "st",
+      "limit": 1,
+      "style": {
+       "flex": "2"
+      },
+      "item": {
+       "type": "use",
+       "template": "story"
+      }
+     },
+     {
+      "type": "box",
+      "when": [
+       {
+        "test": "src.liveNews.channels.0"
+       }
+      ],
+      "style": {
+       "flex": "1",
+       "gap": "10px"
+      },
+      "children": [
+       {
+        "type": "use",
+        "template": "vela:heading",
+        "with": {
+         "text": "{s:watchLive}"
+        }
+       },
+       {
+        "type": "player",
+        "channel": "{src.liveNews.channels.0.$key}",
+        "style": {
+         "aspect-ratio": "16 / 9",
+         "border-radius": "$ui.radiusCard"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "box",
+    "style": {
+     "flex-direction": "row",
+     "align-items": "center",
+     "padding": "0 28px"
+    },
+    "children": [
+     {
+      "type": "tabs",
+      "over": "src.front.topics",
+      "as": "t",
+      "value": "{t.id}",
+      "label": "{t.name}",
+      "bind": {
+       "param": "topic"
+      }
+     },
+     {
+      "type": "use",
+      "template": "vela:pill",
+      "needs": [
+       "mine"
+      ],
+      "with": {
+       "label": "{src.mine.followsTopic|then:s:unfollow,s:follow|with:topic=src.front.topicName}",
+       "glyph": "bell"
+      },
+      "press": {
+       "action": "plugin",
+       "args": {
+        "name": "follow-topic",
+        "topic": "{param.topic}",
+        "on": "{src.mine.followsTopic|not}"
+       },
+       "optimistic": {
+        "source": "mine",
+        "path": "followsTopic",
+        "value": "{src.mine.followsTopic|not}"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "type": "grid",
+    "over": "src.front.stories",
+    "as": "st",
+    "key": "{st.$key}",
+    "columns": {
+     "default": 3,
+     "small": 1,
+     "wide": 4,
+     "tv": 4
+    },
+    "gap": "20px",
+    "style": {
+     "padding": "0 28px"
+    },
+    "small": {
+     "padding": "0 18px"
+    },
+    "item": {
+     "type": "use",
+     "template": "story"
+    }
+   },
+   {
+    "type": "box",
+    "when": [
+     {
+      "test": "src.watch.items.0"
+     }
+    ],
+    "children": [
+     {
+      "type": "use",
+      "template": "vela:heading",
+      "with": {
+       "text": "{s:clips}"
+      },
+      "style": {
+       "padding": "0 28px"
+      }
+     },
+     {
+      "type": "shelf",
+      "over": "src.watch.items",
+      "as": "c",
+      "style": {
+       "padding": "0 28px"
+      },
+      "item": {
+       "type": "titleCard",
+       "item": "{c.$key}"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

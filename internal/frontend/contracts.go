@@ -41,6 +41,8 @@ const (
 	RowRecommendation   RowPurpose = "recommendation"
 	RowLive             RowPurpose = "live"
 	RowWatchlist        RowPurpose = "watchlist"
+	RowRecentContexts   RowPurpose = core.PurposeRecentContexts
+	RowLiked            RowPurpose = core.PurposeLiked
 )
 
 type View struct {
@@ -68,10 +70,20 @@ type View struct {
 	Media       core.MediaClass `json:"media,omitempty"`
 	Card        string          `json:"card,omitempty"`
 	DateDisplay string          `json:"dateDisplay,omitempty"`
+	Experience  string          `json:"experience,omitempty"` // watch|listen|read|gallery|live… (core.LibraryExperience*)
 	Tabs        []ViewTab       `json:"tabs,omitempty"`
 	Sorts       []string        `json:"sorts,omitempty"`
 	Facets      []ViewFacet     `json:"facets,omitempty"`
 }
+
+// EffectiveExperience is the library experience apps should present the view
+// with: the declared one, else its media class default (listen for music).
+func (v View) EffectiveExperience() string {
+	return core.EffectiveLibraryExperience(v.Experience, v.Media)
+}
+
+// LibraryExperiences lists the experiences Ether assigns (plugins may name others).
+var LibraryExperiences = core.LibraryExperiences
 
 // ViewTab describes one sub-tab of a library view.
 type ViewTab struct {
@@ -220,16 +232,11 @@ type CollectionPager interface {
 	ListPage(ctx context.Context, user *User, typ MediaType, offset, limit int) ([]Collection, int, error)
 }
 
-// PluginLibraryRowsReader is an optional Experience capability returning the
-// Recommended tab shelves for a plugin library.
+// PluginLibraryRowsReader is an optional Experience capability returning a
+// plugin library's rows tab (Recommendations page "library:<id>/<tab>";
+// tab "" is the library's first rows tab), arranged by that page.
 type PluginLibraryRowsReader interface {
-	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string) ([]Row, error)
-}
-
-// PluginLibraryTabRowsReader is an optional Experience capability returning the
-// shelves for a specific recommended tab of a plugin library.
-type PluginLibraryTabRowsReader interface {
-	PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tabID string) ([]Row, error)
+	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tab string) ([]Row, error)
 }
 
 // RowEntryKind identifies a neutral entry independently of wire formats.
@@ -286,8 +293,17 @@ type RowLayout struct {
 	PreviewOnFocusPolicy *bool
 	Order                int
 	Style                string
-	Paint                RowPaint
-	Always               bool
+	// StylePolicy is the owner's row style (RowStyleStandard, RowStyleHero,
+	// RowStyleWide), "" when the owner left the app's default.
+	StylePolicy string
+	// HideWatched drops the viewer's fully watched titles from the row.
+	HideWatched bool
+	Paint       RowPaint
+	Always      bool
+	// Present is the page row's presentation (Recommendations): layout,
+	// card, role, personal, library, experience, surface. Wire adapters
+	// copy it; unknown values draw as a standard shelf.
+	Present core.RowPresentation
 }
 
 // RowPaint carries optional presentation colors and artwork references.
@@ -300,8 +316,11 @@ type Row struct {
 	RankedTop10    bool
 	PreviewOnFocus bool
 	// Situation is the server-owned ranking context retained for deferred receipts.
-	Situation    core.HomeSituation
-	ID, Title    string
+	Situation core.HomeSituation
+	ID, Title string
+	// Key is the row's identity across visits when ID is a per-visit
+	// snapshot id; "" means ID is already stable.
+	Key          string
 	Purpose      RowPurpose
 	Kind         string // Stable semantic producer kind, independent of protocol.
 	Layout       RowLayout
@@ -326,8 +345,11 @@ type RowRequest struct {
 	Device           core.Device
 	Placement        Placement
 	ViewID           string
-	Item             core.RatingKey
-	Limit            int
+	// Tab is a library's rows tab (page "library:<id>/<tab>"); "" is the
+	// library's first rows tab.
+	Tab   string
+	Item  core.RatingKey
+	Limit int
 	// Purpose asks for one row. The zero value still returns the whole placement.
 	Purpose RowPurpose
 }
@@ -409,6 +431,11 @@ type ItemQuery struct {
 	UnservedTypes []string
 	// ExcludedTypes contains core media type names excluded by the client.
 	ExcludedTypes []core.MediaType
+	// CatalogueOnly limits a search to the catalogue's own media classes
+	// (Types): a client whose search filter offers each plugin library kind
+	// separately (Vela's Movies and Shows) asked for films or series, not for
+	// books, music or other plugin items that borrow that card shape.
+	CatalogueOnly bool
 	// Level selects a specific declared hierarchy level key on a plugin library.
 	Level string
 	// Role selects children matching a semantic role (or role-less level key) on a plugin library.
@@ -439,6 +466,9 @@ type ItemQuery struct {
 	// SuppressExpand disables on-demand background plugin facet/person expansion
 	// for internal shelf probes and search fan-out.
 	SuppressExpand bool
+	// ChildScanLimit bounds work for a stored plugin subtree probe. If the
+	// subtree cannot be read within this window, the probe returns no items.
+	ChildScanLimit int
 }
 
 // Continuation distinguishes a known next page from exhaustion and a
@@ -456,6 +486,11 @@ type SearchPage struct {
 	Page         core.Page
 	TotalExact   bool
 	Continuation Continuation
+	// Pending reports that a slower source (a plugin's remote catalogue) was
+	// still answering: the page holds what Ether already had, and the same
+	// search shortly returns more. Only searches run with
+	// core.WithSearchPending answer early.
+	Pending bool
 }
 
 // Image identifies an image authorized for an item. Path is an opaque,
@@ -814,6 +849,8 @@ var (
 type PlaylistEntry struct {
 	EntryID string
 	Title   core.Title
+	// AddedAt is when the entry was added; zero when unknown.
+	AddedAt time.Time
 }
 
 // PlaylistContents is a viewer's playlist metadata paired with its visible
@@ -822,6 +859,92 @@ type PlaylistContents struct {
 	Playlist core.Playlist
 	Entries  []PlaylistEntry
 }
+
+// PlayContexts remembers what a viewer plays *from* (an album, an artist, a
+// playlist, their liked songs) for Recently played, keeping the newest few.
+type PlayContexts interface {
+	RecordPlayContext(ctx context.Context, viewer *core.Viewer, ref PlayContextRef) error
+	RecentPlayContexts(ctx context.Context, viewer *core.Viewer, limit int) ([]RecentPlayContext, error)
+}
+
+// PlayContextRef names a play context: a title (album, artist, show), a
+// playlist, or a liked list by role ("favorites" with Role "track").
+type PlayContextRef struct {
+	Kind string // "title", "playlist", "favorites"
+	Key  core.RatingKey
+	Role string
+}
+
+// RecentPlayContext is one play context resolved for the viewer.
+type RecentPlayContext struct {
+	Kind     string
+	Title    *Title
+	Playlist *core.Playlist
+	Role     string
+	PlayedAt time.Time
+}
+
+// TitleContinuations say what plays after a playable title when a queue
+// ends (radio), from the title's source. Asked as the queue nears its end.
+type TitleContinuations interface {
+	PluginContinuation(ctx context.Context, viewer *core.Viewer, key core.RatingKey, limit int) ([]Title, error)
+	ContinuationAvailable() bool
+}
+
+// TitleLyrics reads a playable title's lyrics from its source (a kind
+// plugin that declares them). Asked when a viewer opens the lyrics.
+type TitleLyrics interface {
+	TitleLyrics(ctx context.Context, viewer *core.Viewer, key RatingKey) (Lyrics, error)
+	// LyricsAvailable reports whether any source can answer at all.
+	LyricsAvailable(ctx context.Context) bool
+}
+
+// LyricAvailability describes what is already known about a title's lyrics.
+type LyricAvailability uint8
+
+const (
+	LyricsAbsent LyricAvailability = iota
+	LyricsPossible
+	LyricsPlain
+	LyricsTimed
+)
+
+// TitleLyricsHint reports availability from the projected title and in-memory
+// answers. It performs no I/O and is safe to call for each title in a page.
+type TitleLyricsHint interface {
+	TitleLyricsAvailability(t Title) LyricAvailability
+}
+
+// FavoriteTitles lists a viewer's liked titles of one role (tracks for Liked
+// Songs, albums, artists they follow, movies…) one page at a time, in the
+// viewer's order. A page reads only that viewer's likes of that role.
+type FavoriteTitles interface {
+	FavoriteTitles(ctx context.Context, viewer *core.Viewer, q FavoriteTitlesQuery) (FavoriteTitlesPage, error)
+}
+
+// FavoriteTitlesQuery names the role ("track", "album", "artist", "movie" …),
+// where to continue and how many to return.
+type FavoriteTitlesQuery struct {
+	Role   string
+	Cursor string
+	Limit  int
+}
+
+// FavoriteTitlesPage is one page; Total counts the viewer's likes of the role.
+type FavoriteTitlesPage struct {
+	Items []LikedTitle
+	Next  string
+	Total int
+}
+
+// LikedTitle is one liked title and when it was liked.
+type LikedTitle struct {
+	Title   Title
+	LikedAt time.Time
+}
+
+// ErrBadFavoritesCursor rejects a cursor this server did not issue.
+var ErrBadFavoritesCursor = errors.New("bad favorites cursor")
 
 // TitlePlaylistMembership reports one viewer playlist and every visible entry
 // identifier within it that references the queried title.
@@ -838,6 +961,12 @@ type PlaylistAvailability interface {
 // ViewerPlaylists exposes viewer-owned playlists with stable entry identities,
 // show/season expansion, rename, and per-title membership lookup. All reads
 // and mutations enforce viewer visibility policy before counting or indexing.
+// ViewerPlaylistEditor edits a viewer-owned playlist's name and description
+// (nil leaves a field as it is).
+type ViewerPlaylistEditor interface {
+	EditViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name, summary *string) (*core.Playlist, error)
+}
+
 type ViewerPlaylists interface {
 	PlaylistLibrary
 	ViewerPlaylistContents(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (PlaylistContents, error)
@@ -965,6 +1094,9 @@ type PlayIntent struct {
 	// ExactVersion treats PlanRequest.Version as a scoped opaque handle and
 	// refuses any substitute release, including during later source failover.
 	ExactVersion bool
+	// AutoVersion marks an ExactVersion handle that Auto chose rather than
+	// the viewer: it opens that release, then fails over like Auto.
+	AutoVersion bool
 	// Set flags distinguish omitted choices from stream index zero and
 	// an explicit subtitle-off choice (SubtitleStream == -1).
 	AudioSet    bool
@@ -985,6 +1117,11 @@ type PlayIntent struct {
 	// PreferRemux asks for a copy-only remux when source changes would
 	// otherwise disrupt the client. The broker still decides whether it applies.
 	PreferRemux bool
+	// Queued opens the next item of the device's play queue ahead of time
+	// (gapless audio). It plays beside the device's current session and
+	// replaces it only when it is first observed playing; preloading its
+	// media does not. It never counts as a second stream.
+	Queued bool
 	// DeclaredCaps marks Caps built from this request's complete device
 	// declaration (a Jellyfin/Emby PlaybackInfo DeviceProfile, a Silo
 	// capability body). The broker keeps the latest such caps per device so
@@ -1033,6 +1170,9 @@ const (
 // StreamRequest describes output, not an upstream URL or credential. The
 // broker owns the input, decision and stream grant.
 type StreamRequest struct {
+	// ExpectedOriginalRevision is set by a stable media URL resolving to a
+	// direct-file grant. Empty requires the first representation.
+	ExpectedOriginalRevision *string
 	// PrepareOnly keeps original-file delivery authorized while preparing HLS.
 	PrepareOnly bool
 
@@ -1131,6 +1271,12 @@ type PlayPlan struct {
 	// to correlate the admitted source with offered VersionSlots (never
 	// exposed directly on external APIs).
 	ReleaseID string
+	// OriginalOverClientCap is the direct-play decision for this source that
+	// only the client's own streaming cap (Vela client.maxBitrate) ruled out;
+	// owner caps still admit it. Frontends offer it as an explicit, unselected
+	// choice. Nil when the original is selected, within the cap, or not
+	// playable for another reason.
+	OriginalOverClientCap *core.Decision
 }
 
 // SubtitleStream reports the subtitle stream selected for this play plan,
@@ -1269,7 +1415,7 @@ type Event struct {
 	Timeline        *Timeline
 }
 
-// TrickplayOffer is Jellyfin sprite geometry for one generated width.
+// TrickplayOffer is sprite geometry and coverage state for one generated width.
 // Width and Height are one thumbnail in pixels. Columns and Rows are the
 // grid inside each sheet. Interval is the time between thumbnails.
 type TrickplayOffer struct {
@@ -1278,6 +1424,17 @@ type TrickplayOffer struct {
 	Count         int
 	Interval      time.Duration
 	Bandwidth     int
+	CoverageUntil time.Duration
+	Revision      uint64
+	Generating    bool
+}
+
+// TrickplaySheetResult is one rendered or revalidated trickplay sheet.
+type TrickplaySheetResult struct {
+	Body        []byte
+	Offer       TrickplayOffer
+	Fallback    bool
+	NotModified bool
 }
 
 // TrickplayCacheKey binds preview work to the selected item, release and
@@ -1294,6 +1451,13 @@ type TrickplayCanceler interface{ CancelTrickplay(string) }
 type TrickplayTiles interface {
 	TrickplayOffer(context.Context, SessionAccess, core.RatingKey) (TrickplayOffer, bool)
 	TrickplaySheet(context.Context, SessionAccess, core.RatingKey, int) ([]byte, error)
+}
+
+// SessionTrickplay serves read-only trickplay metadata and JPEG sheets bound
+// strictly to one owning playback session without starting generation.
+type SessionTrickplay interface {
+	SessionTrickplayOffer(ctx context.Context, access SessionAccess, sessionID string) (TrickplayOffer, error)
+	SessionTrickplaySheet(ctx context.Context, access SessionAccess, sessionID string, width, index int, unchanged func(TrickplayOffer) bool) (TrickplaySheetResult, error)
 }
 
 // SessionAccess binds client operations to an authenticated viewer and surface.
@@ -1399,6 +1563,36 @@ type FilterFacetReader interface {
 // StreamDecisionReader returns the admitted decision after an authorized restart.
 type StreamDecisionReader interface {
 	StreamDecision(context.Context, SessionAccess, string) (core.Decision, error)
+}
+
+// OriginalRangeReader associates a direct byte-range read with its broker session.
+type OriginalRangeReader interface {
+	OriginalRange(ctx context.Context, access SessionAccess, sessionID, releaseID, revision string) core.OriginalRange
+}
+
+func WithOriginalRange(ctx context.Context, request core.OriginalRange) context.Context {
+	return core.WithOriginalRange(ctx, request)
+}
+
+// OriginalPlaybackReader exposes a range-triggered original replacement or a
+// terminal loss to session-aware clients.
+type OriginalPlaybackReader interface {
+	OriginalPlaybackState(context.Context, SessionAccess, string) (OriginalPlaybackState, error)
+}
+
+type OriginalPlaybackState struct {
+	Unavailable                      bool
+	Revision, URL, ReleaseID, Origin string
+	Media                            core.MediaInfo
+	Decision                         core.Decision
+	Position                         time.Duration
+}
+
+// PlayingReleaseReader reports the release a session is reading now, after
+// any in-session failover. It reads live session state only; it never
+// resolves or searches.
+type PlayingReleaseReader interface {
+	PlayingRelease(context.Context, SessionAccess, string) (core.Release, core.MediaInfo, error)
 }
 
 // QualitySessions offers lazy variants of the pinned file using the broker ladder.

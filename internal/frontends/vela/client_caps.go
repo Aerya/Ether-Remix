@@ -2,17 +2,30 @@ package vela
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
 )
 
+// clientBitrateKbps converts Vela's client.maxBitrate (bits/s, total) to kbps.
+// Values <= 0 mean unlimited; small positive values clamp to 1 kbps rather than
+// truncating to unlimited.
+func clientBitrateKbps(bps int) int {
+	if bps <= 0 {
+		return 0
+	}
+	return max(1, bps/1000)
+}
+
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
 	audioCodecs := strings.Join(c.AudioCodecs, ",")
+	maxBitrate := max(c.MaxBitrate, 0)
+	maxHeight := max(c.MaxHeight, 0)
 	profile := caps.DeviceProfile{
-		MaxStreamingBitrate: c.MaxBitrate,
+		MaxStreamingBitrate: maxBitrate,
 		DirectPlayProfiles: []caps.DirectPlayProfile{
 			{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
 		},
@@ -54,7 +67,9 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 			dv = true
 		}
 	}
-	result, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: c.Device.ID, DeviceName: c.Device.Name, HDR10: hdr, DolbyVision: dv, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, SubtitleCodecs: c.SubtitleFormats, MaxHeight: c.MaxHeight, MaxBitrateKbps: c.MaxBitrate / 1000}, Profile: profile, UserAgent: r.UserAgent()})
+	result, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: c.Device.ID, DeviceName: c.Device.Name, HDR10: hdr, DolbyVision: dv, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, SubtitleCodecs: c.SubtitleFormats, MaxHeight: maxHeight, MaxBitrateKbps: clientBitrateKbps(c.MaxBitrate)}, Profile: profile, UserAgent: r.UserAgent()})
+	velaDolbyVisionProfiles(&result.Client, c)
+	result.Quality.AllowDolbyVision = result.Quality.AllowDolbyVision && result.Client.DolbyVision
 	// Preserve exact declarations, after owner rules have denied any ranges.
 	for _, format := range c.HDR {
 		if ((format == "hdr10" || format == "hlg") && result.Client.HDR10) || (format == "dv" && result.Client.DolbyVision) {
@@ -65,6 +80,54 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 		result.Client.HLSContainers = []string{"fmp4"}
 	}
 	return result, err
+}
+
+// velaDolbyVisionProfiles fills a missing profile policy with the client's
+// declared variants. An empty declaration disables DV even on a known device.
+func velaDolbyVisionProfiles(cc *frontend.ClientCaps, c client) {
+	if !slices.Contains(c.HDR, "dv") {
+		cc.DolbyVision = false
+		cc.DolbyVisionBaseOnly = true
+		return
+	}
+	if cc.DVProfilesExplicit && len(cc.DVProfiles) == 0 {
+		cc.DolbyVision = false
+		return
+	}
+	if !cc.DolbyVision || cc.DolbyVisionBaseOnly || c.DolbyVisionProfiles == nil {
+		return
+	}
+	if len(*c.DolbyVisionProfiles) == 0 {
+		cc.DVProfiles = nil
+		cc.DVProfilesExplicit = true
+		cc.DVProfilesForced = false
+		cc.DolbyVision = false
+		return
+	}
+	if cc.DVProfilesForced || len(cc.DVProfiles) > 0 {
+		return
+	}
+	for _, variant := range *c.DolbyVisionProfiles {
+		var profile int
+		switch variant {
+		case "5":
+			profile = 5
+		case "7":
+			profile = 7
+		case "8.1", "8.4":
+			profile = 8
+		default:
+			continue
+		}
+		if !slices.Contains(cc.DVProfiles, profile) {
+			cc.DVProfiles = append(cc.DVProfiles, profile)
+		}
+		if !slices.Contains(cc.DVProfileVariants, variant) {
+			cc.DVProfileVariants = append(cc.DVProfileVariants, variant)
+		}
+	}
+	cc.DVProfilesExplicit = len(cc.DVProfiles) == 0
+	cc.DolbyVision = !cc.DVProfilesExplicit
 }
 
 // velaSupportsTS reports whether a Vela client can play MPEG-TS HLS segments.

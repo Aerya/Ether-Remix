@@ -401,6 +401,9 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	s.speedMu.Lock()
 	minWin := minObservationWindow(m.opts.SpeedGrace)
 	readBps, readOK := s.speed.rateWindow(now, minWin)
+	if readOK && g.res != nil {
+		m.observeThroughput(s.ident.key, g.res.Release.Protocol, now, readBps, media)
+	}
 	var netBps float64
 	var netOK bool
 	var minNetSpan time.Duration

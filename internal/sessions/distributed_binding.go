@@ -31,7 +31,7 @@ type neutralBinding struct {
 	Sequence                                uint64
 	HistoryEpoch, HistorySequence           int64
 	VersionHandle, ExactRelease, SourceETag string
-	SourcePinned                            bool
+	SourcePinned, AutoRelease               bool
 	DeliveryToken, DeliveryGeneration       int64
 	DeliverySession                         string
 	Binding                                 Binding[frontend.PlayIntent]
@@ -54,7 +54,7 @@ func (b *Broker) saveNeutralBinding(ctx context.Context, id string, force bool) 
 		b.mu.Unlock()
 		return nil
 	}
-	snapshot := neutralBinding{Version: 1, Public: s.public, Grant: s.grant, PlayID: s.playID, ClientID: s.clientID, PlaybackID: s.playbackID, Caps: s.caps, Opts: s.opts, Decision: s.decision, AllowTranscoding: s.allowTranscoding, Format: s.format, StreamPosition: s.streamPosition, SegmentDuration: s.segmentDuration, Sequence: s.sequence, HistoryEpoch: s.historyEpoch, HistorySequence: s.historySequence, VersionHandle: s.versionHandle, ExactRelease: s.exactRelease, SourcePinned: s.sourcePinned, SourceETag: s.sourceETag, DeliveryToken: s.deliveryToken, DeliveryGeneration: s.deliveryGeneration, DeliverySession: s.deliverySession}
+	snapshot := neutralBinding{Version: 1, Public: s.public, Grant: s.grant, PlayID: s.playID, ClientID: s.clientID, PlaybackID: s.playbackID, Caps: s.caps, Opts: s.opts, Decision: s.decision, AllowTranscoding: s.allowTranscoding, Format: s.format, StreamPosition: s.streamPosition, SegmentDuration: s.segmentDuration, Sequence: s.sequence, HistoryEpoch: s.historyEpoch, HistorySequence: s.historySequence, VersionHandle: s.versionHandle, ExactRelease: s.exactRelease, AutoRelease: s.autoRelease, SourcePinned: s.sourcePinned, SourceETag: s.sourceETag, DeliveryToken: s.deliveryToken, DeliveryGeneration: s.deliveryGeneration, DeliverySession: s.deliverySession}
 	b.mu.Unlock()
 	binding, ok := b.bindings.Get(id)
 	if !ok || !binding.Started {
@@ -141,7 +141,7 @@ func (b *Broker) restoreNeutralBindingMode(ctx context.Context, id string, acces
 	if err != nil || viewer == nil || viewer.ID != p.ViewerID {
 		return core.ErrUnauthorized
 	}
-	s := &brokerSession{public: p, grant: snapshot.Grant, playID: snapshot.PlayID, clientID: snapshot.ClientID, playbackID: snapshot.PlaybackID, caps: snapshot.Caps, opts: snapshot.Opts, decision: snapshot.Decision, allowTranscoding: snapshot.AllowTranscoding, format: snapshot.Format, streamPosition: snapshot.StreamPosition, segmentDuration: snapshot.SegmentDuration, sequence: snapshot.Sequence, historyEpoch: snapshot.HistoryEpoch, historySequence: snapshot.HistorySequence, versionHandle: snapshot.VersionHandle, exactRelease: snapshot.ExactRelease, sourcePinned: snapshot.SourcePinned, sourceETag: snapshot.SourceETag, deliveryToken: snapshot.DeliveryToken, deliveryGeneration: snapshot.DeliveryGeneration, deliverySession: snapshot.DeliverySession, distributed: true, restored: true}
+	s := &brokerSession{public: p, grant: snapshot.Grant, playID: snapshot.PlayID, clientID: snapshot.ClientID, playbackID: snapshot.PlaybackID, caps: snapshot.Caps, opts: snapshot.Opts, decision: snapshot.Decision, allowTranscoding: snapshot.AllowTranscoding, format: snapshot.Format, streamPosition: snapshot.StreamPosition, segmentDuration: snapshot.SegmentDuration, sequence: snapshot.Sequence, historyEpoch: snapshot.HistoryEpoch, historySequence: snapshot.HistorySequence, versionHandle: snapshot.VersionHandle, exactRelease: snapshot.ExactRelease, autoRelease: snapshot.AutoRelease, sourcePinned: snapshot.SourcePinned, sourceETag: snapshot.SourceETag, deliveryToken: snapshot.DeliveryToken, deliveryGeneration: snapshot.DeliveryGeneration, deliverySession: snapshot.DeliverySession, distributed: true, restored: true}
 	if !b.currentMediaPolicy(ctx, viewer, s) {
 		return core.ErrUnauthorized
 	}

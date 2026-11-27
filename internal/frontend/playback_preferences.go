@@ -17,5 +17,7 @@ type PlaybackTrackPreferences interface {
 	GetRules(context.Context, int64) (PlaybackPreferenceRules, error)
 	HasViewerRules(context.Context, int64) (bool, error)
 	ForgetChoice(context.Context, int64, RatingKey, string) error
+	// SubtitleOff reports a remembered subtitle Off for the viewer and title.
+	SubtitleOff(context.Context, int64, RatingKey) (bool, error)
 	PreloadChoices(context.Context, int64, []RatingKey) error
 }

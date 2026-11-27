@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 type renderOpts struct {
 	detail      bool // full tags, Guid children, streams
 	batchDetail bool // multi-key metadata batch: keep list season counts for ungrouped shows
+	slotPage    *slotMediaPage
 	listRender  bool // multi-item render: never trigger plugin /resolve per row
 	media       bool // Media/Part for playable items
 	// inSection: the container already carries the section attributes
@@ -29,6 +31,9 @@ type renderOpts struct {
 	detailEpisodes bool
 	// guids adds the external Guid children (related hubs, like PMS).
 	guids bool
+	// searchIdentity gives the leading search results a chance to carry the
+	// canonical Plex GUID in the same response.
+	searchIdentity bool
 	// state holds the user's watch status for the rendered keys.
 	state map[frontend.RatingKey]frontend.WatchStatus
 	// skipLeafCounts skips applyListLeafCounts when the caller calls applyLeafCounts itself.
@@ -91,24 +96,64 @@ func guidFor(t *frontend.Title) string {
 		return fmt.Sprintf("com.plexapp.agents.none://%016x?lang=xn", h.Sum64())
 	}
 	switch t.Type {
-	case frontend.TypeMovie:
+	case frontend.TypeMovie, frontend.TypeShow:
 		if t.IDs.TMDB > 0 {
-			return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", t.IDs.TMDB)
-		}
-	case frontend.TypeShow:
-		if t.IDs.TMDB > 0 {
-			return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", t.IDs.TMDB)
+			return tmdbAgentGUID(strconv.FormatInt(t.IDs.TMDB, 10))
 		}
 	case frontend.TypeSeason:
-		return fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", t.Key.TMDB(), t.Season)
+		if t.ShowIDs.TMDB > 0 && !t.Key.Allocated() {
+			return tmdbAgentGUID(fmt.Sprintf("%d/%d", t.ShowIDs.TMDB, t.Key.Season()))
+		}
 	case frontend.TypeEpisode:
-		return fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d/%d?lang=en", t.Key.TMDB(), t.Season, t.Episode)
+		if t.ShowIDs.TMDB > 0 && !t.Key.Allocated() {
+			return tmdbAgentGUID(fmt.Sprintf("%d/%d/%d", t.ShowIDs.TMDB, t.Key.Season(), t.Key.Episode()))
+		}
 	}
-	return "com.plexapp.agents.none://" + t.Key.String() + "?lang=xn"
+	if t.IDs.TVDB > 0 {
+		return "tvdb://" + strconv.FormatInt(t.IDs.TVDB, 10)
+	}
+	if t.IDs.IMDB != "" {
+		return "imdb://" + t.IDs.IMDB
+	}
+	return localAgentGUID(t.Key)
 }
 
-func showGUID(show frontend.RatingKey) string {
-	return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", show.TMDB())
+func tmdbAgentGUID(id string) string { return "com.plexapp.agents.themoviedb://" + id + "?lang=en" }
+func localAgentGUID(key frontend.RatingKey) string {
+	return "com.plexapp.agents.none://" + key.String() + "?lang=xn"
+}
+
+func showGUID(show frontend.RatingKey, ids frontend.IDs) string {
+	return guidFor(&frontend.Title{Key: show, Type: frontend.TypeShow, IDs: ids})
+}
+
+// titleParent and titleShow prefer projected relations. Canonical packed keys
+// still encode their catalogue hierarchy on rows without a projected parent.
+func titleParent(t *frontend.Title) frontend.RatingKey {
+	if t.ParentKey != 0 {
+		return t.ParentKey
+	}
+	if t.Type == frontend.TypeSeason && t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	return t.Key.Parent()
+}
+
+func titleShow(t *frontend.Title) frontend.RatingKey {
+	if t.Type == frontend.TypeShow {
+		return t.Key
+	}
+	if t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	parent := titleParent(t)
+	if t.Type == frontend.TypeEpisode {
+		return parent.Parent()
+	}
+	if t.Type == frontend.TypeSeason {
+		return parent
+	}
+	return 0
 }
 
 // externalGuids are the <Guid id="..."/> children.
@@ -245,6 +290,12 @@ func seasonTitle(t *frontend.Title) string {
 
 // metadata renders one title.
 func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o renderOpts) model.Metadata {
+	var m model.Metadata
+	s.metadataInto(ctx, pr, t, o, &m)
+	return m
+}
+
+func (s *Server) metadataInto(ctx context.Context, pr *Request, t *frontend.Title, o renderOpts, m *model.Metadata) {
 	if frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, détails déjà en mémoire seulement — voir docs/pse/FORK.fr.md
 		t = s.pseEnrichCached(t)
 	} else if !o.storedOnly {
@@ -271,7 +322,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	thumbStamp := overlayThumbStamp(t, ov, hasPlex)
 	artStamp := overlayArtStamp(t, ov, hasPlex)
 	show := s.showOfOpts(t, o.storedOnly || frontend.PSEListOnly(ctx)) // PSE-HOOK: listes légères, aucune lecture programmée — voir docs/pse/FORK.fr.md
-	m := model.Metadata{
+	*m = model.Metadata{
 		RatingKey:     t.Key.String(),
 		Key:           metadataKey(t.Key, t.Type),
 		GUID:          guidFor(t),
@@ -293,7 +344,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.OriginalTitle = t.OriginalTitle
 	}
 	if !t.Released.IsZero() {
-		m.OriginallyAvailableAt = t.Released.Format("2006-01-02")
+		m.OriginallyAvailableAt = cmp.Or(t.EpisodeAirDate, t.Released).Format("2006-01-02")
 		if m.Year == 0 {
 			m.Year = t.Released.Year()
 		}
@@ -315,12 +366,12 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	if len(t.Studios) > 0 {
 		m.Studio = t.Studios[0]
 	}
-	sec, secOK := s.sectionForCtx(ctx, t.Type)
-	if t.Key.IsPluginKey() && t.LibraryID != 0 {
-		sec, secOK = s.sectionForLibraryCtx(ctx, t.LibraryID)
-	}
+	var sec Section
+	var secOK bool
 	if o.section != nil && o.section.ID != 0 {
 		sec, secOK = *o.section, true
+	} else if !o.inSection && t.Key.Kind() != frontend.KindCollection {
+		sec, secOK = s.sectionForTitle(ctx, t)
 	}
 	if secOK && !o.inSection && t.Key.Kind() != frontend.KindCollection {
 		m.LibrarySectionID = sec.ID
@@ -352,20 +403,10 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		if t.Title == "" {
 			m.Title = seasonTitle(t)
 		}
-		showKey := t.ShowKey
-		if showKey == 0 {
-			showKey = t.ParentKey
-		}
-		if showKey == 0 {
-			showKey = t.Key.Parent()
-		}
+		showKey := titleShow(t)
 		if showKey != 0 {
 			m.ParentRatingKey = showKey.String()
-			if t.Key.IsPluginKey() {
-				m.ParentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
-			} else {
-				m.ParentGUID = showGUID(showKey)
-			}
+			m.ParentGUID = showGUID(showKey, t.ShowIDs)
 			m.ParentKey = "/library/metadata/" + showKey.String()
 			m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + s.posterStamp(imageStamp(t))
 			if m.Art == "" {
@@ -415,20 +456,13 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			parentIdx = t.Disc
 		}
 		m.ParentIndex = model.Ptr(parentIdx)
-		season := t.ParentKey
-		if season == 0 {
-			season = t.Key.Parent()
-		}
-		showKey := t.ShowKey
-		if showKey == 0 {
-			showKey = season.Parent()
-		}
+		season := titleParent(t)
+		showKey := titleShow(t)
 		if season != 0 {
 			m.ParentRatingKey = season.String()
-			if t.Key.IsPluginKey() {
-				m.ParentGUID = "com.plexapp.agents.none://" + season.String() + "?lang=xn"
-			} else {
-				m.ParentGUID = fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", showKey.TMDB(), t.Season)
+			m.ParentGUID = localAgentGUID(season)
+			if t.ShowIDs.TMDB > 0 && !season.Allocated() && !season.IsPluginKey() {
+				m.ParentGUID = tmdbAgentGUID(fmt.Sprintf("%d/%d", t.ShowIDs.TMDB, season.Season()))
 			}
 			m.ParentKey = "/library/metadata/" + season.String()
 			m.ParentThumb = "/library/metadata/" + season.String() + "/thumb/" + imageStamp(t)
@@ -449,7 +483,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			if t.Key.IsPluginKey() {
 				m.GrandparentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
 			} else {
-				m.GrandparentGUID = showGUID(showKey)
+				m.GrandparentGUID = showGUID(showKey, t.ShowIDs)
 			}
 			m.GrandparentKey = "/library/metadata/" + showKey.String()
 			m.GrandparentTitle = t.ShowTitle
@@ -477,7 +511,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 	}
 	if hasPlex {
-		applyPlexMetaDates(t, &m, ov.Overlay)
+		applyPlexMetaDates(t, m, ov.Overlay)
 		if ov.Rating > 0 && t.Type != frontend.TypeSeason && t.Type != frontend.TypeEpisode {
 			m.Rating = ov.Rating
 			m.RatingImage = ov.RatingImage
@@ -592,20 +626,42 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			// intent, never per row in a list, hub, On Deck, or batch lookup.
 			withVariants = false
 		}
-		m.Media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail)
-		applyEditionTitle(&m, editionTitle)
-		if s.downloadsAllowed(pr.User) {
-			m.AllowSync = model.Ptr(true)
+		finish := func(media []model.Media) {
+			m.Media = media
+			if m.Type == "track" && t.Key.IsPluginKey() {
+				if hint, ok := s.exp().(frontend.TitleLyricsHint); ok {
+					s.addTrackLyrics(ctx, pr.User, m.Media, t.Key, hint.TitleLyricsAvailability(*t))
+				}
+			}
+			applyEditionTitle(m, editionTitle)
+			if s.downloadsAllowed(pr.User) {
+				m.AllowSync = model.Ptr(true)
+			}
+			if detail {
+				s.addProbedStreamFeatures(ctx, t.Key, info, m)
+			}
+			if m.Duration == 0 && len(m.Media) > 0 {
+				m.Duration = m.Media[0].Duration
+			}
 		}
-		if detail {
-			s.addProbedStreamFeatures(ctx, t.Key, info, &m)
+		var deferSlots func([]frontend.VariantRef, slotMediaRender)
+		deferred := false
+		if o.slotPage != nil {
+			deferSlots = func(refs []frontend.VariantRef, render slotMediaRender) {
+				deferred = true
+				o.slotPage.refs = append(o.slotPage.refs, refs...)
+				o.slotPage.finish = append(o.slotPage.finish, func(ids map[frontend.VariantRef]int64) {
+					finish(render(ids))
+				})
+			}
 		}
-		if m.Duration == 0 && len(m.Media) > 0 {
-			m.Duration = m.Media[0].Duration
+		var media []model.Media
+		media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail, deferSlots)
+		if !deferred {
+			finish(media)
 		}
 	}
-	s.decorateDiscoveryMetadata(ctx, pr, t, show, &m, o.detail)
-	return m
+	s.decorateDiscoveryMetadata(ctx, pr, t, show, m, o.detail)
 }
 
 // imageTags are an item's <Image> children, composed like PMS's:
@@ -809,7 +865,7 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 	caps := s.clientCapsForKey(pr, t.Key)
 	if src, ok := s.playback().(resumedVersionSource); ok {
 		info, rel, sel, ok := src.ResumedVersion(ctx, pr.User, t.Key, caps)
-		if !ok || rel.ID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+		if !ok || rel.ID == "" || info.Estimated || !info.HasPlayableMedia() {
 			return frontend.MediaInfo{}, frontend.Release{}, "", false
 		}
 		return info, rel, sel, true
@@ -819,7 +875,7 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 		return frontend.MediaInfo{}, frontend.Release{}, "", false
 	}
 	info, releaseID, ok := src.ResumedTracks(ctx, pr.User, t.Key, caps)
-	if !ok || releaseID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+	if !ok || releaseID == "" || info.Estimated || !info.HasPlayableMedia() {
 		return frontend.MediaInfo{}, frontend.Release{}, "", false
 	}
 	return info, frontend.Release{ID: releaseID}, "", true
@@ -830,11 +886,11 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 // pages. The second result is editionTitle; session monitoring projects only
 // the admitted source. withVariants permits cached labels on detail/queue.
 func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia bool) ([]model.Media, string) {
-	media, edition, _ := s.mediaForWithInfo(ctx, pr, t, withStreams, withVariants, sessionMedia, false)
+	media, edition, _ := s.mediaForWithInfo(ctx, pr, t, withStreams, withVariants, sessionMedia, false, nil)
 	return media, edition
 }
 
-func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia, batchDetail bool) ([]model.Media, string, frontend.MediaInfo) {
+func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia, batchDetail bool, deferSlots func([]frontend.VariantRef, slotMediaRender)) ([]model.Media, string, frontend.MediaInfo) {
 	info, ps, resumed, probedSource := s.mediaInfoWithResumed(ctx, pr, t)
 	stamp := unixOrZero(t.UpdatedAt)
 	if ps != nil && !ps.StartedAt.IsZero() {
@@ -871,7 +927,20 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 		}
 		if len(versions) > 0 {
 			pr.configuredSlots = true
-			return s.slotMedia(ctx, pr, t, versions, info, ps, resumed, stamp, withStreams, batchDetail), versions[0].Edition, info
+			refs := s.variantRefs(t, versions)
+			render := func(ids map[frontend.VariantRef]int64) []model.Media {
+				return s.slotMedia(ctx, pr, t, versions, ids, info, ps, resumed, stamp, withStreams, batchDetail)
+			}
+			if deferSlots != nil && len(refs) != 0 {
+				deferSlots(refs, render)
+				return nil, versions[0].Edition, info
+			}
+			ids, err := s.variantIDsFor(ctx, refs)
+			if err != nil {
+				pr.versionErr = err
+				return nil, "", info
+			}
+			return render(ids), versions[0].Edition, info
 		}
 	}
 	if withVariants && withStreams && !sessionMedia {
@@ -891,14 +960,14 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 				relCopy := ps.Resolution.Release
 				playedRec = &relCopy
 			}
-			if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
+			if !info.Estimated && info.HasPlayableMedia() {
 				probed = info
 			}
 		} else if resumed.ok {
 			probed, probedRelease, playedSelector, info = resumed.info, resumed.rel.ID, resumed.selector, resumed.info
 			relCopy := resumed.rel
 			playedRec = &relCopy
-		} else if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
+		} else if !info.Estimated && info.HasPlayableMedia() {
 			probed = info
 		}
 		if media, edition := s.mediaForVariants(ctx, pr, t, stamp, probed, probedRelease, playedSelector, playedRec, ps); len(media) > 0 {
@@ -906,6 +975,13 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 		}
 	}
 	m := buildMedia(t, info, stamp)
+	if !withStreams && !sessionMedia && info.Estimated {
+		var claim *frontend.Release
+		if ps != nil && ps.Resolution != nil && ps.Resolution.Release.ID != "" && !strings.HasPrefix(ps.Resolution.Release.ID, frontend.VersionSelectorPrefix) {
+			claim = &ps.Resolution.Release
+		}
+		unprobedListMedia(&m, t, claim)
+	}
 	// Detail pages and live sessions render with the ids this client was
 	// issued (play_identity.go); /status/sessions names the Media the
 	// session was admitted on. Batch metadata fetches do not allocate new
@@ -920,7 +996,7 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 			if sessionMedia && ps != nil && pin.selected != 0 && pin.selected != int64(t.Key) {
 				m.ID = pin.selected
 				m.Part[0].ID = pin.selected
-				m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", pin.selected, stamp, containerExt(m.Container))
+				m.Part[0].Key = mediaPartKey(pin.selected, stamp, info)
 			}
 			m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 		}
@@ -966,12 +1042,23 @@ func partFileName(t *frontend.Title, ext string) string {
 	return "/ether/" + name + "." + ext
 }
 
+func mediaFileExt(info frontend.MediaInfo) string {
+	container := plexContainer(info.Container)
+	switch {
+	case strings.EqualFold(info.Container, "webm"):
+		return "webm"
+	case container == "mp4" && info.AudioOnly():
+		return "m4a"
+	}
+	return containerExt(container)
+}
+
+func mediaPartKey(id, stamp int64, info frontend.MediaInfo) string {
+	return fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, mediaFileExt(info))
+}
+
 func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.Media {
 	container := plexContainer(info.Container)
-	ext := containerExt(container)
-	if strings.EqualFold(info.Container, "webm") {
-		ext = "webm"
-	}
 	dur := ms(info.Duration)
 	if dur <= 0 {
 		dur = ms(t.Runtime)
@@ -1029,9 +1116,9 @@ func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.M
 	m.HasVoiceActivity = model.Ptr(false)
 	p := model.Part{
 		ID:           id,
-		Key:          fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, ext),
+		Key:          mediaPartKey(id, stamp, info),
 		Duration:     dur,
-		File:         partFileName(t, ext),
+		File:         partFileName(t, mediaFileExt(info)),
 		Size:         info.Size,
 		AudioProfile: m.AudioProfile,
 		Container:    container,
@@ -1052,6 +1139,91 @@ func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.M
 	}
 	m.Part = []model.Part{p}
 	return m
+}
+
+// unprobedListMedia keeps only the facts Ether knows on a list row (section
+// listings, hubs, On Deck) whose Media was drawn from an estimate. The
+// estimate fills every attribute from the quality profile (2160p H.264 at
+// 20 Mbps, E-AC-3 5.1, a default runtime), and clients that badge or pick a
+// quality from the listing read those as the file's facts. The Media and
+// Part elements stay (clients treat an item without Media as unplayable),
+// with their ids, keys, file name and container; picture, sound, bitrate and
+// size are reported only when the release Ether would play claims them in
+// its name or size. claim is nil for a title without a picked release (a
+// cold configured slot or the plain estimate). Detail pages, play queues and
+// decisions are not list rows and keep their estimate until the probe lands.
+func unprobedListMedia(m *model.Media, t *frontend.Title, claim *frontend.Release) {
+	var info frontend.ReleaseInfo
+	var size int64
+	if claim != nil {
+		info, size = claim.Info, claim.Size
+	}
+	dur := ms(t.Runtime)
+	m.Duration = dur
+	m.Bitrate = 0
+	if size > 0 && t.Runtime > 0 {
+		m.Bitrate = int(float64(size) * 8 / t.Runtime.Seconds() / 1000)
+	}
+	// Width and aspect ratio are never in a release name; height is.
+	m.Width, m.AspectRatio = 0, 0
+	m.Height, m.VideoResolution = 0, ""
+	if info.Height > 0 {
+		m.Height = info.Height
+		m.VideoResolution = videoResolution(0, info.Height)
+	}
+	if info.VideoCodec != "" {
+		m.VideoCodec = plexCodec(info.VideoCodec)
+	} else {
+		m.VideoCodec = ""
+	}
+	m.VideoFrameRate, m.VideoProfile = "", ""
+	if info.AudioCodec != "" {
+		m.AudioCodec = plexCodec(info.AudioCodec)
+		m.AudioProfile = audioProfile(&frontend.StreamInfo{Codec: info.AudioCodec})
+		if m.AudioCodec == "dca" && m.AudioProfile == "ma" {
+			m.AudioCodec = "dca-ma"
+		}
+	} else {
+		m.AudioCodec, m.AudioProfile = "", ""
+	}
+	m.AudioChannels = releaseChannelCount(info.Channels)
+	m.OptimizedForStreaming, m.Has64bitOffsets = nil, nil
+	for i := range m.Part {
+		p := &m.Part[i]
+		p.Duration = dur
+		p.Size = size
+		p.VideoProfile = ""
+		p.AudioProfile = m.AudioProfile
+		p.OptimizedForStreaming, p.Has64bitOffsets = nil, nil
+	}
+}
+
+func releaseChannelCount(s string) int {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "":
+		return 0
+	case "7.1":
+		return 8
+	case "6.1":
+		return 7
+	case "5.1":
+		return 6
+	case "2.1":
+		return 3
+	case "2.0":
+		return 2
+	case "1.0":
+		return 1
+	}
+	if a, b, ok := strings.Cut(s, "."); ok {
+		ai, err1 := strconv.Atoi(a)
+		bi, err2 := strconv.Atoi(b)
+		if err1 == nil && err2 == nil && ai > 0 && bi >= 0 {
+			return ai + bi
+		}
+	}
+	return 0
 }
 
 // audioProfile is PMS's audioProfile ("lc" for AAC, "dts"/"ma" for DTS...).
@@ -1211,9 +1383,10 @@ func (s *Server) renderStreams(key frontend.RatingKey, info frontend.MediaInfo, 
 			ps.DisplayTitle = videoDisplayTitle(st)
 			ps.ExtendedDisplayTitle = ps.DisplayTitle
 		case "audio":
+			ps.BitDepth = st.BitDepth
 			if st.BitsPerRawSample != nil {
 				ps.BitDepth = *st.BitsPerRawSample
-			} else if plexCodec(st.Codec) == "dca" && !strings.Contains(strings.ToLower(st.Profile), "express") {
+			} else if ps.BitDepth == 0 && ps.Codec == "dca" && !strings.Contains(strings.ToLower(st.Profile), "express") {
 				ps.BitDepth = 24
 			}
 			ps.HearingImpaired, ps.VisualImpaired, ps.Comment = trueDisposition(st.HearingImpaired), trueDisposition(st.VisualImpaired), trueDisposition(st.Commentary)
@@ -1663,6 +1836,11 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	if len(ts) == 0 {
 		return nil
 	}
+	if !o.inSection && (o.section == nil || o.section.ID == 0) {
+		// One membership read per candidate library for the page; each
+		// row's metadata reads the attribution from the request memo.
+		s.sectionsForTitles(ctx, ts)
+	}
 	if !frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, aucune fiche complétée — voir docs/pse/FORK.fr.md
 		s.warmTitleDetails(ts, o.storedOnly)
 	}
@@ -1694,22 +1872,23 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	var missingGUIDs []frontend.RatingKey
 	lookup := make([]frontend.RatingKey, 0, len(ts)*2)
 	for i := range ts {
-		k := ts[i].Key
-		lookup = append(lookup, k)
-		switch ts[i].Type {
-		case frontend.TypeSeason:
-			if k.TMDB() > 0 {
-				lookup = append(lookup, frontend.ShowKey(k.TMDB()))
-			}
-		case frontend.TypeEpisode:
-			if k.TMDB() > 0 {
-				lookup = append(lookup, frontend.ShowKey(k.TMDB()), frontend.SeasonKey(k.TMDB(), ts[i].Season))
+		t := &ts[i]
+		lookup = append(lookup, t.Key)
+		if show := titleShow(t); show != 0 && show != t.Key {
+			lookup = append(lookup, show)
+		}
+		if t.Type == frontend.TypeEpisode {
+			if parent := titleParent(t); parent != 0 {
+				lookup = append(lookup, parent)
 			}
 		}
 	}
 	guidSrc := s.libraryGUIDs()
 	if guidSrc != nil {
 		guids = guidSrc.CachedMany(ctx, lookup)
+		if o.searchIdentity {
+			guids = resolveSearchGUIDs(ctx, guidSrc, ts, guids)
+		}
 	}
 	ctx = s.withPlexMeta(ctx, lookup, guids, !o.storedOnly)
 	ctx = s.withPlexCredits(ctx, lookup, guids, o.detail && !o.storedOnly)
@@ -1717,16 +1896,20 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	if !o.storedOnly {
 		order = s.episodeOrderList(ctx, pr, ts, o.detail && !o.batchDetail)
 	}
-	out := make([]model.Metadata, 0, len(ts))
+	if len(ts) > 1 {
+		o.slotPage = &slotMediaPage{}
+	}
+	out := make([]model.Metadata, len(ts))
 	for i := range ts {
-		m := s.metadata(ctx, pr, &ts[i], o)
+		m := &out[i]
+		s.metadataInto(ctx, pr, &ts[i], o, m)
 		if !o.storedOnly {
-			s.applyEpisodeOrder(ctx, pr, &ts[i], &m, order)
+			s.applyEpisodeOrder(ctx, pr, &ts[i], m, order)
 		}
 		if guidSrc != nil {
 			k := ts[i].Key
 			if guid := guids[k]; guid != "" {
-				if !(ts[i].Type == frontend.TypeSeason && ts[i].Season >= 9000) {
+				if !virtualPlexSeason(&ts[i]) {
 					m.GUID = guid
 				}
 			} else {
@@ -1734,24 +1917,24 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 			}
 			switch ts[i].Type {
 			case frontend.TypeSeason:
-				if ts[i].Season < 9000 {
-					if sg := guids[frontend.ShowKey(k.TMDB())]; sg != "" {
+				if !virtualPlexSeason(&ts[i]) {
+					if sg := guids[titleShow(&ts[i])]; sg != "" {
 						m.ParentGUID = sg
 					}
 				}
 			case frontend.TypeEpisode:
-				if sg := guids[frontend.ShowKey(k.TMDB())]; sg != "" {
+				if sg := guids[titleShow(&ts[i])]; sg != "" {
 					m.GrandparentGUID = sg
 				}
 				if !strings.HasPrefix(m.ParentGUID, "local://episode-order/") {
-					if seag := guids[frontend.SeasonKey(k.TMDB(), ts[i].Season)]; seag != "" {
+					if seag := guids[titleParent(&ts[i])]; seag != "" {
 						m.ParentGUID = seag
 					}
 				}
 			}
 		}
-		out = append(out, m)
 	}
+	s.finishSlotPage(ctx, pr, o.slotPage)
 	if guidSrc != nil && len(missingGUIDs) > 0 && !o.storedOnly {
 		guidSrc.Schedule(missingGUIDs...)
 	}
@@ -1774,16 +1957,24 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 	if s.state() == nil || pr.User == nil || len(items) == 0 {
 		return
 	}
-	hasShowOrSeason := false
-	for i := range ts {
-		if ts[i].Type == frontend.TypeShow || ts[i].Type == frontend.TypeSeason {
-			hasShowOrSeason = true
-			break
+	var canonical, projected []frontend.Title
+	for _, t := range ts {
+		if t.Type != frontend.TypeShow && t.Type != frontend.TypeSeason {
+			continue
+		}
+		if t.Key.Allocated() || !viewerEpisodeOrder(&t) {
+			if !t.Key.IsPluginKey() {
+				projected = append(projected, t)
+			}
+		} else {
+			canonical = append(canonical, t)
 		}
 	}
-	if !hasShowOrSeason {
+	s.applyProjectedListLeafCounts(ctx, pr, items, projected)
+	if len(canonical) == 0 {
 		return
 	}
+	ts = canonical
 	var watched []frontend.RatingKey
 	var err error
 	if reader, ok := s.state().(watchedEpisodesOfReader); ok {
@@ -1791,7 +1982,11 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		seen := map[int64]bool{}
 		var shows []int64
 		for i := range ts {
-			if tmdb := ts[i].Key.TMDB(); (ts[i].Type == frontend.TypeShow || ts[i].Type == frontend.TypeSeason) && tmdb > 0 && !seen[tmdb] {
+			tmdb := ts[i].IDs.TMDB
+			if ts[i].Type == frontend.TypeSeason {
+				tmdb = ts[i].ShowIDs.TMDB
+			}
+			if tmdb > 0 && !seen[tmdb] {
 				seen[tmdb] = true
 				shows = append(shows, tmdb)
 			}
@@ -1805,10 +2000,10 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 	if err != nil || len(watched) == 0 {
 		return
 	}
-	watchedByShow := make(map[int64][]frontend.RatingKey)
+	watchedByShow := make(map[frontend.RatingKey][]frontend.RatingKey)
 	for _, k := range watched {
-		if tmdb := k.TMDB(); tmdb > 0 {
-			watchedByShow[tmdb] = append(watchedByShow[tmdb], k)
+		if show := k.Parent().Parent(); show != 0 {
+			watchedByShow[show] = append(watchedByShow[show], k)
 		}
 	}
 	subset := make([]frontend.Title, 0)
@@ -1816,7 +2011,7 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		if ts[i].Type != frontend.TypeShow && ts[i].Type != frontend.TypeSeason {
 			continue
 		}
-		if len(watchedByShow[ts[i].Key.TMDB()]) > 0 {
+		if len(watchedByShow[titleShow(&ts[i])]) > 0 {
 			subset = append(subset, ts[i])
 		}
 	}
@@ -1837,14 +2032,14 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 			continue
 		}
 		viewed := 0
-		for _, k := range watchedByShow[title.Key.TMDB()] {
+		for _, k := range watchedByShow[titleShow(&title)] {
 			switch title.Type {
 			case frontend.TypeShow:
 				if k.Season() > 0 {
 					viewed++
 				}
 			case frontend.TypeSeason:
-				if k.Season() == title.Key.Season() {
+				if k.Season() == title.Season {
 					viewed++
 				}
 			}
@@ -1852,6 +2047,76 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		if viewed > 0 {
 			items[i].ViewedLeafCount = model.Ptr(viewed)
 		}
+	}
+}
+
+// applyProjectedListLeafCounts uses stored counts for the page's alternate
+// orders. It does not load the shows' layouts or visit metadata providers.
+func (s *Server) applyProjectedListLeafCounts(ctx context.Context, pr *Request, items []model.Metadata, titles []frontend.Title) {
+	catalogue, ok := s.catalog().(frontend.AiredEpisodeTallyReader)
+	if !ok || len(titles) == 0 {
+		return
+	}
+	seen := make(map[frontend.RatingKey]bool, len(titles))
+	var shows []frontend.RatingKey
+	for _, t := range titles {
+		if show := titleShow(&t); show != 0 && !seen[show] {
+			shows, seen[show] = append(shows, show), true
+		}
+	}
+	var pending []frontend.RatingKey
+	if reader, ok := s.state().(frontend.PendingWatchKeys); ok {
+		pending = reader.PendingKeys(pr.User.ID)
+	}
+	tallies, err := catalogue.AiredEpisodeTallies(ctx, pr.User.ID, shows, s.now(), pending)
+	if err != nil {
+		return
+	}
+	var judged []frontend.RatingKey
+	for _, tally := range tallies {
+		judged = append(judged, tally.Judge...)
+	}
+	if reader, ok := s.catalog().(frontend.CachedTitleBatchReader); ok && len(judged) > 0 {
+		rows, err := reader.CachedGetMany(ctx, judged)
+		if err == nil {
+			states, err := s.state().GetMany(ctx, pr.User.ID, judged)
+			if err == nil {
+				for key, t := range rows {
+					tally := tallies[titleShow(&t)]
+					if tally.Seasons == nil {
+						continue
+					}
+					n := tally.Seasons[t.Season]
+					n.Aired++
+					if states[key].ViewCount > 0 {
+						n.Played++
+					}
+					tally.Seasons[t.Season] = n
+				}
+			}
+		}
+	}
+	byKey := make(map[string]*model.Metadata, len(items))
+	for i := range items {
+		byKey[items[i].RatingKey] = &items[i]
+	}
+	for _, t := range titles {
+		m := byKey[t.Key.String()]
+		tally, ok := tallies[titleShow(&t)]
+		if !ok || m == nil {
+			continue
+		}
+		watched := 0
+		if t.Type == frontend.TypeSeason {
+			watched = tally.Seasons[t.Season].Played
+		} else {
+			for season, counts := range tally.Seasons {
+				if season > 0 {
+					watched += counts.Played
+				}
+			}
+		}
+		m.ViewedLeafCount = model.Ptr(watched)
 	}
 }
 
@@ -1945,7 +2210,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 			if title.Key.IsPluginKey() || (title.Type != frontend.TypeShow && title.Type != frontend.TypeSeason) {
 				continue
 			}
-			show := frontend.ShowKey(title.Key.TMDB())
+			show := titleShow(&title)
 			if seen[show] {
 				continue
 			}
@@ -1979,7 +2244,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 	together := map[frontend.RatingKey]int{}
 	for i := range ts {
 		if !ts[i].Key.IsPluginKey() && ts[i].Type == frontend.TypeSeason {
-			together[frontend.ShowKey(ts[i].Key.TMDB())]++
+			together[titleShow(&ts[i])]++
 		}
 	}
 	bySeason := map[frontend.RatingKey]map[int][]frontend.Title{}
@@ -1998,7 +2263,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 		case frontend.TypeShow:
 			eps, err = s.episodesOfShow(ctx, pr, memo, title.Key)
 		case frontend.TypeSeason:
-			show := frontend.ShowKey(title.Key.TMDB())
+			show := titleShow(&title)
 			seasons, loaded := bySeason[show]
 			if !loaded && together[show] > 1 {
 				if all, e := s.episodesOfShow(ctx, pr, memo, show); e == nil {
@@ -2007,7 +2272,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 				bySeason[show] = seasons
 			}
 			if seasons != nil {
-				eps = seasons[title.Key.Season()]
+				eps = seasons[title.Season]
 			} else {
 				// A lone season, or its show's episodes failed to load.
 				eps, err = s.metadataChildren(ctx, pr, title.Key)
@@ -2034,7 +2299,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 				continue
 			}
 		}
-		showKey := frontend.ShowKey(title.Key.TMDB())
+		showKey := titleShow(&title)
 		showCovered := coveredShows[showKey]
 		if title.Type == frontend.TypeSeason && bySeason[showKey] == nil {
 			showCovered = false

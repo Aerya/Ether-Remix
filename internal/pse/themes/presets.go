@@ -174,18 +174,18 @@ const presetDescription = "Créée par Ether-Remix pour une bibliothèque à th�
 // specFor décrit la collection d'une rangée de modèle.
 func specFor(e Entry, typ string) core.CollectionSpec {
 	return core.CollectionSpec{
-		Name:        e.Name,
-		Description: presetDescription,
-		MediaType:   typ,
-		Sources:     []core.CollectionSource{{Kind: e.Kind, ID: e.ID, Label: e.Label, Params: e.Params, MediaType: typ}},
-		Match:       "all",
-		Rules:       []core.CollectionRule{},
-		Exclude:     []core.CollectionRule{},
-		Sort:        "source",
-		Refresh:     "daily",
-		Artwork:     core.CollectionArtwork{Mode: "auto"},
-		Targets:     core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
-		Enabled:     true,
+		Name:         e.Name,
+		Description:  presetDescription,
+		MediaType:    typ,
+		Sources:      []core.CollectionSource{{Kind: e.Kind, ID: e.ID, Label: e.Label, Params: e.Params, MediaType: typ}},
+		Match:        "all",
+		Rules:        []core.CollectionRule{},
+		Exclude:      []core.CollectionRule{},
+		Sort:         "source",
+		Refresh:      "daily",
+		Artwork:      core.CollectionArtwork{Mode: "auto"},
+		BrowseInApps: true,
+		Enabled:      true,
 	}
 }
 

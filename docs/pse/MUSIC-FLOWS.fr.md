@@ -29,3 +29,5 @@ Remix appelle uniquement `GET /api/similar_tracks` avec `item_id=tr-…`, `n`, `
 Le contrat HTTP, les refus, les limites de réponse et l'isolation entre spectateurs sont couverts par des tests simulés. Une analyse complète et la qualité des recommandations sur une instance AudioMuse réelle restent à valider ; un titre non analysé ou une API incompatible laisse la dernière playlist intacte.
 
 Référence du contrat : [API de similarité AudioMuse](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/app_ivf.py).
+
+Pour les recommandations d’artistes et d’albums d’un service externe, consultez le [connecteur Digarr](DIGARR.fr.md).

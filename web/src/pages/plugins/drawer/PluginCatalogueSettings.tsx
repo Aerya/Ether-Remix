@@ -1,9 +1,14 @@
-import { sourceName } from "../../libraries/CatalogueSources";
+import {
+  catalogueCapNote,
+  catalogueCapped,
+  catalogueCountLabel,
+  sourceName,
+} from "../../libraries/CatalogueSources";
 import { Badge, Button, SettingsSection, cn, toast } from "@braedonsaunders/appkit-ui";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../../../components/SettingsRow";
-import { t, tn } from "../../../i18n";
+import { t } from "../../../i18n";
 import { errorMessage } from "../../../lib/api";
 import { useAsync } from "../../../lib/hooks";
 import { librariesApi, type LibrarySyncRequest } from "../../libraries/api";
@@ -156,10 +161,8 @@ export function PluginCatalogueSettings({
         );
       })}
       {catalogues.map((source) => {
-        const countLabel =
-          typeof source.itemCount === "number"
-            ? tn(source.itemCount, "{count} title", "{count} titles")
-            : "";
+        const countLabel = typeof source.itemCount === "number" ? catalogueCountLabel(source) : "";
+        const capNote = source.lastError ? "" : catalogueCapNote(source);
         const statusLabel = source.lastError
           ? source.lastError
           : source.health === "unknown"
@@ -171,7 +174,16 @@ export function PluginCatalogueSettings({
           <SettingsRow
             key={source.id}
             title={sourceName(source)}
-            description={countLabel ? `${countLabel} · ${statusLabel}` : statusLabel}
+            description={
+              <>
+                {countLabel ? `${countLabel} · ${statusLabel}` : statusLabel}
+                {capNote ? (
+                  <span className="mt-1 block text-warning" data-testid="catalogue-cap-note">
+                    {capNote}
+                  </span>
+                ) : null}
+              </>
+            }
             control={
               <Button
                 size="sm"
@@ -179,8 +191,14 @@ export function PluginCatalogueSettings({
                 onClick={async () => {
                   setBusySource(source.id);
                   try {
-                    await librariesApi.syncCatalogueSource(source.id);
-                    toast.success(t("Catalogue refreshed"));
+                    const res = await librariesApi.syncCatalogueSource(source.id);
+                    if (catalogueCapped(res)) {
+                      toast.warning(`${catalogueCountLabel(res)}. ${catalogueCapNote(res)}`);
+                    } else {
+                      toast.success(
+                        t("Catalogue refreshed: {count}", { count: catalogueCountLabel(res) }),
+                      );
+                    }
                   } catch (e) {
                     toast.error(errorMessage(e));
                   } finally {

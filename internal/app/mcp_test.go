@@ -51,12 +51,12 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 	}
 	t.Cleanup(a.Close)
 
-	// 1. Verify all 44 built-in tools are registered in both the tool catalogue
+	// 1. Verify all 50 built-in tools are registered in both the tool catalogue
 	// and the descriptor registry (extend.KindTool). web_search and web_fetch
 	// are among them but stay invisible to MCP principals.
 	toolDescs := a.extendRT.registry.List(extend.KindTool)
-	if len(toolDescs) != 44 {
-		t.Fatalf("expected 44 extend.KindTool descriptors, got %d", len(toolDescs))
+	if len(toolDescs) != 50 {
+		t.Fatalf("expected 50 extend.KindTool descriptors, got %d", len(toolDescs))
 	}
 
 	// Route-to-tool coverage for the existing guide match endpoint. Both MCP
@@ -281,6 +281,23 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 		return out.Result.StructuredContent
 	}
 
+	approveInConsole := func(approvalID string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/ether/api/agent/approvals/"+approvalID, strings.NewReader(`{"decision":"approved"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Ether-Request", "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /ether/api/agent/approvals/%s status = %d: %s", approvalID, resp.StatusCode, string(b))
+		}
+	}
+
 	// 3. Answer "why did Heat buffer last night" using read tools over /ether/mcp.
 	searchRes := mcpCall("catalog_search", map[string]any{"query": "Heat"})
 	results, _ := searchRes["results"].([]any)
@@ -361,37 +378,25 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 	}
 	var target int = -1
 	for i, p := range beforeQuality.Profiles {
-		if p.Name == "4K" && p.MediaType == "tv" {
+		if p.Name == "4K" {
 			target = i
 			break
 		}
 	}
 	if target < 0 {
-		t.Fatal("missing default TV profile")
+		t.Fatal("missing default 4K profile")
 	}
 	row := profileRows[target].(map[string]any)
-	if row["name"] != "4K" || row["media"] != "tv" || len(row["qualityOrder"].([]any)) == 0 {
+	if row["name"] != "4K" || len(row["qualityOrder"].([]any)) == 0 {
 		t.Fatalf("profile read: %v", row)
 	}
 	grouped := []core.QualityItem{{Name: "HD and UHD", Qualities: []string{"webdl-2160", "webdl-1080"}}}
-	qualityProposal := mcpCall("quality_order_set", map[string]any{"profile": "4K", "media": "tv", "qualityOrder": grouped})
+	qualityProposal := mcpCall("quality_order_set", map[string]any{"profile": "4K", "qualityOrder": grouped})
 	if qualityProposal["status"] != "pending_approval" || !reflect.DeepEqual(a.cfg.Get().Quality, beforeQuality) {
 		t.Fatal("quality changed before approval")
 	}
 	qualityApproval := qualityProposal["approvalId"].(string)
-	qualityReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/ether/api/agent/approvals/"+qualityApproval, strings.NewReader(`{"decision":"approved"}`))
-	qualityReq.Header.Set("Authorization", "Bearer "+ownerToken)
-	qualityReq.Header.Set("Content-Type", "application/json")
-	qualityReq.Header.Set("X-Ether-Request", "1")
-	qualityResp, err := http.DefaultClient.Do(qualityReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	qualityBody, _ := io.ReadAll(qualityResp.Body)
-	qualityResp.Body.Close()
-	if qualityResp.StatusCode != http.StatusOK {
-		t.Fatalf("quality approval: %d %s", qualityResp.StatusCode, qualityBody)
-	}
+	approveInConsole(qualityApproval)
 	expectedQuality := beforeQuality
 	expectedQuality.Profiles = append([]core.QualityProfile(nil), beforeQuality.Profiles...)
 	expectedQuality.Profiles[target].QualityOrder = grouped
@@ -408,6 +413,97 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reopened.Get().Quality, expectedQuality) {
 		t.Fatal("quality order was not persisted")
+	}
+
+	// Quality rules & defaults end-to-end over /ether/mcp + console approval.
+	rulesList := mcpCall("quality_rules_list", map[string]any{"includeDevices": true})
+	if rulesList["default"] == "" {
+		t.Fatalf("quality_rules_list missing default: %v", rulesList)
+	}
+	if _, ok := rulesList["devices"].(map[string]any); !ok {
+		t.Fatalf("quality_rules_list(includeDevices=true) missing devices: %v", rulesList)
+	}
+
+	// Propose changing defaultAway -> approve -> verify persisted.
+	defProp := mcpCall("quality_defaults_set", map[string]any{"defaultAway": "720p"})
+	if defProp["status"] != "pending_approval" || a.cfg.Get().Quality.DefaultAway == "720p" {
+		t.Fatalf("quality_defaults_set mutated before approval: %v", defProp)
+	}
+	approveInConsole(defProp["approvalId"].(string))
+	if a.cfg.Get().Quality.DefaultAway != "720p" {
+		t.Fatalf("defaultAway not applied: %q", a.cfg.Get().Quality.DefaultAway)
+	}
+
+	// Propose adding rule 1 (away phones cap) -> approve -> verify server-assigned id.
+	addProp1 := mcpCall("quality_rule_add", map[string]any{
+		"name":           "Phones away cap",
+		"devices":        []any{map[string]any{"group": "mobile"}},
+		"where":          "away",
+		"maxBitrateKbps": 8000,
+	})
+	if addProp1["status"] != "pending_approval" || len(a.cfg.Get().Quality.Rules) != 0 {
+		t.Fatalf("quality_rule_add mutated before approval: %v", addProp1)
+	}
+	approveInConsole(addProp1["approvalId"].(string))
+	rulesAfterAdd1 := a.cfg.Get().Quality.Rules
+	if len(rulesAfterAdd1) != 1 || !strings.HasPrefix(rulesAfterAdd1[0].ID, "r_") {
+		t.Fatalf("expected 1 rule with r_ id, got %+v", rulesAfterAdd1)
+	}
+	rule1ID := rulesAfterAdd1[0].ID
+
+	// Propose adding rule 2 (movies 1080p) -> approve -> move rule 2 to position 1.
+	addProp2 := mcpCall("quality_rule_add", map[string]any{
+		"name":    "Movies 1080p",
+		"kind":    "movie",
+		"profile": "1080p",
+	})
+	approveInConsole(addProp2["approvalId"].(string))
+	rule2ID := a.cfg.Get().Quality.Rules[1].ID
+
+	moveProp := mcpCall("quality_rule_move", map[string]any{"ruleId": rule2ID, "position": 1})
+	if moveProp["status"] != "pending_approval" || a.cfg.Get().Quality.Rules[0].ID != rule1ID {
+		t.Fatalf("quality_rule_move mutated before approval: %v", moveProp)
+	}
+	approveInConsole(moveProp["approvalId"].(string))
+	if got := a.cfg.Get().Quality.Rules; len(got) != 2 || got[0].ID != rule2ID || got[1].ID != rule1ID {
+		t.Fatalf("unexpected rule order after move: %+v", got)
+	}
+
+	// Edit rule 1 by its stable ID (now at position 2) -> approve -> verify updated.
+	editProp := mcpCall("quality_rule_edit", map[string]any{
+		"ruleId":         rule1ID,
+		"maxBitrateKbps": 6000,
+		"stereoAudio":    true,
+	})
+	if editProp["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval from quality_rule_edit, got %v", editProp)
+	}
+	approveInConsole(editProp["approvalId"].(string))
+	if r1 := a.cfg.Get().Quality.Rules[1]; r1.ID != rule1ID || r1.MaxBitrateKbps != 6000 || !r1.StereoAudio {
+		t.Fatalf("rule edit did not apply to stable id %s: %+v", rule1ID, r1)
+	}
+
+	// Explain a remote phone movie play: rule 2 picks 1080p, rule 1 adds 6000 kbps + stereo.
+	explainRes := mcpCall("quality_explain", map[string]any{
+		"viewerId": ownerID,
+		"clientId": "plex-ios",
+		"remote":   true,
+		"kind":     "movie",
+	})
+	if explainRes["profile"] != "1080p" || explainRes["profileRuleId"] != rule2ID {
+		t.Fatalf("quality_explain profile mismatch: %v", explainRes)
+	}
+	if explainRes["bitrateKbps"] != float64(6000) || explainRes["stereo"] != true {
+		t.Fatalf("quality_explain accumulated limits mismatch: %v", explainRes)
+	}
+
+	// Verify persisted rules survive reopening config.Open(dir).
+	reopenedRules, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopenedRules.Get().Quality.Rules; len(got) != 2 || got[0].ID != rule2ID || got[1].ID != rule1ID || got[1].MaxBitrateKbps != 6000 {
+		t.Fatalf("quality rules were not persisted cleanly: %+v", got)
 	}
 
 	// MCP secret-requiring writes wait for approval and then present a secret card.

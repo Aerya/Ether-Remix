@@ -257,3 +257,171 @@ func TestAbandonedNZBFetchIsCancelled(t *testing.T) {
 		t.Fatal("the abandoned NZB request kept running")
 	}
 }
+
+func TestFetchNZBVaultReuseAcrossPackTargets(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("id") {
+		case "album-1":
+			if hits.Add(1) > 1 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><error code="409" description="You've already grabbed this NZB within the last hour."/>`))
+				return
+			}
+			_, _ = w.Write([]byte(fakeNZB))
+		case "album-2":
+			if hits.Add(1) > 2 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><error code="409" description="You've already grabbed this NZB within the last hour."/>`))
+				return
+			}
+			_, _ = w.Write([]byte(fakeNZB))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := testConfig(srv.URL)
+	cfg.ID = "idx-pack"
+	c := New(cfg, nil, Options{Vault: &testVault{}})
+
+	ctx := context.Background()
+	keylessURL := srv.URL + "/api?t=get&id=album-1"
+	packID := "kind:" + keylessURL
+
+	// 1. Untargeted fetch populates the vault for the pack ID.
+	body, grabbed, err := c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID,
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album",
+		NZBURL:    keylessURL,
+	})
+	if err != nil || !grabbed || string(body) != fakeNZB {
+		t.Fatalf("initial fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+
+	// 2. Targeted Track 1 fetch with Target.PackID reuses the vaulted NZB (0 extra HTTP hits).
+	idx0 := 0
+	body, grabbed, err = c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID + ":file:track1",
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album",
+		NZBURL:    keylessURL,
+		Target:    &core.ReleaseTarget{FileIndex: &idx0, PackID: packID, AllowNonVideo: true},
+	})
+	if err != nil || grabbed || string(body) != fakeNZB {
+		t.Fatalf("targeted track 1 fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+
+	// 3. Targeted Track 2 fetch with same Target.PackID also hits the vault.
+	idx1 := 1
+	body, grabbed, err = c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID + ":file:track2",
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album",
+		NZBURL:    keylessURL,
+		Target:    &core.ReleaseTarget{FileIndex: &idx1, PackID: packID, AllowNonVideo: true},
+	})
+	if err != nil || grabbed || string(body) != fakeNZB {
+		t.Fatalf("targeted track 2 fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("album 1 server hits = %d, want 1", got)
+	}
+
+	// 4. Reverse order: Targeted Track 1 fetched first, then Track 2, then untargeted.
+	keylessURL2 := srv.URL + "/api?t=get&id=album-2"
+	packID2 := "kind:" + keylessURL2
+	body, grabbed, err = c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID2 + ":file:track1",
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album 2",
+		NZBURL:    keylessURL2,
+		Target:    &core.ReleaseTarget{FileIndex: &idx0, PackID: packID2, AllowNonVideo: true},
+	})
+	if err != nil || !grabbed || string(body) != fakeNZB {
+		t.Fatalf("album 2 track 1 fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+	body, grabbed, err = c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID2 + ":file:track2",
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album 2",
+		NZBURL:    keylessURL2,
+		Target:    &core.ReleaseTarget{FileIndex: &idx1, PackID: packID2, AllowNonVideo: true},
+	})
+	if err != nil || grabbed || string(body) != fakeNZB {
+		t.Fatalf("album 2 track 2 fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+	body, grabbed, err = c.fetchNZBReporting(ctx, core.Release{
+		ID:        packID2,
+		IndexerID: cfg.ID,
+		Name:      "Artist - Album 2",
+		NZBURL:    keylessURL2,
+	})
+	if err != nil || grabbed || string(body) != fakeNZB {
+		t.Fatalf("album 2 untargeted fetch = (%d bytes, grabbed=%v, err=%v)", len(body), grabbed, err)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("total server hits = %d, want 2", got)
+	}
+}
+
+func TestFetchNZBConcurrentPackTargetsCoalesce(t *testing.T) {
+	v := &testVault{}
+	var hits atomic.Int32
+	release := make(chan struct{})
+	srv, served := blockingNZBServer(t, &hits, release)
+
+	cfg := testConfig(srv.URL)
+	cfg.ID = "idx-concurrent-pack"
+	c := New(cfg, nil, Options{Vault: v})
+
+	packID := "kind:" + srv.URL + "/nzb?id=album"
+	idx0, idx1 := 0, 1
+	rels := []core.Release{
+		{
+			ID:        packID + ":file:0",
+			IndexerID: cfg.ID,
+			Name:      "Album",
+			NZBURL:    srv.URL + "/nzb?id=album",
+			Target:    &core.ReleaseTarget{FileIndex: &idx0, PackID: packID, AllowNonVideo: true},
+		},
+		{
+			ID:        packID + ":file:1",
+			IndexerID: cfg.ID,
+			Name:      "Album",
+			NZBURL:    srv.URL + "/nzb?id=album",
+			Target:    &core.ReleaseTarget{FileIndex: &idx1, PackID: packID, AllowNonVideo: true},
+		},
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(rels))
+	bodies := make([][]byte, len(rels))
+	for i, rel := range rels {
+		wg.Add(1)
+		go func(i int, rel core.Release) {
+			defer wg.Done()
+			bodies[i], errs[i] = c.FetchNZB(context.Background(), rel)
+		}(i, rel)
+	}
+	waitFor(t, "both pack targets to join the shared flight", func() bool { return nzbWaiters(c, packID) == 2 })
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("FetchNZB %d: %v", i, err)
+		}
+		if !bytes.Equal(bodies[i], served) {
+			t.Fatalf("FetchNZB %d returned %d bytes, want %d", i, len(bodies[i]), len(served))
+		}
+	}
+	if &bodies[0][0] == &bodies[1][0] {
+		t.Fatal("concurrent pack targets shared the same backing byte slice")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server hits = %d, want 1", got)
+	}
+}

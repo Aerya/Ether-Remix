@@ -16,10 +16,14 @@ func init() {
 func (s *State) PlaybackCompletedShows(ctx context.Context, uid int64, shows []core.RatingKey) (map[core.RatingKey]bool, error) {
 	out := make(map[core.RatingKey]bool, len(shows))
 	for _, show := range shows {
-		lo := core.EpisodeKey(show.TMDB(), 0, 0)
-		hi := core.EpisodeKey(show.TMDB()+1, 0, 0)
+		var lo, hi core.RatingKey
+		if !show.Allocated() {
+			lo, hi = core.EpisodeKey(show.TMDB(), 0, 0), core.EpisodeKey(show.TMDB()+1, 0, 0)
+		}
 		var yes bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM state_history WHERE user_id=? AND view_type=0 AND completed=1 AND rating_key>=? AND rating_key<?)`, uid, int64(lo), int64(hi)).Scan(&yes); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM state_history WHERE user_id=? AND view_type=0 AND completed=1 AND rating_key>=? AND rating_key<?
+ UNION ALL SELECT 1 FROM catalog_allocated_child a JOIN state_history h ON h.rating_key=a.key
+ WHERE a.show_key=? AND a.kind=4 AND h.user_id=? AND h.view_type=0 AND h.completed=1)`, uid, lo, hi, show, uid).Scan(&yes); err != nil {
 			return nil, err
 		}
 		out[show] = yes

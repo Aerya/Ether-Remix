@@ -19,7 +19,7 @@ import (
 func defaultProfile() core.QualityProfile {
 	for _, p := range config.DefaultQuality().Profiles {
 		if p.Name == "1080p" {
-			p.Name, p.MediaType = "default", core.MediaAny
+			p.Name = "default"
 			return p
 		}
 	}
@@ -33,6 +33,10 @@ func clientDevice(caps core.ClientCaps) string {
 	return caps.DeviceName
 }
 
+func clientIdentity(caps core.ClientCaps) clientreg.Identity {
+	return clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: clientDevice(caps), DeviceName: caps.DeviceName, Version: caps.Version}
+}
+
 // defaultCappedAndroidClient reports whether caps describes an Android
 // mobile client whose registry playback ceiling is 1080p unless an owner
 // quality rule lifts it. The match is the registry quirk
@@ -41,19 +45,63 @@ func defaultCappedAndroidClient(caps core.ClientCaps) bool {
 	return clientreg.HasQuirk(clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: clientDevice(caps), Version: caps.Version}, "android-mobile-ceiling")
 }
 
-// ProfileSource names the layer that picked a client's quality profile.
+// ProfileSource names what picked a play's quality profile.
 type ProfileSource string
 
 const (
-	ProfileFromRule    ProfileSource = "rule"    // the first matching quality rule
-	ProfileFromRemote  ProfileSource = "remote"  // the Away profile, for a remote client no rule covers
-	ProfileFromLibrary ProfileSource = "library" // the library the title belongs to
-	ProfileFromDefault ProfileSource = "default" // the At home (default) profile
-	ProfileFromFirst   ProfileSource = "first"   // the first configured profile
-	ProfileBuiltin     ProfileSource = "builtin" // no usable profile is configured
+	ProfileFromRule        ProfileSource = "rule"        // the first matching rule that names a profile
+	ProfileFromDefault     ProfileSource = "default"     // no rule named one: Default
+	ProfileFromDefaultAway ProfileSource = "defaultAway" // no rule named one, away from home: Default away
+	ProfileFromPlugin      ProfileSource = "plugin"      // the plugin chooses its own releases
+	ProfileBuiltin         ProfileSource = "builtin"     // no usable profile is configured
 )
 
-// profileChoice is which configured profile applies to a client, before
+// Membership reports whether the play's title is in a library. It is
+// asked only for libraries a rule names, and lazily.
+type Membership func(core.LibraryID) bool
+
+// playTarget is what the rules can know about the title of a play.
+type playTarget struct {
+	// media is core.MediaMovie, core.MediaTV or "" (unknown).
+	media string
+	// titled is set once the title is known: rules with a Library
+	// condition apply only then. Before that (and for Live TV) only rules
+	// without a Library or Kind condition count, except that a known
+	// media lets Kind rules apply.
+	titled bool
+	inLib  Membership
+	// Fallback limits apply once the play is known to use a fallback row.
+	skipFallbackLimits bool
+}
+
+func mediaTarget(media string) playTarget { return playTarget{media: normalizeMedia(media)} }
+
+func titleTarget(t *core.Title, inLib Membership) playTarget {
+	return playTarget{
+		media: titleMedia(t), titled: t != nil, inLib: inLib,
+		skipFallbackLimits: t != nil && t.Key.IsPluginKey(),
+	}
+}
+
+// ruleLimits are the limits every matching rule contributes; the
+// strictest wins.
+type ruleLimits struct {
+	maxHeight      int
+	maxBitrateKbps int
+	stereo         bool
+}
+
+func (l *ruleLimits) add(r config.QualityLimits) {
+	if r.MaxHeight > 0 && (l.maxHeight == 0 || r.MaxHeight < l.maxHeight) {
+		l.maxHeight = r.MaxHeight
+	}
+	if r.MaxBitrateKbps > 0 && (l.maxBitrateKbps == 0 || r.MaxBitrateKbps < l.maxBitrateKbps) {
+		l.maxBitrateKbps = r.MaxBitrateKbps
+	}
+	l.stereo = l.stereo || r.StereoAudio
+}
+
+// profileChoice is which configured profile applies to a play, before
 // any clamp, and why.
 type profileChoice struct {
 	profile core.QualityProfile
@@ -66,7 +114,7 @@ func normalizeMedia(media string) string {
 	switch strings.ToLower(strings.TrimSpace(media)) {
 	case core.MediaMovie:
 		return core.MediaMovie
-	case core.MediaTV:
+	case core.MediaTV, "show", "episode":
 		return core.MediaTV
 	}
 	return core.MediaAny
@@ -93,101 +141,197 @@ func titleMedia(t *core.Title) string {
 	return core.MediaAny
 }
 
-// remoteProfileName is the Away profile for media: the media-specific
-// choice when set, else the legacy media-neutral one.
-func remoteProfileName(q config.Quality, media string) string {
-	switch media {
-	case core.MediaMovie:
-		if q.RemoteMovie != "" {
-			return q.RemoteMovie
+// ruleKindMedia maps a rule's Kind to the resolver's media.
+func ruleKindMedia(kind string) string {
+	switch kind {
+	case config.KindMovie:
+		return core.MediaMovie
+	case config.KindEpisode:
+		return core.MediaTV
+	}
+	return core.MediaAny
+}
+
+// clientFacts are the device facts rules read, computed once per play.
+type clientFacts struct {
+	caps                     core.ClientCaps
+	done                     bool
+	class, deviceType, appID string
+}
+
+func (f *clientFacts) load() {
+	if f.done {
+		return
+	}
+	f.done = true
+	id := clientIdentity(f.caps)
+	f.class = clientreg.Class(id)
+	f.deviceType = clientreg.DeviceType(id)
+	f.appID = clientreg.AppFor(string(f.caps.Protocol), id)
+}
+
+func (f *clientFacts) matches(d config.DeviceMatch) bool {
+	switch field, v := d.Field(); field {
+	case "group":
+		f.load()
+		return f.class == v
+	case "type":
+		f.load()
+		return f.deviceType == v
+	case "app":
+		f.load()
+		return f.appID == v
+	case "client":
+		return f.caps.ClientID != "" && f.caps.ClientID == v
+	case "contains":
+		return containsMatches(v, f.caps)
+	}
+	return false
+}
+
+// containsMatches is a case-insensitive substring match on the product or
+// platform. "Fire TV" is matched by device instead: the app there reports
+// itself as "Plex for Android (TV)".
+func containsMatches(want string, caps core.ClientCaps) bool {
+	w := strings.ToLower(strings.TrimSpace(want))
+	if w == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(caps.Product), w) || strings.Contains(strings.ToLower(caps.Platform), w) {
+		return true
+	}
+	return (w == "fire tv" || w == "firetv") && core.IsFireTV(caps.Product, caps.Device)
+}
+
+// ruleMatches reports whether every non-empty condition of rule holds for
+// the play. Cheap conditions run first; library membership runs last.
+func ruleMatches(rule config.QualityRule, facts *clientFacts, user *core.User, target playTarget) bool {
+	switch rule.Where {
+	case config.WhereHome:
+		if facts.caps.Remote {
+			return false
 		}
-	case core.MediaTV:
-		if q.RemoteTV != "" {
-			return q.RemoteTV
+	case config.WhereAway:
+		if !facts.caps.Remote {
+			return false
 		}
 	}
-	return q.Remote
-}
-
-// defaultProfileName is the At home profile for media: the media-specific
-// choice when set, else the legacy media-neutral one.
-func defaultProfileName(q config.Quality, media string) string {
-	switch media {
-	case core.MediaMovie:
-		if q.DefaultMovie != "" {
-			return q.DefaultMovie
-		}
-	case core.MediaTV:
-		if q.DefaultTV != "" {
-			return q.DefaultTV
+	if rule.Kind != "" {
+		if target.media == core.MediaAny || ruleKindMedia(rule.Kind) != target.media {
+			return false
 		}
 	}
-	return q.Default
+	if len(rule.Viewers) > 0 {
+		in := user != nil && slices.Contains(rule.Viewers, user.ID)
+		if in == rule.ExceptViewers {
+			return false
+		}
+	}
+	if len(rule.Devices) > 0 {
+		in := slices.ContainsFunc(rule.Devices, facts.matches)
+		if in == rule.ExceptDevices {
+			return false
+		}
+	}
+	if len(rule.Libraries) > 0 {
+		if !target.titled || target.inLib == nil {
+			return false
+		}
+		in := slices.ContainsFunc(rule.Libraries, func(id int64) bool { return target.inLib(core.LibraryID(id)) })
+		if in == rule.ExceptLibraries {
+			return false
+		}
+	}
+	return true
 }
 
-// profileApplies reports whether a profile may be chosen for media.
-func profileApplies(p core.QualityProfile, media string) bool {
-	return core.MediaApplies(p.MediaType, media)
+// evaluation is the walk of the rule list for one play.
+type evaluation struct {
+	choice              profileChoice
+	limits              ruleLimits
+	limitRules          []int // indexes of matching rules that set a limit
+	deviceRule          bool  // the profile came from a rule with a Device condition
+	matched             []int // every matching rule, in order
+	fallbackLimitSource ProfileSource
 }
 
-// chooseProfile is the media-neutral form for callers with no title.
-func chooseProfile(q config.Quality, caps core.ClientCaps, user *core.User) profileChoice {
-	return chooseProfileForMedia(q, caps, user, core.MediaAny, "")
-}
-
-// chooseProfileForMedia is the single place that picks a client's profile.
-//
-// Selection order: the first rule whose non-empty matchers all match, whose
-// media scope applies, and whose profile exists and applies; otherwise the
-// media's remote profile for a remote client (when set and applicable);
-// otherwise the quality profile set on the library the title belongs to
-// (libProfile, when set and applicable); otherwise the media's default;
-// otherwise the first applicable profile; otherwise the built-in default. A
-// rule for a device or viewer is more specific than "away from home", so it
-// wins there too. A movie-scoped profile is never chosen for a show, or the
-// reverse.
-func chooseProfileForMedia(q config.Quality, caps core.ClientCaps, user *core.User, media, libProfile string) profileChoice {
-	media = normalizeMedia(media)
+// evaluate walks the rules from the top: the first matching rule that
+// names a profile picks it, and every matching rule's limits apply. With
+// no profile from a rule, Default away (away from home, when set) or
+// Default decides.
+func evaluate(q config.Quality, caps core.ClientCaps, user *core.User, target playTarget) evaluation {
+	facts := &clientFacts{caps: caps}
+	ev := evaluation{choice: profileChoice{rule: -1}}
 	for i, rule := range q.Rules {
-		if !core.MediaApplies(rule.MediaType, media) || !ruleMatches(rule, caps, user) {
+		if !ruleMatches(rule, facts, user, target) {
 			continue
 		}
-		if p, ok := core.FindProfile(q.Profiles, rule.Profile, media); ok {
-			return profileChoice{profile: p, source: ProfileFromRule, rule: i}
+		ev.matched = append(ev.matched, i)
+		if rule.HasLimits() {
+			ev.limits.add(rule.Limits())
+			ev.limitRules = append(ev.limitRules, i)
+		}
+		if ev.choice.rule < 0 && rule.Profile != "" {
+			if p, ok := core.FindProfile(q.Profiles, rule.Profile); ok {
+				ev.choice = profileChoice{profile: p, source: ProfileFromRule, rule: i}
+				ev.deviceRule = len(rule.Devices) > 0 && !rule.ExceptDevices
+			}
 		}
 	}
-	if caps.Remote {
-		if p, ok := core.FindProfile(q.Profiles, remoteProfileName(q, media), media); ok {
-			return profileChoice{profile: p, source: ProfileFromRemote, rule: -1}
+	if ev.choice.rule >= 0 {
+		return ev
+	}
+	ev.choice = fallbackProfile(q, caps.Remote)
+	if !target.skipFallbackLimits {
+		source, limits := fallbackLimits(q, ev.choice)
+		if limits.HasLimits() {
+			ev.limits.add(limits)
+			ev.fallbackLimitSource = source
 		}
 	}
-	if libProfile != "" {
-		if p, ok := core.FindProfile(q.Profiles, libProfile, media); ok {
-			return profileChoice{profile: p, source: ProfileFromLibrary, rule: -1}
+	return ev
+}
+
+func fallbackProfile(q config.Quality, remote bool) profileChoice {
+	if remote && q.DefaultAway != "" {
+		if p, ok := core.FindProfile(q.Profiles, q.DefaultAway); ok {
+			return profileChoice{profile: p, source: ProfileFromDefaultAway, rule: -1}
 		}
 	}
-	if p, ok := core.FindProfile(q.Profiles, defaultProfileName(q, media), media); ok {
+	if p, ok := core.FindProfile(q.Profiles, q.Default); ok {
 		return profileChoice{profile: p, source: ProfileFromDefault, rule: -1}
 	}
-	for _, p := range q.Profiles {
-		if profileApplies(p, media) {
-			return profileChoice{profile: p, source: ProfileFromFirst, rule: -1}
-		}
+	if len(q.Profiles) > 0 {
+		return profileChoice{profile: q.Profiles[0], source: ProfileFromDefault, rule: -1}
 	}
 	return profileChoice{profile: defaultProfile(), source: ProfileBuiltin, rule: -1}
 }
 
-// ruleEffect records what the matching quality rule did to the client's
-// capabilities in applyClientRules.
+func fallbackLimits(q config.Quality, choice profileChoice) (ProfileSource, config.QualityLimits) {
+	if choice.source == ProfileFromDefaultAway {
+		return ProfileFromDefaultAway, q.DefaultAwayLimits
+	}
+	return ProfileFromDefault, q.DefaultLimits
+}
+
+// chooseProfile is the media-neutral choice for callers with no title.
+func chooseProfile(q config.Quality, caps core.ClientCaps, user *core.User) profileChoice {
+	return evaluate(q, caps, user, playTarget{}).choice
+}
+
+// ruleEffect records what the rules did to the client's capabilities in
+// applyClientRules.
 type ruleEffect struct {
 	choice profileChoice
-	// ruleHeight is the rule's max height written over the client's ceiling.
+	limits ruleLimits
+	// limitRules are the matching rules that set a limit, in order.
+	limitRules          []int
+	fallbackLimitSource ProfileSource
+	// ruleHeight is the strictest rule max height that lowered the
+	// client's ceiling (0 when none lowered it).
 	ruleHeight int
-	// heightIgnored is set when the rule has a max height but the client
-	// (or an owner App compatibility edit) fixed the height.
-	heightIgnored bool
 	// lifted is the height an Android mobile client's usual 1080p ceiling
-	// was raised to because a rule picked a higher profile.
+	// was raised to because a device rule picked a higher profile.
 	lifted int
 	// hdrLifted is set when that lift also turned HDR10 on.
 	hdrLifted bool
@@ -243,121 +387,125 @@ func stripSurroundAudioCaps(caps core.ClientCaps) core.ClientCaps {
 // allows 2160p (4K) and the request carries only the server's default 1080p
 // remote bitrate cap (rather than an explicit client bitrate limit), the
 // default remote bitrate cap is cleared so 4K releases are not demoted below
-// 8 Mbps.
+
+// ApplyClientRules applies the limits of the rules that match a client
+// before any title is known (rules with no Library or Kind condition).
 func ApplyClientRules(q config.Quality, caps core.ClientCaps, user *core.User) core.ClientCaps {
 	return ApplyClientRulesForMedia(q, caps, user, core.MediaAny)
 }
 
-// ApplyClientRulesForMedia applies only shared policy until the title is known.
-// Scoped rules must never irreversibly narrow another media's capabilities.
-// A profile name is shared when every media has a profile of that name.
+// ApplyClientRulesForMedia applies only what can be known before the title
+// is: rules with a Library condition never apply here, and Kind rules only
+// when media is known. Defer fallback limits until the title is known:
+// a Library or Kind rule can still pick a profile.
 func ApplyClientRulesForMedia(q config.Quality, caps core.ClientCaps, user *core.User, media string) core.ClientCaps {
-	if media == core.MediaAny {
-		all := q.Profiles
-		q.Profiles = slices.DeleteFunc(slices.Clone(q.Profiles), func(p core.QualityProfile) bool {
-			return p.MediaType != core.MediaAny && !core.ProfileServesEveryMedia(all, p.Name)
-		})
-		q.Rules = slices.DeleteFunc(slices.Clone(q.Rules), func(r config.QualityRule) bool { return r.MediaType != core.MediaAny })
+	target := mediaTarget(media)
+	target.skipFallbackLimits = true
+	caps, _ = applyClientRules(q, caps, user, target)
+	return caps
+}
+
+// ApplyClientRulesForTitle applies the rules that match a specific title.
+// inLib answers library membership; nil leaves Library rules out.
+func ApplyClientRulesForTitle(q config.Quality, caps core.ClientCaps, user *core.User, t *core.Title, inLib Membership) core.ClientCaps {
+	caps, _ = applyClientRules(q, caps, user, titleTarget(t, inLib))
+	return caps
+}
+
+// applyRuleLimits lowers caps to the accumulated rule limits.
+func applyRuleLimits(caps core.ClientCaps, eff *ruleEffect) core.ClientCaps {
+	l := eff.limits
+	if l.maxHeight > 0 && (caps.MaxHeight == 0 || l.maxHeight < caps.MaxHeight) {
+		caps.MaxHeight = l.maxHeight
+		caps.MaxHeightSource = fmt.Sprintf("quality rule (max %dp)", l.maxHeight)
+		eff.ruleHeight = l.maxHeight
 	}
-	caps, _ = applyClientRules(q, caps, user, media, "")
+	if l.maxBitrateKbps > 0 && (caps.MaxBitrateKbps == 0 || l.maxBitrateKbps <= caps.MaxBitrateKbps) {
+		caps.MaxBitrateKbps = l.maxBitrateKbps
+		caps.DefaultRemoteBitrate = false
+	}
+	if l.stereo {
+		caps = stripSurroundAudioCaps(caps)
+	}
 	return caps
 }
 
-// ApplyClientRulesForTitle applies the rules that match a specific title's
-// media, so a movie rule cannot change a show's caps or the reverse.
-func ApplyClientRulesForTitle(q config.Quality, caps core.ClientCaps, user *core.User, t *core.Title) core.ClientCaps {
-	caps, _ = applyClientRules(q, caps, user, titleMedia(t), "")
-	return caps
-}
-
-func applyClientRules(q config.Quality, caps core.ClientCaps, user *core.User, media, libProfile string) (core.ClientCaps, ruleEffect) {
+func applyClientRules(q config.Quality, caps core.ClientCaps, user *core.User, target playTarget) (core.ClientCaps, ruleEffect) {
 	if len(caps.VideoCodecs) == 0 && !caps.PreserveEmptyVideoCodecs {
 		if defaults := clientreg.Playback(clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: clientDevice(caps), Version: caps.Version}, nil); defaults.ID != "" && defaults.ID != "generic" && len(defaults.Video) > 0 {
 			caps.VideoCodecs = append([]string(nil), defaults.Video...)
 		}
 	}
-	// Rule matchers read only protocol, product, platform and viewer, none
-	// of which this function changes, so the choice holds for the result.
-	eff := ruleEffect{choice: chooseProfileForMedia(q, caps, user, media, libProfile)}
+	// Rule conditions read only identity, viewer, remote and the title,
+	// none of which this function changes, so the result holds.
+	ev := evaluate(q, caps, user, target)
+	eff := ruleEffect{choice: ev.choice, limits: ev.limits, limitRules: ev.limitRules, fallbackLimitSource: ev.fallbackLimitSource}
 	if caps.Download {
 		return caps, eff
 	}
-	if eff.choice.source == ProfileFromRule {
-		rule, prof := q.Rules[eff.choice.rule], eff.choice.profile
-		targetHeight := rule.MaxHeight
+	prof := eff.choice.profile
+	// A device rule that picks a profile above an Android phone's usual
+	// 1080p ceiling lifts the ceiling to the profile (#187).
+	if ev.deviceRule && !caps.ExplicitMaxHeight && defaultCappedAndroidClient(caps) {
+		targetHeight := prof.MaxHeight
 		if targetHeight <= 0 {
-			if prof.MaxHeight > 0 {
-				targetHeight = prof.MaxHeight
+			targetHeight = 2160
+		}
+		if caps.MaxHeight < targetHeight {
+			caps.MaxHeight = targetHeight
+			if targetHeight >= 2160 {
+				caps.MaxHeightSource = ""
 			} else {
-				targetHeight = 2160
+				caps.MaxHeightSource = fmt.Sprintf("quality rule (%s profile)", prof.Name)
 			}
+			eff.lifted = targetHeight
 		}
-		if !caps.ExplicitMaxHeight {
-			if rule.MaxHeight > 0 {
-				caps.MaxHeight = rule.MaxHeight
-				caps.MaxHeightSource = fmt.Sprintf("client quality rule (maxHeight=%dp)", rule.MaxHeight)
-				eff.ruleHeight = rule.MaxHeight
-			} else if defaultCappedAndroidClient(caps) && caps.MaxHeight < targetHeight {
-				caps.MaxHeight = targetHeight
-				if targetHeight >= 2160 {
-					caps.MaxHeightSource = ""
-				} else {
-					caps.MaxHeightSource = fmt.Sprintf("client quality rule (%s profile)", prof.Name)
-				}
-				eff.lifted = targetHeight
-			}
-		} else if rule.MaxHeight > 0 {
-			eff.heightIgnored = true
-		}
-		if caps.MaxHeight >= 2160 && prof.AllowHDR && !caps.ExplicitNoHDR && defaultCappedAndroidClient(caps) {
+		if caps.MaxHeight >= 2160 && prof.AllowHDR && !caps.ExplicitNoHDR {
 			eff.hdrLifted = !caps.HDR10
 			caps.HDR10 = true
 		}
-		if rule.ConvertSurroundAudio {
-			caps = stripSurroundAudioCaps(caps)
-		}
 	}
+	caps = applyRuleLimits(caps, &eff)
 	selected := eff.choice.profile
 	if eff.choice.source != ProfileBuiltin && caps.DefaultRemoteBitrate && (selected.MaxHeight == 0 || selected.MaxHeight >= 2160) && (caps.MaxHeight == 0 || caps.MaxHeight >= 2160) {
-		caps.MaxBitrateKbps = 0
+		// An implicit client default may be discarded, but a configured
+		// limit still applies even if it was above that implicit default.
+		caps.MaxBitrateKbps = eff.limits.maxBitrateKbps
 		caps.DefaultRemoteBitrate = false
 	}
 	return caps, eff
 }
 
-// libProfileForTitle is the quality profile set on the library a title
-// belongs to, or "" when none applies (no lookup wired, no matching
-// library, or the library left it at Default).
-func (s *Service) libProfileForTitle(ctx context.Context, t *core.Title) string {
+// membershipFor is the library membership of t for the rules, or nil
+// when no lookup is wired.
+func (s *Service) membershipFor(ctx context.Context, t *core.Title) Membership {
 	if s.libProfiles == nil || t == nil {
-		return ""
+		return nil
 	}
-	return s.libProfiles.QualityProfileForTitle(ctx, t)
+	return func(id core.LibraryID) bool { return s.libProfiles.InLibrary(ctx, t, id) }
 }
 
 // SelectProfile picks the quality profile for a client and clamps it
 // to what the client can direct-play. Playback uses it for
 // pre-resolution estimates; the resolver uses it for ranking.
 //
-// Selection order is chooseProfile's. Clamping: MaxHeight is capped at
+// Selection is evaluate's. Clamping: MaxHeight is capped at
 // caps.MaxHeight, HDR/DV are only allowed when the client supports them,
 // and preferred codecs the client cannot decode are dropped.
 func SelectProfile(q config.Quality, caps core.ClientCaps, user *core.User) core.QualityProfile {
 	return SelectProfileForMedia(q, caps, user, core.MediaAny)
 }
 
-// SelectProfileForMedia is SelectProfile with a movie or show context, so
-// media-scoped profiles and rules apply. An empty media is media-neutral.
+// SelectProfileForMedia is SelectProfile with a movie or episode context,
+// so Kind rules apply. An empty media is media-neutral.
 func SelectProfileForMedia(q config.Quality, caps core.ClientCaps, user *core.User, media string) core.QualityProfile {
-	return decideProfile(q, caps, user, media, "").profile
+	return decideProfile(q, caps, user, mediaTarget(media)).profile
 }
 
-// SelectProfileForTitle is SelectProfileForMedia with the quality profile
-// set on the library the title belongs to (libProfile, from
-// LibraryProfileForTitle). It applies after a client rule and the Away
-// profile, before the generic Movies/Shows default.
-func SelectProfileForTitle(q config.Quality, caps core.ClientCaps, user *core.User, t *core.Title, libProfile string) core.QualityProfile {
-	return decideProfile(q, caps, user, titleMedia(t), libProfile).profile
+// SelectProfileForTitle is SelectProfileForMedia for a known title, so
+// Library rules apply too (inLib answers membership).
+func SelectProfileForTitle(q config.Quality, caps core.ClientCaps, user *core.User, t *core.Title, inLib Membership) core.QualityProfile {
+	return decideProfile(q, caps, user, titleTarget(t, inLib)).profile
 }
 
 // profileDecision is SelectProfile's answer with what decided it.
@@ -367,11 +515,30 @@ type profileDecision struct {
 	effect  ruleEffect
 }
 
-func decideProfile(q config.Quality, caps core.ClientCaps, user *core.User, media, libProfile string) profileDecision {
+func (d profileDecision) ruleDecision(q config.Quality) (source ProfileSource, profileRuleID string, limitRuleIDs []string) {
+	source = d.effect.choice.source
+	if source == ProfileFromRule && d.effect.choice.rule >= 0 && d.effect.choice.rule < len(q.Rules) {
+		profileRuleID = q.Rules[d.effect.choice.rule].ID
+	}
+	if len(d.effect.limitRules) > 0 {
+		limitRuleIDs = make([]string, 0, len(d.effect.limitRules))
+		for _, idx := range d.effect.limitRules {
+			if idx >= 0 && idx < len(q.Rules) && q.Rules[idx].ID != "" {
+				limitRuleIDs = append(limitRuleIDs, q.Rules[idx].ID)
+			}
+		}
+	}
+	if d.effect.fallbackLimitSource != "" {
+		limitRuleIDs = append(limitRuleIDs, string(d.effect.fallbackLimitSource))
+	}
+	return source, profileRuleID, limitRuleIDs
+}
+
+func decideProfile(q config.Quality, caps core.ClientCaps, user *core.User, target playTarget) profileDecision {
 	if caps.Download && caps.DownloadSourceMaxHeight > caps.MaxHeight {
 		caps.MaxHeight = caps.DownloadSourceMaxHeight
 	}
-	caps, eff := applyClientRules(q, caps, user, media, libProfile)
+	caps, eff := applyClientRules(q, caps, user, target)
 	prof := eff.choice.profile
 	// Deep-copy slices so callers cannot mutate config.
 	prof.PreferredLanguages = append([]string(nil), prof.PreferredLanguages...)
@@ -441,7 +608,7 @@ func decideProfile(q config.Quality, caps core.ClientCaps, user *core.User, medi
 			}
 		}
 	}
-	if eff.choice.source == ProfileFromRule && q.Rules[eff.choice.rule].ConvertSurroundAudio && len(caps.AudioCodecs) > 0 {
+	if eff.limits.stereo && len(caps.AudioCodecs) > 0 {
 		for _, a := range core.FormatAudioCodecs {
 			if !caps.SupportsAudio(a) {
 				delete(prof.CustomFormatScores, core.AudioFormat(a))
@@ -580,39 +747,8 @@ func traceConfiguredMaxHeight(p core.QualityProfile) *int {
 	}
 }
 
-// productMatches is a case-insensitive substring match on X-Plex-Product.
-// "Fire TV" is matched by device instead: the app there reports itself as
-// "Plex for Android (TV)", so the console's Fire TV preset never matched.
-func productMatches(want string, caps core.ClientCaps) bool {
-	w := strings.ToLower(strings.TrimSpace(want))
-	if strings.Contains(strings.ToLower(caps.Product), w) {
-		return true
-	}
-	return (w == "fire tv" || w == "firetv") && core.IsFireTV(caps.Product, caps.Device)
-}
-
-func ruleMatches(rule config.QualityRule, caps core.ClientCaps, user *core.User) bool {
-	if rule.Protocol != "" && !strings.EqualFold(string(rule.Protocol), string(caps.Protocol)) {
-		return false
-	}
-	if rule.Product != "" && !productMatches(rule.Product, caps) {
-		return false
-	}
-	if rule.Platform != "" && !strings.Contains(strings.ToLower(caps.Platform), strings.ToLower(rule.Platform)) {
-		return false
-	}
-	if rule.UserID != 0 {
-		if user == nil || user.ID != rule.UserID {
-			return false
-		}
-	}
-	// A rule with no matchers at all would match everything; require
-	// at least one matcher to avoid surprises from empty config rows.
-	return rule.Protocol != "" || rule.Product != "" || rule.Platform != "" || rule.UserID != 0
-}
-
 // ProfileForTitle is the shared library-aware policy used by playback caches,
 // resolution, and discovery. Context is used only for bounded local membership reads.
 func (s *Service) ProfileForTitle(ctx context.Context, caps core.ClientCaps, user *core.User, t *core.Title) core.QualityProfile {
-	return SelectProfileForTitle(s.qualityCfg(), caps, user, t, s.libProfileForTitle(ctx, t))
+	return SelectProfileForTitle(s.qualityCfg(), caps, user, t, s.membershipFor(ctx, t))
 }

@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -10,8 +13,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/viewerpolicy"
 )
 
@@ -240,5 +247,78 @@ func TestPeopleSnapshotUsesLeasedSectionsAfterSpikeTransition(t *testing.T) {
 	}
 	if id, ok := after.SectionFor(core.MediaType("virtual-other")); !ok || id != 1 {
 		t.Fatal("virtual kind classification changed")
+	}
+}
+
+func TestVelaPersonDetailDoesNotWaitForWriter(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 42, Username: "owner"}, "owner-token"); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := a.users.Owner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := core.Title{Key: core.MovieKey(777), Type: core.TypeMovie, Title: "Credit", Released: time.Unix(1, 0), Cast: []core.Person{{TMDB: 30, Name: "Visible Person", ThumbPath: "/portrait.jpg"}}}
+	if err := a.catalog.UpsertTitle(ctx, title, false); err != nil {
+		t.Fatal(err)
+	}
+	artwork := &peopleHTTPArtwork{state: &peopleHTTPState{titles: map[core.RatingKey]core.Title{title.Key: title}}}
+	exp, err := a.newSurfaceExperience("vela", artwork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(a.db, a.users, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := core.Device{ID: "tv"}
+	credential, err := grants.Issue(ctx, viewer.ID, nil, "vela", device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, err := identity.NewArtworkImageGrantService(a.db, "vela", grants, func() frontend.Experience { return exp }, artwork, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := frontendtest.Identity{ResolveDeviceFunc: func(ctx context.Context, token string, device core.Device) (*core.User, time.Time, error) {
+		return grants.ResolveDevice(ctx, "vela", token, device)
+	}}
+	inst, err := (vela.Frontend{ReplayKey: make([]byte, 32)}).Mount(ctx, frontend.Host{Experience: exp, Identity: id, ImageGrants: images, Sessions: frontendtest.Sessions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer inst.Close(ctx)
+
+	writer, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	reqCtx, stats := store.WithQueryStats(ctx)
+	r := httptest.NewRequest(http.MethodGet, "/vela/v0/people/"+core.FacetID("person", "30"), nil).WithContext(reqCtx)
+	r.Header.Set("Authorization", "Bearer "+credential)
+	r.Header.Set("X-Vela-Device-Id", device.ID)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		inst.Handler().ServeHTTP(w, r)
+		close(done)
+	}()
+	blocked := false
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		blocked = true
+	}
+	if err := writer.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	t.Logf("queries=%d rows=%d writes=%d lock_wait=%s", stats.Queries(), stats.Rows(), stats.Writes(), stats.LockWait())
+	if blocked || stats.Writes() != 0 || stats.LockWait() != 0 || w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"photo":{`)) {
+		t.Fatalf("person detail under writer contention: status=%d blocked=%t writes=%d lock_wait=%s", w.Code, blocked, stats.Writes(), stats.LockWait())
 	}
 }

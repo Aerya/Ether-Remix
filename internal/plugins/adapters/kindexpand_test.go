@@ -316,7 +316,7 @@ func TestKindCatalogFacetAndPersonExpansion(t *testing.T) {
 	if platPage.Expanding || expandCalls.Load() != 0 || len(platPage.Items) != 1 {
 		t.Fatalf("undeclared facet triggered expand or wrong items: expanding=%v calls=%d items=%d", platPage.Expanding, expandCalls.Load(), len(platPage.Items))
 	}
-	if _, err := exp.PluginLibraryRows(ctx, viewer, core.Device{}, viewID); err != nil {
+	if _, err := exp.PluginLibraryRows(ctx, viewer, core.Device{}, viewID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if expandCalls.Load() != 0 {

@@ -180,13 +180,14 @@ test("manifest, settings schema, i18n, and 17 default leagues satisfy contract a
 
   assert.equal(manifest.id, "org.ether.sports");
   assert.equal(manifest.ether.kind, "extension");
-  assert.deepEqual(manifest.ether.capabilities, ["live_events"]);
+  assert.deepEqual(manifest.ether.capabilities, ["live_events", "screens"]);
   assert.equal(manifest.ether.runtime.kind, "hosted");
   assert.equal(manifest.ether.runtime.entry, "src/plugin.ts");
   assert.equal(manifest.ether.schedule, undefined, "plugin must never declare a background schedule");
   assert.deepEqual(manifest.ether.permissions.network, [
     "site.api.espn.com",
     "site.web.api.espn.com",
+    "a.espncdn.com",
   ]);
 
   // Live feed contribution (spec A1)
@@ -196,26 +197,19 @@ test("manifest, settings schema, i18n, and 17 default leagues satisfy contract a
   assert.ok(feed.minIntervalSec >= 10);
   assert.deepEqual(feed.entityKinds, ["team"]);
 
-  // Screen contribution (spec A3 + binding Vela wire section types)
+  // Screen contribution
   assert.equal(manifest.ether.contributes.screens.length, 1);
   const screen = manifest.ether.contributes.screens[0];
   assert.equal(screen.id, "sports");
   assert.equal(screen.icon, "trophy");
-  const types = screen.sections.map((s: any) => s.type);
-  assert.deepEqual(types, [
-    "leagues",
-    "hero",
-    "events",
-    "events",
-    "events",
-    "schedule",
-    "table",
-    "entities",
-  ]);
-  const liveSection = screen.sections.find((s: any) => s.id === "live");
-  assert.deepEqual(liveSection.query, { state: ["in"] });
-  const favSection = screen.sections.find((s: any) => s.id === "your-teams");
-  assert.deepEqual(favSection.query, { favorites: true, window: "week" });
+  // The screen is documents (docs/plugin-screens.md); its surfaces are the
+  // player overlays, the alert toast and the Home row.
+  assert.equal(screen.sections, undefined, "0.3.19 sections are gone");
+  assert.deepEqual(screen.pages, { index: "screens/sports.json", game: "screens/game.json" });
+  assert.deepEqual(
+    manifest.ether.contributes.surfaces.map((s: any) => `${s.id}:${s.presentation}`),
+    ["scorebug:playerOverlay", "ticker:playerOverlay", "alert:toast", "tonight:homeRow"],
+  );
 
   // All 17 default leagues configured in settings schema and registry
   assert.equal(DEFAULT_LEAGUES.length, 17);

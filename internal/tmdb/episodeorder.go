@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // EpisodeGroupSummary describes a TMDB alternate order (type 1 original air,
@@ -42,4 +43,33 @@ func (c *Client) EpisodeGroup(ctx context.Context, id string) (*EpisodeGroup, er
 	var out EpisodeGroup
 	err := c.getJSON(ctx, "/tv/episode_group/"+url.PathEscape(id), url.Values{}, &out)
 	return &out, err
+}
+
+// GroupSeasonOffset converts subgroup order to the displayed season number.
+func GroupSeasonOffset(g *EpisodeGroup) int {
+	// TMDB subgroup order is already the season number when the orders
+	// start at 1, or when order 0 is the Specials subgroup (One Piece
+	// "TVDB Order": 0=Specials, 16=Season 16). Only a set whose first
+	// subgroup is a regular season at order 0 numbers seasons order+1.
+	seasonOffset := 0
+	for _, group := range g.Groups {
+		if group.Order != 0 {
+			continue
+		}
+		specials := strings.EqualFold(strings.TrimSpace(group.Name), "specials")
+		if !specials && len(group.Episodes) > 0 {
+			specials = true
+			for _, ep := range group.Episodes {
+				if ep.SeasonNumber != 0 {
+					specials = false
+					break
+				}
+			}
+		}
+		if !specials {
+			seasonOffset = 1
+		}
+		break
+	}
+	return seasonOffset
 }

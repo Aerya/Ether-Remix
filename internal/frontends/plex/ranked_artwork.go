@@ -94,7 +94,23 @@ func (s *Server) serveRankedArtwork(w http.ResponseWriter, r *http.Request, key 
 	writeHTTPError(w, 404)
 }
 
-func paintRankedCollection(mc *model.MediaContainer, offset int) {
+const rankedNoCoverArtDisplayImageQuirk = "plex-no-coverart-display-image"
+
+// rankedDisplayImageMeta returns Meta.DisplayImage requesting wide "coverArt"
+// cards for clients that read server-supplied Image[type="coverArt"] entries
+// (such as Plex for iOS and Apple TV). Plex Web and desktop/HTML clients built
+// on Plex's web-client bundle overwrite server Image arrays during metadata
+// normalization and leave only coverPoster, so requesting coverArt causes them
+// to draw blank 16:9 cards; omitting Meta.DisplayImage lets them draw portrait
+// cards using thumb (the ranked portrait composite).
+func rankedDisplayImageMeta(pr *Request, mediaType string) *model.Meta {
+	if pr != nil && frontend.HasQuirk(pr.Product, pr.Platform, pr.Device, pr.Model, pr.Version, rankedNoCoverArtDisplayImageQuirk) {
+		return nil
+	}
+	return &model.Meta{DisplayImage: []model.DisplayImage{{Type: mediaType, ImageType: "coverArt"}}}
+}
+
+func paintRankedCollection(pr *Request, mc *model.MediaContainer, offset int) {
 	if offset >= 10 {
 		mc.Metadata = nil
 	} else {
@@ -111,7 +127,7 @@ func paintRankedCollection(mc *model.MediaContainer, offset int) {
 	if len(mc.Metadata) > 0 {
 		typ = mc.Metadata[0].Type
 	}
-	mc.Meta = &model.Meta{DisplayImage: []model.DisplayImage{{Type: typ, ImageType: "coverArt"}}}
+	mc.Meta = rankedDisplayImageMeta(pr, typ)
 }
 
 // serveRankedPlaceholder preserves the existing upcoming-collection artwork

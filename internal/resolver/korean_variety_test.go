@@ -283,3 +283,58 @@ func TestCandidateCheckWaitPreservesFetchedNZBOnTimeout(t *testing.T) {
 		t.Fatalf("speculative budget = %v, want %v", b, candidateBudget)
 	}
 }
+
+// TMDB lists the presenter in the English title ("Seol Min-seok's Naked World
+// History") and numbers all 279 weekly episodes in one season; releases use
+// the uncredited or Hangul title with a bare episode number and air date.
+func TestKoreanVarietyPossessiveCreditTitleDecision(t *testing.T) {
+	ctx := context.Background()
+	ep := &core.Title{
+		Key:               core.EpisodeKey(114565, 1, 279),
+		Type:              core.TypeEpisode,
+		ShowKey:           core.ShowKey(114565),
+		ShowIDs:           core.IDs{TMDB: 114565},
+		ShowTitle:         "Seol Min-seok's Naked World History",
+		ShowOriginalTitle: "벌거벗은 세계사",
+		ShowEnglishTitle:  "Seol Min-seok's Naked World History",
+		ShowYear:          2020,
+		Title:             "Episode 279",
+		Season:            1,
+		Episode:           279,
+		Released:          time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC),
+		Language:          "ko",
+		Runtime:           90 * time.Minute,
+	}
+	cfg := config.Defaults("")
+	wrongReleases := []core.Release{
+		parsedEpisodeRel("wrong-ep", "Naked.World.History.E278.261102.1080p-NEXT", 1800),
+		parsedEpisodeRel("wrong-date", "벌거벗은 세계사.261102.1080p", 1800),
+		parsedEpisodeRel("wrong-show", "World.Changing.Quiz.E279.141227.HDTV.XviD-WITH", 1800),
+	}
+	for _, name := range []string{
+		"Naked.World.History.E279.261109.1080p.WEB-DL.AAC.H.264-NEXT",
+		"Naked.World.History.S01E279.1080p.WEB-DL",
+		"Naked.World.History.261109.1080p",
+		"설민석의 벌거벗은 세계사.E279.261109.720p-NEXT",
+		"벌거벗은 세계사.E279.261109.1080p.H264-F1RST",
+	} {
+		t.Run(name, func(t *testing.T) {
+			all := append([]core.Release{parsedEpisodeRel("good", name, 1800)}, wrongReleases...)
+			svc := New(&fakeIndexer{releases: all}, fakeHealth{}, nil, cfg, Options{})
+			defer svc.Close()
+			res, err := svc.Resolve(ctx, core.ResolveRequest{Title: ep, Client: webCaps()})
+			if err != nil {
+				t.Fatalf("Resolve(%q) failed: %v (traces=%+v)", name, err, svc.Traces())
+			}
+			if res.Release.ID != "good" {
+				t.Fatalf("Resolve(%q) picked %q (%q), want good", name, res.Release.ID, res.Release.Name)
+			}
+			tr := svc.Traces()[0]
+			for _, bad := range wrongReleases {
+				if c := findTraceCandidate(t, tr, bad.ID); !c.Rejected {
+					t.Errorf("wrong release %q was not rejected when resolving %q", bad.Name, name)
+				}
+			}
+		})
+	}
+}

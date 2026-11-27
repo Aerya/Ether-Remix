@@ -196,9 +196,16 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 		tallyWhere.WriteString(`library_id = ? AND level = ? AND field = ?`)
 		tallyArgs := []any{int64(rec.LibraryID), targetLevel, fieldKey}
 		appendFoldedWordPrefixCol(&tallyWhere, &tallyArgs, "label_fold", terms)
+		isPG := store.DialectOf(s.db) == store.Postgres
 		orderBy := `label_lower ASC, label ASC, v_int ASC`
+		if isPG {
+			orderBy = `left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+		}
 		if orderByCount {
 			orderBy = `cnt DESC, label_lower ASC, label ASC, v_int ASC`
+			if isPG {
+				orderBy = `cnt DESC, left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
 		}
 		pageArgs := append(append([]any(nil), tallyArgs...), limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
@@ -321,13 +328,14 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 			qArgs := append([]any(nil), itemArgs...)
 			if len(terms) > 0 {
 				where.WriteString(fieldDrivenWhere)
-				if store.DialectOf(s.db) == store.Postgres {
+				isPG := store.DialectOf(s.db) == store.Postgres
+				if isPG {
 					where.WriteString(` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
 				} else {
 					where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
 				}
 				qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
-				appendFoldedWordPrefix(&where, &qArgs, terms)
+				appendFoldedWordPrefixDialect(&where, &qArgs, isPG, terms)
 			} else {
 				where.WriteString(itemWhere)
 				where.WriteString(` AND f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
@@ -630,13 +638,20 @@ func (s *Service) resolveNewestByTextBuckets(ctx context.Context, libraryID core
 	var items []core.KindItem
 	var bucketIDs []string
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	if len(smallIDs) > 0 {
-		placeholders := make([]string, len(smallIDs))
-		args := make([]any, 0, 1+len(smallIDs)+len(itemArgs))
+		var textPred strings.Builder
+		args := make([]any, 0, 1+2*len(smallIDs)+len(itemArgs))
 		args = append(args, fieldKey)
-		for i, id := range smallIDs {
-			placeholders[i] = "?"
-			args = append(args, id)
+		if isPG {
+			appendPGPrefixIn(&textPred, &args, "f.v_text", smallIDs)
+		} else {
+			placeholders := make([]string, len(smallIDs))
+			for i, id := range smallIDs {
+				placeholders[i] = "?"
+				args = append(args, id)
+			}
+			textPred.WriteString(` AND f.v_text IN (` + strings.Join(placeholders, ",") + `)`)
 		}
 		args = append(args, itemArgs...)
 
@@ -646,7 +661,7 @@ func (s *Service) resolveNewestByTextBuckets(ctx context.Context, libraryID core
 		ROW_NUMBER() OVER (PARTITION BY f.v_text ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
 	FROM plugin_item_fields f
 	JOIN plugin_items i ON i.item_ref = f.item_ref
-	WHERE f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+	WHERE f.field = ?` + textPred.String() + ` AND ` + fieldDrivenWhere + `
 )
 SELECT r.bucket_id, ` + prefixedItemCols("i.") + `
 FROM ranked r
@@ -680,12 +695,19 @@ WHERE r.rn = 1`
 		for start := 0; start < len(largeIDs); start += maxArms {
 			chunk := largeIDs[start:min(start+maxArms, len(largeIDs))]
 			arms := make([]string, len(chunk))
-			args := make([]any, 0, len(chunk)*(len(probePrefixArgs)+3))
+			args := make([]any, 0, len(chunk)*(len(probePrefixArgs)+4))
 			for i, id := range chunk {
-				arms[i] = `SELECT * FROM (SELECT CAST(? AS TEXT) AS bucket_id, i.item_ref FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 1) sub` + strconv.Itoa(i)
-				args = append(args, id)
-				args = append(args, probePrefixArgs...)
-				args = append(args, fieldKey, id)
+				if isPG {
+					arms[i] = `SELECT * FROM (SELECT CAST(? AS TEXT) AS bucket_id, i.item_ref FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND md5(f.v_text) = ? AND f.v_text = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 1) sub` + strconv.Itoa(i)
+					args = append(args, id)
+					args = append(args, probePrefixArgs...)
+					args = append(args, fieldKey, pgTextMD5(id), id)
+				} else {
+					arms[i] = `SELECT * FROM (SELECT CAST(? AS TEXT) AS bucket_id, i.item_ref FROM plugin_items i WHERE ` + probePred + ` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = ?) ORDER BY i.released DESC, i.item_ref ASC LIMIT 1) sub` + strconv.Itoa(i)
+					args = append(args, id)
+					args = append(args, probePrefixArgs...)
+					args = append(args, fieldKey, id)
+				}
 			}
 			querySQL := `WITH winners AS (
 	` + strings.Join(arms, "\n\tUNION ALL\n\t") + `

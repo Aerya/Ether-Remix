@@ -84,7 +84,7 @@ func (a Source) libraryPosters(ctx context.Context, viewer *core.User, children 
 	out := make([]libraryPoster, 0, 4)
 	for i := range children {
 		title := children[i]
-		if !artwork.ValidPath(title.PosterPath) || !a.visible(ctx, viewer, &title) {
+		if !validRemoteArtwork(title.PosterPath) || !a.visible(ctx, viewer, &title) {
 			continue
 		}
 		out = append(out, libraryPoster{key: title.Key, path: title.PosterPath})

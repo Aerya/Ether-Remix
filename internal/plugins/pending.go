@@ -15,6 +15,18 @@ import (
 
 const ResolverTotal = 25 * time.Second
 
+type resolveSliceHookKey struct{}
+
+// WithResolveSliceHook attaches a callback invoked immediately before each
+// resolve/match slice inside Manager.Call so the caller can track per-slice
+// host source progress.
+func WithResolveSliceHook(ctx context.Context, fn func()) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, resolveSliceHookKey{}, fn)
+}
+
 // PendingReply defers a kind resolve or match without recording a failure.
 // RetryInMS is clamped to 250..5000. Job is an optional /ether/job/ route;
 // the host passes the original request body and drives job continuations.
@@ -72,6 +84,9 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	var lastRetryMS int64
 	var job *actionJob
 	for {
+		if onSlice, _ := ctx.Value(resolveSliceHookKey{}).(func()); onSlice != nil {
+			onSlice()
+		}
 		resp, err := m.callOnce(ctx, pluginID, req)
 		if err != nil {
 			if parent.Err() != nil {

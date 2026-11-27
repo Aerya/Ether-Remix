@@ -1,9 +1,6 @@
 # Assistant de configuration Remix
 
-## Tester la branche BETA
-
-La version stable conserve l’ancien assistant. Ce parcours est réservé à la branche `BETA` et à l’image `ghcr.io/remix-media/ether-remix:beta` (amd64 et arm64). Le workflow BETA ne publie jamais `latest`. Dans Dockge-Enhanced, créez une instance de test avec un dossier de données distinct (ou une copie à froid de vos données) et un port différent. Deux instances ne doivent pas écrire dans la même base. Ouvrez `/ether/remix/assistant` pour commencer.
-
+L’assistant fait partie de `main` et de l’image stable `ghcr.io/remix-media/ether-remix:latest`. Ouvrez `/ether/remix/assistant` pour commencer. Les anciennes images `beta` restent des instantanés : la branche et le workflow BETA sont retirés après intégration. Pour poursuivre les mises à jour d’une ancienne instance BETA, remplacez son tag par `latest` dans Dockge-Enhanced en conservant ses volumes, après sauvegarde à froid de `/config`. Deux instances ne doivent jamais écrire dans la même base.
 
 L’assistant remplace le démarrage rapide en quatre étapes. Ouvrez **Remix → Accueil → Relancer l’assistant**. Il reste accessible aux utilisateurs avancés et ne crée pas une seconde configuration effective.
 
@@ -11,10 +8,11 @@ L’assistant remplace le démarrage rapide en quatre étapes. Ouvrez **Remix �
 
 1. **Contenus** : films, séries, animés, musique. Ces intentions orientent les propositions ; décocher un contenu ne supprime ni ne masque une bibliothèque existante.
 2. **Langues et disponibilité** : distinguer catalogue français, marqueurs de releases, critères de lecture et sous-titres. Les sections VO/VOSTFR et SubMaker renvoient aux éditeurs de règles ; elles ne sont pas créées automatiquement.
-3. **Découverte** : catalogue, JukeBox, catalogues Stremio/Xperience, SeerrCatalog, RSS Catalog et annonces pre. Découvrir un titre ne garantit pas une source de lecture.
+3. **Découverte** : catalogue, JukeBox, catalogues Stremio/Xperience, SeerrCatalog, StreamFusion Reborn, RSS Catalog et annonces pre ; pour la musique, playlists programmées, AudioMuse et Digarr. Les services musicaux externes ont leurs propres prérequis : AudioMuse demande des morceaux locaux déjà analysés ; Digarr demande un jeton personnel en lecture seule par spectateur. Découvrir un titre ne garantit pas une source de lecture.
 4. **Usages** : lecture à la demande, téléchargement ou fichiers existants, cumulables. Les permissions de téléchargement ne sont jamais activées simplement en cochant un usage.
 5. **Connexions** : présenter les fournisseurs pertinents avec prérequis et limites. Les liens ouvrent un nouvel onglet pour configurer et tester les services. L’assistant ne conserve pas leurs secrets et ne considère pas un lien ouvert comme une connexion réussie.
-6. **Bibliothèques et accueil** : intentions Plex/Jellyfin, accès aux applications et à l’accueil Plex, configuration JukeBox et éditeur de bibliothèques existants. Ces éditeurs ont leur propre enregistrement immédiat. Les bibliothèques à thème restent partagées entre les protocoles ; le choix de client ne crée pas de visibilité par client.
+6. **Bibliothèques et accueil** : intentions Plex/Plexamp, Jellyfin/Infuse, Emby, Stremio, Nuvio, Subsonic et autres applications ; accès aux recommandations et aux exclusions des derniers ajouts Jellyfin/Emby, configuration JukeBox et éditeur de bibliothèques existants. Ces éditeurs ont leur propre enregistrement immédiat. Les bibliothèques à thème restent partagées entre les protocoles ; le choix de client ne crée pas de visibilité par client.
+   Pour Stremio, configurez le lien personnel HTTPS (catalogues ou fichiers seuls, affichage et quotas de versions par qualité). Pour Nuvio, liez le compte dans le profil du spectateur, **Connexion et appareils → Nuvio**, puis installez son lien Stremio. La synchronisation reprise/historique est distincte des addons utilisés comme sources. Les liens déjà installés ne changent pas automatiquement. Certains éditeurs avancés demandent le mode **Expert**.
 7. **Affiches** : accès aux fournisseurs, cartes de navigation et durée du cache. Les affiches des collections restent un chantier distinct ; aucun style nouveau n’est généré automatiquement.
 8. **Examiner et appliquer** : comparer les valeurs globales, lire les avertissements, puis confirmer le lot. Les connexions, créations de collections et modifications déjà enregistrées dans d’autres éditeurs ne font pas partie de ce lot.
 

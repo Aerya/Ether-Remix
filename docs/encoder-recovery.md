@@ -63,8 +63,16 @@ checked against the current fence before any client bytes are written, so a late
 old-generation response cannot publish. Four concurrent response buffers of at
 most 16 MiB are admitted per runtime; the surviving-controller retention store
 has a 256 MiB global / 64 MiB per-session bound. These are lazy allocations.
-Retention never evicts committed bytes. Exhaustion prevents further durable
-publication; it does not justify advancing the restart watermark.
+When a session's segment no longer fits, the store releases that session's
+oldest published segments below the restart watermark (never the floor
+segment, which is the transition boundary, and never one being read), so the
+watermark keeps advancing for the whole stream; a released segment is served
+straight from the encoder while it lives. If a segment still cannot be retained
+(other sessions hold the global pool, or the segment alone exceeds the
+per-session budget), it is delivered anyway and that session gives up encoder
+recovery: its viewer is past the watermark, so a replacement could never resume
+behind it. Exhaustion never withholds delivery and never advances the restart
+watermark.
 
 The 30-second request wait bounds a failed client request, not a successful
 interruption guarantee. Detection, placement, source binding and encoder startup

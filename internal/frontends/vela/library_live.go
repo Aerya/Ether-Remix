@@ -275,9 +275,9 @@ func (i *instance) libraryLivePlay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	options := frontend.DecideOptions{
-		MaxWidth:       b.Client.MaxWidth,
-		MaxHeight:      b.Client.MaxHeight,
-		MaxBitrateKbps: b.Client.MaxBitrate / 1000,
+		MaxWidth:       max(b.Client.MaxWidth, 0),
+		MaxHeight:      max(b.Client.MaxHeight, 0),
+		MaxBitrateKbps: clientBitrateKbps(b.Client.MaxBitrate),
 		DirectPlay:     true,
 		DirectStream:   b.Client.HLS || b.Client.MSE,
 		AudioStream:    -1,
@@ -412,6 +412,7 @@ func (i *instance) libraryLivePlay(w http.ResponseWriter, r *http.Request) {
 	i.refreshTrackDelivery(r.Context(), i.access(r, v), s.ID, ps)
 	i.addQualityPaths(r.Context(), i.access(r, v), s.ID, ps)
 	i.refreshOutput(r.Context(), s.ID, ps)
+	alignUnobservedLivePosition(ps)
 	i.mu.Lock()
 	for oldID, old := range i.sessions {
 		old.mu.Lock()

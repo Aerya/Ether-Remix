@@ -62,8 +62,18 @@ func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[str
 	}
 	// Recorded Jellyfin detail responses include these keys for video items
 	// even when the library has no chapter list or trickplay tiles.
-	if !mbDeclaredNonVideo(detail.Title) {
+	video := !mbDeclaredNonVideo(detail.Title)
+	if video {
 		dto["Trickplay"] = map[string]any{}
+		// Roku's MovieDetails calls LCase on every video source's type
+		// before it checks whether the source has any probed streams.
+		if sources, ok := dto["MediaSources"].([]any); ok {
+			for _, entry := range sources {
+				if source, ok := entry.(map[string]any); ok {
+					setMissing(source, "VideoType", "VideoFile")
+				}
+			}
+		}
 	}
 	if _, ok := dto["Chapters"]; !ok {
 		if sources, ok := dto["MediaSources"].([]any); ok {
@@ -102,6 +112,10 @@ func (i *instance) jellyfinItemDetailDTO(detail frontend.ItemDetail, dto map[str
 			}
 		}
 		dto["HasSubtitles"] = has
+	} else if video {
+		// Roku calls Count() on the top-level array during detail loading,
+		// including on cold titles for which Ether has no probed tracks.
+		dto["MediaStreams"] = []any{}
 	}
 	if width, height, ok := jellyfinVideoSize(dto, detail); ok {
 		dto["Width"] = width

@@ -91,6 +91,8 @@ type EncoderRequest struct {
 	Decision        core.Decision   // output codec, size, bitrate, audio; fixed for life; HW from HWAccel
 	ClientCaps      core.ClientCaps // viewer limits used for optional RTX VSR upscale headroom
 	SegmentDuration time.Duration   // 4 s; keyframe exactly at every segment start
+	DVRCache        *LiveDVRCache   // node-local budget shared by Live TV outputs
+	DVRLiveWindow   time.Duration   // minimum live suffix for a budgeted output
 	DVRWindow       time.Duration   // segments kept on node-local disk for timeshift (30 min default; 0 = live window only)
 	// LiveSource marks a provider (IPTV) channel: rate control may use one
 	// segment of VBV buffer under the ceiling, so keyframes of moving

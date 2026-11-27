@@ -19,6 +19,9 @@ import (
 )
 
 func init() {
+	const metadataSource = `ALTER TABLE libraries ADD COLUMN metadata_source TEXT NOT NULL DEFAULT '';`
+	store.Register("libraries", 16, metadataSource)
+	store.RegisterDialect("libraries", 16, store.Postgres, metadataSource)
 	const mig13 = `
 ALTER TABLE libraries ADD COLUMN present_overrides TEXT NOT NULL DEFAULT '{}';
 UPDATE libraries SET present_overrides = '{"adapterOnly":true}' WHERE source = 'plugin' AND present LIKE '%"adapterOnly":true%';

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/auth"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -249,6 +250,12 @@ func (h *Handler) handleRemoveViewer(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, err)
 		return
 	}
+	if h.deps.Config != nil {
+		_ = h.deps.Config.Update(func(c *config.Config) error {
+			config.RemoveViewerFromRules(&c.Quality, id)
+			return nil
+		})
+	}
 	if h.deps.ViewerCatalogRules != nil {
 		if err := h.deps.ViewerCatalogRules.RefreshViewerRules(r.Context()); err != nil {
 			writeError(w, 500, "rules_reload", err.Error())
@@ -288,6 +295,12 @@ func (h *Handler) handleMergeViewer(w http.ResponseWriter, r *http.Request) {
 	if err := h.deps.Lifecycle.MergeViewers(r.Context(), id, body.Into); err != nil {
 		writeLifecycleError(w, err)
 		return
+	}
+	if h.deps.Config != nil {
+		_ = h.deps.Config.Update(func(c *config.Config) error {
+			config.ReplaceViewerInRules(&c.Quality, id, body.Into)
+			return nil
+		})
 	}
 	if h.deps.ViewerCatalogRules != nil {
 		if err := h.deps.ViewerCatalogRules.RefreshViewerRules(r.Context()); err != nil {

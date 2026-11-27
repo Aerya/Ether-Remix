@@ -633,10 +633,18 @@ func TestSignInSuccessResetsIdentityBucketAndLockoutLogsOnceAtWarn(t *testing.T)
 		}
 	}
 
-	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
-	// Exactly two WARN lines: one when alice+IP locked out, one when the IP-wide bucket locked out.
+	// Background services may also emit WARN records. Only authentication
+	// lockouts belong to this assertion; an unrelated warning must not fail it.
+	a.log.Warn("unrelated background warning")
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
+		if strings.Contains(line, `msg="sign-in locked out"`) {
+			lines = append(lines, line)
+		}
+	}
+	// Exactly two lockout warnings: one for alice+IP, one for the IP-wide bucket.
 	if len(lines) != 2 {
-		t.Fatalf("got %d WARN lines, want 2:\n%s", len(lines), logBuf.String())
+		t.Fatalf("got %d lockout WARN lines, want 2:\n%s", len(lines), logBuf.String())
 	}
 	for _, line := range lines {
 		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, `app="Jellyfin Android TV"`) || !strings.Contains(line, "remaining=15m0s") {

@@ -36,16 +36,17 @@ export function SourceEditorHeader({
 export function SourceEditorMetrics({
   items,
 }: {
-  items: { key: string; label: ReactNode; value: ReactNode }[];
+  items: { key: string; label: ReactNode; value: ReactNode; subtitle?: ReactNode }[];
 }) {
   return (
     <div
       className={`grid grid-cols-2 gap-2 ${items.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-4"}`}
     >
-      {items.map(({ key, label, value }) => (
+      {items.map(({ key, label, value, subtitle }) => (
         <div key={key} className="rounded-xl border border-border bg-surface px-3 py-2.5">
           <p className="text-[11px] font-medium uppercase tracking-wider text-fg-subtle">{label}</p>
           <p className="mt-0.5 truncate text-lg font-semibold tabular-nums text-fg">{value}</p>
+          {subtitle && <p className="mt-0.5 text-xs text-fg-muted">{subtitle}</p>}
         </div>
       ))}
     </div>

@@ -1,0 +1,31 @@
+{
+  "id": "tv.ether.examples.release-server",
+  "version": "1.0.0",
+  "name": "Release server",
+  "description": "Search and stream releases from your own release server, including music and book searches.",
+  "types": ["movie", "series"],
+  "idPrefixes": ["tt"],
+  "resources": ["stream"],
+  "ether": {
+    "protocol": 1,
+    "kind": "source",
+    "capabilities": ["stream_source"],
+    "summary": "$t:summary",
+    "runtime": { "kind": "hosted", "entry": "plugin.ts" },
+    "license": "MIT",
+    "permissions": { "network": ["operator"] },
+    "strings": { "en": "i18n/en.json" },
+    "settings": {
+      "fields": [
+        { "key": "server", "kind": "url", "label": "$t:server", "hint": "$t:serverHint" }
+      ]
+    },
+    "contributes": {
+      "source": {
+        "class": "indexer",
+        "abilities": ["search"],
+        "search": { "categories": [3000, 7000], "lookups": ["album"] }
+      }
+    }
+  }
+}

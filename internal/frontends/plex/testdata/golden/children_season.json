@@ -53,28 +53,16 @@
         "Media": [
           {
             "id": 4000013960010001,
-            "duration": 8340000,
-            "bitrate": 7600,
-            "width": 1920,
-            "height": 1080,
-            "aspectRatio": 1.78,
-            "audioChannels": 6,
-            "audioCodec": "eac3",
-            "videoCodec": "h264",
-            "videoResolution": "1080",
+            "duration": 3480000,
             "container": "mkv",
-            "videoFrameRate": "24p",
-            "videoProfile": "high",
             "hasVoiceActivity": false,
             "Part": [
               {
                 "id": 4000013960010001,
                 "key": "/library/parts/4000013960010001/1790899200/file.mkv",
-                "duration": 8340000,
+                "duration": 3480000,
                 "file": "/ether/Boundary Bay - s01e01 - Pilot.mkv",
-                "size": 8000000000,
-                "container": "mkv",
-                "videoProfile": "high"
+                "container": "mkv"
               }
             ]
           }
@@ -125,28 +113,16 @@
         "Media": [
           {
             "id": 4000013960010002,
-            "duration": 8340000,
-            "bitrate": 7600,
-            "width": 1920,
-            "height": 1080,
-            "aspectRatio": 1.78,
-            "audioChannels": 6,
-            "audioCodec": "eac3",
-            "videoCodec": "h264",
-            "videoResolution": "1080",
+            "duration": 2880000,
             "container": "mkv",
-            "videoFrameRate": "24p",
-            "videoProfile": "high",
             "hasVoiceActivity": false,
             "Part": [
               {
                 "id": 4000013960010002,
                 "key": "/library/parts/4000013960010002/1790899200/file.mkv",
-                "duration": 8340000,
+                "duration": 2880000,
                 "file": "/ether/Boundary Bay - s01e02 - Second Watch....mkv",
-                "size": 8000000000,
-                "container": "mkv",
-                "videoProfile": "high"
+                "container": "mkv"
               }
             ]
           }

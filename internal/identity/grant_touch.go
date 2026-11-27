@@ -126,14 +126,16 @@ func (g *Grants) flushTouches(ctx context.Context) {
 	g.applyTouches(ctx, batch)
 }
 
-// effectiveExpiry folds a queued-but-unwritten touch into the stored
-// expiry, so sliding expiration holds from the caller's side the moment
-// Resolve queues the refresh, not whenever the writer gets to it.
-func (g *Grants) effectiveExpiry(hash, surface string, stored int64) int64 {
-	if touch, ok := g.pendingTouch(grantTouchKey{hash: hash, surface: surface}); ok && touch.expires > stored {
+// queuedExpiry is the expiry of a queued-but-unwritten touch, or 0, so
+// sliding expiration holds from the caller's side the moment Resolve
+// queues the refresh, not whenever the writer gets to it. Callers read it
+// before the grant row: the drainer drops a touch only after its write
+// commits, so a touch missing from the queue is already in the row.
+func (g *Grants) queuedExpiry(hash, surface string) int64 {
+	if touch, ok := g.pendingTouch(grantTouchKey{hash: hash, surface: surface}); ok {
 		return touch.expires
 	}
-	return stored
+	return 0
 }
 
 func (g *Grants) pendingTouch(key grantTouchKey) (grantTouch, bool) {

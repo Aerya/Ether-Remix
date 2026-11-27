@@ -163,7 +163,7 @@ func ParseStremio(value string) (StremioID, error) {
 	if len(parts) == 2 {
 		season, e1 := ParseDecimal(parts[0])
 		episode, e2 := ParseDecimal(parts[1])
-		if e1 != nil || e2 != nil || season < 0 || season > 999 || episode < 0 || episode > 9999 {
+		if e1 != nil || e2 != nil || season < 0 || season > 9999 || episode < 0 || episode > 9999 {
 			return StremioID{}, ErrInvalid
 		}
 		result.Season = int(season)
@@ -213,7 +213,11 @@ func StremioTMDBKey(mediaType string, id StremioID) (core.RatingKey, error) {
 		if id.HasEpisode || n >= 1_000_000_000_000_000 {
 			return 0, ErrInvalid
 		}
-		return core.MovieKey(n), nil
+		key := core.MovieKey(n)
+		if key.Allocated() {
+			return 0, ErrInvalid
+		}
+		return key, nil
 	case "series":
 		if n >= 100_000_000 {
 			return 0, ErrInvalid

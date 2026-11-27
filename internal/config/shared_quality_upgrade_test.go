@@ -17,13 +17,16 @@ func TestAttachSharedUpgradesLegacyProfilesAndRetriesConflict(t *testing.T) {
 	legacy := store.Get()
 	legacy.Quality.Profiles = []core.QualityProfile{
 		{Name: "Shared", Import: &core.ProfileImport{Source: "trash", App: "radarr", Profile: "example"}},
-		{Name: "Already TV", MediaType: core.MediaTV},
+		{Name: "Already TV"},
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(SharedJSON(legacy), &raw); err != nil {
 		t.Fatal(err)
 	}
-	profiles := raw["quality"].(map[string]any)["profiles"].([]any)
+	quality := raw["quality"].(map[string]any)
+	quality["defaultTv"] = "Already TV"
+	profiles := quality["profiles"].([]any)
+	profiles[1].(map[string]any)["mediaType"] = "tv"
 	profiles[0].(map[string]any)["futureField"] = "preserved"
 	profiles[0].(map[string]any)["futureInteger"] = json.Number("9007199254740993")
 	encode := func() string {
@@ -49,8 +52,11 @@ func TestAttachSharedUpgradesLegacyProfilesAndRetriesConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store.Get().Quality.Profiles
-	if len(got) != 3 || got[0].Name != "Concurrent rename" || got[0].MediaType != core.MediaMovie || got[1].Name != got[0].Name || got[1].MediaType != core.MediaTV || got[2].Name != "Already TV" || got[2].MediaType != core.MediaTV || got[0].Import == nil || got[1].Import == nil {
+	if len(got) != 2 || got[0].Name != "Concurrent rename" || got[1].Name != "Already TV" || got[0].Import == nil {
 		t.Fatalf("unexpected upgraded profiles: %+v", got)
+	}
+	if mig := store.Get().Quality.RulesMigration; mig == nil || mig.Home[core.MediaTV] != "Already TV" {
+		t.Fatalf("library hand-off = %+v", mig)
 	}
 	plain, _, err := openDocument([]byte(backend.doc.Doc), store.credentialKey)
 	if err != nil {
@@ -62,7 +68,10 @@ func TestAttachSharedUpgradesLegacyProfilesAndRetriesConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles = raw["quality"].(map[string]any)["profiles"].([]any)
-	for _, p := range profiles[:2] {
+	for _, p := range profiles[:1] {
+		if _, ok := p.(map[string]any)["mediaType"]; ok {
+			t.Fatal("upgrade kept a profile media")
+		}
 		if p.(map[string]any)["futureField"] != "preserved" {
 			t.Fatal("upgrade dropped an unknown profile field")
 		}
@@ -81,7 +90,7 @@ func TestAttachSharedUpgradesLegacyProfilesAndRetriesConflict(t *testing.T) {
 	if err := peer.AttachShared(context.Background(), backend, SharedOptions{PollInterval: -1}); err != nil {
 		t.Fatal(err)
 	}
-	if len(peer.Get().Quality.Profiles) != 3 || backend.doc.Version != 3 {
+	if len(peer.Get().Quality.Profiles) != 2 || backend.doc.Version != 3 {
 		t.Fatal("a second node repeated or failed to load the migration")
 	}
 }

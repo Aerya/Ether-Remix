@@ -228,16 +228,8 @@ export function FlowsOverview({
         />
         <Kpi
           label={t("Watching for")}
-          value={t("Events, schedules & hooks")}
-          detail={
-            catalogue
-              ? tn(
-                  catalogue.events.length,
-                  "{count} event type across the server",
-                  "{count} event types across the server",
-                )
-              : undefined
-          }
+          value={catalogue ? tn(catalogue.events.length, "{count} event", "{count} events") : "—"}
+          detail={t("Events, schedules & hooks")}
           icon={<Sparkles size={17} />}
           tone="success"
         />

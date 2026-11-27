@@ -188,6 +188,17 @@ func (n *Namespace) updatePartialLocked(id string, size, updatedAt int64) {
 	n.partialUsed += size
 }
 
+func (n *Namespace) setPartialReservationLocked(id string, rem int64) {
+	if old, ok := n.partialReservations[id]; ok {
+		n.partialReserved = max(n.partialReserved-old, 0)
+		delete(n.partialReservations, id)
+	}
+	if rem > 0 {
+		n.partialReservations[id] = rem
+		n.partialReserved += rem
+	}
+}
+
 func (n *Namespace) evictPartial(id string) int64 {
 	n.mu.Lock()
 	if _, active := n.partialLocks[id]; active {
@@ -254,6 +265,7 @@ type Partial struct {
 
 	f         *os.File
 	size      int64
+	reserved  int64
 	meta      PartialMeta
 	committed bool
 	discarded bool
@@ -406,6 +418,10 @@ func (p *Partial) SetMeta(meta PartialMeta) error {
 // Reset discards any staged bytes, resets the partial to offset 0, and records
 // new metadata for a fresh transfer.
 func (p *Partial) Reset(meta PartialMeta) error {
+	return p.reset(meta, false)
+}
+
+func (p *Partial) reset(meta PartialMeta, keepReservation bool) error {
 	if p.closed || p.committed {
 		return ErrClosed
 	}
@@ -426,6 +442,9 @@ func (p *Partial) Reset(meta PartialMeta) error {
 	}
 	p.f = f
 	p.size = 0
+	if !keepReservation {
+		p.reserved = 0
+	}
 	p.discarded = false
 	p.capChecked = false
 	p.sinceCapCheck = 0
@@ -435,8 +454,111 @@ func (p *Partial) Reset(meta PartialMeta) error {
 
 	p.n.mu.Lock()
 	p.n.updatePartialLocked(p.id, 0, meta.UpdatedAt)
+	if !keepReservation {
+		p.n.setPartialReservationLocked(p.id, 0)
+	}
 	p.n.mu.Unlock()
 	return p.n.writePartialMeta(p.id, p.meta)
+}
+
+// Reserve makes room for and reserves space up to total bytes for this partial
+// (including bytes already staged in p) against the namespace quota, shared
+// cache cap, and disk free-space floor. When total <= p.size or
+// total <= p.reserved, Reserve is a no-op. If sufficient evictable space cannot
+// be freed, staged bytes and any prior reservation are preserved and
+// ErrQuotaFull (matching ErrTooLarge) is returned.
+func (p *Partial) Reserve(total int64) error {
+	if p.closed || p.committed {
+		return ErrClosed
+	}
+	if total <= 0 {
+		return nil
+	}
+	p.n.cache.mu.Lock()
+	closed := p.n.cache.closed
+	p.n.cache.mu.Unlock()
+	if closed {
+		return ErrClosed
+	}
+	if total <= p.size || total <= p.reserved {
+		return nil
+	}
+
+	prevReserved := p.reserved
+	prevRem := max(prevReserved-p.size, 0)
+	curFootprint := max(p.size, prevReserved)
+	delta := total - curFootprint
+	newRem := total - p.size
+
+	p.n.cache.evictMu.Lock()
+	defer p.n.cache.evictMu.Unlock()
+
+	p.n.mu.Lock()
+	maxBytes := p.n.quota.EffectiveMaxBytes()
+	p.n.mu.Unlock()
+	if total > maxBytes {
+		return fmt.Errorf("%w: partial exceeded %d bytes", ErrTooLarge, maxBytes)
+	}
+
+	sharedCap := p.n.cache.EffectiveSharedCap()
+	p.capChecked = true
+	p.lastSharedCap = sharedCap
+	p.sinceCapCheck = 0
+	if total > sharedCap {
+		return quotaFullErrorf("partial exceeded cache cap %d bytes", sharedCap)
+	}
+
+	p.n.mu.Lock()
+	maxBytes = p.n.quota.EffectiveMaxBytes()
+	nsAccounted := p.n.used + p.n.partialUsed + p.n.partialReserved
+	if total > maxBytes {
+		p.n.mu.Unlock()
+		return fmt.Errorf("%w: partial exceeded %d bytes", ErrTooLarge, maxBytes)
+	}
+	if nsAccounted+delta > maxBytes {
+		p.n.mu.Unlock()
+		p.n.Sweep(delta)
+		p.n.mu.Lock()
+		maxBytes = p.n.quota.EffectiveMaxBytes()
+		nsAccounted = p.n.used + p.n.partialUsed + p.n.partialReserved
+		if total > maxBytes {
+			p.n.mu.Unlock()
+			return fmt.Errorf("%w: partial exceeded %d bytes", ErrTooLarge, maxBytes)
+		}
+		if nsAccounted+delta > maxBytes {
+			p.n.mu.Unlock()
+			return quotaFullErrorf("namespace quota %d bytes reached", maxBytes)
+		}
+	}
+	p.n.setPartialReservationLocked(p.id, newRem)
+	p.n.mu.Unlock()
+
+	rollback := func() {
+		p.n.mu.Lock()
+		p.n.setPartialReservationLocked(p.id, prevRem)
+		p.n.mu.Unlock()
+	}
+
+	sharedCap = p.n.cache.EffectiveSharedCap()
+	p.lastSharedCap = sharedCap
+	if total > sharedCap {
+		rollback()
+		return quotaFullErrorf("partial exceeded cache cap %d bytes", sharedCap)
+	}
+	totalAccounted := p.n.cache.totalAccounted()
+	if totalAccounted > sharedCap {
+		p.n.cache.enforceGlobalLimitLocked(0, nil, "")
+		sharedCap = p.n.cache.EffectiveSharedCap()
+		p.lastSharedCap = sharedCap
+		totalAccounted = p.n.cache.totalAccounted()
+		if total > sharedCap || totalAccounted > sharedCap {
+			rollback()
+			return quotaFullErrorf("cache cap %d bytes reached", sharedCap)
+		}
+	}
+
+	p.reserved = total
+	return nil
 }
 
 func (p *Partial) ensureSpace(add int64) error {
@@ -451,29 +573,35 @@ func (p *Partial) ensureSpace(add int64) error {
 	}
 
 	nextSize := p.size + add
+	curFootprint := max(p.size, p.reserved)
+	nextFootprint := max(nextSize, p.reserved)
+	delta := nextFootprint - curFootprint
+
 	p.n.mu.Lock()
 	maxBytes := p.n.quota.EffectiveMaxBytes()
-	nsTotal := p.n.used + p.n.partialUsed
+	nsAccounted := p.n.used + p.n.partialUsed + p.n.partialReserved
 	p.n.mu.Unlock()
 
 	if nextSize > maxBytes {
 		return fmt.Errorf("%w: partial exceeded %d bytes", ErrTooLarge, maxBytes)
 	}
-	if nsTotal+add > maxBytes {
-		p.n.Sweep()
+	if nsAccounted+delta > maxBytes {
+		p.n.Sweep(delta)
 		p.n.mu.Lock()
 		maxBytes = p.n.quota.EffectiveMaxBytes()
-		nsTotal = p.n.used + p.n.partialUsed
+		nsAccounted = p.n.used + p.n.partialUsed + p.n.partialReserved
 		p.n.mu.Unlock()
-		if nextSize > maxBytes || nsTotal+add > maxBytes {
-			return fmt.Errorf("%w: namespace quota %d bytes reached", ErrTooLarge, maxBytes)
+		if nextSize > maxBytes {
+			return fmt.Errorf("%w: partial exceeded %d bytes", ErrTooLarge, maxBytes)
+		}
+		if nsAccounted+delta > maxBytes {
+			return quotaFullErrorf("namespace quota %d bytes reached", maxBytes)
 		}
 	}
 
 	needCapCheck := !p.capChecked || p.sinceCapCheck >= partialDiskCheckStride || nextSize > p.lastSharedCap
 	if !needCapCheck {
-		totalUsed, _ := p.n.cache.TotalStats()
-		if totalUsed+add > p.lastSharedCap {
+		if p.n.cache.totalAccounted()+delta > p.lastSharedCap {
 			needCapCheck = true
 		}
 	}
@@ -483,16 +611,16 @@ func (p *Partial) ensureSpace(add int64) error {
 		p.lastSharedCap = sharedCap
 		p.sinceCapCheck = 0
 		if nextSize > sharedCap {
-			return fmt.Errorf("%w: partial exceeded cache cap %d bytes", ErrTooLarge, sharedCap)
+			return quotaFullErrorf("partial exceeded cache cap %d bytes", sharedCap)
 		}
-		totalUsed, _ := p.n.cache.TotalStats()
-		if totalUsed+add > sharedCap {
-			p.n.cache.enforceGlobalLimit()
+		totalAccounted := p.n.cache.totalAccounted()
+		if totalAccounted+delta > sharedCap {
+			p.n.cache.enforceGlobalLimit(delta)
 			sharedCap = p.n.cache.EffectiveSharedCap()
 			p.lastSharedCap = sharedCap
-			totalUsed, _ = p.n.cache.TotalStats()
-			if nextSize > sharedCap || totalUsed+add > sharedCap {
-				return fmt.Errorf("%w: cache cap %d bytes reached", ErrTooLarge, sharedCap)
+			totalAccounted = p.n.cache.totalAccounted()
+			if nextSize > sharedCap || totalAccounted+delta > sharedCap {
+				return quotaFullErrorf("cache cap %d bytes reached", sharedCap)
 			}
 		}
 	}
@@ -512,7 +640,7 @@ func (p *Partial) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	if p.f == nil {
-		if err := p.Reset(p.meta); err != nil {
+		if err := p.reset(p.meta, true); err != nil {
 			return 0, err
 		}
 	}
@@ -525,6 +653,9 @@ func (p *Partial) Write(b []byte) (int, error) {
 		p.meta.UpdatedAt = nowNs
 		p.n.mu.Lock()
 		p.n.updatePartialLocked(p.id, p.size, nowNs)
+		if p.reserved > 0 {
+			p.n.setPartialReservationLocked(p.id, max(p.reserved-p.size, 0))
+		}
 		p.n.mu.Unlock()
 	}
 	return n, err
@@ -562,6 +693,7 @@ func (p *Partial) Discard() error {
 		p.f = nil
 	}
 	p.size = 0
+	p.reserved = 0
 	p.meta = PartialMeta{ContentLength: -1}
 	p.discarded = true
 	p.capChecked = false
@@ -570,6 +702,7 @@ func (p *Partial) Discard() error {
 	_ = os.Remove(p.n.partialMetaPath(p.id))
 	p.n.mu.Lock()
 	p.n.updatePartialLocked(p.id, 0, 0)
+	p.n.setPartialReservationLocked(p.id, 0)
 	p.n.mu.Unlock()
 	return nil
 }
@@ -596,8 +729,11 @@ func (p *Partial) Commit(ctx context.Context, key string) (CommitResult, error) 
 	p.n.mu.Unlock()
 	sharedCap := p.n.cache.EffectiveSharedCap()
 	limit := min(maxBytes, sharedCap)
-	if limit <= 0 || p.size > maxBytes || p.size > sharedCap {
+	if p.size > maxBytes {
 		return CommitResult{}, fmt.Errorf("%w: size %d exceeds limit %d", ErrTooLarge, p.size, limit)
+	}
+	if limit <= 0 || p.size > sharedCap {
+		return CommitResult{}, quotaFullErrorf("size %d exceeds limit %d", p.size, limit)
 	}
 
 	dataPath := p.n.partialDataPath(p.id)
@@ -675,6 +811,7 @@ func (p *Partial) Commit(ctx context.Context, key string) (CommitResult, error) 
 	nowNs := p.n.cache.now().UnixNano()
 	p.n.mu.Lock()
 	p.n.updatePartialLocked(p.id, 0, 0)
+	p.n.setPartialReservationLocked(p.id, 0)
 	e, exists := p.n.blobs[digest]
 	if !exists {
 		e = &blobEntry{
@@ -704,13 +841,14 @@ func (p *Partial) Commit(ctx context.Context, key string) (CommitResult, error) 
 		}
 	}
 	p.n.dirty = true
-	overNamespace := p.n.used+p.n.partialUsed > p.n.quota.EffectiveMaxBytes()
+	overNamespace := p.n.used+p.n.partialUsed+p.n.partialReserved > p.n.quota.EffectiveMaxBytes()
 	p.n.mu.Unlock()
+	p.reserved = 0
 
 	if overNamespace {
-		p.n.Sweep()
+		p.n.sweep(0, digest)
 	}
-	p.n.cache.enforceGlobalLimit()
+	p.n.cache.enforceGlobalLimitProtected(0, p.n, digest)
 	p.n.flushIndex()
 
 	p.committed = true
@@ -744,7 +882,9 @@ func (p *Partial) Close() error {
 		p.f = nil
 	}
 	p.closed = true
+	p.reserved = 0
 	p.n.mu.Lock()
+	p.n.setPartialReservationLocked(p.id, 0)
 	if p.n.partialLocks[p.id] == p.lock {
 		delete(p.n.partialLocks, p.id)
 	}
@@ -788,9 +928,9 @@ func (c *Cache) collectIdlePartials(nss []*Namespace) []globalPartialCandidate {
 }
 
 // sweepPartialsLocked collects expired idle partials (and, when needed, oldest
-// idle partials to bring used+partialUsed back under maxBytes) for removal
-// outside n.mu. Caller must hold n.mu.
-func (n *Namespace) sweepPartialsLocked(now time.Time, maxBytes int64) []string {
+// idle partials to bring used+partialUsed+partialReserved back under target)
+// for removal outside n.mu. Caller must hold n.mu.
+func (n *Namespace) sweepPartialsLocked(now time.Time, target int64) []string {
 	var paths []string
 	var active []*partialEntry
 	for id, pe := range n.partials {
@@ -806,7 +946,7 @@ func (n *Namespace) sweepPartialsLocked(now time.Time, maxBytes int64) []string 
 		cp := *pe
 		active = append(active, &cp)
 	}
-	if n.used+n.partialUsed > maxBytes && len(active) > 0 {
+	if n.used+n.partialUsed+n.partialReserved > target && len(active) > 0 {
 		sort.Slice(active, func(i, j int) bool {
 			if active[i].UpdatedAt != active[j].UpdatedAt {
 				return active[i].UpdatedAt < active[j].UpdatedAt
@@ -814,7 +954,7 @@ func (n *Namespace) sweepPartialsLocked(now time.Time, maxBytes int64) []string 
 			return active[i].ID < active[j].ID
 		})
 		for _, pe := range active {
-			if n.used+n.partialUsed <= maxBytes {
+			if n.used+n.partialUsed+n.partialReserved <= target {
 				break
 			}
 			delete(n.partials, pe.ID)

@@ -34,19 +34,13 @@ func init() {
 // season (the latest started season for a show) and schedules RevealSeason on
 // the service's background context so caller requests never block on SQL or I/O.
 func (s *Service) RevealTitleSeason(key core.RatingKey) {
-	if s == nil || s.d.Search == nil || key == 0 || key.IsPluginKey() || key.TMDB() <= 0 {
+	if s == nil || s.d.Search == nil || key == 0 {
 		return
 	}
 	switch key.Kind() {
-	case core.KindEpisode:
-		if key.Season() > 0 {
-			s.RevealSeason(s.bgCtx, core.SeasonKey(key.TMDB(), key.Season()))
-		}
 	case core.KindSeason:
-		if key.Season() > 0 {
-			s.RevealSeason(s.bgCtx, key)
-		}
-	case core.KindShow:
+		s.RevealSeason(s.bgCtx, key)
+	case core.KindEpisode, core.KindShow:
 		s.visibilityMu.Lock()
 		if s.closed || s.bgCtx.Err() != nil {
 			s.visibilityMu.Unlock()
@@ -56,12 +50,28 @@ func (s *Service) RevealTitleSeason(key core.RatingKey) {
 		s.visibilityMu.Unlock()
 		go func() {
 			defer s.bg.Done()
-			seasonKey := s.latestStartedSeason(s.bgCtx, key)
+			var seasonKey core.RatingKey
+			if key.Kind() == core.KindShow {
+				seasonKey = s.latestStartedSeason(s.bgCtx, key)
+			} else if title, err := s.d.Catalog.CachedTitle(s.bgCtx, key); err == nil && title != nil {
+				seasonKey = releaseSeasonKey(title)
+			}
 			if seasonKey != 0 {
 				s.startSeasonReveal(seasonKey, false)
 			}
 		}()
 	}
+}
+
+// releaseSeasonKey resolves an episode's regular effective season container.
+func releaseSeasonKey(t *core.Title) core.RatingKey {
+	if t.Type != core.TypeEpisode || t.Season <= 0 {
+		return 0
+	}
+	if t.ParentKey != 0 {
+		return t.ParentKey
+	}
+	return t.Key.Parent()
 }
 
 // RevealSeason schedules an asynchronous season-level release check for an
@@ -70,7 +80,7 @@ func (s *Service) RevealSeason(_ context.Context, seasonKey core.RatingKey) {
 	if s == nil || s.d.Search == nil {
 		return
 	}
-	if seasonKey.Kind() != core.KindSeason || seasonKey.TMDB() <= 0 || seasonKey.Season() <= 0 {
+	if seasonKey.Kind() != core.KindSeason {
 		return
 	}
 	s.startSeasonReveal(seasonKey, true)
@@ -160,7 +170,11 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 		return
 	}
 
-	showKey := core.ShowKey(seasonKey.TMDB())
+	sample := unreleased[0]
+	showKey := sample.ShowKey
+	if showKey == 0 {
+		showKey = seasonKey.Parent()
+	}
 	var show *core.Title
 	if got, e := s.d.Catalog.CachedTitle(ctx, showKey); e == nil && got != nil {
 		show = got
@@ -190,15 +204,16 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 		}
 	}
 
-	sample := unreleased[0]
+	sample = unreleased[0]
 	req := core.SearchRequest{
 		Type:              core.TypeEpisode,
+		EpisodeSource:     sample.EpisodeOrder.Source,
 		IDs:               sample.ShowIDs,
 		Title:             cmp.Or(sample.ShowTitle, sample.Title),
 		OriginalTitle:     sample.ShowOriginalTitle,
 		Year:              cmp.Or(sample.ShowYear, sample.Year),
 		AlternativeTitles: sample.AlternativeTitles,
-		Season:            seasonKey.Season(),
+		Season:            sample.Season,
 	}
 	if show != nil {
 		req.IDs = show.IDs
@@ -301,7 +316,7 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 		var chosen *verifiedEpisode
 
 		for _, raw := range kept {
-			if !candidateMayMatchEpisode(raw, ep.Season, ep.Episode) {
+			if !candidateMayMatchEpisode(raw, ep) {
 				continue
 			}
 			accepted, reason, e := s.d.Validator.FeedCandidate(rctx, &ep, raw)
@@ -391,6 +406,7 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 		ereq := req
 		ereq.Episode = ep.Episode
 		ereq.EpisodeTitle = ep.Title
+		ereq.Released = cmp.Or(ep.EpisodeAirDate, ep.Released)
 		ectx, stop := context.WithTimeout(sctx, seasonRevealTimeout)
 		found, _ := s.d.Search(ectx, ereq)
 		stop()
@@ -431,11 +447,11 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 	s.clearVisibility()
 }
 
-func candidateMayMatchEpisode(r core.Release, season, episode int) bool {
+func candidateMayMatchEpisode(r core.Release, ep core.Title) bool {
 	if r.Name == "" && r.Info.Title == "" && len(r.Info.Seasons) == 0 && len(r.Info.Episodes) == 0 {
 		return true
 	}
-	if releaseparse.EpisodeMatches(r.Info, season, episode) {
+	if releaseparse.EpisodeMatches(r.Info, ep.Season, ep.Episode) || releaseparse.EpisodeMatchesAirDate(r.Info, cmp.Or(ep.EpisodeAirDate, ep.Released)) {
 		return true
 	}
 	if r.Info.FullSeason {
@@ -443,7 +459,7 @@ func candidateMayMatchEpisode(r core.Release, season, episode int) bool {
 			return true
 		}
 		for _, n := range r.Info.Seasons {
-			if n == season {
+			if n == ep.Season {
 				return true
 			}
 		}
@@ -643,7 +659,7 @@ func (s *Service) latestStartedSeason(ctx context.Context, showKey core.RatingKe
 // isSeasonInProgress reports whether seasonKey is a regular season with at
 // least one released episode and at least one unreleased episode at now.
 func (s *Service) isSeasonInProgress(ctx context.Context, seasonKey core.RatingKey, now time.Time, candidates []core.Title, memo map[core.RatingKey]bool) bool {
-	if seasonKey.Kind() != core.KindSeason || seasonKey.TMDB() <= 0 || seasonKey.Season() <= 0 {
+	if seasonKey.Kind() != core.KindSeason {
 		return false
 	}
 	if v, ok := memo[seasonKey]; ok {
@@ -667,11 +683,9 @@ func (s *Service) isSeasonInProgress(ctx context.Context, seasonKey core.RatingK
 		return inProgress
 	}
 
-	showKey := core.ShowKey(seasonKey.TMDB())
-	seasonNum := seasonKey.Season()
 	hasReleased, hasUnreleased := false, false
 	for _, t := range candidates {
-		if t.Type == core.TypeEpisode && t.ShowKey == showKey && t.Season == seasonNum && t.Episode > 0 && !t.Adult {
+		if releaseSeasonKey(&t) == seasonKey && t.Episode > 0 && !t.Adult {
 			if t.IsReleased(now) {
 				hasReleased = true
 			} else {
@@ -679,8 +693,10 @@ func (s *Service) isSeasonInProgress(ctx context.Context, seasonKey core.RatingK
 			}
 		}
 	}
-	if !hasReleased {
-		if ep1, err := s.d.Catalog.CachedTitle(ctx, core.EpisodeKey(seasonKey.TMDB(), seasonNum, 1)); err == nil && ep1 != nil && ep1.IsReleased(now) {
+	// A packed TMDB season still has an addressable premiere when only the
+	// premiere is mirrored. Allocated seasons need stored episode mappings.
+	if !hasReleased && !seasonKey.Allocated() && seasonKey.Season() > 0 {
+		if ep1, err := s.d.Catalog.CachedTitle(ctx, core.EpisodeKey(seasonKey.TMDB(), seasonKey.Season(), 1)); err == nil && ep1 != nil && ep1.IsReleased(now) {
 			hasReleased = true
 		}
 	}

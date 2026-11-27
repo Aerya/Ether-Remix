@@ -30,11 +30,15 @@ type FacetExpansion struct {
 	FinishedAt time.Time
 	ItemsAdded int64
 	Error      string
+	// Outdated: the expansion ran under an earlier declaration of the kind
+	// (an older plugin), so it no longer counts as fresh.
+	Outdated bool
 }
 
-// IsFresh reports whether e completed successfully within ttl of now.
+// IsFresh reports whether e completed successfully within ttl of now, under
+// the kind's current declaration.
 func (e FacetExpansion) IsFresh(now time.Time, ttl time.Duration) bool {
-	if e.State != ExpansionStateDone || e.FinishedAt.IsZero() || ttl <= 0 {
+	if e.State != ExpansionStateDone || e.FinishedAt.IsZero() || ttl <= 0 || e.Outdated {
 		return false
 	}
 	return now.Sub(e.FinishedAt) < ttl
@@ -68,13 +72,16 @@ func (s *Service) GetFacetExpansion(ctx context.Context, pluginID, kindKey, face
 		libID      int64
 		startedAt  int64
 		finishedAt int64
+		current    int
 	)
 	err := s.db.QueryRowContext(ctx, `
-SELECT plugin_id, kind_key, library_id, facet, value_key, state, started_at, finished_at, items_added, error
-FROM plugin_facet_expansions
-WHERE plugin_id = ? AND kind_key = ? AND facet = ? AND value_key = ?`,
+SELECT e.plugin_id, e.kind_key, e.library_id, e.facet, e.value_key, e.state, e.started_at, e.finished_at, e.items_added, e.error,
+	CASE WHEN e.decl_hash = COALESCE((SELECT k.decl_hash FROM plugin_kinds k WHERE k.plugin_id = e.plugin_id AND k.kind_key = e.kind_key), '') THEN 1 ELSE 0 END
+FROM plugin_facet_expansions e
+WHERE e.plugin_id = ? AND e.kind_key = ? AND e.facet = ? AND e.value_key = ?`,
 		pluginID, kindKey, facet, valueKey,
-	).Scan(&out.PluginID, &out.KindKey, &libID, &out.Facet, &out.ValueKey, &out.State, &startedAt, &finishedAt, &out.ItemsAdded, &out.Error)
+	).Scan(&out.PluginID, &out.KindKey, &libID, &out.Facet, &out.ValueKey, &out.State, &startedAt, &finishedAt, &out.ItemsAdded, &out.Error, &current)
+	out.Outdated = current == 0
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return FacetExpansion{}, false, nil
@@ -99,16 +106,17 @@ func (s *Service) MarkFacetExpansionRunning(ctx context.Context, pluginID, kindK
 	}
 	nowUnix := s.Now().Unix()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO plugin_facet_expansions(plugin_id, kind_key, library_id, facet, value_key, state, started_at, finished_at, items_added, error)
-VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, '')
+INSERT INTO plugin_facet_expansions(plugin_id, kind_key, library_id, facet, value_key, state, started_at, finished_at, items_added, error, decl_hash)
+VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, '', COALESCE((SELECT decl_hash FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?), ''))
 ON CONFLICT(plugin_id, kind_key, facet, value_key) DO UPDATE SET
 	library_id  = excluded.library_id,
 	state       = excluded.state,
 	started_at  = excluded.started_at,
 	finished_at = 0,
 	items_added = 0,
-	error       = ''`,
-		pluginID, kindKey, int64(libraryID), facet, valueKey, ExpansionStateRunning, nowUnix,
+	error       = '',
+	decl_hash   = excluded.decl_hash`,
+		pluginID, kindKey, int64(libraryID), facet, valueKey, ExpansionStateRunning, nowUnix, pluginID, kindKey,
 	)
 	return err
 }
@@ -124,15 +132,15 @@ func (s *Service) FinishFacetExpansion(ctx context.Context, pluginID, kindKey st
 	}
 	nowUnix := s.Now().Unix()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO plugin_facet_expansions(plugin_id, kind_key, library_id, facet, value_key, state, started_at, finished_at, items_added, error)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO plugin_facet_expansions(plugin_id, kind_key, library_id, facet, value_key, state, started_at, finished_at, items_added, error, decl_hash)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT decl_hash FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?), ''))
 ON CONFLICT(plugin_id, kind_key, facet, value_key) DO UPDATE SET
 	library_id  = excluded.library_id,
 	state       = excluded.state,
 	finished_at = excluded.finished_at,
 	items_added = excluded.items_added,
 	error       = excluded.error`,
-		pluginID, kindKey, int64(libraryID), facet, valueKey, state, nowUnix, nowUnix, int64(itemsAdded), errMsg,
+		pluginID, kindKey, int64(libraryID), facet, valueKey, state, nowUnix, nowUnix, int64(itemsAdded), errMsg, pluginID, kindKey,
 	)
 	return err
 }
@@ -169,12 +177,17 @@ WHERE library_id = ? AND level = '' AND field = ? AND v_int = ?`,
 				return 0, "", false, err
 			}
 		}
+		isPG := store.DialectOf(s.db) == store.Postgres
 		if folded := FoldFieldText(trimmed); folded != "" {
+			orderBy := `label_lower ASC, label ASC, v_int ASC`
+			if isPG {
+				orderBy = `left(label_lower, 256) ASC, label_lower ASC, label ASC, v_int ASC`
+			}
 			err = s.db.QueryRowContext(ctx, `
 SELECT v_int, label
 FROM plugin_item_person_tally
 WHERE library_id = ? AND level = '' AND field = ? AND label_fold = ?
-ORDER BY label_lower ASC, label ASC, v_int ASC
+ORDER BY `+orderBy+`
 LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
 			if err == nil && core.IsPluginPersonID(personID) && canonicalName != "" {
 				return personID, canonicalName, true, nil
@@ -186,16 +199,26 @@ LIMIT 1`, int64(libraryID), field, folded).Scan(&personID, &canonicalName)
 		return 0, "", false, nil
 	}
 
+	isPG := store.DialectOf(s.db) == store.Postgres
 	libCheck := `i.library_id + 0 = ?`
-	if store.DialectOf(s.db) == store.Postgres {
+	if isPG {
 		libCheck = `i.library_id = ?`
 	}
-	err = s.db.QueryRowContext(ctx, `
+	if isPG {
+		err = s.db.QueryRowContext(ctx, `
+SELECT f.v_int, f.v_text
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.field = ? AND left(f.v_text, 256) = ? AND f.v_text = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, pgTextPrefix(trimmed), trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
+	} else {
+		err = s.db.QueryRowContext(ctx, `
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE f.field = ? AND f.v_text = ? AND f.v_int > 0 AND `+libCheck+`
 LIMIT 1`, field, trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
+	}
 	if err == nil && core.IsPluginPersonID(personID) {
 		return personID, canonicalName, true, nil
 	}
@@ -206,12 +229,21 @@ LIMIT 1`, field, trimmed, int64(libraryID)).Scan(&personID, &canonicalName)
 	if folded == "" {
 		return 0, "", false, nil
 	}
-	err = s.db.QueryRowContext(ctx, `
+	if isPG {
+		err = s.db.QueryRowContext(ctx, `
+SELECT f.v_int, f.v_text
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.field = ? AND left(f.v_fold, 256) = ? AND f.v_fold = ? AND f.v_int > 0 AND `+libCheck+`
+LIMIT 1`, field, pgTextPrefix(folded), folded, int64(libraryID)).Scan(&personID, &canonicalName)
+	} else {
+		err = s.db.QueryRowContext(ctx, `
 SELECT f.v_int, f.v_text
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
 WHERE f.field = ? AND f.v_fold = ? AND f.v_int > 0 AND `+libCheck+`
 LIMIT 1`, field, folded, int64(libraryID)).Scan(&personID, &canonicalName)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", false, nil
 	}

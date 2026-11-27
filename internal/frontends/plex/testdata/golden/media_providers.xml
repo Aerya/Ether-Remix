@@ -4,14 +4,14 @@
 <Feature key="/library/sections" type="content">
 <Directory hubKey="/hubs" title="Home" />
 <Directory agent="tv.plex.agents.movie" language="en-US" refreshing="0" scanner="Plex Movie" uuid="1dc336c6-64af-dcfe-d33e-ccd1243d2b6a" id="1" key="/library/sections/1" hubKey="/hubs/sections/1" type="movie" title="Movies" updatedAt="1792324800" scannedAt="1792324800">
-<Pivot id="recommended" key="/hubs/sections/1" type="hub" title="Recommended" context="content.discover" symbol="star" />
+<Pivot id="recommended" key="/hubs/sections/1" type="hub" title="Recommendations" context="content.discover" symbol="star" />
 <Pivot id="library" key="/library/sections/1/all?type=1" type="list" title="Library" context="content.library" symbol="library" />
 <Pivot id="collections" key="/library/sections/1/collections" type="list" title="Collections" context="content.collections" symbol="stack" />
 <Pivot id="playlists" key="/playlists?type=15&amp;sectionID=1&amp;playlistType=video" type="list" title="Playlists" context="content.playlists" symbol="playlist" />
 <Pivot id="categories" key="/library/sections/1/categories" type="list" title="Categories" context="content.categories" symbol="stack" />
 </Directory>
 <Directory agent="tv.plex.agents.series" language="en-US" refreshing="0" scanner="Plex TV Series" uuid="3ef35822-1c2b-8b72-8efb-de2992ef085e" id="2" key="/library/sections/2" hubKey="/hubs/sections/2" type="show" title="TV Shows" updatedAt="1792324800" scannedAt="1792324800">
-<Pivot id="recommended" key="/hubs/sections/2" type="hub" title="Recommended" context="content.discover" symbol="star" />
+<Pivot id="recommended" key="/hubs/sections/2" type="hub" title="Recommendations" context="content.discover" symbol="star" />
 <Pivot id="library" key="/library/sections/2/all?type=2" type="list" title="Library" context="content.library" symbol="library" />
 <Pivot id="collections" key="/library/sections/2/collections" type="list" title="Collections" context="content.collections" symbol="stack" />
 <Pivot id="playlists" key="/playlists?type=15&amp;sectionID=2&amp;playlistType=video" type="list" title="Playlists" context="content.playlists" symbol="playlist" />

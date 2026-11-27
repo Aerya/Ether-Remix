@@ -18,7 +18,8 @@
             "debrid_check",
             "debrid_acquire",
             "release_files",
-            "usenet_check"
+            "usenet_check",
+            "nzb_request"
           ]
         },
         "query": {
@@ -27,7 +28,31 @@
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+          "description": "Comma-separated Newznab category IDs (1000–8999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases. Stremio add-ons and source plugins are asked only when the plugin declared one of the categories in ether.contributes.source.search."
+        },
+        "lookup": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+            },
+            "fields": {
+              "type": "object",
+              "maxProperties": 8,
+              "propertyNames": {
+                "pattern": "^[a-z][a-zA-Z0-9_]{0,31}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          },
+          "description": "indexer_search with category only. A typed lookup (for example {type: \"album\", fields: {artist, title}}) passed to source plugins that declared its type in ether.contributes.source.search.lookups; every other indexer searches query alone."
         },
         "profile": {
           "type": "string",
@@ -98,11 +123,13 @@
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
+          "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
+          "deprecated": true
         },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
@@ -112,6 +139,29 @@
           "type": "integer",
           "minimum": 0,
           "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
+        },
+        "nzbIdentity": {
+          "type": "object",
+          "required": [
+            "indexerId",
+            "guid"
+          ],
+          "properties": {
+            "indexerId": {
+              "type": "string"
+            },
+            "guid": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -387,11 +437,13 @@
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Key-less torrent download or details page link for torrent indexers (same-origin indexer credentials are stripped and re-attached by Ether at fetch time when handed back with indexerId); torrent candidates never populate nzbUrl."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
+          "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Key-less Usenet NZB download link populated only for Usenet candidates. Same-origin indexer API keys and secrets are stripped so candidates are safe to cache in plugin storage; Ether re-attaches credentials on same-origin fetches when handed back with indexerId."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
+          "deprecated": true
         },
         "title": {
           "type": "string"
@@ -454,6 +506,31 @@
         "usenetCheck": {
           "$ref": "#/$defs/usenetCheckResult",
           "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
+        },
+        "pluginRelease": {
+          "type": "object",
+          "required": [
+            "plugin",
+            "id"
+          ],
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "description": "A release a stream_source plugin answered for a category it declared (ether.contributes.source.search): the plugin id and its lazy stream id. It has no infoHash, magnet or nzbUrl; release_files asks the plugin for the files and a release source opens it through the plugin's open route with the chosen file."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
         }
       }
     },
@@ -461,7 +538,9 @@
       "type": "object",
       "properties": {
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input."
         },
         "magnet": {
           "type": "string"
@@ -470,7 +549,9 @@
           "type": "string"
         },
         "torrentUrl": {
-          "type": "string"
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef."
         },
         "passwordSecret": {
           "type": "string"
@@ -503,6 +584,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
         }
       }
     },

@@ -15,13 +15,27 @@ type RowEntryPolicy struct {
 	PlaylistExistsBatch func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
 }
 
+type collectionCardHeaders interface {
+	CollectionCardHeaders(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]*core.Collection, error)
+}
+
+func readCollectionCard(ctx context.Context, checker collectionCardHeaders, viewer *core.User, key core.RatingKey) *core.Collection {
+	cards, err := checker.CollectionCardHeaders(ctx, viewer, []core.RatingKey{key})
+	if err != nil {
+		return nil
+	}
+	return cards[key]
+}
+
 type rowEntryBatchKey struct{}
 type rowEntryBatchProof struct {
-	viewer      *core.User
-	cols        map[core.RatingKey]*core.Collection
-	checkedCols map[core.RatingKey]bool
-	playlists   map[core.RatingKey]bool
-	checkedPls  map[core.RatingKey]bool
+	viewer       *core.User
+	cols         map[core.RatingKey]*core.Collection
+	checkedCols  map[core.RatingKey]bool
+	cards        map[core.RatingKey]*core.Collection
+	cardsChecked bool
+	playlists    map[core.RatingKey]bool
+	checkedPls   map[core.RatingKey]bool
 }
 
 // PrepareRows batches collection visibility and playlist ownership checks for
@@ -31,7 +45,7 @@ func (p RowEntryPolicy) PrepareRows(ctx context.Context, u *core.User, rows []fr
 	if u == nil || len(rows) == 0 {
 		return ctx
 	}
-	var colKeys, plKeys []core.RatingKey
+	var colKeys, plKeys, cardKeys []core.RatingKey
 	checkedCols := map[core.RatingKey]bool{}
 	checkedPls := map[core.RatingKey]bool{}
 	addCol := func(k core.RatingKey) {
@@ -46,7 +60,7 @@ func (p RowEntryPolicy) PrepareRows(ctx context.Context, u *core.User, rows []fr
 			switch e.Kind {
 			case frontend.RowEntryCollection:
 				if e.Collection != nil {
-					addCol(e.Collection.Key)
+					cardKeys = append(cardKeys, e.Collection.Key)
 				}
 			case frontend.RowEntryPlaylist:
 				if e.Playlist != nil && !checkedPls[e.Playlist.Key] {
@@ -57,6 +71,16 @@ func (p RowEntryPolicy) PrepareRows(ctx context.Context, u *core.User, rows []fr
 		}
 	}
 	proof := rowEntryBatchProof{viewer: u}
+	if checker, ok := p.Collections.(collectionCardHeaders); ok {
+		if len(cardKeys) > 0 {
+			proof.cards, _ = checker.CollectionCardHeaders(ctx, u, cardKeys)
+			proof.cardsChecked = true
+		}
+	} else {
+		for _, key := range cardKeys {
+			addCol(key)
+		}
+	}
 	if checker, ok := p.Collections.(RowViewCollectionBatchChecker); ok && len(colKeys) > 0 {
 		if cols, _, err := checker.CheckMembersBatch(ctx, u, colKeys, nil, 0); err == nil {
 			proof.cols = cols
@@ -69,7 +93,7 @@ func (p RowEntryPolicy) PrepareRows(ctx context.Context, u *core.User, rows []fr
 			proof.checkedPls = checkedPls
 		}
 	}
-	if proof.checkedCols == nil && proof.checkedPls == nil {
+	if proof.checkedCols == nil && proof.checkedPls == nil && !proof.cardsChecked {
 		return ctx
 	}
 	return context.WithValue(ctx, rowEntryBatchKey{}, proof)
@@ -110,7 +134,19 @@ func (p RowEntryPolicy) Entry(ctx context.Context, u *core.User, e frontend.RowE
 	case frontend.RowEntryTitle:
 		return e.Title != nil && p.Visibility.Visible(ctx, u, e.Title)
 	case frontend.RowEntryCollection:
-		return e.Collection != nil && p.Subject(ctx, u, string(e.Kind), e.Collection.Key.String())
+		if e.Collection == nil {
+			return false
+		}
+		if checker, ok := p.Collections.(collectionCardHeaders); ok {
+			var card *core.Collection
+			if proof, ok := ctx.Value(rowEntryBatchKey{}).(rowEntryBatchProof); ok && proof.viewer == u && proof.cardsChecked {
+				card = proof.cards[e.Collection.Key]
+			} else {
+				card = readCollectionCard(ctx, checker, u, e.Collection.Key)
+			}
+			return card != nil && p.Visibility.CollectionAllowed(u, card)
+		}
+		return p.Subject(ctx, u, string(e.Kind), e.Collection.Key.String())
 	case frontend.RowEntryPlaylist:
 		if e.Playlist == nil {
 			return false

@@ -2,6 +2,8 @@
 
 Les recherches et imports conservent automatiquement leurs références dans un index commun, réutilisé à la lecture. Dans **Remix → Indexation**, le seul interrupteur **Rechercher automatiquement des releases** (`PSE_INDEXER`) contrôle les recherches de fond. Il reste désactivé par défaut ; l’arrêter n’efface pas l’index et ne désactive ni sa consultation ni sa réutilisation. L’ancien réglage `PSE_RELEASE_LIBRARY` est ignoré, quelle que soit sa valeur. Les sources, budgets et pauses déjà configurés sont conservés.
 
+Le recalcul du catalogue lisible conserve les compteurs précédents jusqu’à la publication complète des nouveaux résultats. Une interruption conserve aussi la signature précédente ; le prochain cycle peut réessayer. Le calcul dispose d’un budget indépendant de 30 minutes et publie ses écritures par lots dans une seule transaction.
+
 Les recherches réelles alimentent la bibliothèque, ainsi que l’import SFR pour les titres du catalogue. Les liens fichiers Alkodiques conservent le chemin AllDebrid vérifié, sans ajout de magnet. Les références et éventuels en-têtes privés sont chiffrés avec la clé de configuration de Remix et ne sont jamais envoyés au navigateur.
 
 À la lecture, les références encore récentes sont proposées au moteur existant : langue, qualité, contraintes du lecteur et vérifications restent applicables. Le moteur peut réutiliser les alternatives conservées puis faire une recherche de secours si elles échouent ou ne conviennent pas. Le gain dépend du temps de résolution, de contrôle et de mise en tampon ; aucune lecture instantanée n’est garantie. Les recherches d’indexation et les recherches manuelles continuent à interroger les sources.
@@ -65,3 +67,16 @@ Le nettoyage des anciens liens démarre après actualisation des profils et exce
 
 
 La [configuration rapide](QUICK_SOURCES.fr.md) conserve les recherches et les références dans les mécanismes existants. Une référence déjà indexée ne passe jamais devant une source sélectionnée plus haut ; l’ordre est appliqué avant validation à la lecture.
+
+## Recherche automatique et lecture
+
+Les recherches et imports conservent dans un index commun les références conformes aux critères Remix actifs. Les liens hors critères sont refusés ; les anciens liens sont nettoyés après actualisation des profils et exceptions. À la lecture, Remix propose les références encore utilisables, applique les critères de langue et de qualité, puis recherche d’autres sources si nécessaire. L’identité du film ou de l’épisode reste vérifiée ; une référence enregistrée ne garantit pas sa disponibilité.
+
+Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquement des releases**, prépare les contenus du catalogue en arrière-plan. Les sources se choisissent sur la même page ; cadence et budgets sont dans les réglages avancés. Désactiver cette recherche conserve l’index, sa consultation et son utilisation à la lecture.
+
+La recherche de fond ne télécharge ni ne débride les fichiers. Un addon distant peut néanmoins effectuer ses propres appels. Pour les séries, le passage initial couvre **S01E01** : les autres épisodes sont enregistrés au fil des recherches, sans garantie de saison complète. [Fonctionnement de l’index](RELEASE_LIBRARY.fr.md).
+
+Les fichiers AllDebrid vérifiés peuvent être prioritaires lorsqu’ils respectent le profil. Les quotas suspendent les comptes concernés, les tentatives de secours sont limitées et le renouvellement des liens peut être réglé pour éviter des appels inutiles. [AllDebrid et proxys](../alldebrid-mediaflow.md).
+
+Quand aucune source n’est disponible à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche au lieu de rester bloqués.
+Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique son nom et l’heure de reprise, et précise si aucune autre source n’a de release. Sans `Retry-After`, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min dès qu’une requête réussit. La limite journalière réglée dans Ether a son propre message. Après un redémarrage, la pause en cours est conservée, mais le palier repart de 15 min.

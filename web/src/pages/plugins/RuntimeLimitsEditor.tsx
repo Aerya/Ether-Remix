@@ -3,7 +3,7 @@ import { Input, confirmDialog } from "@braedonsaunders/appkit-ui";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { apiFetch } from "../../lib/api";
 import { t } from "../../i18n";
-import type { RuntimeLimits } from "./types";
+import type { ListItemsGrant, RuntimeLimits } from "./types";
 import { formatLimit, limitNumber, runtimeLimitFields } from "./runtime-limit-fields";
 
 type Policy = {
@@ -13,7 +13,11 @@ type Policy = {
 type Draft = Record<keyof RuntimeLimits, string>;
 function isIntegerLimit(key: keyof RuntimeLimits): boolean {
   return (
-    key === "unitBudget" || key === "poolSize" || key === "archiveMembers" || key === "maxItems"
+    key === "unitBudget" ||
+    key === "poolSize" ||
+    key === "archiveMembers" ||
+    key === "maxItems" ||
+    key === "listItems"
   );
 }
 export function RuntimeLimitsEditor({
@@ -22,6 +26,8 @@ export function RuntimeLimitsEditor({
   requested,
   storedItems,
   maxItems,
+  listItems,
+  listsOnly = false,
   hasMediaKinds = false,
   flush = false,
   onSaved,
@@ -31,6 +37,10 @@ export function RuntimeLimitsEditor({
   requested?: Partial<RuntimeLimits>;
   storedItems?: number;
   maxItems?: number;
+  /** The plugin's list sync size; without it the "Titles per list" row is hidden. */
+  listItems?: ListItemsGrant;
+  /** A plain add-on: only its list size applies. */
+  listsOnly?: boolean;
   hasMediaKinds?: boolean;
   flush?: boolean;
   onSaved?: () => void;
@@ -40,7 +50,11 @@ export function RuntimeLimitsEditor({
   const { draft, setDraft, dirty, reset } = useDraft(saved);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const fields = runtimeLimitFields();
+  const allFields = runtimeLimitFields();
+  const rows = plugin
+    ? allFields.filter((f) => (f.key === "listItems" ? Boolean(listItems) : !listsOnly))
+    : allFields;
+  const fields = allFields;
   useEffect(() => {
     let live = true;
     setPolicy(null);
@@ -79,7 +93,10 @@ export function RuntimeLimitsEditor({
       );
     });
   const input = (f: (typeof fields)[number]) => {
-    const global = limitNumber(f.key, policy?.runtimeLimits) / f.scale || f.fallback;
+    let global = limitNumber(f.key, policy?.runtimeLimits) / f.scale || f.fallback;
+    // A list's default is what the plugin asks for, within the global limit.
+    if (plugin && f.key === "listItems" && listItems)
+      global = Math.min(listItems.requested, global);
     return (
       <Input
         aria-label={plugin ? t("Override: {limit}", { limit: f.label }) : f.label}
@@ -175,13 +192,17 @@ export function RuntimeLimitsEditor({
                   </tr>
                 </thead>
                 <tbody>
-                  {fields.map((f) => {
-                    const asked = limitNumber(f.key, requested) / f.scale;
-                    const allowed =
-                      f.key === "maxItems" && !limits && maxItems
+                  {rows.map((f) => {
+                    const list = f.key === "listItems" ? listItems : undefined;
+                    const asked = list ? list.requested : limitNumber(f.key, requested) / f.scale;
+                    const allowed = list
+                      ? list.granted
+                      : f.key === "maxItems" && !limits && maxItems
                         ? maxItems / f.scale
                         : limitNumber(f.key, limits) / f.scale;
-                    const hasAllowed = Boolean(limits || (f.key === "maxItems" && maxItems));
+                    const hasAllowed = Boolean(
+                      list || limits || (f.key === "maxItems" && maxItems),
+                    );
                     const global =
                       limitNumber(f.key, policy?.runtimeLimits) / f.scale || f.fallback;
                     return (
@@ -204,7 +225,12 @@ export function RuntimeLimitsEditor({
                               })}
                             </p>
                           ) : null}
-                          {limits && !asked && allowed > 0 && allowed < global ? (
+                          {list ? (
+                            <p className="mt-1 max-w-44 text-fg-muted">
+                              {t("Each list syncs up to this many titles.")}
+                            </p>
+                          ) : null}
+                          {limits && !list && !asked && allowed > 0 && allowed < global ? (
                             <p className="mt-1 max-w-44 text-fg-muted">
                               {t("The plugin didn't ask for more.")}
                             </p>
@@ -260,7 +286,23 @@ export function RuntimeLimitsEditor({
                 )}
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                {fields.slice(8).map((f) => (
+                {fields.slice(8, 9).map((f) => (
+                  <label key={f.key} className="space-y-1 text-xs">
+                    {f.label}
+                    {input(f)}
+                  </label>
+                ))}
+              </div>
+            </section>
+            <section className="space-y-3 border-t border-border pt-4">
+              <h3 className="text-sm font-medium">{t("Plugin lists")}</h3>
+              <p className="text-xs text-fg-muted">
+                {t(
+                  "The most titles each plugin list syncs. Plugins show the size they ask for when you install them. Clear the field to restore the default.",
+                )}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {fields.slice(9).map((f) => (
                   <label key={f.key} className="space-y-1 text-xs">
                     {f.label}
                     {input(f)}

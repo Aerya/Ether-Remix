@@ -61,6 +61,7 @@ func run() error {
 	indexer := flag.String("indexer", "api.nzbgeek.info", "only this indexer host")
 	data := flag.String("data", "", "persistent benchmark data directory (keeps search/NZB caches)")
 	trace := flag.Bool("trace", false, "print coarse phase timing breakdown")
+	balanced := flag.Bool("balanced", false, "share load across every server (usenet.loadMode balanced) instead of trying them in order")
 	retry := flag.Bool("retry", false, "bypass a persisted unavailable result while reusing cached indexer results")
 	freshSearch := flag.Bool("fresh-search", false, "bypass cached indexer results (counts against the configured indexer budget)")
 	flag.Parse()
@@ -91,6 +92,9 @@ func run() error {
 	}
 	ctx := context.Background()
 	cfg := config.Defaults(dir)
+	if *balanced {
+		cfg.Usenet.LoadMode = config.UsenetLoadBalanced
+	}
 	for i, s := range r.Servers {
 		connections := s.Connections
 		if connections <= 0 {
@@ -109,7 +113,7 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	fetcher := usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log, TraceProtocol: *trace})
+	fetcher := usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log, Balanced: cfg.Usenet.Balanced(), TraceProtocol: *trace})
 	defer fetcher.Close()
 	cache, err := segcache.Open(filepath.Join(dir, "cache"), 2<<30, log)
 	if err != nil {

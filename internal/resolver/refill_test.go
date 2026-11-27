@@ -78,7 +78,7 @@ func startedRefill(t *testing.T, i *refillIndexer) refillSearch {
 }
 func refillEpisode(episode int) *core.Title {
 	return &core.Title{Key: core.EpisodeKey(400063, 3, episode), Type: core.TypeEpisode,
-		ShowTitle: "Taskmaster", Title: "Taskmaster", Season: 3, Episode: episode, Runtime: 45 * time.Minute}
+		ShowIDs: core.IDs{TMDB: 400063}, ShowTitle: "Taskmaster", Title: "Taskmaster", Season: 3, Episode: episode, Runtime: 45 * time.Minute}
 }
 
 func TestRefillSearchCacheDedupCapacityAndNoQueue(t *testing.T) {

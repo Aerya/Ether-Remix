@@ -906,6 +906,61 @@ func shiftFMP4(src []byte, scales map[uint32]uint32, seconds float64, sequence u
 	return b
 }
 
+// rebaseFMP4 moves every track fragment's decode time (tfdt) back by that
+// track's delta in its own timescale (a negative delta moves it forward). It
+// returns a new slice, or false when a corrected time would be negative or
+// not fit its box; src is never modified.
+func rebaseFMP4(src []byte, delta map[uint32]int64) ([]byte, bool) {
+	b := append([]byte(nil), src...)
+	ok := true
+	mp4Boxes(b, func(typ string, body, _ []byte) {
+		if typ != "moof" {
+			return
+		}
+		mp4Boxes(body, func(typ string, body, _ []byte) {
+			if typ != "traf" {
+				return
+			}
+			var track uint32
+			mp4Boxes(body, func(typ string, body, _ []byte) {
+				switch typ {
+				case "tfhd":
+					if len(body) >= 8 {
+						track = binary.BigEndian.Uint32(body[4:])
+					}
+				case "tfdt":
+					d, has := delta[track]
+					if !has || d == 0 {
+						return
+					}
+					switch {
+					case len(body) >= 12 && body[0] == 1:
+						v := int64(binary.BigEndian.Uint64(body[4:])) - d
+						if v < 0 {
+							ok = false
+							return
+						}
+						binary.BigEndian.PutUint64(body[4:], uint64(v))
+					case len(body) >= 8 && body[0] == 0:
+						v := int64(binary.BigEndian.Uint32(body[4:])) - d
+						if v < 0 || v > math.MaxUint32 {
+							ok = false
+							return
+						}
+						binary.BigEndian.PutUint32(body[4:], uint32(v))
+					default:
+						ok = false
+					}
+				}
+			})
+		})
+	})
+	if !ok {
+		return nil, false
+	}
+	return b, true
+}
+
 // splitTS cuts a transport stream segment at video keyframes so no part runs
 // past maxDur by more than the rounding RFC 8216 allows (EXTINF rounded to
 // the nearest second must not exceed the target). A relay's copy cut can land

@@ -205,7 +205,13 @@ export const setupSources: SetupSource[] = [
     music: true,
   },
 ];
-export const discoveryOptions: { id: string; label: Copy; help: Copy; href: string }[] = [
+export const discoveryOptions: {
+  id: string;
+  label: Copy;
+  help: Copy;
+  href: string;
+  music?: boolean;
+}[] = [
   {
     id: "catalogue",
     label: ["Catalogue Remix", "Remix catalogue"],
@@ -260,7 +266,107 @@ export const discoveryOptions: { id: string; label: Copy; help: Copy; href: stri
     ],
     href: "/remix/indexation?view=pre",
   },
+  {
+    id: "sfr",
+    label: ["StreamFusion Reborn", "StreamFusion Reborn"],
+    help: [
+      "Import des références d’une base StreamFusion existante ; configurer le chemin et les sources de lecture.",
+      "Import references from an existing StreamFusion database; configure its path and playback sources.",
+    ],
+    href: "/remix/sources?source=stremio#pse-sfr",
+  },
+  {
+    id: "music-playlists",
+    label: ["Playlists et mixes programmés", "Playlists and scheduled mixes"],
+    help: [
+      "Imports Deezer, Spotify, ListenBrainz ou Last.fm et mises à jour programmées. Lecture selon vos sources musicales.",
+      "Deezer, Spotify, ListenBrainz or Last.fm imports and scheduled updates. Playback depends on your music sources.",
+    ],
+    href: "/remix/contenus?content=musique",
+    music: true,
+  },
+  {
+    id: "audiomuse",
+    label: ["AudioMuse", "AudioMuse"],
+    help: [
+      "Service externe facultatif : similarités entre morceaux locaux déjà analysés, pour les mixes personnels.",
+      "Optional external service: similarities between analysed local tracks for personal mixes.",
+    ],
+    href: "/remix/contenus?content=musique",
+    music: true,
+  },
+  {
+    id: "digarr",
+    label: ["Digarr", "Digarr"],
+    help: [
+      "Service externe et jeton personnel en lecture seule par spectateur ; recommandations d’artistes et albums, pas une source audio.",
+      "External service and personal read-only token per viewer; artist and album recommendations, not an audio source.",
+    ],
+    href: "/remix/contenus?content=musique",
+    music: true,
+  },
 ];
+export const clientOptions: { id: string; label: Copy; help: Copy }[] = [
+  {
+    id: "plex",
+    label: ["Plex / Plexamp", "Plex / Plexamp"],
+    help: [
+      "Accueil et bibliothèques par spectateur et appareil.",
+      "Home and libraries per viewer and device.",
+    ],
+  },
+  {
+    id: "jellyfin",
+    label: ["Jellyfin / Infuse", "Jellyfin / Infuse"],
+    help: [
+      "Bibliothèques et filtres des derniers ajouts Films et Séries.",
+      "Libraries and latest movie/show filters.",
+    ],
+  },
+  {
+    id: "emby",
+    label: ["Emby", "Emby"],
+    help: [
+      "Clients compatibles avec le serveur Emby de Remix.",
+      "Clients compatible with Remix’s Emby server.",
+    ],
+  },
+  {
+    id: "stremio",
+    label: ["Stremio", "Stremio"],
+    help: [
+      "Lien personnel HTTPS : catalogues ou fichiers seuls, affichage et versions par qualité.",
+      "Personal HTTPS link: catalogues or files only, display and versions per quality.",
+    ],
+  },
+  {
+    id: "nuvio",
+    label: ["Nuvio", "Nuvio"],
+    help: [
+      "Lien Stremio et compte lié par spectateur pour synchroniser reprise et historique.",
+      "Stremio link and per-viewer linked account to sync resume and history.",
+    ],
+  },
+  {
+    id: "subsonic",
+    label: ["Clients musicaux Subsonic", "Subsonic music clients"],
+    help: [
+      "Symfonium, Feishin et autres clients avec accès musical personnel.",
+      "Symfonium, Feishin and other clients with personal music access.",
+    ],
+  },
+  {
+    id: "other",
+    label: ["Autres applications", "Other apps"],
+    help: [
+      "Silo, WebDAV, IPTV et DLNA : accès à activer selon votre application.",
+      "Silo, WebDAV, IPTV and DLNA: enable access for your app.",
+    ],
+  },
+];
+export function visibleDiscoveryOptions(c: SetupChoices) {
+  return discoveryOptions.filter((o) => !o.music || c.contents.includes("music"));
+}
 export function visibleSetupSources(c: SetupChoices) {
   return setupSources.filter(
     (s) => (!s.music || c.contents.includes("music")) && s.usages.some((u) => c.usages.includes(u)),
@@ -294,7 +400,11 @@ export function restoreChoices(value: unknown): SetupChoices {
       setupSources.map((x) => x.id),
       [],
     ),
-    clients: pick(v.clients, ["plex", "jellyfin"], initialChoices.clients),
+    clients: pick(
+      v.clients,
+      clientOptions.map((o) => o.id),
+      initialChoices.clients,
+    ),
     original: v.original === true,
     subtitles: v.subtitles === true,
   };

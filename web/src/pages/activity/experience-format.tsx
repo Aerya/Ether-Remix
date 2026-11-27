@@ -183,7 +183,7 @@ export function causeSentence(cause: ExperienceCause, viewerId: number): ReactNo
         {
           share: pct(cause.remotePct),
           rate: formatMbps(cause.sourceKbps),
-          away: link("/quality/profiles", t("Away profile")),
+          away: link("/releases/profiles", t("Away profile")),
           limits: link(`/viewers/${viewerId}/limits`, t("limits")),
         },
       );

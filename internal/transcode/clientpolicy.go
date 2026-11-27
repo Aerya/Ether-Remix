@@ -106,7 +106,7 @@ func ResolvePolicy(c core.ClientCaps, overrides []core.ClientCapabilityOverride)
 // With no model evidence an unspecified profile is accepted only if the client
 // explicitly advertised DV; known unsupported profiles use their base layer.
 func SupportsDVProfile(c core.ClientCaps, profile int) bool {
-	if !c.DolbyVision {
+	if !c.DolbyVision || (c.DVProfilesExplicit && len(c.DVProfiles) == 0) {
 		return false
 	}
 	if profile == 0 {
@@ -147,6 +147,7 @@ func ApplyForcedOverrides(c core.ClientCaps, model string, overrides []core.Clie
 		}
 		if o.DolbyVisionProfiles != nil {
 			c.DVProfiles = slices.Clone(o.DolbyVisionProfiles)
+			c.DVProfileVariants = nil
 			c.DVProfilesExplicit = len(o.DolbyVisionProfiles) == 0
 			c.DVProfilesForced = len(o.DolbyVisionProfiles) > 0
 		}

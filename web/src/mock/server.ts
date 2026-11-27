@@ -1,4 +1,5 @@
 import { remixMock } from "../pse/mock";
+import type { EpisodeOrder, EpisodeOrderDetails, MetadataSource } from "../lib/metadataSources";
 import { interpretDemo } from "./catalogInterpret";
 import { indexerUsage, infrastructure, saveCost, sourceHistory } from "./source-stats";
 import { matchesCatalogFilter } from "./catalogFilter";
@@ -19,18 +20,9 @@ import type {
   AddonCatalogPreviewItem,
   AddonCatalogSubscription,
   AddonImportNameMode,
-  AvailableRow,
   CollectionSpec,
-  Device,
-  HomeLayout,
-  HomeRow,
-  LayoutDefaultsMaxRows,
-  LayoutPage,
-  LayoutSection,
-  LibraryMediaSurface,
-  RowGroup,
-  RowSectionTag,
-  ViewerLibraryPage,
+  CollectionUsage,
+  CollectionUse,
   Rule,
   Source,
   TasteOverride,
@@ -38,25 +30,8 @@ import type {
   TitleCard,
   Viewer,
 } from "../lib/contract";
-import {
-  collectionIdOf,
-  daypartOf,
-  defaultRowsForSection,
-  effectivePolicy,
-  clearLibraryLayout,
-  prune,
-  libraryIdOfSection,
-  matchRank,
-  mediaSectionForLibrary,
-  overrideCount,
-  pageOf,
-  parseLayoutSection,
-  rowFits,
-  tidySchedule,
-  whenMatches,
-} from "../lib/layout";
 import { createLibraryTabsMock } from "./libraryTabs";
-import { assemble } from "./assemble";
+import { createPagesMock } from "./pages";
 import { normalizeSpec } from "../lib/rules";
 import { resolutionGroups } from "../lib/qualityRanking";
 import type {
@@ -115,6 +90,38 @@ const MOCK_EQUIVALENTS: Record<string, string[]> = {
 
 const NOW = () => new Date();
 
+/** "Used on" for the seeded collections: the Recommendations rows that show them. */
+const COLLECTION_USAGE: Record<string, CollectionUse[]> = {
+  c1: [
+    {
+      page: "home",
+      pageName: "Home",
+      rowId: "row-edge-of-your-seat",
+      rowName: "Edge of your seat",
+      placement: "pinned",
+      position: 3,
+      schedule: "Fri–Sat evenings",
+    },
+    {
+      page: "library:1/recommended",
+      pageName: "Movies › Recommendations",
+      rowId: "row-edge-of-your-seat-movies",
+      rowName: "Edge of your seat",
+      placement: "auto",
+    },
+  ],
+  c4: [
+    {
+      page: "home",
+      pageName: "Home",
+      rowId: "row-weeknight-wind-down",
+      rowName: "Weeknight wind-down",
+      placement: "show",
+      schedule: "Mon–Thu from 6 PM",
+    },
+  ],
+};
+
 export interface FakeOptions {
   /** Owner-installed Vela client; absent by default. */
   velaInstalled?: boolean;
@@ -125,8 +132,11 @@ export interface FakeOptions {
   /** Override /status/hwaccel and dashboard.sections.hwaccel for OS/GPU tests. */
   hwaccel?: Record<string, unknown>;
   bootstrap?: Partial<Bootstrap>;
+  /** Preview the one-time release notes drawer after an update. */
+  whatsNew?: boolean;
   /** Artificial latency for realism in the browser; 0 in tests. */
   latencyMs?: number;
+  fastUsenetSpeed?: boolean;
   /** Serve as a node of a three-node PostgreSQL cluster instead of a standalone server. */
   cluster?: boolean;
   /** Pin the server in a startup state (see mock/ops.ts), e.g. "migrating" or "failed:database_corrupt". */
@@ -149,6 +159,8 @@ export interface FakeOptions {
   prerolls?: boolean;
   /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
   portConflict?: boolean | string;
+  /** A reverse proxy forwarding visitor addresses without being trusted. */
+  untrustedProxy?: boolean;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -346,6 +358,7 @@ function defaultConfig(): EtherConfig {
     },
     catalog: {
       tmdbKey: "",
+      tvdbKey: "",
       language: "en-US",
       region: "US",
       minPopularity: 5,
@@ -367,7 +380,6 @@ function defaultConfig(): EtherConfig {
       profiles: [
         {
           name: "4K",
-          mediaType: "movie",
           maxHeight: 2160,
           minHeight: 1080,
           allowHdr: true,
@@ -392,40 +404,14 @@ function defaultConfig(): EtherConfig {
           },
           minSizeMbPerMin: 15,
           maxSizeMbPerMin: 1000,
+          episodeMinSizeMbPerMin: 0,
+          episodeMaxSizeMbPerMin: 0,
           preferredLanguages: null,
           audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
           name: "1080p",
-          mediaType: "movie",
-          maxHeight: 1080,
-          minHeight: 720,
-          allowHdr: false,
-          allowDolbyVision: false,
-          qualityOrder: resolutionGroups(1080, 720),
-          customFormatScores: {
-            "ether:viewer-language": 10000,
-            "ether:viewer-subtitles": 15,
-            "ether:webdl": 2000,
-            "ether:bluray": 1000,
-            "ether:codec-h264": 12,
-            "ether:codec-hevc": 6,
-            "ether:audio-eac3": 12,
-            "ether:audio-ac3": 8,
-            "ether:audio-aac": 4,
-            "ether:audio-direct": 10,
-            "ether:audio-transcode": -15,
-          },
-          minSizeMbPerMin: 5,
-          maxSizeMbPerMin: 150,
-          preferredLanguages: null,
-          audioLanguageMode: "preferred",
-          allowCam: false,
-        },
-        {
-          name: "1080p",
-          mediaType: "tv",
           maxHeight: 1080,
           minHeight: 720,
           allowHdr: false,
@@ -447,14 +433,23 @@ function defaultConfig(): EtherConfig {
           },
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
+          episodeMinSizeMbPerMin: 0,
+          episodeMaxSizeMbPerMin: 0,
           preferredLanguages: null,
           audioLanguageMode: "preferred",
           allowCam: false,
         },
       ],
-      rules: [{ product: "Plex for Apple TV", mediaType: "movie", profile: "4K" }],
+      rules: [
+        {
+          id: "r_appletv1",
+          name: "Living room Apple TV",
+          devices: [{ app: "plex:Plex for Apple TV", label: "Plex for Apple TV" }],
+          profile: "4K",
+        },
+      ],
       default: "1080p",
-      remote: "1080p",
+      defaultAway: "",
       sync: { enabled: false, interval: "24h0m0s" },
     },
     transcode: {
@@ -571,6 +566,7 @@ const VIEWERS: Viewer[] = [
     title: "The Kids",
     isOwner: false,
     lastActive: "",
+    ageLimit: "PG",
     plays30d: 58,
     hoursWatched30d: 24.8,
     lifecycle: {
@@ -687,7 +683,50 @@ export function createFakeServer(opts: FakeOptions = {}) {
     }
   });
   // Keep the fixture stable when a setup link changes the page's query string.
-  const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
+  const previewParams = new URL(window.location.href).searchParams;
+  const metadataMode = previewParams.get("metadata");
+  const bundledTMDB =
+    metadataMode !== "none" && metadataMode !== "tvdb" && !previewParams.has("catalogKey");
+  function metadataSources(): MetadataSource[] {
+    const tmdbKeySource = state.config.catalog.tmdbKey
+      ? "owner"
+      : bundledTMDB
+        ? "built-in"
+        : "none";
+    const tmdbEnabled = !state.config.catalog.tmdbDisabled;
+    const tvdbConfigured = Boolean(state.config.catalog.tvdbKey);
+    return [
+      {
+        id: "tmdb",
+        name: "TMDB",
+        configured: tmdbEnabled && tmdbKeySource !== "none",
+        enabled: tmdbEnabled,
+        keySource: tmdbKeySource,
+        movies: true,
+        shows: true,
+      },
+      {
+        id: "tvdb",
+        name: "TheTVDB",
+        configured: tvdbConfigured,
+        enabled: tvdbConfigured,
+        keySource: tvdbConfigured ? "owner" : "none",
+        movies: true,
+        shows: true,
+      },
+    ];
+  }
+
+  function setupSteps() {
+    return [
+      {
+        id: "catalog",
+        title: "Metadata sources",
+        complete: metadataSources().some((source) => source.configured),
+        required: false,
+      },
+    ];
+  }
   const xtreamGrants = new Map<
     string,
     {
@@ -860,39 +899,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
     collections: [] as CollectionSpec[],
     addonImports: [] as AddonCatalogSubscription[],
     overrides: new Map<number, TasteOverride[]>(),
-    layout: {
-      global: [
-        {
-          section: "home",
-          rows: [
-            { row: "continue-watching", status: "always", slot: 1 },
-            { row: "short-on-time", status: "eligible", when: { days: [1, 2, 3, 4, 5] } },
-            { row: "something-different", status: "eligible", maxDaysPerWeek: 3 },
-          ],
-        },
-        {
-          section: "library:7",
-          rows: [
-            { row: "finish-what-you-started", status: "always", slot: 1 },
-            { row: "new-seasons", status: "always", slot: 2 },
-            { row: "popular-on-server", status: "off" },
-          ],
-        },
-      ],
-      viewers: [
-        {
-          userId: 3,
-          pages: [
-            {
-              section: "home",
-              maxRows: 8,
-              rows: [{ row: "short-on-time", status: "always", maxSlot: 3 }],
-            },
-          ],
-        },
-      ],
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as HomeLayout,
     logs: [] as LogEntry[],
     calls: [] as { method: string; path: string; body: unknown }[],
     plexDefaults: {} as Record<number, Record<string, unknown>>,
@@ -960,20 +966,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const t = TEMPLATES.find((x) => x.id === id)!;
     const spec = normalizeSpec({
       ...t.spec,
-      // One seeded collection is a scheduled Home row, not a Collections-tab
-      // entry, so the Home designer has a collection schedule to edit. It is
-      // renamed so it does not share a name with the built-in Short on Time row.
-      ...(id === "short-under-90"
-        ? {
-            name: "Weeknight wind-down",
-            targets: {
-              ...t.spec.targets,
-              collectionsTab: false,
-              homeRow: true,
-              schedule: { days: [1, 2, 3, 4], fromHour: 18 },
-            },
-          }
-        : {}),
+      // One seeded collection is only a row (not browseable in apps), renamed
+      // so it does not share a name with the built-in Short on Time source.
+      ...(id === "short-under-90" ? { name: "Weeknight wind-down", browseInApps: false } : {}),
       id: `c${seq++}`,
       enabled: id !== "family-night",
       updatedAt: NOW().toISOString(),
@@ -983,18 +978,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
     Object.assign(spec, { ratingKey: String(20000 + seq) });
     state.collections.push(spec);
   }
-  state.collections.push({
-    ...normalizeSpec({
-      name: "Recently added",
-      description: "Plex's built-in recently added row.",
-      sources: [{ kind: "catalog" }],
-      sort: "added",
-    }),
-    id: "builtin-recent",
-    builtIn: true,
-    enabled: true,
-    itemCount: 120,
-  });
 
   const levels = ["debug", "info", "info", "info", "warn", "error"];
   for (let i = 0; i < 80; i++) {
@@ -1335,1066 +1318,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   // ---- Homes (layered Home Designer) ---------------------------------------------------
 
-  const DEFAULT_ROWS: LayoutDefaultsMaxRows = { home: 10, library: 8 };
-  let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
-  let listMockLibs: () => Record<string, unknown>[] = () => [];
-
-  function pluginLibraryCandidates(
-    libId: number,
-    lib: Record<string, unknown>,
-  ): {
-    descriptors: AvailableRow[];
-    rows: HomeRow[];
-  } {
-    const label = String(lib.name ?? "Items");
-    const section = `library:${libId}` as const;
-    const itemsA = pickTitles(`plugin-${libId}-recent`, 8, () => true).map(card);
-    const itemsB = pickTitles(`plugin-${libId}-top`, 8, (x) => (x.rating ?? 0) > 7.2).map(card);
-    const itemsC = pickTitles(`plugin-${libId}-subject`, 8, () => true).map(card);
-    const defs = [
-      {
-        hubId: `plugin.${libId}.recently-added`,
-        kind: "recentlyAdded",
-        title: `Recently Added ${label}`,
-        description: `Newest items synced into ${label}.`,
-        group: "picks" as const,
-        items: itemsA,
-      },
-      {
-        hubId: `plugin.${libId}.top-rated`,
-        kind: "topRated",
-        title: `Top Rated ${label}`,
-        description: `Highest rated items in ${label}.`,
-        group: "explore" as const,
-        items: itemsB,
-      },
-      {
-        hubId: `plugin.${libId}.facet-subject`,
-        kind: "facet",
-        title: "Featured Subjects",
-        description: `Grouped by indexed facets in ${label}.`,
-        group: "explore" as const,
-        items: itemsC,
-      },
-    ];
-    return {
-      descriptors: defs.map((d) => ({
-        hubId: d.hubId,
-        title: d.title,
-        kind: d.kind,
-        description: d.description,
-        group: d.group,
-        sections: [section],
-      })),
-      rows: defs.map((d, idx) => ({
-        hubId: d.hubId,
-        title: d.title,
-        kind: d.kind,
-        reason: d.description,
-        score: 0.9 - idx * 0.1,
-        source: "engine" as const,
-        items: d.items,
-      })),
-    };
-  }
-
-  function resolveSectionMedia(section: LayoutSection): {
-    mediaSurface?: LibraryMediaSurface;
-    isPluginLibrary: boolean;
-    effectiveMedia: "home" | "movies" | "shows";
-    mediaFilter: (x: FakeTitle) => boolean;
-  } {
-    if (section === "home") {
-      return { isPluginLibrary: false, effectiveMedia: "home", mediaFilter: () => true };
-    }
-    const libId = libraryIdOfSection(section);
-    const lib = libId !== null ? lookupMockLib(libId) : undefined;
-    const isPluginLibrary = lib?.source === "plugin";
-    const mediaSurface = isPluginLibrary ? undefined : mediaSectionForLibrary(lib as never);
-    const effectiveMedia = mediaSurface ?? "movies";
-    const baseFilter = (x: FakeTitle) =>
-      effectiveMedia === "shows" ? x.type === "show" : x.type === "movie";
-    const rules = Array.isArray(lib?.rules) ? (lib.rules as VisibilityGroup[]) : [];
-    const visDefault = String(lib?.visibilityDefault ?? "show");
-    if (!isPluginLibrary && (rules.length > 0 || visDefault === "hide")) {
-      const scoped = (x: FakeTitle) => baseFilter(x) && !hiddenByRules(x, rules, visDefault);
-      if (catalog.filter(scoped).length >= 4) {
-        return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: scoped };
-      }
-    }
-    return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: baseFilter };
-  }
-
-  /** Candidate rows the "engine" proposes for a viewer (null = the typical viewer). */
-  function candidatesFor(
-    userId: number | null,
-    device: string,
-    at: Date,
-    section: LayoutSection,
-    layout: HomeLayout,
-  ): HomeRow[] {
-    const day = at.getDay();
-    const hour = at.getHours();
-    const weekend = day === 0 || day === 6;
-    const t = userId === null ? null : taste(userId);
-    const top = t?.genres[0]?.name ?? "Drama";
-    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
-    if (isPluginLibrary) {
-      const libId = libraryIdOfSection(section)!;
-      return pluginLibraryCandidates(libId, lookupMockLib(libId) ?? {}).rows;
-    }
-    const short = device === "mobile" || (!weekend && hour >= 21);
-    const seed = `${userId ?? "typical"}-${section}`;
-    const prefix =
-      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
-    const mk = (
-      stem: string,
-      title: string,
-      kind: string,
-      reason: string,
-      score: number,
-      items: FakeTitle[],
-      source: HomeRow["source"] = "engine",
-      why?: (t: FakeTitle) => string,
-    ): HomeRow => ({
-      hubId: `${prefix}.${stem}`,
-      title,
-      kind,
-      reason,
-      score: Math.round(score * 100) / 100,
-      source,
-      items: items.map(card),
-      itemReasons: why ? Object.fromEntries(items.map((x) => [x.key, why(x)])) : undefined,
-    });
-    const rows: HomeRow[] = [];
-    if (userId === null) {
-      rows.push(
-        mk(
-          "top10.today",
-          "Top 10 on Living Room Ether Today",
-          "top-10-today",
-          "Trending now, catalogue popularity and what viewers here watch.",
-          0.9,
-          pickTitles(seed + "t10", 10, media),
-        ),
-        mk(
-          "showcase.thriller",
-          "Acclaimed Thrillers",
-          "genre-showcase",
-          "Acclaimed, popular thrillers: what a new viewer plays is the first taste evidence.",
-          0.74,
-          pickTitles(seed + "sc1", 12, (x) => media(x) && (x.genres ?? []).includes("Thriller")),
-        ),
-        mk(
-          "showcase.comedy",
-          "Acclaimed Comedies",
-          "genre-showcase",
-          "Acclaimed, popular comedies.",
-          0.7,
-          pickTitles(seed + "sc2", 12, (x) => media(x) && (x.genres ?? []).includes("Comedy")),
-        ),
-        mk(
-          "newreleases",
-          "New Releases",
-          "new-releases",
-          "The newest notable releases.",
-          0.62,
-          pickTitles(seed + "nr", 12, media),
-        ),
-        mk(
-          "popular.server",
-          "Popular on Living Room Ether",
-          "popular-on-server",
-          "What viewers here watched most this month.",
-          0.58,
-          pickTitles(seed + "ps", 12, media),
-        ),
-        mk(
-          "toprated",
-          "Top Rated",
-          "top-rated",
-          "Acclaimed titles with trustworthy ratings.",
-          0.5,
-          pickTitles(seed + "tr", 12, (x) => media(x) && (x.rating ?? 0) > 7.4),
-        ),
-        mk(
-          "trending",
-          "Trending This Week",
-          "trending",
-          "What is trending on TMDB this week.",
-          0.46,
-          pickTitles(seed + "trn", 12, media),
-        ),
-        mk(
-          "shortontime",
-          "Short on Time",
-          "short-on-time",
-          "Shorter films and episodes.",
-          short ? 0.72 : 0.4,
-          pickTitles(seed + "sh", 12, (x) => media(x) && (x.runtimeMinutes ?? 999) <= 95),
-        ),
-      );
-    } else {
-      const anchor = pickTitles(seed + "anchor", 1, media)[0];
-      const person = PEOPLE[userId];
-      rows.push(
-        mk(
-          "top10",
-          "Top 10 for You",
-          "top-10",
-          `The ten titles the taste model rates highest; leans on ${top}.`,
-          0.91,
-          pickTitles(seed + "top", 10, (x) => media(x) && (x.genres ?? []).includes(top))
-            .concat(pickTitles(seed + "top2", 10, media))
-            .slice(0, 10),
-          "engine",
-          (x) => `${(x.genres ?? []).join(", ")} · rated ${x.rating}`,
-        ),
-        mk(
-          `because.${anchor?.key ?? 0}`,
-          `Because You Watched ${anchor?.title ?? "something"}`,
-          "because-you-watched",
-          `Similar keywords and people to ${anchor?.title}.`,
-          0.84,
-          pickTitles(seed + "byw", 12, media),
-          "engine",
-          (x) => `Shares ${(x.genres ?? [])[0] ?? "themes"} and keywords with ${anchor?.title}`,
-        ),
-        mk(
-          `person.${person?.id ?? 0}`,
-          `More from ${person?.name}`,
-          "more-from-person",
-          `You've finished ${2 + userId} titles with ${person?.name}.`,
-          0.77,
-          pickTitles(seed + "mf", 9, media),
-        ),
-        mk(
-          "trending.taste",
-          "Trending in Your Taste",
-          "trending-in-your-taste",
-          `Popular this week in ${top} and neighbours.`,
-          0.72,
-          pickTitles(seed + "tr", 14, media),
-        ),
-        mk(
-          "hiddengems",
-          "Hidden Gems for You",
-          "hidden-gems",
-          "High ratings, few votes, strong taste match.",
-          0.66,
-          pickTitles(seed + "hg", 12, (x) => media(x) && (x.rating ?? 0) > 7.5 && x.votes < 6000),
-        ),
-        mk(
-          "shortontime",
-          "Short on Time",
-          "short-on-time",
-          short
-            ? "Shorter titles: it's a weeknight or a phone."
-            : "Shorter titles for a quick watch.",
-          short ? 0.8 : 0.41,
-          pickTitles(seed + "sh", 12, (x) => media(x) && (x.runtimeMinutes ?? 999) <= 95),
-        ),
-        mk(
-          "newthisweek",
-          "New This Week",
-          "new-this-week",
-          `Fresh releases in ${top} and other genres you like.`,
-          0.58,
-          pickTitles(seed + "new", 10, media),
-        ),
-        mk(
-          "comfort",
-          "Comfort Rewatches",
-          "comfort-rewatches",
-          "Favourites you've watched more than once.",
-          weekend ? 0.61 : 0.47,
-          pickTitles(seed + "cf", 8, media),
-        ),
-        mk(
-          "different",
-          "Something Different",
-          "something-different",
-          "Outside your usual genres to keep things fresh.",
-          0.39,
-          pickTitles(seed + "sd", 10, (x) => media(x) && !(x.genres ?? []).includes(top)),
-        ),
-        mk(
-          "top10.today",
-          "Top 10 on Living Room Ether Today",
-          "top-10-today",
-          "Trending now, catalogue popularity and what viewers here watch.",
-          0.36,
-          pickTitles(seed + "t10", 10, media),
-        ),
-      );
-      const wantsAlways = (stem: string, kind: string) => {
-        const eff = effectivePolicy(layout, userId, section, `${prefix}.${stem}`, kind);
-        return eff?.policy.status === "always" || Boolean(eff?.policy.slot);
-      };
-      if (wantsAlways("newreleases", "new-releases"))
-        rows.push(
-          mk(
-            "newreleases",
-            "New Releases",
-            "new-releases",
-            "The newest notable releases.",
-            0.62,
-            pickTitles(seed + "nr", 12, media),
-          ),
-        );
-      if (wantsAlways("popular.server", "popular-on-server"))
-        rows.push(
-          mk(
-            "popular.server",
-            "Popular on Living Room Ether",
-            "popular-on-server",
-            "What viewers here watched most this month.",
-            0.58,
-            pickTitles(seed + "ps", 12, media),
-          ),
-        );
-      if (wantsAlways("toprated", "top-rated"))
-        rows.push(
-          mk(
-            "toprated",
-            "Top Rated",
-            "top-rated",
-            "Acclaimed titles with trustworthy ratings.",
-            0.5,
-            pickTitles(seed + "tr2", 12, (x) => media(x) && (x.rating ?? 0) > 7.4),
-          ),
-        );
-      if (wantsAlways("trending", "trending"))
-        rows.push(
-          mk(
-            "trending",
-            "Trending This Week",
-            "trending",
-            "What is trending on TMDB this week.",
-            0.46,
-            pickTitles(seed + "trn", 12, media),
-          ),
-        );
-    }
-    if (section === "home") {
-      const cw = userId === null ? [] : pickTitles(seed + "cw", 6, media);
-      rows.push({
-        ...mk(
-          "continue",
-          "Continue Watching",
-          "continue-watching",
-          "Titles you're part-way through, most recent first.",
-          cw.length ? 0.95 : 0,
-          cw,
-          "plex",
-          () => "Started recently",
-        ),
-        hubId: "home.continue",
-      });
-    }
-    // Owner collections: targeted ones, plus those the layout places on this page.
-    const page = (l: "global" | number) => pageOf(layout, l, section)?.rows ?? [];
-    const placed = new Set(
-      [...page("global"), ...(userId === null ? [] : page(userId))]
-        .filter((r) => r.status !== "off" && r.row.startsWith("collection:"))
-        .map((r) => r.row.slice("collection:".length)),
-    );
-    for (const c of state.collections) {
-      if (!c.enabled || c.builtIn) continue;
-      const targeted =
-        (section === "home" ? c.targets.homeRow : c.targets.sectionRow) &&
-        (c.targets.users === "all" || (userId !== null && c.targets.users.includes(userId)));
-      if (!targeted && !placed.has(String(c.id))) continue;
-      // The collection's schedule (a draft's edit in a preview), unless this
-      // viewer's own override sets a schedule; the layout pass applies that.
-      const id = String(c.id);
-      const own =
-        userId === null ? undefined : page(userId).find((r) => collectionIdOf(r.row) === id);
-      const s =
-        layout.collectionSchedules && id in layout.collectionSchedules
-          ? layout.collectionSchedules[id]
-          : c.targets.schedule;
-      if (!own?.when && !whenMatches(tidySchedule(s), { day, hour, device, date: at })) continue;
-      const items = evaluate(c).items.slice(0, 12);
-      if (!items.length) continue;
-      rows.push({
-        hubId: `collection.${c.id}`,
-        title: c.name,
-        kind: `collection:${c.id}`,
-        score: 0.6,
-        source: "owner",
-        items,
-        reason: targeted
-          ? `Owner collection “${c.name}”, targeted at this viewer.`
-          : `Owner collection “${c.name}”, placed on this page in the Home Designer.`,
-      });
-    }
-    return rows;
-  }
-
-  function homeFor(
-    userId: number | null,
-    device: string,
-    at: Date,
-    section: string,
-    layout: HomeLayout = state.layout,
-  ) {
-    const sec = parseLayoutSection(section);
-    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(sec);
-    const day = at.getDay();
-    const hour = at.getHours();
-    const weekend = day === 0 || day === 6 || (day === 5 && hour >= 17);
-    const daypart = daypartOf(hour);
-    const viewer =
-      userId === null
-        ? null
-        : { id: userId, title: VIEWERS.find((v) => v.id === userId)?.title ?? `Viewer ${userId}` };
-    let rows = candidatesFor(userId, device, at, sec, layout);
-    if (sec !== "home" && !isPluginLibrary) {
-      const prefix = effectiveMedia === "movies" ? "movie" : "tv";
-      rows = [
-        {
-          hubId: `${prefix}.inprogress.1`,
-          title: "Continue Watching",
-          kind: "continue-watching",
-          reason: "Titles you're part-way through in this library (Plex's own row).",
-          score: 0,
-          source: "plex",
-          items: (userId === null ? [] : pickTitles(`${userId}cw${sec}`, 5, media)).map(card),
-          placement: "Plex puts its own rows at the top of a library.",
-        },
-        {
-          hubId: `${prefix}.recentlyadded.1`,
-          title: "Recently Added",
-          kind: "recently-added",
-          reason: "The newest additions to this library (Plex's own row).",
-          score: 0,
-          source: "plex",
-          items: pickTitles(`ra${sec}`, 12, media).map(card),
-          placement: "Plex puts its own rows at the top of a library.",
-        },
-        ...rows,
-      ];
-    }
-    rows = assemble(rows, layout, {
-      viewer,
-      section: sec,
-      device: device as Device,
-      at,
-      defaultRows: defaultRowsForSection(DEFAULT_ROWS, sec),
-    });
-    rows = appendAbsentAlwaysRows(rows, userId, device, at, sec, layout);
-    return {
-      rows,
-      generatedAt: new Date().toISOString(),
-      context: { device, daypart, weekend },
-      viewer,
-    };
-  }
-
-  const PERSONAL_KINDS = new Set([
-    "favorites",
-    "continue-watching",
-    "up-next",
-    "top-10",
-    "because-you-watched",
-    "more-from-person",
-    "trending-in-your-taste",
-    "fans-also-loved",
-    "trending-with-fans",
-    "hidden-gems",
-    "new-this-week",
-    "comfort-rewatches",
-    "something-different",
-    "playlists",
-    "taste-cluster",
-    "era-favourites",
-    "world-cinema",
-    "occasion",
-    "acclaimed-unseen",
-    "top-rated-in-genre",
-    "new-seasons",
-    "finish-what-you-started",
-    "start-something-new",
-    "more-from-network",
-    "llm",
-    "trakt-recommendations",
-    "trakt-watchlist",
-  ]);
-
-  function appendAbsentAlwaysRows(
-    rows: HomeRow[],
-    userId: number | null,
-    device: string,
-    at: Date,
-    sec: LayoutSection,
-    layout: HomeLayout,
-  ): HomeRow[] {
-    const day = at.getDay();
-    const hour = at.getHours();
-    const { mediaSurface, isPluginLibrary, effectiveMedia } = resolveSectionMedia(sec);
-    if (isPluginLibrary) return rows;
-    const prefix =
-      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
-    const availList = availableRows();
-    const active: { pol: LayoutPage["rows"][number]; layer: "global" | "override" }[] = [];
-    if (userId !== null) {
-      const viewerPage = pageOf(layout, userId, sec);
-      for (const pol of viewerPage?.rows ?? []) {
-        if ((pol.status === "always" || pol.slot) && !/[*?[]/.test(pol.row))
-          active.push({ pol, layer: "override" });
-      }
-    }
-    const globalPage = pageOf(layout, "global", sec);
-    for (const pol of globalPage?.rows ?? []) {
-      if ((pol.status !== "always" && !pol.slot) || /[*?[]/.test(pol.row)) continue;
-      const colId = collectionIdOf(pol.row);
-      const avail = availList.find((a) => a.hubId === pol.row || a.kind === pol.row);
-      const kind = colId ? `collection:${colId}` : (avail?.kind ?? pol.row);
-      const hubId = colId ? `collection.${colId}` : `${prefix}.${avail?.hubId ?? pol.row}`;
-      const eff = effectivePolicy(layout, userId, sec, hubId, kind);
-      if (
-        !eff ||
-        (eff.policy.status !== "always" && !eff.policy.slot) ||
-        eff.layer !== "global" ||
-        eff.policy.row !== pol.row
-      )
-        continue;
-      active.push({ pol, layer: "global" });
-    }
-    if (!active.length) return rows;
-    const out = [...rows];
-    for (const { pol, layer } of active) {
-      if (out.some((r) => matchRank(pol.row, r.hubId, r.kind) > 0)) continue;
-      const colId = collectionIdOf(pol.row);
-      const col = colId ? state.collections.find((c) => String(c.id) === colId) : undefined;
-      const avail = availList.find((a) => a.hubId === pol.row || a.kind === pol.row);
-      const kind = colId ? `collection:${colId}` : (avail?.kind ?? pol.row);
-      const hubId = colId
-        ? `collection.${colId}`
-        : kind === "playlists"
-          ? "home.playlists"
-          : `${prefix}.${avail?.hubId ?? pol.row}`;
-      const title = col?.name ?? avail?.title ?? pol.row;
-      const source: HomeRow["source"] = colId
-        ? "owner"
-        : ["continue-watching", "recently-added", "playlists"].includes(kind)
-          ? "plex"
-          : "engine";
-      let hiddenCode = "no_matching_titles";
-      let hiddenReason = "No matching titles for this viewer";
-      if (!whenMatches(pol.when, { day, hour, device, date: at })) {
-        hiddenCode = "outside_schedule";
-        hiddenReason = "Outside schedule";
-      } else if (colId) {
-        if (!col) {
-          hiddenCode = "collection_empty";
-          hiddenReason = "Collection has no titles for this viewer";
-        } else if (!col.enabled) {
-          hiddenCode = "collection_disabled";
-          hiddenReason = "Collection is disabled in Collection Studio";
-        } else if (
-          col.targets.users !== "all" &&
-          (userId === null || !col.targets.users.includes(userId))
-        ) {
-          hiddenCode = "collection_not_shared";
-          hiddenReason = "Collection is not shared with this viewer";
-        } else if (
-          (effectiveMedia === "movies" && col.mediaType === "show") ||
-          (effectiveMedia === "shows" && col.mediaType === "movie")
-        ) {
-          hiddenCode = "wrong_surface";
-          hiddenReason = "Not available on this page";
-        } else {
-          const s =
-            layout.collectionSchedules && colId in layout.collectionSchedules
-              ? layout.collectionSchedules[colId]
-              : col.targets.schedule;
-          if (
-            !(layer === "override" && pol.when) &&
-            !whenMatches(tidySchedule(s), { day, hour, device, date: at })
-          ) {
-            hiddenCode = "outside_collection_schedule";
-            hiddenReason = "Outside collection schedule";
-          } else {
-            hiddenCode = "collection_empty";
-            hiddenReason = "Collection has no titles for this viewer";
-          }
-        }
-      } else if (avail && !rowFits(avail as { sections?: RowSectionTag[] }, sec, mediaSurface)) {
-        hiddenCode = "wrong_surface";
-        hiddenReason = "Not available on this page";
-      } else if (userId === null && PERSONAL_KINDS.has(kind)) {
-        hiddenCode = "typical_viewer_personal";
-        hiddenReason = "Hidden for Typical viewer: personal row";
-      } else if (kind === "genre-showcase" && userId !== null && taste(userId).confidence >= 0.35) {
-        hiddenCode = "cold_start_only";
-        hiddenReason = "Only shown for new viewers while learning their taste";
-      } else if (kind === "playlists") {
-        hiddenCode = "no_playlists";
-        hiddenReason = "Viewer has no playlists";
-      } else if (kind === "favorites") {
-        hiddenCode = "no_favorites";
-        hiddenReason = "Viewer has no favorites";
-      } else if (["up-next", "finish-what-you-started", "continue-watching"].includes(kind)) {
-        hiddenCode = "no_in_progress";
-        hiddenReason = "Nothing in progress for this viewer";
-      } else if (kind === "trakt-recommendations" || kind === "trakt-watchlist") {
-        hiddenCode = "needs_trakt";
-        hiddenReason = "No Trakt titles for this viewer";
-      } else if (kind === "llm") {
-        hiddenCode = "ai_unavailable";
-        hiddenReason = "No AI recommendations ready";
-      } else if (PERSONAL_KINDS.has(kind)) {
-        hiddenCode = "needs_watch_history";
-        hiddenReason = "Needs more watch history for this viewer";
-      }
-      out.push({
-        hubId,
-        title,
-        kind,
-        reason: "",
-        score: 0,
-        source,
-        items: [],
-        hidden: true,
-        hiddenCode,
-        hiddenReason,
-        layer,
-        policy: pol,
-        policyLayer: layer,
-        anchorSlot: pol.slot,
-        pinned: Boolean(pol.slot),
-        placement: pol.slot
-          ? `${layer} anchor at slot ${pol.slot}`
-          : layer === "override"
-            ? "Viewer override"
-            : `Always included by ${layer}`,
-      });
-    }
-    return out;
-  }
-
-  const ROW_META: Record<string, { group: RowGroup; sections?: RowSectionTag[] }> = {
-    "continue-watching": { group: "picks", sections: ["home", "movies", "shows"] },
-    "up-next": { group: "shows", sections: ["home", "shows"] },
-    "top-10": { group: "picks", sections: ["home"] },
-    "hidden-gems": { group: "explore", sections: ["home", "movies", "shows"] },
-    "more-from-person": { group: "explore", sections: ["home", "movies", "shows"] },
-    "top-10-today": { group: "household", sections: ["home"] },
-    "short-on-time": { group: "picks", sections: ["home", "movies"] },
-    "comfort-rewatches": { group: "picks", sections: ["home"] },
-    "popular-on-server": { group: "household" },
-    trending: { group: "household" },
-  };
-  const SECTION_ROWS: AvailableRow[] = [
-    {
-      hubId: "fans-also-loved",
-      title: "Fans of What You Watch Also Loved",
-      kind: "fans-also-loved",
-      description:
-        "What people who love the viewer's favourites loved most, strongest when several favourites agree.",
-      group: "picks",
-      sections: ["home", "movies", "shows"],
-    },
-    {
-      hubId: "trending-with-fans",
-      title: "Trending With Fans of What You Watch",
-      kind: "trending-with-fans",
-      description: "What's trending right now among fans of the viewer's favourites.",
-      group: "picks",
-      sections: ["home", "movies", "shows"],
-    },
-    {
-      hubId: "taste-cluster",
-      title: "<Taste cluster>",
-      kind: "taste-cluster",
-      description:
-        "Named rows for the viewer's strongest taste clusters, e.g. “Time-Travel Sci-Fi Films”.",
-      group: "explore",
-      sections: ["home", "movies", "shows"],
-    },
-    {
-      hubId: "era-favourites",
-      title: "Best of the '<decade>s for You",
-      kind: "era-favourites",
-      description: "Unseen films from the decades the viewer loves most.",
-      group: "explore",
-      sections: ["home", "movies"],
-    },
-    {
-      hubId: "world-cinema",
-      title: "<Language> Cinema for You",
-      kind: "world-cinema",
-      description: "Films in the languages the viewer watches beyond their main one.",
-      group: "explore",
-      sections: ["home", "movies"],
-    },
-    {
-      hubId: "occasion",
-      title: "Date Night · Family Night · Under 100 Minutes",
-      kind: "occasion",
-      description: "Occasion rows, each shown only when the viewer's history supports it.",
-      group: "explore",
-      sections: ["home", "movies"],
-    },
-    {
-      hubId: "acclaimed-unseen",
-      title: "Acclaimed & Unseen",
-      kind: "acclaimed-unseen",
-      description: "Highly rated films the viewer hasn't watched, ranked by fit.",
-      group: "explore",
-      sections: ["home", "movies"],
-    },
-    {
-      hubId: "top-rated-in-genre",
-      title: "Top-Rated <Genre>",
-      kind: "top-rated-in-genre",
-      description: "The best of the viewer's top genres.",
-      group: "explore",
-      sections: ["home", "movies", "shows"],
-    },
-    {
-      hubId: "new-seasons",
-      title: "New Seasons of Your Shows",
-      kind: "new-seasons",
-      description: "Fresh seasons of shows the viewer is caught up on.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-    {
-      hubId: "finish-what-you-started",
-      title: "Finish What You Started",
-      kind: "finish-what-you-started",
-      description: "Shows started and stalled, ordered by how close they are to done.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-    {
-      hubId: "start-something-new",
-      title: "Start Something New",
-      kind: "start-something-new",
-      description: "Unstarted shows that match the viewer's taste, from the pilot.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-    {
-      hubId: "complete-series",
-      title: "Complete Series to Binge",
-      kind: "complete-series",
-      description: "Ended series with two or more seasons.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-    {
-      hubId: "limited-series",
-      title: "Limited Series for You",
-      kind: "limited-series",
-      description: "One-season stories and miniseries.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-    {
-      hubId: "more-from-network",
-      title: "More from <Network>",
-      kind: "more-from-network",
-      description: "Series from networks the viewer keeps coming back to.",
-      group: "shows",
-      sections: ["home", "shows"],
-    },
-  ];
-
-  function availableRows(): AvailableRow[] {
-    return [
-      ...baseRows().map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" as RowGroup }), ...r })),
-      ...SECTION_ROWS,
-    ];
-  }
-
-  function baseRows() {
-    return [
-      {
-        hubId: "continue-watching",
-        title: "Continue Watching",
-        kind: "continue-watching",
-        description:
-          "Titles the viewer is part-way through (built by Plex; the engine only places it).",
-      },
-      {
-        hubId: "top-10",
-        title: "Top 10 for You",
-        kind: "top-10",
-        description: "The ten titles the taste model rates highest right now.",
-      },
-      {
-        hubId: "top-10-today",
-        title: "Top 10 Today",
-        kind: "top-10-today",
-        description: "The server's Top 10 today. Leads new viewers' Homes.",
-      },
-      {
-        hubId: "genre-showcase",
-        title: "Acclaimed <Genre>",
-        kind: "genre-showcase",
-        description: "Acclaimed, popular titles of one broad genre (new viewers).",
-      },
-      {
-        hubId: "because-you-watched",
-        title: "Because You Watched…",
-        kind: "because-you-watched",
-        description: "Titles similar to something the viewer recently finished.",
-      },
-      {
-        hubId: "more-from-person",
-        title: "More from…",
-        kind: "more-from-person",
-        description: "More from a director, writer or actor the viewer loves.",
-      },
-      {
-        hubId: "trending-in-your-taste",
-        title: "Trending in Your Taste",
-        kind: "trending-in-your-taste",
-        description: "This week's trending titles, ranked by taste.",
-      },
-      {
-        hubId: "hidden-gems",
-        title: "Hidden Gems for You",
-        kind: "hidden-gems",
-        description: "Highly rated, little-known titles that fit the viewer's taste.",
-      },
-      {
-        hubId: "short-on-time",
-        title: "Short on Time",
-        kind: "short-on-time",
-        description: "Shorter films and episodes, fitted to the time the viewer has.",
-      },
-      {
-        hubId: "new-this-week",
-        title: "New This Week",
-        kind: "new-this-week",
-        description: "Fresh releases in the viewer's favourite genres.",
-      },
-      {
-        hubId: "comfort-rewatches",
-        title: "Comfort Rewatches",
-        kind: "comfort-rewatches",
-        description: "Favourites the viewer has not seen in a while.",
-      },
-      {
-        hubId: "something-different",
-        title: "Something Different",
-        kind: "something-different",
-        description: "Exploration: acclaimed titles outside the usual genres.",
-      },
-      {
-        hubId: "new-releases",
-        title: "New & Noteworthy",
-        kind: "new-releases",
-        description: "The newest released titles in the catalogue.",
-      },
-      {
-        hubId: "popular-on-server",
-        title: "Popular on This Server",
-        kind: "popular-on-server",
-        description: "What other viewers here watched most.",
-      },
-      {
-        hubId: "top-rated",
-        title: "Top Rated",
-        kind: "top-rated",
-        description: "TMDB's top rated titles.",
-      },
-      {
-        hubId: "trending",
-        title: "Trending This Week",
-        kind: "trending",
-        description: "What is trending on TMDB this week.",
-      },
-      {
-        hubId: "recently-added",
-        title: "Recently Added",
-        kind: "recently-added",
-        description: "Built by Plex at the top of each library section.",
-      },
-      {
-        hubId: "playlists",
-        title: "Recent Playlists",
-        kind: "playlists",
-        description: "Built by Plex at the end of Home.",
-      },
-      ...state.collections
-        .filter((c) => !c.builtIn)
-        .map((c) => ({
-          hubId: `collection:${c.id}`,
-          title: c.name,
-          kind: `collection:${c.id}`,
-          description: "Owner collection (Collection Studio).",
-          group: "collections" as const,
-          sections: (c.mediaType === "movie"
-            ? ["home", "movies"]
-            : c.mediaType === "show"
-              ? ["home", "shows"]
-              : ["home", "movies", "shows"]) as RowSectionTag[],
-        })),
-    ];
-  }
-
-  function layoutDoc() {
-    const collectionSchedules = Object.fromEntries(
-      state.collections.flatMap((c) =>
-        c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
-      ),
-    );
-    const libraries = listMockLibs()
-      .filter((l) => l.source === "plugin" || l.mediaType === "movie" || l.mediaType === "show")
-      .map((l) => {
-        const id = Number(l.id);
-        const section = `library:${id}` as const;
-        const type =
-          l.source === "plugin" ? ("plugin" as const) : (l.mediaType as "movie" | "show");
-        return {
-          id,
-          name: String(l.name),
-          slug: String(l.key),
-          type,
-          section,
-          customized: state.layout.global.some((p) => p.section === section),
-        };
-      });
-    return {
-      layout: Object.keys(collectionSchedules).length
-        ? { ...state.layout, collectionSchedules }
-        : state.layout,
-      availableRows: availableRows(),
-      defaults: { maxRows: DEFAULT_ROWS },
-      libraries,
-    };
-  }
-
-  function libraryLayoutDoc(libId: number) {
-    const raw = lookupMockLib(libId);
-    if (!raw) return null;
-    const section = `library:${libId}` as const;
-    const isPlugin = raw.source === "plugin";
-    const type = isPlugin ? ("plugin" as const) : (raw.mediaType as "movie" | "show");
-    const customPage = state.layout.global.find((p) => p.section === section);
-    const customized = Boolean(customPage);
-    const effectivePage: LayoutPage = customPage
-      ? structuredClone(customPage)
-      : { section, rows: [] };
-    const viewerPages: ViewerLibraryPage[] = state.layout.viewers.flatMap((v) => {
-      const vp = v.pages.find((p) => p.section === section);
-      return vp ? [{ userId: v.userId, page: structuredClone(vp) }] : [];
-    });
-    const collectionSchedules = Object.fromEntries(
-      state.collections.flatMap((c) =>
-        c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
-      ),
-    );
-    const surface: LibraryMediaSurface = type === "show" ? "shows" : "movies";
-    const candidates: AvailableRow[] = isPlugin
-      ? pluginLibraryCandidates(libId, raw).descriptors
-      : availableRows().filter((r) => rowFits(r, section, surface));
-    return {
-      library: {
-        id: libId,
-        name: String(raw.name),
-        slug: String(raw.key),
-        type,
-        section,
-        customized,
-      },
-      customized,
-      effectivePage,
-      viewerPages,
-      defaults: { maxRows: DEFAULT_ROWS.library ?? 8 },
-      availableRows: candidates,
-      collectionSchedules,
-      layout: Object.keys(collectionSchedules).length
-        ? { ...state.layout, collectionSchedules }
-        : state.layout,
-    };
-  }
-
-  /** The server's main validation rules, so the UI's error paths are exercised. */
-  function validateLayout(doc: HomeLayout): { field: string; message: string }[] {
-    const out: { field: string; message: string }[] = [];
-    const pages = (field: string, ps: LayoutPage[]) =>
-      ps.forEach((p, i) => {
-        const slots = new Map<number, string>();
-        p.rows.forEach((r, j) => {
-          const f = `${field}[${i}].rows[${j}]`;
-          if (!r.row) out.push({ field: `${f}.row`, message: "is required" });
-          if (r.slot && slots.has(r.slot))
-            out.push({
-              field: `${f}.slot`,
-              message: `slot ${r.slot} is already anchored to ${slots.get(r.slot)}`,
-            });
-          if (r.slot) slots.set(r.slot, r.row);
-          if (r.minSlot && r.maxSlot && r.minSlot > r.maxSlot)
-            out.push({
-              field: `${f}.minSlot`,
-              message: `never above slot ${r.minSlot} and never below slot ${r.maxSlot} cannot both hold`,
-            });
-          if (r.row === "continue-watching" && r.status === "off")
-            out.push({
-              field: `${f}.status`,
-              message:
-                "Continue Watching is Plex's own row: it can be anchored or bounded, not turned off",
-            });
-        });
-      });
-    pages("global", doc.global ?? []);
-    (doc.global ?? []).forEach((p, i) =>
-      p.rows.forEach((r, j) => {
-        if (r.when && collectionIdOf(r.row))
-          out.push({
-            field: `layout.global[${i}].rows[${j}].when`,
-            message: "a collection row uses its collection's schedule",
-          });
-      }),
-    );
-    (doc.viewers ?? []).forEach((v, i) => pages(`viewers[${i}].pages`, v.pages));
-    return out;
-  }
-
-  function impact(draft: HomeLayout, device: string, at: Date, section: string) {
-    const viewers = VIEWERS.map((v) => {
-      const visible = (l: HomeLayout) =>
-        homeFor(v.id, device, at, section, l).rows.filter(
-          (r) =>
-            (!r.hidden && r.source !== "plex") || (r.kind === "continue-watching" && !r.hidden),
-        );
-      const before = visible(state.layout);
-      const after = visible(draft);
-      const bi = new Map(before.map((r, i) => [r.hubId, i]));
-      const ai = new Map(after.map((r, i) => [r.hubId, i]));
-      const added = after.filter((r) => !bi.has(r.hubId)).map((r) => r.title);
-      const removed = before.filter((r) => !ai.has(r.hubId)).map((r) => r.title);
-      const moved = after.filter(
-        (r) => bi.has(r.hubId) && bi.get(r.hubId) !== ai.get(r.hubId),
-      ).length;
-      const sec = parseLayoutSection(section);
-      return {
-        viewerId: v.id,
-        title: v.title,
-        overrides: overrideCount(draft, v.id, sec),
-        changed: added.length + removed.length + moved > 0,
-        added,
-        removed,
-        moved,
-      };
-    });
-    return {
-      viewers,
-      summary: {
-        viewers: viewers.length,
-        withOverrides: viewers.filter((v) => v.overrides > 0).length,
-        changed: viewers.filter((v) => v.changed).length,
-      },
-    };
-  }
-
   function activity(): ActivityDay[] {
     const out: ActivityDay[] = [];
     for (let i = 29; i >= 0; i--) {
@@ -2579,6 +1502,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       },
     };
     return {
+      setupSteps: setupSteps(),
       names: [
         "cache",
         "catalog",
@@ -2650,6 +1574,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           os: "darwin",
           arch: "arm64",
           ffmpeg: "8.0.1",
+          videoEncoderLimit: state.config.transcode?.maxTranscodes ?? 2,
           filtersProbed: true,
           toneMap: ["videotoolbox"],
           colour: ["zscale", "colorspace", "scale"],
@@ -2750,16 +1675,34 @@ export function createFakeServer(opts: FakeOptions = {}) {
     };
   }
 
+  const currentNotes = `## Console
+- Release notes open in Ether after an update and can be reopened from Maintenance.
+- Updates shows the last and next checks. Use **Check now** whenever you want to check manually.
+
+## Playback
+- Continue watching keeps your latest position when switching between apps.
+- The activity page shows whether a stream plays directly or uses transcoding.`;
+  const availableNotes = `## Libraries
+- Library scans show which folder Ether is indexing.
+- Search includes season and episode matches.
+
+## Playback
+- Subtitle changes keep the current release playing.`;
+  let notesUnseen = opts.whatsNew === true;
+  const availableVersion = "0.9.1";
+  const notesUrl = "https://github.com/braedonsaunders/ether/releases";
+  let lastUpdateCheck = Date.now() - 3600_000;
   let updateRequested = false;
   let updateForced = false;
   function updateStatus() {
     return {
       enabled: true,
-      current: "0.2.0",
+      current: state.boot.version,
       available: {
-        version: "0.3.0",
+        version: availableVersion,
         kind: "binary",
-        notesUrl: "https://example.invalid/notes",
+        notes: availableNotes,
+        notesUrl,
         staged: true,
       },
       capability: "self-apply",
@@ -2771,7 +1714,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       autoUpdate: state.config.updates.autoUpdate,
       requested: updateRequested,
       force: updateForced,
-      lastCheck: new Date(Date.now() - 3600_000).toISOString(),
+      lastCheck: new Date(lastUpdateCheck).toISOString(),
+      nextCheck: new Date(lastUpdateCheck + 6 * 3600_000).toISOString(),
       window: {
         start: state.config.updates.maintenanceStart ?? "03:00",
         end: state.config.updates.maintenanceEnd ?? "06:00",
@@ -3333,8 +2277,31 @@ export function createFakeServer(opts: FakeOptions = {}) {
     },
     sync: { pluginId: "demo-music", kindKey: "recording", generation: 1, items: 18 },
   });
-  lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
-  listMockLibs = () => mockLibs;
+  const pagesMock = createPagesMock({
+    metadataListsAvailable: () =>
+      metadataSources().some((source) => source.id === "tmdb" && source.configured),
+    catalog,
+    card,
+    libraries: () =>
+      mockLibs
+        .filter((l) => !l.hidden)
+        .map((l) => {
+          const kind = l.kind as { media?: string } | undefined;
+          const media = kind?.media;
+          const plugin = l.source === "plugin" ? String(l.pluginName ?? l.name) : undefined;
+          return {
+            id: Number(l.id),
+            name: String(l.name),
+            experience:
+              media === "music" ? "listen" : media === "book" ? "read" : ("watch" as const),
+            mediaType:
+              l.source === "plugin" ? undefined : l.mediaType === "show" ? "show" : "movie",
+            plugin,
+          };
+        }),
+    viewers: () => VIEWERS.map((v) => ({ id: v.id, title: v.title })),
+    collections: () => state.collections,
+  });
   const libraryTabs = createLibraryTabsMock({
     catalog,
     getCollections: () => state.collections,
@@ -3518,13 +2485,52 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return { mediaClass, adapterOnly, effective: present, available: avail, apps };
   }
 
+  if (metadataMode === "both" || metadataMode === "tvdb") state.config.catalog.tvdbKey = "••••";
+  if (metadataMode === "both") mockLibs[1]!.metadataSource = "tmdb";
+
+  const episodeOverrides = new Map<string, EpisodeOrder>();
+  const tmdbAired = { source: "tmdb", kind: "aired" };
+  const tvdbAired = { source: "tvdb", kind: "aired" };
+  function episodeOrder(key: string): EpisodeOrderDetails | undefined {
+    const orderOptions = metadataSources().filter((source) => source.configured && source.shows);
+    const library = mockLibs.find((item) => item.id === 2)!;
+    const defaultSource =
+      orderOptions.find((source) => source.id === library.metadataSource) ?? orderOptions[0];
+    if (!defaultSource) return;
+    const libraryDefault = defaultSource.id === "tvdb" ? tvdbAired : tmdbAired;
+    const override = episodeOverrides.get(key);
+    const effective = override ?? libraryDefault;
+    const options = orderOptions.flatMap((source): EpisodeOrder[] =>
+      source.id === "tvdb"
+        ? [tvdbAired, { source: "tvdb", kind: "dvd" }, { source: "tvdb", kind: "absolute" }]
+        : [tmdbAired, { source: "tmdb", kind: "group:mock-story", label: "Story arcs" }],
+    );
+    return {
+      effective,
+      override,
+      libraryDefault,
+      libraryName: String(library.name),
+      options,
+      gap:
+        effective.source === "tmdb" && orderOptions.some((source) => source.id === "tvdb")
+          ? { order: tvdbAired, count: 4120 }
+          : undefined,
+    };
+  }
+
+  function matchProviderId(key: string, source: string) {
+    return String((Number(key) % 1e15) + (source === "tvdb" ? 100000 : 0));
+  }
+
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
       lib.sources = [
         lib.source === "plugin"
           ? `plugin:${lib.pluginId}:${lib.kindKey}`
           : lib.mediaType === "show"
-            ? "tmdb-tv"
+            ? metadataSources().find((source) => source.configured && source.shows)?.id === "tvdb"
+              ? "tvdb"
+              : "tmdb-tv"
             : "tmdb-movies",
       ];
     if (lib.source !== "plugin" && lib.rules === undefined) {
@@ -3613,6 +2619,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
             libraries: [{ id: 2, name: "TV Shows" }],
           },
           {
+            id: "tvdb",
+            name: "TheTVDB",
+            owner: "TheTVDB",
+            group: "builtin",
+            mediaTypes: ["show"],
+            health: "unknown",
+            libraries: [],
+          },
+          {
             id: "plugin:demo:book",
             name: "Books",
             owner: "Open Library",
@@ -3640,7 +2655,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
             owner: "Cinemeta",
             group: "stremio",
             mediaTypes: ["movie"],
-            health: "unknown",
+            health: "ok",
+            // Cut off at the default 500 titles per list.
+            itemCount: 468,
+            listed: 500,
+            limit: 500,
             pluginId: "cinemeta",
             libraries: [],
           },
@@ -3691,12 +2710,35 @@ export function createFakeServer(opts: FakeOptions = {}) {
               health: "unknown",
               libraries: [],
             })),
-        ].map((source) => ({
-          ...source,
-          libraries: mockLibs
-            .filter((lib) => ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id))
-            .map((lib) => ({ id: lib.id, name: lib.name })),
-        })),
+        ]
+          .filter((source) => {
+            if (source.pluginId) {
+              const enabled = extendMock.pluginEnabled(source.pluginId);
+              return (
+                enabled === true ||
+                (enabled === false && url.searchParams.get("includeDisabled") === "true")
+              );
+            }
+            if (source.id === "tvdb")
+              return metadataSources().some((entry) => entry.id === "tvdb" && entry.configured);
+            if (source.id.startsWith("tmdb-"))
+              return metadataSources().some((entry) => entry.id === "tmdb" && entry.configured);
+            return true;
+          })
+          .map((source) => ({
+            ...source,
+            enabled: source.pluginId ? extendMock.pluginEnabled(source.pluginId) === true : true,
+            libraries: mockLibs
+              .filter(
+                (lib) =>
+                  (source.group === "plugin" &&
+                    "kindKey" in source &&
+                    lib.pluginId === source.pluginId &&
+                    lib.kindKey === source.kindKey) ||
+                  ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id),
+              )
+              .map((lib) => ({ id: lib.id, name: lib.name })),
+          })),
       });
     if (!seg[1]) {
       if (method === "POST") {
@@ -3706,6 +2748,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           key: `lib-${id}`,
           name: String(b.name ?? "Library"),
           sources: b.sources,
+          metadataSource: b.metadataSource,
           source: b.collectionId ? "collection" : "catalogue",
           collectionId: b.collectionId,
           mediaType: b.mediaType,
@@ -4357,11 +3400,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "m3u",
         "xtream",
       ].filter((id) => state.config.frontends?.[id]?.enabled);
-      const adapters: Record<string, { name: string; logo?: string; auth?: string }> = {};
+      const adapters: Record<
+        string,
+        { name: string; logo?: string; auth?: string; protocolHint?: string }
+      > = {};
       for (const [id, entry] of Object.entries(state.config.frontends ?? {})) {
         if (!id.startsWith("plugin:") || !entry?.enabled) continue;
         enabled.push(id);
-        adapters[id] = { name: id.split(":").at(-1) || id, auth: "ether_token" };
+        adapters[id] = {
+          name: id.split(":").at(-1) || id,
+          auth: "ether_token",
+          protocolHint: id.endsWith(":subsonic") ? "subsonic" : undefined,
+        };
       }
       if (method === "GET" && seg.length === appsOffset + 1)
         return json(Object.keys(adapters).length ? { apps: enabled, adapters } : { apps: enabled });
@@ -4433,7 +3483,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const site = sites.handle(method, seg, body, state.config);
     if (site) return json(site.body, site.status);
 
-    const ext = await extendMock(method, seg, q, body);
+    const ext = await extendMock.handle(method, seg, q, body);
     if (ext) return ext;
 
     const cal = calendar.handle(method, seg, q);
@@ -4447,10 +3497,36 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const tvr = liveTV.handle(method, seg, q, body);
     if (tvr) return json(tvr.body, tvr.status);
 
-    const tr = trash.handle(method, seg, body, state.config);
+    const tr = trash.handle(method, seg, body, state.config, q);
     if (tr) return json(tr.body, tr.status);
 
-    const qm = qualityMock.handle(method, seg, body, state.config, (id) => safetyPolicies.get(id));
+    const qm = qualityMock.handle(
+      method,
+      seg,
+      q,
+      body,
+      state.config,
+      mockLibs.map((l) => ({
+        id: Number(l.id),
+        name: String(l.name ?? ""),
+        source: String(l.source ?? "builtin"),
+        mediaType: l.mediaType ? String(l.mediaType) : undefined,
+        pluginId: l.pluginId ? String(l.pluginId) : undefined,
+        pluginName: l.pluginName ? String(l.pluginName) : undefined,
+        sort: Number(l.sort ?? 0),
+        hidden: Boolean(l.hidden),
+      })),
+      (id) => safetyPolicies.get(id),
+      (key) => {
+        const hit = byKey.get(key);
+        if (!hit) return null;
+        const isEpisode = hit.type === "episode" || hit.type === "show";
+        return {
+          kind: isEpisode ? "episode" : "movie",
+          libraryIds: isEpisode ? [2] : [1, 4],
+        };
+      },
+    );
     if (qm) return json(qm.body, qm.status);
 
     const rc = releaseConsole.handle(method, seg, q, body);
@@ -4611,26 +3687,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
     };
     // Settings schemas mirror internal/frontend (WS1d): keep beside the
     // descriptors so the Apps page renders from the same shape.
-    const rowKindOptions = [
-      "because-you-watched",
-      "trending",
-      "top-10",
-      "fans-also-loved",
-      "new-releases",
-      "hidden-gems",
-      "more-from-person",
-      "popular-on-server",
-    ];
     const mediaBrowserSchema = (quickConnect: boolean) => ({
       signInHelp: true,
       sections: [
         {
           key: "home",
-          fields: [
-            { key: "homeRows", kind: "bool" },
-            { key: "homeRowCount", kind: "number", more: true, min: 0, max: 12 },
-            { key: "homeRowKinds", kind: "rowKinds", more: true, options: rowKindOptions },
-          ],
+          fields: [{ key: "homeRowCount", kind: "number", min: 0, max: 12 }],
         },
         {
           key: "find",
@@ -4703,6 +3765,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
       { id: "webdav", name: "Files (WebDAV)", settingsSchema: accountSchema("files") },
       { id: "m3u", name: "M3U & XMLTV", settingsSchema: accountSchema("playlist") },
       { id: "xtream", name: "IPTV apps (Xtream)", settingsSchema: accountSchema("xtream") },
+      // A plugin adapter (ether.music) that has not shipped its own icon yet.
+      // Plugins install after first-run setup, so the setup chooser never lists it.
+      ...(state.config.setupComplete
+        ? [
+            {
+              id: "plugin:ether.music:subsonic",
+              name: "Subsonic",
+              auth: "query_credentials",
+              protocolHint: "subsonic",
+              pathPrefix: "/subsonic",
+            },
+          ]
+        : []),
     ];
     if (seg[0] === "frontends" && seg.length === 1 && method === "GET") {
       return json(
@@ -4908,6 +3983,42 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return json({ ok: true });
     }
 
+    if (
+      method === "POST" &&
+      seg.length === 4 &&
+      seg[0] === "test" &&
+      seg[3] === "speed" &&
+      (seg[1] === "usenet" || seg[1] === "debrid")
+    ) {
+      const usenet = seg[1] === "usenet";
+      const providers = usenet ? state.config.usenet.providers : state.config.debrid?.providers;
+      if (
+        !providers?.some(
+          (provider) => provider.id === decodeURIComponent(seg[2]!) && provider.enabled,
+        )
+      ) {
+        return json({ status: "unavailable" });
+      }
+      const slow = usenet && !opts.fastUsenetSpeed;
+      const mbps = slow ? 0.65 : 6.4;
+      const connections = usenet ? 4 : 1;
+      return json({
+        status: "ok",
+        at: new Date().toISOString(),
+        seconds: 10,
+        mbps,
+        mbpsPerConnection: mbps / connections,
+        streamMbps: mbps * 8 * 0.8,
+        typicalMbps: 10.16,
+        connections,
+        opened: usenet ? 2 : 1,
+        refused: 0,
+        misses: slow ? 3 : 0,
+        spareOnly: slow,
+        streamsPlaying: slow ? 2 : 0,
+      });
+    }
+
     // Static routes
     const remix = remixMock(route, body);
     if (remix) return remix;
@@ -5003,6 +4114,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /bootstrap":
       case "GET /health":
         return json(state.boot);
+      case "GET /server/proxy-hint": {
+        const trusted = state.config.server.trustedProxyCIDRs ?? [];
+        const proxies =
+          opts.untrustedProxy && !trusted.includes("172.18.0.2") && !trusted.includes("npm")
+            ? [
+                {
+                  address: "172.18.0.2",
+                  name: "npm",
+                  requests: 42,
+                  lastSeen: new Date().toISOString(),
+                },
+              ]
+            : [];
+        return json({ proxies });
+      }
       case "GET /server/console-listener": {
         const mainPort = state.config.server.port ?? 32400;
         const configuredPort = state.config.server.consolePort ?? 0;
@@ -5030,24 +4156,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ config: state.config });
       case "PUT /config":
         state.config = body as EtherConfig;
+        for (const key of ["tmdbKey", "tvdbKey"] as const) {
+          if (state.config.catalog[key]) state.config.catalog[key] = "••••";
+        }
         return json({ config: state.config });
+      case "GET /metadata/sources":
+        return json({ sources: metadataSources() });
       case "GET /setup/status":
         return json({
           setupComplete: state.config.setupComplete,
-          requiredComplete: !catalogKeyMissing,
-          steps: [
-            {
-              id: "catalog",
-              title: "TMDB API key",
-              complete: !catalogKeyMissing,
-              required: true,
-            },
-          ],
+          requiredComplete: true,
+          steps: setupSteps(),
         });
       case "POST /setup/complete":
         state.config.setupComplete = true;
         state.boot.setupComplete = true;
-        return json({ setupComplete: true, requiredComplete: true, steps: [] });
+        return json({ setupComplete: true, requiredComplete: true, steps: setupSteps() });
       case "POST /setup/reopen":
         return json({
           setupComplete: state.config.setupComplete,
@@ -5533,10 +4657,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
               ?.value || DEFAULT_USER_AGENT,
         });
       }
+      case "POST /test/tvdb":
+      case "POST /test/tmdb": {
+        const key = (body as { key?: string } | null)?.key?.trim();
+        const source = route.endsWith("/tmdb") ? "tmdb" : "tvdb";
+        const configured = metadataSources().some(
+          (entry) => entry.id === source && entry.configured,
+        );
+        return json({ ok: Boolean(key && key !== "••••") || configured, durationMs: 73 });
+      }
       case "POST /test/usenet":
       case "POST /test/indexer":
       case "POST /test/debrid":
-      case "POST /test/tmdb":
       case "POST /test/introdb":
       case "POST /test/llm":
       case "POST /test/trakt":
@@ -6054,7 +5186,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       case "GET /updates":
         return json(updateStatus());
+      case "GET /updates/notes": {
+        const version = q.get("version");
+        if (version === availableVersion)
+          return json({ version, markdown: availableNotes, notesUrl });
+        if (version && version !== state.boot.version)
+          return err(404, "release_not_found", "Release notes not found for this version.");
+        return json({ version: state.boot.version, markdown: currentNotes, unseen: notesUnseen });
+      }
+      case "POST /updates/notes/dismiss":
+        notesUnseen = false;
+        return new Response(null, { status: 204 });
       case "POST /updates/check":
+        lastUpdateCheck = Date.now();
         return json(updateStatus(), 202);
       case "POST /updates/apply":
         updateRequested = true;
@@ -6454,7 +5598,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             rules: [],
             limit: sel.maxItems ?? req.maxItems ?? 100,
             refresh: req.refresh ?? "daily",
-            targets: req.targets ?? { collectionsTab: true, users: "all" },
+            browseInApps: req.browseInApps ?? true,
             folder,
             sortOrder: idx + 1,
             enabled: req.enabled ?? true,
@@ -6504,7 +5648,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           refresh: req.refresh ?? "daily",
           maxItems: req.maxItems ?? 100,
           enabled: req.enabled ?? true,
-          targets: req.targets ?? { collectionsTab: true, users: "all" },
+          browseInApps: req.browseInApps ?? true,
           catalogCount: addonId === "cinemeta" ? 4 : 6,
           managedCount: state.collections.filter((c) => c.addonSync?.addonId === addonId).length,
           removedCount: 0,
@@ -6656,6 +5800,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /catalog/search": {
         const needle = (q.get("q") ?? "").toLowerCase();
         const type = q.get("type");
+        const includeOrder = type === "show" && q.get("episodeOrder") === "1";
+        const limit = Number(q.get("limit") ?? 24);
         return json({
           items: catalog
             .filter(
@@ -6663,8 +5809,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 t.title.toLowerCase().includes(needle) &&
                 (!type || type === "mixed" || t.type === type),
             )
-            .slice(0, Number(q.get("limit") ?? 24))
-            .map(card),
+            .slice(0, includeOrder ? Math.min(15, limit) : limit)
+            .map((title) => {
+              const item = card(title);
+              if (!includeOrder) return item;
+              const order = episodeOrder(title.key);
+              return {
+                ...item,
+                episodeOrder: order && {
+                  effective: order.effective,
+                  override: order.override,
+                  libraryDefault: order.libraryDefault,
+                  libraryName: order.libraryName,
+                },
+              };
+            }),
         });
       }
       case "GET /catalog/facets": {
@@ -6776,90 +5935,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
               };
             }),
         });
-      case "GET /layout":
-        return json(layoutDoc());
-      case "PUT /layout": {
-        const doc = (body as { layout?: HomeLayout }).layout;
-        if (!doc)
-          return json(
-            {
-              error: {
-                code: "validation",
-                message: "layout: is required",
-                fields: [{ field: "layout", message: "is required" }],
-              },
-            },
-            400,
-          );
-        const problems = validateLayout(doc);
-        if (problems.length)
-          return json(
-            {
-              error: {
-                code: "validation",
-                message: `${problems[0]!.field}: ${problems[0]!.message}`,
-                fields: problems,
-              },
-            },
-            400,
-          );
-        state.layout = {
-          global: doc.global ?? [],
-          viewers: doc.viewers ?? [],
-          updatedAt: new Date().toISOString(),
-        };
-        // Edited collection schedules are saved on their collections.
-        for (const [id, schedule] of Object.entries(doc.collectionSchedules ?? {})) {
-          const c = state.collections.find((x) => String(x.id) === id);
-          if (c) c.targets = { ...c.targets, schedule: tidySchedule(schedule) ?? null };
-        }
-        return json(layoutDoc());
-      }
-      case "POST /layout/preview": {
-        const b = body as {
-          viewerId?: number | null;
-          layout?: HomeLayout;
-          device?: string;
-          at?: string;
-          section?: string;
-        };
-        if (b.layout) {
-          const problems = validateLayout(b.layout);
-          if (problems.length)
-            return json(
-              {
-                error: {
-                  code: "validation",
-                  message: `${problems[0]!.field}: ${problems[0]!.message}`,
-                  fields: problems,
-                },
-              },
-              400,
-            );
-        }
-        if (b.viewerId != null && !VIEWERS.some((v) => v.id === b.viewerId))
-          return err(404, "not_found", "no such viewer");
-        return json(
-          homeFor(
-            b.viewerId ?? null,
-            b.device ?? "tv",
-            b.at ? new Date(b.at) : new Date(),
-            b.section ?? "home",
-            b.layout ?? state.layout,
-          ),
-        );
-      }
-      case "POST /layout/impact": {
-        const b = body as { layout: HomeLayout; device?: string; at?: string; section?: string };
-        return json(
-          impact(
-            b.layout,
-            b.device ?? "tv",
-            b.at ? new Date(b.at) : new Date(),
-            b.section ?? "home",
-          ),
-        );
-      }
       case "GET /insights/ranker":
         return json({
           trainedAt: new Date(Date.now() - 3 * 3600e3).toISOString(),
@@ -6879,8 +5954,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       case "GET /insights/rows":
         return json({
-          rows: availableRows()
-            .slice(0, 9)
+          rows: [
+            ["home.continue", "Continue Watching"],
+            ["home.top-10", "Top 10 for You"],
+            ["home.trending", "Trending This Week"],
+            ["home.because-you-watched", "Because You Watched"],
+            ["home.hidden-gems", "Hidden Gems"],
+          ]
+            .map(([hubId, title]) => ({ hubId: hubId!, title: title! }))
             .map((r) => {
               const impressions7d = 80 + (hash(r.hubId) % 400);
               const plays7d = Math.round(impressions7d * ((hash(r.hubId + "p") % 30) / 100));
@@ -7013,6 +6094,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       if (idx < 0) return err(404, "not_found", "no such collection");
       const current = state.collections[idx]!;
+      if (seg[2] === "usage" && method === "GET") {
+        return json({ uses: COLLECTION_USAGE[id] ?? [] } satisfies CollectionUsage);
+      }
       if (seg[2] === "rebuild" && method === "POST") {
         const r = evaluate(current);
         current.itemCount = r.total;
@@ -7021,17 +6105,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       if (method === "GET") return json(current);
       if (method === "PUT") {
-        const input = normalizeSpec(body as CollectionSpec);
-        const spec = current.builtIn
-          ? {
-              ...current,
-              artwork: input.artwork,
-              targets: input.targets,
-              enabled: input.enabled,
-              rotate: input.rotate,
-              limit: input.limit > 0 && input.limit <= 100 ? input.limit : current.limit,
-            }
-          : input;
+        const spec = normalizeSpec(body as CollectionSpec);
         const saved = {
           ...spec,
           id,
@@ -7052,6 +6126,59 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const followed = t ? null : calendar.title(decodeURIComponent(seg[2]));
       if (followed) return json(followed);
       if (!t) return err(404, "not_found", "no such title");
+      if (seg[3] === "refresh" && method === "POST") return new Response(null, { status: 204 });
+      if (seg[3] === "episode-order" && method === "PUT") {
+        const order = (body as { order: EpisodeOrder | null }).order;
+        const details = t.type === "show" ? episodeOrder(t.key) : undefined;
+        if (
+          !details ||
+          (order &&
+            !details.options.some(
+              (option) => option.source === order.source && option.kind === order.kind,
+            ))
+        )
+          return err(400, "bad_input", "Episode order unavailable");
+        if (order) episodeOverrides.set(t.key, order);
+        else episodeOverrides.delete(t.key);
+        return new Response(null, { status: 204 });
+      }
+      if ((seg[3] === "matches" && method === "GET") || (seg[3] === "match" && method === "PUT")) {
+        const provider = body as { source: string; providerId: string } | null;
+        const source = method === "GET" ? q.get("source") : provider?.source;
+        if (
+          !metadataSources().some(
+            (entry) =>
+              entry.id === source &&
+              entry.configured &&
+              (t.type === "show" ? entry.shows : entry.movies),
+          )
+        )
+          return err(400, "bad_input", "Metadata source unavailable");
+        if (method === "PUT") {
+          const next = [...byKey.values()].find(
+            (item) =>
+              item.type === t.type && matchProviderId(item.key, source!) === provider?.providerId,
+          );
+          return next ? json({ key: next.key }) : err(404, "not_found", "no such title");
+        }
+        const search = (q.get("q") ?? "").toLowerCase();
+        const year = Number(q.get("year"));
+        return json(
+          [...byKey.values()]
+            .filter(
+              (item) =>
+                item.type === t.type &&
+                item.title.toLowerCase().includes(search) &&
+                (!year || item.year === year),
+            )
+            .slice(0, 20)
+            .map((item) => ({
+              ...card(item),
+              source,
+              providerId: matchProviderId(item.key, source!),
+            })),
+        );
+      }
       if (seg[3] === "tags") {
         if (method === "PUT")
           ownerTags.set(t.key, [
@@ -7079,6 +6206,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       return json({
         ...card(t),
+        episodeOrder: t.type === "show" ? episodeOrder(t.key) : undefined,
+        tmdbId: Number(t.key) % 1e15,
         cast: t.people.map((id) => PEOPLE.find((p) => p.id === id)).filter(Boolean),
         directors: [],
         keywords: t.keywords.map((id) => KEYWORDS.find((k) => k.id === id)).filter(Boolean),
@@ -7230,10 +6359,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (seg[2] === "taste" && seg[3] === "overrides" && method === "PUT") {
         state.overrides.set(id, (body as { overrides: TasteOverride[] }).overrides ?? []);
         return json(taste(id));
-      }
-      if (seg[2] === "home" && method === "GET") {
-        const at = q.get("at") ? new Date(q.get("at")!) : new Date();
-        return json(homeFor(id, q.get("device") ?? "tv", at, q.get("section") ?? "home"));
       }
       if (seg[2] === "refresh" && method === "POST") return new Response(null, { status: 204 });
       if (seg[2] === "plex-servers" && method === "GET") {
@@ -7606,6 +6731,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
       ) {
         value = { ...(value as Record<string, unknown>), token: "" };
       }
+      if (key === "catalog" && value && typeof value === "object") {
+        const catalog = value as Record<string, unknown>;
+        for (const field of ["tmdbKey", "tvdbKey"]) {
+          if (catalog[field] && (body as Record<string, unknown>)?.[field]) catalog[field] = "••••";
+        }
+      }
+      if (key === "quality" && value && typeof value === "object" && !Array.isArray(value)) {
+        const q = value as { rules?: { id?: string }[] | null };
+        if (Array.isArray(q.rules)) {
+          let seq = q.rules.length;
+          q.rules = q.rules.map((r) =>
+            r.id ? r : { ...r, id: `r_${(++seq).toString(36).padStart(8, "0")}` },
+          );
+        }
+      }
       (state.config as unknown as Record<string, unknown>)[key] = value;
       return json({ section: key, value });
     }
@@ -7737,68 +6877,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
       restoredHidden.add(`${viewerHidden[1]}:${(body as { handle: string }).handle}`);
       return json({ restored: true });
     }
-    if (seg[0] === "layout" && seg[1] === "libraries" && seg[2] && seg.length === 3) {
-      const libId = Number(seg[2]);
-      const section = `library:${libId}` as const;
-      if (!Number.isSafeInteger(libId) || libId <= 0 || !lookupMockLib(libId)) {
-        return err(404, "not_found", "no such library");
-      }
-      if (method === "GET") {
-        return json(libraryLayoutDoc(libId));
-      }
-      if (method === "DELETE") {
-        state.layout = {
-          ...clearLibraryLayout(state.layout, section),
-          updatedAt: new Date().toISOString(),
-        };
-        return json(libraryLayoutDoc(libId));
-      }
-      if (method === "PUT") {
-        const b = (body ?? {}) as {
-          page?: LayoutPage;
-          viewerPages?: ViewerLibraryPage[];
-          collectionSchedules?: Record<string, Record<string, unknown> | null>;
-        };
-        let global = state.layout.global.filter((p) => p.section !== section);
-        if (b.page) {
-          global = [...global, { ...b.page, section, rows: b.page.rows ?? [] }];
-        }
-        let viewers = state.layout.viewers;
-        if (b.viewerPages) {
-          const byUser = new Map(b.viewerPages.map((vp) => [vp.userId, { ...vp.page, section }]));
-          const seen = new Set<number>();
-          viewers = viewers.map((v) => {
-            seen.add(v.userId);
-            const rest = v.pages.filter((p) => p.section !== section);
-            const next = byUser.get(v.userId);
-            return { ...v, pages: next ? [...rest, next] : rest };
-          });
-          for (const [uid, page] of byUser.entries()) {
-            if (!seen.has(uid)) viewers = [...viewers, { userId: uid, pages: [page] }];
-          }
-        }
-        const nextDoc = prune({ ...state.layout, global, viewers });
-        const problems = validateLayout(nextDoc);
-        if (problems.length) {
-          return json(
-            {
-              error: {
-                code: "validation",
-                message: `${problems[0]!.field}: ${problems[0]!.message}`,
-                fields: problems,
-              },
-            },
-            400,
-          );
-        }
-        state.layout = { ...nextDoc, updatedAt: new Date().toISOString() };
-        for (const [id, schedule] of Object.entries(b.collectionSchedules ?? {})) {
-          const c = state.collections.find((x) => String(x.id) === id);
-          if (c) c.targets = { ...c.targets, schedule: tidySchedule(schedule as never) ?? null };
-        }
-        return json(libraryLayoutDoc(libId));
-      }
-    }
     return err(404, "not_found", "no such API endpoint");
   }
 
@@ -7832,6 +6910,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     if (gate === UNREACHABLE) throw new TypeError("Failed to fetch");
     if (gate) return json(gate.body, gate.status);
     if (seg[0] === "admin" && seg[1] === "prerolls") return prerolls(url, init);
+    const page = pagesMock.handle(method, seg, body, new Headers(init?.headers ?? req?.headers));
+    if (page) return json(page.body, page.status);
     return handle(method, url, body);
   }
 
@@ -7840,7 +6920,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
     state,
     catalog,
     evaluate,
-    homeFor,
     releaseConsole,
     sites,
     velaBranding,

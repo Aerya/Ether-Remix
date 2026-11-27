@@ -31,7 +31,7 @@ const changesMaxPages = 1000
 // The first pass only records today: the mirror was just filled.
 func (c *Catalog) syncChanges(ctx context.Context) error {
 	src, ok := c.tmdb().(changesSource)
-	if !ok {
+	if !ok || !c.TMDBConfigured() {
 		return nil
 	}
 	today := c.now().UTC().Truncate(24 * time.Hour)

@@ -135,8 +135,8 @@ func TestScenarioDifferentViewersGetDifferentHomes(t *testing.T) {
 	if r := rowByKind(am, KindFranchise); r != nil {
 		t.Fatalf("franchise row shown by default: %v", kindsOf(am))
 	}
-	saga := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", Rows: []core.RowPolicy{{Row: KindFranchise, Status: "eligible"}}}}}
-	if fp, err := h.e.PreviewLayout(ctx, &alice, wednesdayTV, "library:1", 12, saga); err != nil {
+	saga := rpage(libPage(1), prow(KindFranchise, core.PlacementAuto, 0))
+	if fp, err := previewDraft(h.e, ctx, &alice, wednesdayTV, "library:1", 12, saga); err != nil {
 		t.Fatal(err)
 	} else if r := rowByKind(fp.Rows, KindFranchise); r == nil || r.Hidden || r.Title != "Finish Star Saga Collection" {
 		t.Fatalf("an owner policy should bring the saga back on Movies: %v", kindsOf(fp.Rows))
@@ -145,8 +145,9 @@ func TestScenarioDifferentViewersGetDifferentHomes(t *testing.T) {
 	// with most of the ones Vera directed, so her director lens shows on a
 	// Movies page that explicitly includes person rows and does not hold Home titles back.
 	off := false
-	draft := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", DedupeHome: &off, Rows: []core.RowPolicy{{Row: KindPerson, Status: "always"}}}}}
-	mp2, err := h.e.PreviewLayout(ctx, &alice, wednesdayTV, "library:1", 12, draft)
+	draft := rpage(libPage(1), prow(KindPerson, core.PlacementShow, 0))
+	draft.SkipHome = &off
+	mp2, err := previewDraft(h.e, ctx, &alice, wednesdayTV, "library:1", 12, draft)
 	if err != nil {
 		t.Fatal(err)
 	}

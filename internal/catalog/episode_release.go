@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,13 +42,30 @@ func (c *Catalog) RecordPlayableEpisodes(ctx context.Context, keys []core.Rating
 			targets = append(targets, k)
 		}
 	}
+	var episodes []core.RatingKey
 	for _, key := range keys {
-		if key.Kind() != core.KindEpisode {
-			continue
+		if key.Kind() == core.KindEpisode && !seen[key] {
+			addTarget(key)
+			episodes = append(episodes, key)
 		}
-		// A playable premiere also releases its season navigation container.
-		addTarget(key)
-		addTarget(core.SeasonKey(key.TMDB(), key.Season()))
+	}
+	stored, err := c.releaseEpisodeRows(ctx, episodes)
+	if err != nil {
+		return err
+	}
+	if err := c.ProjectEpisodeTitles(ctx, stored); err != nil {
+		return err
+	}
+	parents := make(map[core.RatingKey]core.RatingKey, len(stored))
+	for _, episode := range stored {
+		parents[episode.Key] = episode.ParentKey
+	}
+	for _, key := range episodes {
+		parent := parents[key]
+		if parent == 0 {
+			parent = key.Parent()
+		}
+		addTarget(parent)
 	}
 	if len(targets) == 0 {
 		return nil
@@ -97,28 +116,143 @@ func applyEpisodeRelease(ctx context.Context, tx *sql.Tx, key core.RatingKey) er
 	return err
 }
 
-// SeasonEpisodesAll returns every mirrored regular episode of seasonKey in
-// episode order without filtering unreleased rows or calling metadata providers.
-func (c *Catalog) SeasonEpisodesAll(ctx context.Context, seasonKey core.RatingKey) ([]core.Title, error) {
-	if seasonKey.Kind() != core.KindSeason || seasonKey.Season() <= 0 || seasonKey.TMDB() <= 0 {
-		return nil, nil
-	}
-	return c.queryTitlesUnfiltered(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND season=? AND adult=0 ORDER BY episode ASC LIMIT 1000`, int64(core.ShowKey(seasonKey.TMDB())), seasonKey.Season())
+// ResolveEpisode resolves a frontend coordinate to its stable episode key.
+func (c *Catalog) ResolveEpisode(ctx context.Context, show core.RatingKey, season, episode int) (core.RatingKey, error) {
+	coordinate, err := c.ResolveEpisodeAt(ctx, show, season, episode)
+	return coordinate.Key, err
 }
 
-// LatestStartedSeason returns the highest regular season of showKey that has at
-// least one released episode (by metadata date or recorded playable evidence).
+func (c *Catalog) releaseEpisodeRows(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
+	var out []core.Title
+	for chunk := range store.Chunks(keys, 200) {
+		args := make([]any, len(chunk))
+		for i, key := range chunk {
+			args[i] = key
+		}
+		rows, err := c.queryTitlesUnfiltered(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND key IN (`+placeholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+func layoutSeasonEpisodes(layout EpisodeLayout, number int) []EpisodeCoordinate {
+	start := sort.Search(len(layout.Episodes), func(i int) bool { return layout.Episodes[i].Season >= number })
+	episodes := layout.Episodes[start:]
+	end := sort.Search(len(episodes), func(i int) bool { return episodes[i].Season > number })
+	return episodes[:end]
+}
+
+func (c *Catalog) releaseTitlesForCoordinates(ctx context.Context, layout EpisodeLayout, coords []EpisodeCoordinate) ([]core.Title, error) {
+	keys := make([]core.RatingKey, 0, len(coords))
+	for _, ep := range coords {
+		keys = append(keys, ep.Key)
+	}
+	rows, err := c.releaseEpisodeRows(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	var knownAirDates []core.RatingKey
+	now := c.now()
+	for _, ep := range coords {
+		if !ep.AirDate.IsZero() && ep.AirDate.After(now) {
+			knownAirDates = append(knownAirDates, ep.Key)
+		}
+	}
+	evidence, err := c.PlayableEpisodeReleases(ctx, knownAirDates)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[core.RatingKey]core.Title, len(rows))
+	for _, t := range rows {
+		index[t.Key] = t
+	}
+	var out []core.Title
+	for _, ep := range coords {
+		t, ok := index[ep.Key]
+		if !ok {
+			continue
+		}
+		t.EpisodeOrder, t.EpisodeAirDate = layout.Order, ep.AirDate
+		t.ParentKey, t.Season, t.Episode, t.AbsoluteEpisode = ep.ParentKey, ep.Season, ep.Episode, ep.Absolute
+		if !ep.AirDate.IsZero() {
+			t.Released = ep.AirDate
+			if at := evidence[ep.Key]; !at.IsZero() && at.Before(t.Released) {
+				t.Released = at
+			}
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// SeasonEpisodesAll returns mirrored regular episodes in effective order,
+// including unaired episodes, without contacting metadata providers.
+func (c *Catalog) SeasonEpisodesAll(ctx context.Context, seasonKey core.RatingKey) ([]core.Title, error) {
+	if seasonKey.Kind() != core.KindSeason {
+		return nil, nil
+	}
+	parent, err := c.StoredTitle(ctx, seasonKey)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	showKey := parent.ShowKey
+	if showKey == 0 {
+		showKey = seasonKey.Parent()
+	}
+	layout, ok, err := c.CachedEpisodeLayout(ctx, showKey)
+	if err != nil || !ok {
+		return nil, err
+	}
+	for number, key := range layout.Seasons {
+		if key == seasonKey && number > 0 {
+			return c.releaseTitlesForCoordinates(ctx, layout, layoutSeasonEpisodes(layout, number))
+		}
+	}
+	return nil, nil
+}
+
+// LatestStartedSeason returns the highest regular effective season with an
+// aired episode or verified playable evidence.
 func (c *Catalog) LatestStartedSeason(ctx context.Context, showKey core.RatingKey) (core.RatingKey, error) {
-	if showKey.Kind() != core.KindShow || showKey.TMDB() <= 0 {
+	if showKey.Kind() != core.KindShow {
 		return 0, nil
 	}
-	nowTS := c.now().Unix()
-	var season int
-	err := c.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(season), 0) FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND season>0 AND adult=0 AND ((release_known=1 AND released_ts>0 AND released_ts<=?) OR EXISTS(SELECT 1 FROM catalog_episode_release e WHERE e.key=catalog_titles.key AND e.earliest_ts<=?))`, int64(showKey), nowTS, nowTS).Scan(&season)
-	if err != nil || season <= 0 {
+	layout, ok, err := c.CachedEpisodeLayout(ctx, showKey)
+	if err != nil || !ok {
 		return 0, err
 	}
-	return core.SeasonKey(showKey.TMDB(), season), nil
+	now := c.now()
+	started := 0
+	var pending []core.RatingKey
+	for _, ep := range layout.Episodes {
+		if ep.Season > started && !ep.AirDate.IsZero() && !ep.AirDate.After(now) {
+			started = ep.Season
+		}
+	}
+	for _, ep := range layout.Episodes {
+		if ep.Season > started {
+			pending = append(pending, ep.Key)
+		}
+	}
+	evidence, err := c.PlayableEpisodeReleases(ctx, pending)
+	if err != nil {
+		return 0, err
+	}
+	for _, ep := range layout.Episodes {
+		if at := evidence[ep.Key]; !at.IsZero() && !at.After(now) && ep.Season > started {
+			started = ep.Season
+		}
+	}
+	if started == 0 {
+		return 0, nil
+	}
+	return layout.Seasons[started], nil
 }
 
 // PlayableEpisodeReleases returns recorded earliest playable timestamps for keys.

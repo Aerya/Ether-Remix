@@ -129,3 +129,54 @@ it("une intention mémorisée ne transporte ni URL arbitraire ni secret", () => 
   expect(visibleSetupSources(initialChoices).some((s) => s.id === "music")).toBe(false);
   expect(visibleSetupSources(restored).some((s) => s.id === "music")).toBe(true);
 });
+
+it("propose les clients récents sans activer de connexion", async () => {
+  mount(6);
+  const nuvio = await screen.findByRole("checkbox", { name: /Nuvio/ });
+  fireEvent.click(nuvio);
+  expect(screen.getByRole("link", { name: /Lier Nuvio par spectateur/ })).toHaveAttribute(
+    "href",
+    "/viewers",
+  );
+  expect(screen.getByRole("link", { name: /Configurer l’accès Stremio/ })).toHaveAttribute(
+    "href",
+    "/apps/stremio",
+  );
+  expect(screen.getByText(/Les liens déjà installés restent inchangés/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Jellyfin \/ Infuse/ }));
+  expect(screen.getByRole("link", { name: /Exclusions des derniers ajouts/ })).toHaveAttribute(
+    "href",
+    "/remix/contenus?content=films",
+  );
+  expect(
+    restoreChoices(JSON.parse(localStorage.getItem("remix.setup.intent.v1")!)).clients,
+  ).toContain("nuvio");
+  expect(apiFetch.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+});
+it("propose Digarr et AudioMuse pour la musique avec leurs prérequis", async () => {
+  localStorage.setItem(
+    "remix.setup.intent.v1",
+    JSON.stringify({ ...initialChoices, contents: ["music"] }),
+  );
+  mount(3);
+  const digarr = await screen.findByRole("checkbox", { name: /Digarr/ });
+  expect(screen.getByRole("checkbox", { name: /AudioMuse/ })).toBeTruthy();
+  fireEvent.click(digarr);
+  expect(screen.getByRole("link", { name: /Digarr/ })).toHaveAttribute(
+    "href",
+    "/remix/contenus?content=musique",
+  );
+  expect(screen.getByText(/jeton personnel en lecture seule par spectateur/)).toBeTruthy();
+  expect(apiFetch.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+});
+it("masque les découvertes musicales sans perdre les intentions mémorisées", async () => {
+  localStorage.setItem(
+    "remix.setup.intent.v1",
+    JSON.stringify({ ...initialChoices, discovery: ["digarr", "audiomuse"] }),
+  );
+  mount(3);
+  await screen.findByRole("checkbox", { name: /Catalogue Remix/ });
+  expect(screen.queryByRole("checkbox", { name: /Digarr/ })).toBeNull();
+  expect(screen.queryByRole("link", { name: /Digarr/ })).toBeNull();
+  expect(JSON.parse(localStorage.getItem("remix.setup.intent.v1")!).discovery).toContain("digarr");
+});

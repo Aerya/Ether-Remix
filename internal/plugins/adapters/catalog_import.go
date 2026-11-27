@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS collections_addon_imports (
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );`)
+	// Add-on imports keep only "Browse in apps" (their old Collections tab
+	// switch); where their rows show is a Recommendations page now.
+	store.Register("collections_addon_imports", 2, `UPDATE collections_addon_imports SET targets_json = CASE WHEN targets_json LIKE '%"collectionsTab":false%' THEN '{"browseInApps":false}' ELSE '{"browseInApps":true}' END WHERE targets_json NOT LIKE '%browseInApps%';`)
 }
 
 const (
@@ -106,7 +109,7 @@ type storedSubscription struct {
 	Refresh        string
 	MaxItems       int
 	Enabled        bool
-	Targets        core.CollectionTargets
+	BrowseInApps   bool
 	KnownKeys      []string
 	LastSyncedAt   time.Time
 	LastSummary    *core.AddonImportSummary
@@ -554,12 +557,12 @@ func (ci *CatalogImporter) Apply(ctx context.Context, req core.AddonCatalogImpor
 				Params:   params,
 				MaxItems: maxItems,
 			}},
-			Match:   collections.MatchAll,
-			Sort:    "source",
-			Refresh: cfg.Refresh,
-			Artwork: core.CollectionArtwork{Mode: "auto"},
-			Targets: cfg.Targets,
-			Enabled: cfg.Enabled,
+			Match:        collections.MatchAll,
+			Sort:         "source",
+			Refresh:      cfg.Refresh,
+			Artwork:      core.CollectionArtwork{Mode: "auto"},
+			BrowseInApps: cfg.BrowseInApps,
+			Enabled:      cfg.Enabled,
 			AddonSync: &core.CollectionAddonSync{
 				AddonID:     rec.ID,
 				AddonName:   addonName,
@@ -612,7 +615,7 @@ func (ci *CatalogImporter) Apply(ctx context.Context, req core.AddonCatalogImpor
 		Refresh:        cfg.Refresh,
 		MaxItems:       cfg.MaxItems,
 		Enabled:        cfg.Enabled,
-		Targets:        cfg.Targets,
+		BrowseInApps:   cfg.BrowseInApps,
 		KnownKeys:      knownKeys,
 		LastSyncedAt:   now,
 		LastSummary:    summary,
@@ -862,12 +865,12 @@ func (ci *CatalogImporter) reconcileAddon(ctx context.Context, rec plugins.Recor
 					Kind:     extend.PluginID(rec.ID, key),
 					MaxItems: sub.MaxItems,
 				}},
-				Match:   collections.MatchAll,
-				Sort:    "source",
-				Refresh: sub.Refresh,
-				Artwork: core.CollectionArtwork{Mode: "auto"},
-				Targets: sub.Targets,
-				Enabled: sub.Enabled,
+				Match:        collections.MatchAll,
+				Sort:         "source",
+				Refresh:      sub.Refresh,
+				Artwork:      core.CollectionArtwork{Mode: "auto"},
+				BrowseInApps: sub.BrowseInApps,
+				Enabled:      sub.Enabled,
 				AddonSync: &core.CollectionAddonSync{
 					AddonID:     rec.ID,
 					AddonName:   addonName,
@@ -996,10 +999,11 @@ func scanSubscription(sc interface{ Scan(...any) error }) (storedSubscription, e
 	s.FollowManifest = follow != 0
 	s.Enabled = enabled != 0
 	if targetsJSON != "" {
-		_ = json.Unmarshal([]byte(targetsJSON), &s.Targets)
-	}
-	if !s.Targets.Users.All && s.Targets.Users.IDs == nil {
-		s.Targets.Users = core.AllUsers()
+		var t struct {
+			BrowseInApps bool `json:"browseInApps"`
+		}
+		_ = json.Unmarshal([]byte(targetsJSON), &t)
+		s.BrowseInApps = t.BrowseInApps
 	}
 	if knownJSON != "" {
 		_ = json.Unmarshal([]byte(knownJSON), &s.KnownKeys)
@@ -1023,7 +1027,7 @@ func scanSubscription(sc interface{ Scan(...any) error }) (storedSubscription, e
 }
 
 func (ci *CatalogImporter) saveSubscription(ctx context.Context, s storedSubscription) error {
-	targetsB, err := json.Marshal(s.Targets)
+	targetsB, err := json.Marshal(map[string]bool{"browseInApps": s.BrowseInApps})
 	if err != nil {
 		return err
 	}
@@ -1089,7 +1093,7 @@ func (ci *CatalogImporter) toSubscriptionView(s storedSubscription, rec *plugins
 		Refresh:        s.Refresh,
 		MaxItems:       s.MaxItems,
 		Enabled:        s.Enabled,
-		Targets:        s.Targets,
+		BrowseInApps:   s.BrowseInApps,
 		ManagedCount:   managedCount,
 		RemovedCount:   removedCount,
 		LastSummary:    s.LastSummary,
@@ -1125,7 +1129,7 @@ type normalizedImportConfig struct {
 	Refresh        string
 	MaxItems       int
 	Enabled        bool
-	Targets        core.CollectionTargets
+	BrowseInApps   bool
 }
 
 func normalizeImportConfig(req core.AddonCatalogImportRequest) (normalizedImportConfig, error) {
@@ -1162,17 +1166,6 @@ func normalizeImportConfig(req core.AddonCatalogImportRequest) (normalizedImport
 	} else if maxItems < 1 || maxItems > MaxPluginListItems {
 		fields["maxItems"] = fmt.Sprintf("Must be between 1 and %d.", MaxPluginListItems)
 	}
-	targets := req.Targets
-	if !targets.CollectionsTab && !targets.HomeRow && !targets.SectionRow {
-		targets.CollectionsTab = true
-	}
-	if !targets.Users.All && targets.Users.IDs == nil {
-		targets.Users = core.AllUsers()
-	}
-	targets.Schedule = collections.NormalizeSchedule(targets.Schedule)
-	if err := collections.ValidateSchedule(targets.Schedule); err != nil {
-		fields["targets.schedule"] = err.Error()
-	}
 	if len(fields) > 0 {
 		return normalizedImportConfig{}, &importValidationError{fields: fields}
 	}
@@ -1184,7 +1177,7 @@ func normalizeImportConfig(req core.AddonCatalogImportRequest) (normalizedImport
 		Refresh:        refresh,
 		MaxItems:       maxItems,
 		Enabled:        req.Enabled,
-		Targets:        targets,
+		BrowseInApps:   req.BrowseInApps,
 	}, nil
 }
 

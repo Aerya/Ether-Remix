@@ -90,6 +90,12 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 
 ### Personal libraries and collections
 
+Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions: Remix libraries chosen per viewer, with or without the base sections, in Plex, Stremio and Jellyfin. In Jellyfin, exclusion rules (genre, country, language… as in “Edit collection”) can remove titles (e.g. animation, documentaries) from Movies and Shows latest additions.
+
+**Layout templates** save Home, libraries and collection presentation: capture your current setup, duplicate A/B/C variants and reapply them with undo. Plex theme libraries can combine local folders and indexed sources for everyone or selected viewers; private content remains filtered per viewer.
+
+Home and library rows are edited in **Recommendations**. Collections define their content; existing placements, layout templates and viewer restrictions are preserved. Xperience/JukeBox imports remain available.
+
 **Layout templates** save Home, libraries and collection presentation: capture your current setup, duplicate A/B/C variants and reapply them with undo. Plex theme libraries can combine local folders and indexed sources for everyone or selected viewers; private content remains filtered per viewer.
 
 **Nuvio-inspired navigation cards — optional BETA**: Country services load automatically. The editor opens beneath the card; GitHub, ThePosterDB and ACdb galleries let you search and select artwork directly in Remix. MediUX covers public genre galleries (English search), not studios/services. Fanart.tv has no integrated navigation-card search; file/URL import remains available. search TMDB studios and labels, select services from multiple countries and genres. Preview each card with automatic artwork, a GitHub gallery image or an imported file/URL. Services can form country groups on Plex and Jellyfin/Emby home screens; rendering depends on the client and the previous home remains restorable. [Guide](GUIDE.en.md#nuvio-inspired-navigation-cards).
@@ -137,6 +143,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 - Review the preview, choose the destination viewer and track matched or missing tracks. Imports create personal copies without replacing other playlists.
 - Synchronize public Deezer profiles, Last.fm and ListenBrainz; manage personal playlists through Subsonic clients.
 - **Scheduled playlists**: rotating personal mixes and followed Deezer/Spotify/ListenBrainz playlists per viewer; intervals, manual refresh, pause and missing-track counts. Optional AudioMuse for already analysed local tracks. [Guide and limits](MUSIC-FLOWS.en.md).
+- **Optional Digarr**: per-viewer artist and album recommendations, matching album search in the Deezer catalogue and personal playlist creation. Personal read-only token; no approval or acquisition triggered in Digarr. [Setup and limits](DIGARR.en.md).
 - **iBroadcast playlists**: enable import for each connected account; track order and repetitions are preserved, with updates without duplicates and no changes sent to iBroadcast.
 - Explore **country charts, recent plays, most-played tracks and new releases from followed artists**. Genres, similar artists, radios and mixes depend on the client.
 
@@ -148,7 +155,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
-- Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing, unless the next unwatched episode was released within the new-episodes window (60 days by default): the show is then ranked by that release date, even if it was last watched long ago. 200 shows from the history are examined (at most 100 on Plex, instead of 50). A weekly season the viewer has not started falls back to its former rank 60 days after the next episode’s release. Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
+- An old show with a newly released episode comes back to the top of the row, ranked by the release date. Settings in Remix → Playback → Continue watching: shows examined (200 by default), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows. Every show in progress is listed, and the row appears instantly: each show's next episode is computed ahead of time, on every viewing or new episode. The number of shows examined is a fallback during the initial fill; access rights, hidden items and client presentation limits still apply. Only the selected viewer’s history is used.
 - Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
 - Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional. Stops and playback changes are relayed per session without duplicates.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
@@ -165,6 +172,8 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 <a id="nav-ether-extended-by-remix"></a>
 
 ### Ether, extended by Remix
+
+A library, row or collection only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid warm-up. Details load only when a title is opened or played. Setting `PSE_LIGHT_LISTS` (Remix console), on by default.
 
 - **Display name**: rename a viewer in the console for statistics and activity, even with a Plex account. Sign-in does not change.
 - Daily synchronization with the original project, checks before merging and failure reporting. Ether’s catalogue-source libraries, IPTV improvements and release ranking coexist with Remix filters and sources.
@@ -186,3 +195,13 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 | **Music** _(Remix)_                           | Plex and Plexamp, Jellyfin clients (Finamp…), Subsonic apps: Symfonium, Feishin, Supersonic, DSub…                                                                                |
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
+
+### Stremio and Nuvio
+
+**Stremio** — Personal addon; requires an HTTPS address. Two links per profile: with catalogues (Movies, Shows and one row per collection of the granted Remix libraries) or files only (playback only). Display (Direct, Compact, Detailed) and number of versions per quality (4K, 1080p, 720p) set per link: the Auto stream then the best ranked releases of each quality.
+
+**Nuvio** — Per-viewer link (Profile › Sign-in & devices › Nuvio): code sign-in, Nuvio profile choice, resume points and history synced both ways (Nuvio → Ether every 5 minutes, adjustable; Ether → Nuvio when a playback stops or a title is marked watched), one-click install of the viewer's Stremio link in Nuvio. The addon also declares the Stremio `player` and `library` resources for Nuvio TV 1.2.0-beta.2 or later. An account's history is kept in full: parental controls only apply to playback, not to the import.
+
+### Plugin libraries
+
+Plugin libraries can be rebuilt after explicit confirmation. Ether sync preserves Remix plugin refresh settings, quotas and scheduling.

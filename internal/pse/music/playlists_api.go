@@ -35,6 +35,7 @@ type Viewer struct {
 
 // PlaylistAPI sert la gestion des playlists dans la console.
 type PlaylistAPI struct {
+	Digarr    func(int64) DigarrConfig
 	AudioMuse func() AudioMuseConfig
 	Sync      *PlaylistSync
 	Spotify   *SpotifyPlaylists
@@ -132,6 +133,7 @@ func (a *PlaylistAPI) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.importRoutes(mux)
 	a.flowRoutes(mux)
+	a.digarrRoutes(mux)
 	reply := func(w http.ResponseWriter, r *http.Request) {
 		v, err := a.view(r.Context())
 		if err != nil {

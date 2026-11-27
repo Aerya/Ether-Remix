@@ -2,8 +2,60 @@ package plex
 
 import (
 	"context"
+	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
+
+// resolveSearchGUIDs fills cold identities for the leading movie and show
+// results under one wait budget per render. The bounded resolver coalesces
+// concurrent requests for the same title and saves verified results even if
+// the client types another character before the provider responds.
+func resolveSearchGUIDs(ctx context.Context, source frontend.LibraryGUIDs, titles []frontend.Title, guids map[frontend.RatingKey]string) map[frontend.RatingKey]string {
+	resolver, ok := source.(boundedGUIDResolver)
+	if !ok || ctx.Err() != nil {
+		return guids
+	}
+	const perKind = 2
+	const wait = 350 * time.Millisecond
+	var keys []frontend.RatingKey
+	remaining := map[frontend.KeyKind]int{frontend.KindMovie: perKind, frontend.KindShow: perKind}
+	for _, title := range titles {
+		key := title.Key
+		kind := key.Kind()
+		if remaining[kind] == 0 {
+			continue
+		}
+		remaining[kind]--
+		if guids[key] == "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return guids
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	results := make([]string, len(keys))
+	var calls sync.WaitGroup
+	for i, key := range keys {
+		calls.Go(func() {
+			results[i] = resolver.ResolveBounded(ctx, key, wait)
+		})
+	}
+	calls.Wait()
+	for i, guid := range results {
+		if guid == "" {
+			continue
+		}
+		if guids == nil {
+			guids = make(map[frontend.RatingKey]string, len(keys))
+		}
+		guids[keys[i]] = guid
+	}
+	return guids
+}
 
 // maxGUIDResolves bounds the plex.tv identities queued for background
 // resolution at once.

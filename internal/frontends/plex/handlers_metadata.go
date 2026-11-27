@@ -137,6 +137,10 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpDetail(w, r, id)
+		return
+	}
 	// Serve stored catalogue details while bounded enrichment fills the mirror.
 	reqCtx := r.Context()
 	ctx := s.exp().NoProviderWait(reqCtx)
@@ -230,7 +234,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if err != nil && q.Get("collection") == "" {
 				if future, e := s.scheduledEpisode(ctx, pr, k); e == nil {
 					md = s.scheduledMetadata(ctx, pr, future)
-					mc = s.itemContainer(future.Type)
+					mc = s.titleContainer(ctx, future)
 					mc.Metadata = append(mc.Metadata, md)
 					continue
 				}
@@ -238,7 +242,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				if t, ck, e := s.lookupPlaceholder(ctx, pr, k, q.Get("collection")); e == nil {
 					md = s.placeholderMetadata(ctx, pr, t, ck)
-					mc = s.itemContainer(t.Type)
+					mc = s.titleContainer(ctx, t)
 					mc.Metadata = append(mc.Metadata, md)
 					continue
 				}
@@ -306,14 +310,14 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				pr.versionFlowKey = t.Key
 			}
 			md = s.detail(ctx, pr, t, metadataOptionOn(q.Get("includeChildren")), metadataOptionOn(q.Get("includeOnDeck")), metadataOptionOn(q.Get("includeRelated")), metadataOptionOn(q.Get("includeExtras")), q.Get("extraTypes"))
-			if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
-				md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
-				if t.Type == frontend.TypeEpisode {
-					md.GrandparentTheme = md.Theme
-					md.ParentTheme = md.Theme
-				}
-				if t.Type == frontend.TypeSeason {
-					md.ParentTheme = md.Theme
+			if url := s.themeURL(*t, true); url != "" {
+				switch t.Type {
+				case frontend.TypeShow:
+					md.Theme = url
+				case frontend.TypeSeason:
+					md.ParentTheme = url
+				case frontend.TypeEpisode:
+					md.GrandparentTheme = url
 				}
 			}
 			if q.Get("includePreferences") == "1" {
@@ -321,7 +325,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 			applyRelatedCountCap(&md, q)
 			if mc == nil {
-				mc = s.itemContainer(t.Type)
+				mc = s.titleContainer(ctx, t)
 			}
 		}
 		mc.Metadata = append(mc.Metadata, md)
@@ -381,8 +385,11 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 		case frontend.KindCollection, frontend.KindSmart, frontend.KindPlaylist, frontend.KindExtra:
 		default:
 			addPreload(k)
-			if (k.Kind() == frontend.KindSeason || k.Kind() == frontend.KindEpisode) && k.TMDB() > 0 {
-				addPreload(frontend.ShowKey(k.TMDB()))
+			if parent := k.Parent(); parent != 0 {
+				if k.Kind() == frontend.KindEpisode {
+					parent = parent.Parent()
+				}
+				addPreload(parent)
 			}
 		}
 	}
@@ -459,6 +466,7 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 	var uniqueTitles []frontend.Title
 	seenUnique := make(map[frontend.RatingKey]bool, len(slots))
 	hasShowOrSeason := false
+	var firstTitle *frontend.Title
 	kept := slots[:0]
 	for _, slot := range slots {
 		if !slot.isTitle {
@@ -475,7 +483,9 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 			return nil, false
 		}
 		s.rememberTitle(slot.title)
-		ensureContainer(slot.title.Type, false)
+		if firstTitle == nil {
+			firstTitle = slot.title
+		}
 		if slot.title.Type == frontend.TypeShow || slot.title.Type == frontend.TypeSeason {
 			hasShowOrSeason = true
 		}
@@ -486,6 +496,12 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 		kept = append(kept, slot)
 	}
 	slots = kept
+	if mc == nil && firstTitle != nil {
+		// Resolve the page's sections together; the container and each
+		// row read the result.
+		s.sectionsForTitles(ctx, uniqueTitles)
+		mc = s.titleContainer(ctx, firstTitle)
+	}
 
 	includeChildren := metadataOptionOn(q.Get("includeChildren"))
 	includeOnDeck := metadataOptionOn(q.Get("includeOnDeck"))
@@ -595,7 +611,7 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 	if guidSrc == nil || t == nil || md == nil {
 		return
 	}
-	if !strings.HasPrefix(md.GUID, "plex://") && !(t.Type == frontend.TypeSeason && t.Season >= 9000) {
+	if !strings.HasPrefix(md.GUID, "plex://") && !virtualPlexSeason(t) {
 		if g := guidSrc.Cached(ctx, t.Key); g != "" {
 			md.GUID = g
 		} else if extras && frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
@@ -622,20 +638,20 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 	}
 	switch t.Type {
 	case frontend.TypeSeason:
-		if t.Season < 9000 && !strings.HasPrefix(md.ParentGUID, "plex://") && t.Key.TMDB() > 0 {
-			if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+		if !virtualPlexSeason(t) && !strings.HasPrefix(md.ParentGUID, "plex://") && titleShow(t) != 0 {
+			if sg := guidSrc.Cached(ctx, titleShow(t)); sg != "" {
 				md.ParentGUID = sg
 			}
 		}
 	case frontend.TypeEpisode:
-		if t.Key.TMDB() > 0 {
+		if titleShow(t) != 0 {
 			if !strings.HasPrefix(md.GrandparentGUID, "plex://") {
-				if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+				if sg := guidSrc.Cached(ctx, titleShow(t)); sg != "" {
 					md.GrandparentGUID = sg
 				}
 			}
 			if !strings.HasPrefix(md.ParentGUID, "plex://") && !strings.HasPrefix(md.ParentGUID, "local://episode-order/") {
-				if seag := guidSrc.Cached(ctx, frontend.SeasonKey(t.Key.TMDB(), t.Season)); seag != "" {
+				if seag := guidSrc.Cached(ctx, titleParent(t)); seag != "" {
 					md.ParentGUID = seag
 				}
 			}
@@ -668,7 +684,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 	if onDeck && (t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason) {
 		show := t.Key
 		if t.Type == frontend.TypeSeason {
-			show = frontend.ShowKey(t.Key.TMDB())
+			show = titleShow(t)
 		}
 		if ep, st := s.showOnDeck(ctx, pr, show, memo); ep != nil && (t.Type != frontend.TypeSeason || ep.Season == t.Season) {
 			// The show page's Play button plays this episode: resolve,
@@ -680,7 +696,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 				if extras {
 					items[0].Extras = &model.Extras{}
 					for _, e := range s.extrasFor(ctx, pr, ep, extraTypes) {
-						items[0].Extras.Metadata = append(items[0].Extras.Metadata, s.extraMetadata(e, ep, true))
+						items[0].Extras.Metadata = append(items[0].Extras.Metadata, s.extraMetadata(ctx, e, ep, true))
 					}
 					items[0].Extras.Size = len(items[0].Extras.Metadata)
 				}
@@ -699,7 +715,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 		list := s.extrasFor(ctx, pr, t, extraTypes)
 		ex := &model.Extras{}
 		for _, e := range list {
-			ex.Metadata = append(ex.Metadata, s.extraMetadata(e, t, true))
+			ex.Metadata = append(ex.Metadata, s.extraMetadata(ctx, e, t, true))
 		}
 		if pluginExtras := s.pluginVideoExtras(ctx, pr, t); len(pluginExtras) > 0 {
 			ex.Metadata = append(ex.Metadata, pluginExtras...)
@@ -780,6 +796,8 @@ func startDetailPageWait(pr *Request) {
 		// probe needs the measured four-second allowance. Persisted probes
 		// return before any wait in warmDetail.
 		pr.detailWaitUntil = time.Now().Add(4 * time.Second)
+	} else if webTrackPickerClient(pr) {
+		pr.detailWaitUntil = time.Now().Add(detailWarmWaitBudget + detailVariantReserve)
 	} else if pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV")) {
 		pr.detailWaitUntil = time.Now().Add(250 * time.Millisecond)
 	}
@@ -858,6 +876,10 @@ func (s *Server) seasonNextEpisode(ctx context.Context, pr *Request, eps []front
 }
 
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpBrowse(w, r, id, false)
+		return
+	}
 	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
@@ -904,7 +926,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.revealDetail(pr, parent)
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
 	mc.Thumb = s.thumbURL(parent)
@@ -1051,6 +1073,23 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 			mc.Directory = []model.Directory{*allLeaves}
 		}
 	}
+	// PMS repeats the show theme on its children: the container's theme plus
+	// parentTheme on seasons / grandparentTheme on the season's episodes.
+	// Cache-only: the detail open is what fetches.
+	if url := s.themeURL(*parent, false); url != "" {
+		mc.Theme = url
+		if parent.Type == frontend.TypeSeason {
+			mc.Extra = append(mc.Extra, model.A("grandparentTheme", url))
+		}
+		for n := range mc.Metadata {
+			switch mc.Metadata[n].Type {
+			case "season":
+				mc.Metadata[n].ParentTheme = url
+			case "episode":
+				mc.Metadata[n].GrandparentTheme = url
+			}
+		}
+	}
 	mc.Size = len(mc.Metadata) + len(mc.Directory)
 	if pr.HasPage {
 		mc.SetPage(lo, len(kids))
@@ -1059,6 +1098,10 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpBrowse(w, r, id, true)
+		return
+	}
 	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
@@ -1091,7 +1134,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	mc := s.itemContainer(parent.Type)
+	mc := s.titleContainer(ctx, parent)
 	mc.Key = parent.Key.String()
 	mc.Title1 = parent.Title
 	mc.Title2 = "All Episodes"
@@ -1162,14 +1205,19 @@ func (s *Server) handleParent(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	up := k.Parent()
-	if s.episodeOrder() != nil && k.Kind() == frontend.KindEpisode {
-		if n, _, _, ok := s.episodeOrder().Position(r.Context(), FromContext(r.Context()).User, k); ok {
-			up = frontend.SeasonKey(k.TMDB(), n)
-		}
+	ctx, pr := r.Context(), FromContext(r.Context())
+	title, err := s.metadataTitle(ctx, pr, k)
+	if err != nil || title == nil || !s.visibleTitle(ctx, pr.User, title) {
+		writeHTTPError(w, http.StatusNotFound)
+		return
 	}
+	up := s.presentedParent(ctx, pr, title)
 	if strings.HasSuffix(r.URL.Path, "/grandparent") {
-		up = up.Parent()
+		if title.Type == frontend.TypeEpisode {
+			up = titleShow(title)
+		} else {
+			up = 0
+		}
 	}
 	if up == 0 {
 		writeHTTPError(w, http.StatusNotFound)
@@ -1218,7 +1266,7 @@ func (s *Server) handleSubscriptionModes(w http.ResponseWriter, r *http.Request)
 		Size:            1,
 		Extra:           []model.Attr{model.A("type", md.Type)},
 	}
-	if sec, ok := s.sectionFor(t.Type); ok {
+	if sec, ok := s.sectionForTitle(ctx, t); ok {
 		mc.LibrarySectionID = model.Ptr(sec.ID)
 	}
 	s.write(w, r, mc)
@@ -1236,7 +1284,7 @@ func (s *Server) renderSingle(w http.ResponseWriter, r *http.Request, k frontend
 		s.writeErr(w, r, err)
 		return
 	}
-	mc := s.itemContainer(t.Type)
+	mc := s.titleContainer(ctx, t)
 	mc.Metadata = []model.Metadata{s.detail(ctx, pr, t, false, false, false, false, "")}
 	mc.Size = 1
 	s.write(w, r, mc)
@@ -1589,7 +1637,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 			mc.Size = len(mc.Metadata)
 			mc.SetPage(min(offset, total), total)
 			if c.RankedTop10 {
-				paintRankedCollection(mc, offset)
+				paintRankedCollection(pr, mc, offset)
 			}
 			s.write(w, r, mc)
 			return
@@ -1615,7 +1663,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 		mc.Size = len(mc.Metadata)
 		mc.SetPage(offset, total)
 		if c.RankedTop10 {
-			paintRankedCollection(mc, offset)
+			paintRankedCollection(pr, mc, offset)
 		}
 		s.write(w, r, mc)
 		return
@@ -1653,7 +1701,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, page.Total)
 	if c.RankedTop10 {
-		paintRankedCollection(mc, offset)
+		paintRankedCollection(pr, mc, offset)
 	}
 	s.write(w, r, mc)
 }
@@ -1685,7 +1733,7 @@ func (s *Server) collectionMemberPage(w http.ResponseWriter, r *http.Request, c 
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, total)
 	if c.RankedTop10 {
-		paintRankedCollection(mc, offset)
+		paintRankedCollection(pr, mc, offset)
 	}
 	s.write(w, r, mc)
 }
@@ -1816,16 +1864,18 @@ func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *fronten
 	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
 		return
 	}
-	if plexMobileOrTVBedrockClient(pr) {
-		// These Plex clients build their subtitle picker from the first
-		// response. The playback manager permits this wait only for an
-		// already resolved/cached source, never a fresh search.
+	if plexMobileOrTVBedrockClient(pr) || webTrackPickerClient(pr) {
+		// These clients build their track picker from the first response.
 		s.warmDetail(ctx, pr, t)
 		return
 	}
 	if warm, ok := s.playback().(frontend.Prewarmer); ok {
 		warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
 	}
+}
+
+func webTrackPickerClient(pr *Request) bool {
+	return pr != nil && (browserClient(pr) || strings.EqualFold(pr.Product, "Vela") || strings.EqualFold(pr.Product, "Mave"))
 }
 
 func (s *Server) revealDetail(pr *Request, t *frontend.Title) {

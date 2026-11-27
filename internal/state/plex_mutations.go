@@ -2,9 +2,10 @@ package state
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/core"
 	"math"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // RateExact preserves the distinction between clearing a rating and writing
@@ -48,14 +49,22 @@ func (s *State) ScrobbleTree(ctx context.Context, user int64, key core.RatingKey
 	switch key.Kind() {
 	case core.KindEpisode:
 		if watched {
-			add(key.Parent())
-			add(key.Parent().Parent())
+			ancestors, err := s.resolveAncestry(ctx, []core.RatingKey{key})
+			if err != nil {
+				return err
+			}
+			add(ancestors[key].ParentKey)
+			add(ancestors[key].ShowKey)
 		}
 	case core.KindShow, core.KindSeason:
 		add(key)
 		if !watched && key.Kind() == core.KindShow {
+			ancestors, err := s.resolveAncestry(ctx, leaves)
+			if err != nil {
+				return err
+			}
 			for _, leaf := range leaves {
-				add(leaf.Parent())
+				add(ancestors[leaf].ParentKey)
 			}
 		}
 	}
@@ -94,7 +103,22 @@ func (s *State) TouchParents(ctx context.Context, user int64, key core.RatingKey
 	if key.Kind() != core.KindEpisode {
 		return nil
 	}
-	return s.updateAt(ctx, user, []core.RatingKey{key.Parent(), key.Parent().Parent()}, at, func(cur *row, now time.Time) (bool, bool, []Event) {
+	ancestors, err := s.resolveAncestry(ctx, []core.RatingKey{key})
+	if err != nil {
+		return err
+	}
+	episode := ancestors[key]
+	parents := make([]core.RatingKey, 0, 2)
+	if episode.ParentKey.Kind() == core.KindSeason {
+		parents = append(parents, episode.ParentKey)
+	}
+	if episode.ShowKey.Kind() == core.KindShow {
+		parents = append(parents, episode.ShowKey)
+	}
+	if len(parents) == 0 {
+		return nil
+	}
+	return s.updateAt(ctx, user, parents, at, func(cur *row, now time.Time) (bool, bool, []Event) {
 		cur.ws.LastViewedAt = now
 		cur.ws.UpdatedAt = now
 		cur.watchAt = now
@@ -103,4 +127,27 @@ func (s *State) TouchParents(ctx context.Context, user int64, key core.RatingKey
 		}
 		return false, false, nil
 	})
+}
+
+// resolveAncestry preserves the encoded hierarchy for callers that construct
+// State without a catalogue, and never infers parents of allocated keys.
+func (s *State) resolveAncestry(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]Ancestry, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if s.ancestry != nil {
+		return s.ancestry(ctx, keys)
+	}
+	out := make(map[core.RatingKey]Ancestry, len(keys))
+	for _, key := range keys {
+		if parent := key.Parent(); parent != 0 {
+			switch key.Kind() {
+			case core.KindEpisode:
+				out[key] = Ancestry{ShowKey: parent.Parent(), ParentKey: parent}
+			case core.KindSeason:
+				out[key] = Ancestry{ShowKey: parent, ParentKey: parent}
+			}
+		}
+	}
+	return out, nil
 }

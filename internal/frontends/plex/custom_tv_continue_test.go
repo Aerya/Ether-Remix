@@ -87,12 +87,7 @@ func TestCustomTVRecommendedContinueWatching(t *testing.T) {
 			defer e.Close()
 			f.srv.setRecommender(e)
 			f.srv.bindHost(frontend.Host{Experience: customTVContinueExperience{f.srv.exp()}})
-			if _, err := e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{
-				Section: "library:4", MaxRows: 1,
-				Rows: []core.RowPolicy{{Row: "continue-watching", Status: "always", Slot: 1}},
-			}}}); err != nil {
-				t.Fatal(err)
-			}
+			saveCuratedPage(t, e, core.LibraryPage(4, "recommended"), 1, core.Row{Source: core.RowSource{Kind: personalize.KindContinue}})
 
 			read := func(t *testing.T, path string) model.MediaContainer {
 				t.Helper()

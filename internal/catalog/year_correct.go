@@ -79,7 +79,7 @@ func (c *Catalog) correctMovieYears(ctx context.Context) {
 			continue
 		}
 		c.drainMovieYearViews(ctx)
-		if c.tmdb() == nil {
+		if !c.TMDBConfigured() {
 			c.noteYearError(ctx, errors.New("catalog: movie year refresh waiting for TMDB"))
 			if !waitGap(ctx, 30*time.Second) {
 				return
@@ -488,7 +488,7 @@ func (c *Catalog) refreshMovieYearKey(ctx context.Context, key core.RatingKey) (
 }
 
 func (c *Catalog) fetchMovieYear(ctx context.Context, rating core.RatingKey) (bool, error) {
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		return false, errors.New("catalog: movie year refresh waiting for TMDB")
 	}
 	d, err := c.tmdb().MovieDetails(ctx, rating.TMDB())

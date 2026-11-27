@@ -46,13 +46,13 @@ describe("resolveRouteTitle", () => {
     expect(titleFor("/collections", "?tab=templates")).toBe("Collections · Templates — Home");
     expect(titleFor("/collections/new")).toBe("Collections · New collection — Home");
     expect(titleFor("/collections/42")).toBe("Collections · Edit collection — Home");
-    expect(titleFor("/home")).toBe("Home — Home");
+    expect(titleFor("/recommendations")).toBe("Recommendations — Home");
     expect(titleFor("/livetv")).toBe("Live TV · Channels — Home");
     expect(titleFor("/livetv/looks")).toBe("Live TV · Styles — Home");
     expect(titleFor("/calendar/week")).toBe("Calendar · Week — Home");
     expect(titleFor("/metadata/episodes")).toBe("Metadata · Episode order — Home");
     expect(titleFor("/sources/statistics")).toBe("Sources · Statistics — Home");
-    expect(titleFor("/quality/rules")).toBe("Quality · Rules — Home");
+    expect(titleFor("/releases/rules")).toBe("Releases · Rules — Home");
     expect(titleFor("/cache")).toBe("Cache — Home");
     expect(titleFor("/cache/explorer")).toBe("Cache · Explorer — Home");
     expect(titleFor("/playback/devices/seen")).toBe(
@@ -107,9 +107,9 @@ describe("document.title integration", () => {
       expect(document.title).toBe("Overview — Living Room Ether");
     });
 
-    fireEvent.click(screen.getAllByRole("link", { name: "Home" })[0]!);
+    fireEvent.click(screen.getAllByRole("link", { name: "Recommendations" })[0]!);
     await waitFor(() => {
-      expect(document.title).toBe("Home — Living Room Ether");
+      expect(document.title).toBe("Recommendations — Living Room Ether");
     });
   });
 

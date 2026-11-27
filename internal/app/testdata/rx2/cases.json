@@ -1,0 +1,51 @@
+[
+  {"name":"shipped-defaults","config":{}},
+  {"name":"default-1080p","config":{"quality":{"default":"1080p"}}},
+  {"name":"imported-twins","config":{"quality":{"default":"Imported","profiles":[
+    {"name":"Imported","mediaType":"movie","import":{"source":"trash","app":"radarr","profile":"web-hd"},"maxHeight":1080,"qualityOrder":[{"name":"WEB","qualities":["webdl-1080","webrip-1080"]}],"customFormatScores":{"ether:hdr":100}},
+    {"name":"Imported","mediaType":"tv","import":{"source":"trash","app":"radarr","profile":"web-hd"},"maxHeight":1080,"qualityOrder":[{"name":"WEB","qualities":["webdl-1080","webrip-1080"]}],"customFormatScores":{"ether:hdr":100,"ether:series-year-differs":-5000},"episodeMaxSizeMbPerMin":100}
+  ]}}},
+  {"name":"different-twins","config":{"quality":{"default":"Imported","profiles":[
+    {"name":"Imported","mediaType":"movie","maxHeight":2160,"allowHdr":true},
+    {"name":"Imported","mediaType":"tv","maxHeight":1080}
+  ]}}},
+  {"name":"device-limits","config":{"quality":{"rules":[
+    {"product":"Plex for Roku","profile":"1080p","maxHeight":720,"convertSurroundAudio":true},
+    {"product":"Plex for iOS","profile":"1080p","maxHeight":720,"convertSurroundAudio":true},
+    {"product":"Plex for Android (Mobile)","mediaType":"movie","profile":"4K","maxHeight":2160}
+  ]}}},
+  {"name":"viewer-rules-and-caps","config":{"quality":{"rules":[
+    {"userId":1,"profile":"720p"},
+    {"product":"Plex for Roku","profile":"1080p","maxHeight":480,"convertSurroundAudio":true}
+  ]}},"viewers":[{"id":1,"cap":3500},{"id":2}]},
+  {"name":"library-and-library-only","config":{},"libraries":[
+    {"id":1,"name":"Movies","qualityProfile":"1080p","rules":[{"action":"hide","scope":"library","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":["Animation","Horror"]}]}]},
+    {"name":"Animation","mediaType":"movie","qualityProfile":"720p","rules":[{"action":"show","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":["Animation"]}]}]}
+  ]},
+  {"name":"away-cap","config":{"transcode":{"remoteMaxBitrateKbps":8000},"quality":{"remote":"1080p"}}},
+  {"name":"away-cap-4k","config":{"transcode":{"remoteMaxBitrateKbps":8000}}},
+  {"name":"different-defaults","config":{"quality":{"defaultMovie":"4K","defaultTv":"720p","remoteMovie":"1080p","remoteTv":"720p"}}},
+  {"name":"different-home-shared-away","config":{"quality":{"defaultMovie":"4K","defaultTv":"720p","remote":"1080p"}}},
+  {"name":"no-matcher","config":{"quality":{"rules":[{"profile":"720p","maxHeight":480,"convertSurroundAudio":true}]}}},
+  {"name":"arjun-plex-web","config":{"transcode":{"remoteMaxBitrateKbps":8000},"quality":{"default":"4K","remote":"1080p","rules":[
+    {"userId":1,"profile":"1080p"},
+    {"product":"Plex for Apple TV","userId":2,"profile":"4K"},
+    {"product":"Plex for Roku","profile":"720p","maxHeight":720,"convertSurroundAudio":true},
+    {"product":"Plex for iOS","mediaType":"movie","profile":"720p"},
+    {"product":"Plex for iOS","mediaType":"tv","profile":"1080p"},
+    {"product":"Plex for Android","mediaType":"movie","profile":"720p"},
+    {"product":"Plex for Android","mediaType":"tv","profile":"1080p"},
+    {"userId":3,"profile":"1080p"},
+    {"product":"Plex Web","profile":"4K","maxHeight":1080}
+  ]}},"viewers":[{"id":1},{"id":2},{"id":3},{"id":4,"cap":15000},{"id":5}]},
+  {"name":"arjun-away-libraries","config":{"transcode":{"remoteMaxBitrateKbps":8000},"quality":{"default":"4K","remote":"1080p","rules":[
+    {"userId":1,"profile":"1080p"},
+    {"product":"Plex for Apple TV","userId":2,"profile":"4K"},
+    {"product":"Plex for Android","profile":"720p"}
+  ]}},"viewers":[{"id":1},{"id":2,"cap":15000}],"libraries":[{"name":"K-Drama","mediaType":"show","qualityProfile":"1080p","rules":[{"action":"show","mediaType":"show","match":"all","rules":[{"field":"genre","op":"in","value":["Animation"]}]}]},{"name":"Hindi & Tamil Films","mediaType":"movie","qualityProfile":"4K","rules":[{"action":"show","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":["Drama"]}]}]}]},
+  {"name":"away-by-kind-libraries","config":{"quality":{"defaultMovie":"4K","defaultTv":"1080p","remoteMovie":"1080p"}},"libraries":[{"name":"K-Drama","mediaType":"show","qualityProfile":"4K","rules":[{"action":"show","mediaType":"show","match":"all","rules":[{"field":"genre","op":"in","value":["Animation"]}]}]},{"name":"Hindi & Tamil Films","mediaType":"movie","qualityProfile":"4K","rules":[{"action":"show","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":["Drama"]}]}]}]},
+  {"name":"away-shared-builtin-library","config":{"transcode":{"remoteMaxBitrateKbps":6000},"quality":{"remote":"720p"}},"libraries":[
+    {"id":1,"name":"Movies","qualityProfile":"1080p","rules":[{"action":"hide","scope":"library","mediaType":"movie","match":"all","rules":[{"field":"genre","op":"in","value":["Horror"]}]}]},
+    {"name":"K-Drama","mediaType":"show","qualityProfile":"1080p","rules":[{"action":"show","mediaType":"show","match":"all","rules":[{"field":"genre","op":"in","value":["Animation"]}]}]}
+  ]}
+]

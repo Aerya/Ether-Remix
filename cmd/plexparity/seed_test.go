@@ -57,7 +57,7 @@ func TestSeed(t *testing.T) {
 	if err != nil || len(programs) == 0 {
 		t.Fatalf("live TV fixture guide empty: %v %v", programs, err)
 	}
-	for _, table := range []string{"catalog_titles", "state_watch", "state_history", "state_playlists", "watchlist_items", "trackprefs_rules", "personalize_home_layout", "personalize_row_impressions"} {
+	for _, table := range []string{"catalog_titles", "state_watch", "state_history", "state_playlists", "watchlist_items", "trackprefs_rules", "personalize_pages", "personalize_row_impressions"} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil || n == 0 {
 			t.Fatalf("%s empty: count=%d err=%v", table, n, err)

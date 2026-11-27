@@ -232,11 +232,88 @@ func (s *Store) SetLangExempt(ctx context.Context, keys []core.RatingKey) error 
 	return tx.Commit()
 }
 
+// Coordinate publications across Store instances. Waiting is cancellable;
+// the full rebuild calculates outside this lock so indexing can continue.
+var playableLocks = struct {
+	sync.Mutex
+	byDB map[*sql.DB]*playableLock
+}{byDB: make(map[*sql.DB]*playableLock)}
+
+type playableLock struct {
+	token chan struct{}
+	users int
+}
+
+func (s *Store) lockPlayable(ctx context.Context) (func(), error) {
+	playableLocks.Lock()
+	lock := playableLocks.byDB[s.db]
+	if lock == nil {
+		lock = &playableLock{token: make(chan struct{}, 1)}
+		playableLocks.byDB[s.db] = lock
+	}
+	lock.users++
+	playableLocks.Unlock()
+	drop := func() {
+		playableLocks.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(playableLocks.byDB, s.db)
+		}
+		playableLocks.Unlock()
+	}
+	select {
+	case lock.token <- struct{}{}:
+		return func() { <-lock.token; drop() }, nil
+	case <-ctx.Done():
+		drop()
+		return nil, ctx.Err()
+	}
+}
+
+// Entries exist only for the duration of a rebuild. Access to each entry is
+// protected by its database's playable lock.
+var playableBuilds sync.Map // *sql.DB -> *playableBuild
+
+type playableBuild struct {
+	signature   string
+	updated     map[core.RatingKey]playableCount
+	invalidated bool
+}
+
+type playableCount struct {
+	key               core.RatingKey
+	releases, anyLang int
+}
+
 // RefreshPlayable recalcule le nombre de releases lisibles d'un titre.
 // Deux releases de même nom venant de sources différentes comptent une
 // seule fois. Les observations expirées et celles d'une source désactivée
 // ne comptent pas (freshness.go).
 func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p PlayableSettings) error {
+	unlock, err := s.lockPlayable(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	count, err := s.countPlayable(ctx, key, p)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO pse_playable(title_key,releases,any_lang) VALUES(?,?,?)
+ON CONFLICT(title_key) DO UPDATE SET releases=excluded.releases, any_lang=excluded.any_lang`, int64(key), count.releases, count.anyLang)
+	if err == nil {
+		if v, ok := playableBuilds.Load(s.db); ok {
+			build := v.(*playableBuild)
+			if p.signature()+quality.Signature(s.db) != build.signature {
+				build.invalidated = true
+			}
+			build.updated[key] = count
+		}
+	}
+	return err
+}
+
+func (s *Store) countPlayable(ctx context.Context, key core.RatingKey, p PlayableSettings) (playableCount, error) {
 	if quality.Active(s.db) {
 		p.Filter = Filter{}
 	}
@@ -244,7 +321,7 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 	anyLang.Languages = nil
 	rs, err := s.Releases(ctx, key, anyLang)
 	if err != nil {
-		return err
+		return playableCount{}, err
 	}
 	original := ""
 	if quality.Active(s.db) {
@@ -253,6 +330,9 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 	names, all := map[string]bool{}, map[string]bool{}
 	now := s.now()
 	for _, r := range rs {
+		if err := ctx.Err(); err != nil {
+			return playableCount{}, err
+		}
 		info := releaseparse.Parse(r.Name)
 		info.Height, info.VideoCodec, info.AudioCodec = r.Height, r.VideoCodec, r.AudioCodec
 		info.HDR10, info.DolbyVision = r.HDR, r.DolbyVision
@@ -268,25 +348,42 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 			names[strings.ToLower(r.Name)] = true
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO pse_playable(title_key,releases,any_lang) VALUES(?,?,?)
-ON CONFLICT(title_key) DO UPDATE SET releases=excluded.releases, any_lang=excluded.any_lang`, int64(key), len(names), len(all))
-	return err
+	return playableCount{key: key, releases: len(names), anyLang: len(all)}, ctx.Err()
 }
 
 // ForgetPlayable efface la signature : le prochain SyncPlayable recalcule
 // tout. Appelé quand la fonction est désactivée, la table cessant alors
 // d'être tenue à jour.
 func (s *Store) ForgetPlayable(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM pse_state WHERE k='playable_signature'`)
+	unlock, err := s.lockPlayable(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if v, ok := playableBuilds.Load(s.db); ok {
+		v.(*playableBuild).invalidated = true
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM pse_state WHERE k='playable_signature'`)
 	return err
 }
 
 // SyncPlayable recalcule tous les titres si le filtre a changé depuis le
 // dernier calcul. Renvoie le nombre de titres recalculés.
 func (s *Store) SyncPlayable(ctx context.Context, p PlayableSettings) (int, error) {
-	sig := p.signature() + quality.Signature(s.db)
+	unlock, err := s.lockPlayable(ctx)
+	if err != nil {
+		return 0, err
+	}
+	build := &playableBuild{signature: p.signature() + quality.Signature(s.db), updated: make(map[core.RatingKey]playableCount)}
+	if _, loaded := playableBuilds.LoadOrStore(s.db, build); loaded {
+		unlock()
+		return 0, errors.New("playable rebuild already in progress")
+	}
+	unlock()
+	defer playableBuilds.Delete(s.db)
+	sig := build.signature
 	var cur string
-	err := s.db.QueryRowContext(ctx, `SELECT v FROM pse_state WHERE k='playable_signature'`).Scan(&cur)
+	err = s.db.QueryRowContext(ctx, `SELECT v FROM pse_state WHERE k='playable_signature'`).Scan(&cur)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
@@ -300,26 +397,83 @@ func (s *Store) SyncPlayable(ctx context.Context, p PlayableSettings) (int, erro
 	var keys []core.RatingKey
 	for rows.Next() {
 		var k int64
-		if rows.Scan(&k) == nil {
-			keys = append(keys, core.RatingKey(k))
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			return 0, err
 		}
+		keys = append(keys, core.RatingKey(k))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM pse_playable`); err != nil {
-		return 0, err
-	}
+	counts := make([]playableCount, 0, len(keys))
 	for _, k := range keys {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		if err := s.RefreshPlayable(ctx, k, p); err != nil {
+		count, err := s.countPlayable(ctx, k, p)
+		if err != nil {
 			return 0, err
 		}
+		counts = append(counts, count)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO pse_state(k,v) VALUES('playable_signature',?)
-ON CONFLICT(k) DO UPDATE SET v=excluded.v`, sig)
-	return len(keys), err
+	// Indexing continues while we calculate. Its newer individual counts take
+	// precedence, including newly indexed titles absent from the initial key list.
+	unlock, err = s.lockPlayable(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	if build.invalidated {
+		return 0, errors.New("playable rebuild invalidated")
+	}
+	for i, c := range counts {
+		if newer, ok := build.updated[c.key]; ok {
+			counts[i] = newer
+			delete(build.updated, c.key)
+		}
+	}
+	for _, newer := range build.updated {
+		counts = append(counts, newer)
+	}
+	// Never certify a rebuild calculated across different quality policies.
+	if sig != p.signature()+quality.Signature(s.db) {
+		return 0, errors.New("quality policy changed during playable rebuild")
+	}
+	if err := s.publishPlayable(ctx, counts, sig); err != nil {
+		return 0, err
+	}
+	return len(counts), nil
+}
+
+// Only the final publication holds the writer. A failure, including cancellation
+// after DELETE or during a batch, rolls back both the counts and their signature.
+func (s *Store) publishPlayable(ctx context.Context, counts []playableCount, sig string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM pse_playable`); err != nil {
+		return err
+	}
+	const batchSize = 250
+	for start := 0; start < len(counts); start += batchSize {
+		batch := counts[start:min(start+batchSize, len(counts))]
+		values := make([]string, len(batch))
+		args := make([]any, 0, 3*len(batch))
+		for i, c := range batch {
+			values[i] = "(?,?,?)"
+			args = append(args, int64(c.key), c.releases, c.anyLang)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO pse_playable(title_key,releases,any_lang) VALUES `+strings.Join(values, ","), args...); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO pse_state(k,v) VALUES('playable_signature',?)
+ON CONFLICT(k) DO UPDATE SET v=excluded.v`, sig); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

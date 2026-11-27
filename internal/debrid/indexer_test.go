@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
@@ -174,6 +175,58 @@ func TestIndexerRescuesSeasonPackWhenSingleEpisodesUncached(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "cached-pack" || inner.packCalls != 1 || !inner.packTorrentOnly {
 		t.Fatalf("expected torrent-only cached season pack rescue, got=%+v packCalls=%d torrentOnly=%v", got, inner.packCalls, inner.packTorrentOnly)
 	}
+}
+
+type lateEpisodeInner struct {
+	packFallbackInner
+}
+
+func (p *lateEpisodeInner) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
+	if req.Episode != 0 {
+		// Advance the synthetic clock beyond the availability window while
+		// leaving the foreground search and its season query active.
+		time.Sleep(9 * time.Second)
+	}
+	releases, err := p.Search(ctx, req)
+	arrived(releases)
+	return releases, err
+}
+
+func TestLateAvailabilityKeepsCandidatesAfterSeasonMerge(t *testing.T) {
+	h := newHarness(t, 1<<20, "torbox")
+	h.svc.db = nil
+	h.provs["torbox-0"].bulk = true
+	h.cacheEverywhere(testHash)
+	fullSeason := core.ReleaseInfo{FullSeason: true}
+	inner := &lateEpisodeInner{packFallbackInner: packFallbackInner{
+		episodeResults: []core.Release{
+			{ID: "pack", InfoHash: strings.Repeat("11", 20), Protocol: core.ProtocolTorrent, Info: fullSeason},
+			{ID: "hint", InfoHash: strings.Repeat("22", 20), Protocol: core.ProtocolTorrent, DebridCached: []string{"torbox"}},
+			{ID: "unknown", InfoHash: strings.Repeat("33", 20), Protocol: core.ProtocolTorrent},
+		},
+		packResults: []core.Release{
+			{ID: "pack", InfoHash: testHash, Protocol: core.ProtocolTorrent, Info: fullSeason},
+		},
+	}}
+	idx := NewIndexer(inner, h.svc)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, coverage := core.WithSearchCoverage(t.Context())
+		req := core.SearchRequest{Type: core.TypeEpisode, Season: 2, Episode: 7}
+		got, err := idx.Search(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !coverage.Incomplete() {
+			t.Fatal("deadline-limited availability was marked complete")
+		}
+		var ids []string
+		for _, r := range got {
+			ids = append(ids, r.ID)
+		}
+		if strings.Join(ids, ",") != "pack,hint,unknown" || got[0].InfoHash != testHash {
+			t.Fatalf("wanted the confirmed season hash ahead of the hint and unknown, got %v", ids)
+		}
+	})
 }
 
 func TestIndexerResolveTorrentForwardsToInner(t *testing.T) {

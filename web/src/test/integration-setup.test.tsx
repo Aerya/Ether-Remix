@@ -119,16 +119,17 @@ it("turns TheIntroDB lookups on from its card switch", async () => {
   expect(fake.state.config.markers?.apiKey).toBe("intro-key");
 });
 
-it("keeps configured TMDB available and opens its settings tab", async () => {
+it("keeps configured TMDB available and opens its credential drawer", async () => {
   const { fake } = renderApp("/services/overview", {}, (f) => {
     f.state.config.catalog.tmdbKey = "[configured]";
   });
   const manage = await screen.findByRole("button", { name: "Manage TMDB" });
-  expect(screen.queryByRole("switch", { name: "TMDB enabled" })).toBeNull();
+  // Catalogue cards use the shared card: a configured TMDB shows its switch on.
+  expect(await screen.findByRole("switch", { name: "TMDB enabled" })).toBeChecked();
   fireEvent.click(manage);
-  await screen.findByRole("tab", { name: "TMDB", selected: true });
-  expect(screen.getByLabelText("TMDB API key")).toHaveValue("[configured]");
-  expect(screen.getByRole("button", { name: "Test TMDB key" })).toBeInTheDocument();
+  const drawer = await screen.findByRole("dialog", { name: "Manage TMDB" });
+  expect(within(drawer).getByLabelText("TMDB API key")).toHaveValue("[configured]");
+  expect(within(drawer).getByRole("button", { name: "Test" })).toBeInTheDocument();
   expect(fake.state.config.catalog.tmdbKey).toBe("[configured]");
 });
 

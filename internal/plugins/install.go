@@ -46,6 +46,8 @@ type Source struct {
 type Preview struct {
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
+	// ListItems is how many titles one sync of each of its lists reads.
+	ListItems *ListItemsGrant `json:"listItems,omitempty"`
 	// Summary is the manifest summary with any "$t:" reference resolved
 	// from the package's own strings.
 	Summary string `json:"summary,omitempty"`
@@ -238,6 +240,11 @@ func (m *Manager) fetchSiblings(ctx context.Context, manURL string, manRaw []byt
 	if icon := man.Ether.Icon; icon != "" && !strings.HasPrefix(icon, "http://") && !strings.HasPrefix(icon, "https://") {
 		paths = append(paths, icon)
 	}
+	for _, a := range man.Ether.Contributes.FrontendAdapters {
+		if ValidAdapterIconPath(a.Icon) {
+			paths = append(paths, a.Icon)
+		}
+	}
 	if man.Ether.Runtime.Entry != "" {
 		paths = append(paths, man.Ether.Runtime.Entry)
 	}
@@ -422,6 +429,12 @@ func (p *Preview) resolve() error {
 			}
 		}
 	}
+	if ScreensUseDocuments(man) {
+		english := func(key string) (string, bool) { t, ok := p.resolvedStrings["en"][key]; return t, ok }
+		if _, err := CompileScreenDocuments(man, p.files, english); err != nil {
+			return err
+		}
+	}
 	if man := p.Manifest; man.Ether != nil {
 		p.Summary = pluginText(p.resolvedStrings, man.Ether.Summary)
 	}
@@ -580,6 +593,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		return nil, fmt.Errorf("plugins: manifest version %q does not match catalogue version %q", man.Version, src.Version)
 	}
 	p := &Preview{Manifest: man, RuntimeLimits: m.grantedRuntimeLimits(man), source: src, files: files, manifestRaw: raw, Verified: src.Verified, StremioOnly: man.IsStremioOnly()}
+	p.ListItems = m.ListItemsGrant(man.ID, man)
 	p.PermissionLines, p.NeedsViewers, p.NeedsFolders = PermissionSheet(man)
 	p.LocalHosts = DeclaredLocalHosts(man)
 	if err := p.resolve(); err != nil {
@@ -650,7 +664,41 @@ type InstallOptions struct {
 	AcceptAddedPermissions bool
 	// ReplaceLibraries confirms a non-additive media-kind upgrade that
 	// replaces the plugin's library contents (spec §2.5).
-	ReplaceLibraries bool
+	ReplaceLibraries           bool
+	rebuildConfirmation        string
+	requireRebuildConfirmation bool
+}
+
+type libraryLevelChangeError struct {
+	*ValidationError
+	confirmation string
+}
+
+func (e *libraryLevelChangeError) Unwrap() error { return e.ValidationError }
+
+func isLibraryLevelChange(e *ValidationError) bool {
+	for _, field := range e.Fields {
+		if !strings.Contains(field.Field, ".levels[") {
+			return false
+		}
+	}
+	return len(e.Fields) > 0
+}
+
+func canRebuildChangedKinds(prev, next []MediaKindMeta) bool {
+	for _, old := range prev {
+		found := false
+		for _, candidate := range next {
+			if candidate.Key == old.Key && (!old.HasLibrary() || candidate.HasLibrary()) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func mediaKindsOf(m Manifest) []MediaKindMeta {
@@ -677,8 +725,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			if p.source.reviewed == nil || current.URL != p.source.URL || !strings.EqualFold(current.SHA256, p.source.SHA256) {
 				return Record{}, fmt.Errorf("plugins: catalogue entry changed since the package was reviewed")
 			}
-			approved := Manifest{Ether: &EtherBlock{Permissions: current.Permissions, Capabilities: current.Capabilities}}
-			if man.Ether == nil || man.Ether.Kind != current.Kind || len(PermissionDiff(approved, man)) != 0 {
+			if man.Ether == nil || man.Ether.Kind != current.Kind || len(catalogueReviewDiff(current, man)) != 0 {
 				return Record{}, fmt.Errorf("plugins: catalogue review changed since the package was reviewed")
 			}
 		} else if _, err := cat.Resolve(ctx, man.ID, ""); err != nil && errors.Is(err, ErrRevoked) {
@@ -688,7 +735,11 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 		return Record{}, fmt.Errorf("plugins: no signed catalogue is configured")
 	}
 	cur, curErr := m.store.record(ctx, man.ID)
+	if curErr != nil && !errors.Is(curErr, ErrNotFound) {
+		return Record{}, curErr
+	}
 	existing := curErr == nil
+	replaceLibraries := false
 	if existing {
 		if CompareSemVer(man.Version, cur.Version) <= 0 && man.Version != cur.Version {
 			// Same-version reinstall is allowed (Studio); older is not.
@@ -696,14 +747,25 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 				return Record{}, fmt.Errorf("plugins: version %s is older than the installed %s; use rollback", man.Version, cur.Version)
 			}
 		}
-		if !opts.ReplaceLibraries {
-			if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
-				return Record{}, err
-			}
-		}
 		added := PermissionDiff(cur.Manifest, man)
 		if len(added) > 0 && !opts.AcceptAddedPermissions {
 			return Record{}, &PermissionIncreaseError{Added: added}
+		}
+		prevKinds, nextKinds := mediaKindsOf(cur.Manifest), mediaKindsOf(man)
+		if err := ValidateMediaKindsUpgrade(prevKinds, nextKinds); err != nil {
+			canRebuild := canRebuildChangedKinds(prevKinds, nextKinds)
+			confirmation := digestOf(append(append(bytes.Clone(cur.ManifestRaw), 0), p.manifestRaw...))
+			if !opts.ReplaceLibraries || !canRebuild || (opts.requireRebuildConfirmation && opts.rebuildConfirmation != confirmation) {
+				var validation *ValidationError
+				if canRebuild && errors.As(err, &validation) && isLibraryLevelChange(validation) {
+					return Record{}, &libraryLevelChangeError{ValidationError: validation, confirmation: confirmation}
+				}
+				return Record{}, err
+			}
+			replaceLibraries = true
+		}
+		if cur.ReplaceLibraries && bytes.Equal(cur.ManifestRaw, p.manifestRaw) {
+			replaceLibraries = true
 		}
 	}
 	if man.Ether != nil && man.Ether.Runtime.Kind == "data" {
@@ -720,7 +782,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	r := Record{
 		ID: man.ID, Name: man.Name, Version: man.Version, Manifest: man, ManifestRaw: p.manifestRaw,
 		SourceKind: sourceKindOf(p.source), SourceURL: p.source.URL, Enabled: true,
-		Verified: p.source.Verified, AutoUpdate: opts.AutoUpdate, Shadow: opts.Shadow,
+		Verified: p.source.Verified, AutoUpdate: opts.AutoUpdate, Shadow: opts.Shadow, ReplaceLibraries: replaceLibraries,
 	}
 	if man.Ether != nil {
 		r.Kind = string(man.Ether.Kind)
@@ -732,16 +794,6 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			r.PrevVersion = cur.Version
 		} else {
 			r.PrevVersion = cur.PrevVersion
-		}
-	}
-	if err := m.store.upsert(ctx, r); err != nil {
-		return Record{}, err
-	}
-	if existing {
-		// Only the current and previous bundles are ever read again
-		// (runtime, rollback); older ones are dead blobs.
-		if err := m.store.dropOtherVersions(ctx, man.ID, r.Version, r.PrevVersion); err != nil {
-			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
 		}
 	}
 	// Grants: keep existing picks on update unless new ones were given;
@@ -794,6 +846,16 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	if err := m.store.putSettings(ctx, man.ID, row); err != nil {
 		return Record{}, err
 	}
+	if err := m.store.upsert(ctx, r); err != nil {
+		return Record{}, err
+	}
+	if existing {
+		// Only the current and previous bundles are ever read again
+		// (runtime, rollback); older ones are dead blobs.
+		if err := m.store.dropOtherVersions(ctx, man.ID, r.Version, r.PrevVersion); err != nil {
+			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
+		}
+	}
 	if h, err := m.store.health(ctx, man.ID); err == nil && h.Status == "" {
 		_ = m.store.putHealth(ctx, man.ID, Health{Status: "ok", Observed: map[string]int{}})
 	}
@@ -843,6 +905,10 @@ func sourceKindOf(s Source) string {
 	return "url"
 }
 
+// ErrNoUpdateSource reports a plugin with nowhere to fetch updates from: a
+// Studio build, or a package file the marketplace does not list.
+var ErrNoUpdateSource = errors.New("this plugin was installed from a file and the marketplace does not list it, so Ether cannot check it for updates")
+
 // PermissionIncreaseError reports an update that asks for more access.
 type PermissionIncreaseError struct{ Added []string }
 
@@ -858,13 +924,27 @@ func (m *Manager) CheckUpdate(ctx context.Context, id string) (*Preview, bool, e
 	if err != nil {
 		return nil, false, err
 	}
-	if (r.SourceURL == "" && r.SourceKind != "catalogue") || r.SourceKind == "studio" {
+	if r.SourceKind == "studio" {
 		// A Studio build's link (an edited add-on's) is not an update source.
-		return nil, false, fmt.Errorf("plugins: %s has no update source", id)
+		return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+	}
+	sourceKind := r.SourceKind
+	if r.SourceURL == "" && sourceKind != "catalogue" {
+		// Installed from a package file: the signed marketplace is the update
+		// source when it lists this plugin. The catalogue review still gates
+		// the update, and added permissions still need the owner's consent.
+		cat := m.getCatalogue()
+		if cat == nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		if _, err := cat.Resolve(ctx, id, ""); err != nil {
+			return nil, false, fmt.Errorf("plugins: %s: %w", id, ErrNoUpdateSource)
+		}
+		sourceKind = "catalogue"
 	}
 	g, _ := m.store.grants(ctx, id)
-	src := Source{Kind: r.SourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
-	if r.SourceKind == "catalogue" {
+	src := Source{Kind: sourceKind, URL: r.SourceURL, LAN: g.LAN, Verified: r.Verified}
+	if sourceKind == "catalogue" {
 		src.ID = r.ID
 	}
 	p, err := m.PreviewInstall(ctx, src)
@@ -888,26 +968,37 @@ func (m *Manager) CheckUpdate(ctx context.Context, id string) (*Preview, bool, e
 	}
 	added := PermissionDiff(r.Manifest, p.Manifest)
 	if r.AutoUpdate && r.Verified && len(added) == 0 {
-		if _, err := m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow}); err != nil {
-			return p, true, err
+		if _, err := m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow}); err == nil {
+			return p, true, nil
+		} else {
+			var shape *libraryLevelChangeError
+			if !errors.As(err, &shape) {
+				return p, true, err
+			}
 		}
-		return p, true, nil
 	}
-	r.UpdateVersion = p.Manifest.Version
-	r.updateManifest = string(p.manifestRaw)
 	filesRaw, err := json.Marshal(p.files)
 	if err != nil {
 		return nil, false, err
 	}
-	r.updateFiles = string(filesRaw)
-	if err := m.store.upsert(ctx, r); err != nil {
+	res, err := m.store.db.ExecContext(ctx, `
+UPDATE plugins_installed SET update_version = ?, update_manifest = ?, update_files = ?
+WHERE id = ? AND manifest = ?`, p.Manifest.Version, string(p.manifestRaw), string(filesRaw), id, string(r.ManifestRaw))
+	if err != nil {
 		return nil, false, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return p, false, err
 	}
 	return p, true, nil
 }
 
 // ApplyUpdate installs a pending update previously stored by CheckUpdate.
 func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) (Record, error) {
+	return m.applyUpdate(ctx, id, InstallOptions{AcceptAddedPermissions: acceptAdded})
+}
+
+func (m *Manager) applyUpdate(ctx context.Context, id string, opts InstallOptions) (Record, error) {
 	r, err := m.store.record(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -915,13 +1006,14 @@ func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) 
 	if r.UpdateVersion == "" || r.updateManifest == "" {
 		return Record{}, fmt.Errorf("plugins: no update is waiting for %s", id)
 	}
+	opts.AutoUpdate, opts.Shadow = r.AutoUpdate, r.Shadow
 	if r.SourceKind == "catalogue" {
 		g, _ := m.store.grants(ctx, id)
 		p, err := m.PreviewInstall(ctx, Source{Kind: "catalogue", ID: id, Version: r.UpdateVersion, LAN: g.LAN})
 		if err != nil {
 			return Record{}, err
 		}
-		return m.Install(ctx, p, InstallOptions{AutoUpdate: r.AutoUpdate, Shadow: r.Shadow, AcceptAddedPermissions: acceptAdded})
+		return m.Install(ctx, p, opts)
 	}
 	man, err := ParseManifest([]byte(r.updateManifest))
 	if err != nil {
@@ -937,13 +1029,7 @@ func (m *Manager) ApplyUpdate(ctx context.Context, id string, acceptAdded bool) 
 	if err := p.resolve(); err != nil {
 		return Record{}, err
 	}
-	saved, err := m.Install(ctx, p, InstallOptions{AcceptAddedPermissions: acceptAdded, AutoUpdate: r.AutoUpdate, Shadow: r.Shadow})
-	if err != nil {
-		return Record{}, err
-	}
-	saved.UpdateVersion, saved.updateManifest, saved.updateFiles = "", "", ""
-	_ = m.store.upsert(ctx, saved)
-	return saved, nil
+	return m.Install(ctx, p, opts)
 }
 
 // Rollback returns a plugin to its previous version (one step).

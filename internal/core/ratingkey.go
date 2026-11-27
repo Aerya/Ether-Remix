@@ -8,9 +8,7 @@ import (
 	"strings"
 )
 
-// RatingKey is the Plex ratingKey of an Ether item. It is derived from TMDB
-// identifiers so a title keeps the same key before and after anything about
-// it is resolved or cached.
+// RatingKey is the stable identity of an Ether item.
 //
 // Layout (decimal, kept below 2^53 so JavaScript clients parse it safely):
 //
@@ -50,6 +48,37 @@ const (
 )
 
 const keyBase = 1_000_000_000_000_000 // 10^15
+
+// AllocatedTitleBase reserves an upper payload range for allocated movie,
+// show, and season keys. It exceeds the payload of any 32-bit TMDB id,
+// including season packing. Episode packing occupies its full range, so
+// allocated episodes use the spare JavaScript-safe range above plugin parts.
+const (
+	AllocatedTitleBase   int64 = 900_000_000_000_000
+	AllocatedEpisodeBase int64 = int64(KindLocal)*keyBase + PluginPartKeyBase + PluginPartMaxSeq*PluginPartStride
+	AllocatedKeyMaxSeq   int64 = 250_000_000
+)
+
+func AllocatedKey(kind KeyKind, seq int64) (RatingKey, bool) {
+	if seq < 1 || seq >= AllocatedKeyMaxSeq {
+		return 0, false
+	}
+	switch kind {
+	case KindMovie, KindShow, KindSeason:
+		return RatingKey(int64(kind)*keyBase + AllocatedTitleBase + seq), true
+	case KindEpisode:
+		return RatingKey(AllocatedEpisodeBase + seq), true
+	}
+	return 0, false
+}
+
+func (k RatingKey) Allocated() bool {
+	if k > RatingKey(AllocatedEpisodeBase) && k < RatingKey(AllocatedEpisodeBase+AllocatedKeyMaxSeq) {
+		return true
+	}
+	kind := KeyKind(int64(k) / keyBase)
+	return kind >= KindMovie && kind <= KindSeason && k.payload() > AllocatedTitleBase && k.payload() < AllocatedTitleBase+AllocatedKeyMaxSeq
+}
 
 // MaxTitleRuleKeys bounds the number of rating keys in one "title" visibility
 // condition so compiled key IN (...) predicates stay bounded.
@@ -254,12 +283,20 @@ func EpisodeKey(show int64, season, episode int) RatingKey {
 	return RatingKey(int64(KindEpisode)*keyBase + show*10_000_000 + int64(season)*10_000 + int64(episode))
 }
 
-func (k RatingKey) Kind() KeyKind  { return KeyKind(int64(k) / keyBase) }
+func (k RatingKey) Kind() KeyKind {
+	if k > RatingKey(AllocatedEpisodeBase) && k < RatingKey(AllocatedEpisodeBase+AllocatedKeyMaxSeq) {
+		return KindEpisode
+	}
+	return KeyKind(int64(k) / keyBase)
+}
 func (k RatingKey) payload() int64 { return int64(k) % keyBase }
 
 // TMDB returns the TMDB id for movie, show, and collection keys, and the show
 // id for season and episode keys.
 func (k RatingKey) TMDB() int64 {
+	if k.Allocated() {
+		return 0
+	}
 	switch k.Kind() {
 	case KindSeason:
 		return k.payload() / 10_000
@@ -272,6 +309,9 @@ func (k RatingKey) TMDB() int64 {
 
 // Season returns the season number for season and episode keys.
 func (k RatingKey) Season() int {
+	if k.Allocated() {
+		return 0
+	}
 	switch k.Kind() {
 	case KindSeason:
 		return int(k.payload() % 10_000)
@@ -283,6 +323,9 @@ func (k RatingKey) Season() int {
 
 // Episode returns the episode number for episode keys.
 func (k RatingKey) Episode() int {
+	if k.Allocated() {
+		return 0
+	}
 	if k.Kind() == KindEpisode {
 		return int(k.payload() % 10_000)
 	}
@@ -291,6 +334,9 @@ func (k RatingKey) Episode() int {
 
 // Parent returns the season key of an episode and the show key of a season.
 func (k RatingKey) Parent() RatingKey {
+	if k.Allocated() {
+		return 0
+	}
 	switch k.Kind() {
 	case KindEpisode:
 		return SeasonKey(k.TMDB(), k.Season())

@@ -45,7 +45,10 @@ function Instrument({
     <div
       role="group"
       aria-label={label}
-      className={cn("flex min-h-0 flex-col gap-1.5 py-3 first:pt-0 last:pb-0", className)}
+      className={cn(
+        "flex min-h-0 flex-col gap-1.5 py-3 first:pt-0 last:pb-0 @5xl:min-h-auto @5xl:flex-1",
+        className,
+      )}
     >
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
@@ -61,8 +64,11 @@ function Instrument({
   );
 }
 
-/** Fixed band height so every five-minute trace renders cleanly in natural card flow. */
-const chartBox = "h-20";
+/**
+ * A fixed band in natural card flow. Where the Overview fits the window
+ * height the bands share the spare room instead, never below a readable trace.
+ */
+const chartBox = "h-20 @5xl:h-auto @5xl:min-h-12 @5xl:flex-1";
 
 /**
  * This server's live CPU, memory, network and GPU load as a stack of
@@ -77,7 +83,7 @@ export function ServerPanel({ hwaccel, className }: { hwaccel?: string; classNam
       title={t("Server")}
       icon={<Server size={16} />}
       className={className}
-      bodyClassName="flex flex-col"
+      bodyClassName="flex flex-col @5xl:overflow-y-auto"
       actions={
         <span className="flex items-center gap-2">
           {hwaccel ? <Badge variant="secondary">{hwaccel}</Badge> : null}
@@ -148,7 +154,7 @@ function Vitals({ data }: { data: SystemLoad }) {
 
   return (
     <>
-      <div className="flex flex-col divide-y divide-border-subtle">
+      <div className="flex flex-col divide-y divide-border-subtle @5xl:min-h-auto @5xl:flex-1">
         <Instrument
           label="CPU"
           value={pct(cur?.cpu)}

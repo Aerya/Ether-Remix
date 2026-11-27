@@ -202,7 +202,7 @@ func (s *Service) ByKey(ctx context.Context, key string) (core.Library, error) {
 }
 
 // Create saves a library with sources and visible visibility rules.
-func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaType, rules []core.LibraryExclusion, fallback string, p core.Presentations) (core.Library, error) {
+func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaType, rules []core.LibraryExclusion, fallback string, p core.Presentations, options ...CreateOption) (core.Library, error) {
 	mediaType = core.MediaType(core.NormalizeRuleMediaType(string(mediaType)))
 	rules = core.NormalizeLibraryRules(rules)
 	name = strings.TrimSpace(name)
@@ -232,10 +232,14 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if err != nil {
 		return core.Library{}, err
 	}
-	lib, err := s.insert(ctx, tx, core.Library{
+	lib := core.Library{
 		ID: id, Key: key, Name: name, Source: core.LibraryCatalog,
 		MediaType: mediaType, Rules: rules, VisibilityDefault: fallback, Present: p, Sort: int(id),
-	})
+	}
+	for _, option := range options {
+		option(&lib)
+	}
+	lib, err = s.insert(ctx, tx, lib)
 	if err != nil {
 		return core.Library{}, err
 	}
@@ -254,7 +258,7 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 // the library empty rather than failing the read. mediaType pins
 // movie|show like a filter library. The caller passes the zero
 // Presentations for the console-only default (§15.3).
-func (s *Service) CreateCollection(ctx context.Context, name string, collectionID int64, mediaType core.MediaType, p core.Presentations) (core.Library, error) {
+func (s *Service) CreateCollection(ctx context.Context, name string, collectionID int64, mediaType core.MediaType, p core.Presentations, options ...CreateOption) (core.Library, error) {
 	name = strings.TrimSpace(name)
 	slug := slugify(name)
 	if name == "" || slug == "" {
@@ -282,10 +286,14 @@ func (s *Service) CreateCollection(ctx context.Context, name string, collectionI
 	if err != nil {
 		return core.Library{}, err
 	}
-	lib, err := s.insert(ctx, tx, core.Library{
+	lib := core.Library{
 		ID: id, Key: key, Name: name, Source: core.LibraryCollection,
 		MediaType: mediaType, CollectionID: collectionID, Present: p, Sort: int(id),
-	})
+	}
+	for _, option := range options {
+		option(&lib)
+	}
+	lib, err = s.insert(ctx, tx, lib)
 	if err != nil {
 		return core.Library{}, err
 	}

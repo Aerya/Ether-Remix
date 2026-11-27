@@ -91,11 +91,7 @@ func (c *availabilityCatalog) Search(ctx context.Context, q string, types []core
 	if e != nil {
 		return nil, e
 	}
-	vis := c.Catalog.FilterVisibility(ctx, ts)
-	if c.Catalog.TMDBConfigured() {
-		return c.availability.FilterDiscovery(ctx, vis), nil
-	}
-	return vis, nil
+	return c.availability.FilterDiscovery(ctx, c.Catalog.FilterVisibility(ctx, ts)), nil
 }
 func (c *availabilityCatalog) PeopleTitles(ctx context.Context, viewer *core.User, q string, n int) ([]core.Title, error) {
 	gf, err := c.availability.PagingFilter(ctx, core.Filter{})
@@ -106,9 +102,5 @@ func (c *availabilityCatalog) PeopleTitles(ctx context.Context, viewer *core.Use
 	if e != nil {
 		return nil, e
 	}
-	vis := c.Catalog.FilterVisibility(ctx, ts)
-	if c.Catalog.TMDBConfigured() {
-		return c.availability.FilterDiscovery(ctx, vis), nil
-	}
-	return vis, nil
+	return c.availability.FilterDiscovery(ctx, c.Catalog.FilterVisibility(ctx, ts)), nil
 }

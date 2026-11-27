@@ -102,8 +102,8 @@ func testCfg() config.Config {
 // 1080p. Ranking behaviour, not the shipped defaults, is what they test.
 func fixtureQuality() config.Quality {
 	q := config.DefaultQuality()
-	q.Default, q.Remote = "1080p", "1080p"
-	q.Rules = []config.QualityRule{{Product: "Apple TV", Profile: "4K"}}
+	q.Default, q.DefaultAway = "1080p", "1080p"
+	q.Rules = []config.QualityRule{{ID: "r_atv", Devices: []config.DeviceMatch{{Contains: "Apple TV"}}, Profile: "4K"}}
 	for i := range q.Profiles {
 		if q.Profiles[i].Name == "4K" {
 			q.Profiles[i].MinHeight = 1080
@@ -152,7 +152,7 @@ func TestSelectProfile(t *testing.T) {
 		t.Fatalf("remote web profile %q want the remote profile", p.Name)
 	}
 	q720 := q
-	q720.Remote = "720p"
+	q720.DefaultAway = "720p"
 	if p = SelectProfile(q720, remoteWeb, nil); p.Name != "720p" {
 		t.Fatalf("remote web profile %q want the remote 720p", p.Name)
 	}
@@ -164,7 +164,7 @@ func TestSelectProfile(t *testing.T) {
 		t.Fatalf("clamped profile %+v", p)
 	}
 	// User rule.
-	q.Rules = append([]config.QualityRule{{UserID: 7, Profile: "720p"}}, q.Rules...)
+	q.Rules = append([]config.QualityRule{{ID: "r_v7", Viewers: []int64{7}, Profile: "720p"}}, q.Rules...)
 	if p = SelectProfile(q, webCaps(), &core.User{ID: 7}); p.Name != "720p" {
 		t.Fatalf("user rule profile %q", p.Name)
 	}
@@ -907,7 +907,7 @@ func TestEpisodeSizeBoundsAndLargerFile(t *testing.T) {
 func TestRemote4KProfileDoesNotDemote2160pUnderDefault8MbpsCap(t *testing.T) {
 	ctx := context.Background()
 	cfg := testCfg()
-	cfg.Quality.Remote = "4K"
+	cfg.Quality.DefaultAway = "4K"
 	idx := &fakeIndexer{releases: []core.Release{
 		rel("uhd-18gb", "The.Signal.1999.2160p.BluRay.x265.10bit-GRP", 18000),
 		rel("hd-4gb", "The.Signal.1999.1080p.BluRay.x264-GRP", 4200),
@@ -968,10 +968,10 @@ func TestConvertSurroundAudioDeviceRulePrefersSameTierAAC(t *testing.T) {
 	// With ConvertSurroundAudio: strips surround codecs from caps and prefers same-tier AAC release.
 	cfgOn := cfg
 	cfgOn.Quality.Rules = []config.QualityRule{{
-		Protocol:             "jellyfin",
-		Product:              "Infuse",
-		Profile:              "4K",
-		ConvertSurroundAudio: true,
+		ID:          "r_infuse",
+		Devices:     []config.DeviceMatch{{Contains: "Infuse"}},
+		Profile:     "4K",
+		StereoAudio: true,
 	}}
 	svcOn := New(idx, fakeHealth{}, nil, cfgOn, Options{})
 	capsOn := ApplyClientRules(cfgOn.Quality, infuseCaps(), nil)
@@ -1005,8 +1005,8 @@ func TestConvertSurroundAudioDeviceRulePrefersSameTierAAC(t *testing.T) {
 // each gets the 4K profile held to what the device can play.
 func TestShippedQualityHasNoServerCap(t *testing.T) {
 	q := config.DefaultQuality()
-	if len(q.Rules) != 0 || q.Remote != "" {
-		t.Fatalf("shipped rules %v remote %q", q.Rules, q.Remote)
+	if len(q.Rules) != 0 || q.DefaultAway != "" {
+		t.Fatalf("shipped rules %v remote %q", q.Rules, q.DefaultAway)
 	}
 	tv := appleTVCaps()
 	phone := core.ClientCaps{Product: "Plex for Android (Mobile)", Platform: "Android", MaxHeight: 1080, VideoCodecs: []string{"h264", "hevc"}}
@@ -1024,7 +1024,7 @@ func TestShippedQualityHasNoServerCap(t *testing.T) {
 		}
 	}
 	// The owner caps away-from-home with an Away profile.
-	q.Remote = "1080p"
+	q.DefaultAway = "1080p"
 	tv.Remote = true
 	if p := SelectProfile(q, tv, nil); p.Name != "1080p" {
 		t.Fatalf("away profile %q want 1080p", p.Name)

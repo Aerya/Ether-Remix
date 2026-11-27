@@ -171,11 +171,14 @@ export function PosterGrid({
   items,
   reasons,
   onSelect,
+  badge,
   className,
 }: {
   items: TitleCard[];
   reasons?: Record<string, string>;
   onSelect?: (item: TitleCard) => void;
+  /** A corner badge per card (a rank, an age rating). */
+  badge?: (item: TitleCard, index: number) => ReactNode;
   className?: string;
 }) {
   return (
@@ -191,7 +194,7 @@ export function PosterGrid({
           <PosterCard
             item={it}
             reason={reasons?.[it.key]}
-
+            badge={badge?.(it, i)}
             onClick={onSelect ? () => onSelect(it) : undefined}
             eager={i < 12}
           />

@@ -87,26 +87,26 @@ func TestPMSSessionProjectionNestedTypes(t *testing.T) {
 	}
 }
 
-func TestPMSDecisionArmingIsSessionAndItemScoped(t *testing.T) {
+// PMS lets a player open start without a decision: start decides for itself.
+// A start for a delivery its player has stopped stays refused; a new
+// session= value, or a fresh decision, plays again.
+func TestPMSStartDecidesImplicitlyButNotAfterStop(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
 	start := "/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F1000000000000550&session=arm"
-	if got := f.get(t, start); got.Code != 400 {
-		t.Fatalf("unarmed start: %d", got.Code)
-	}
-	decision := strings.Replace(start, "start.m3u8", "decision", 1)
-	if got := f.get(t, decision, "X-Plex-Session-Identifier", "first"); got.Code != 200 {
-		t.Fatal(got.Code, got.Body.String())
-	}
-	if got := f.get(t, start, "X-Plex-Session-Identifier", "second"); got.Code != 400 {
-		t.Fatalf("another player borrowed decision: %d", got.Code)
+	if got := f.get(t, start, "X-Plex-Session-Identifier", "first"); got.Code != 200 {
+		t.Fatalf("start without decision: %d %s", got.Code, got.Body.String())
 	}
 	other := strings.Replace(start, "1000000000000550", alien.Key.String(), 1)
-	if got := f.get(t, other, "X-Plex-Session-Identifier", "first"); got.Code != 400 {
-		t.Fatalf("another item borrowed decision: %d", got.Code)
+	if got := f.get(t, other, "X-Plex-Session-Identifier", "second"); got.Code == 400 {
+		t.Fatal("another player's start was refused for want of a decision")
 	}
-	if got := f.get(t, start, "X-Plex-Session-Identifier", "first"); got.Code != 200 {
-		t.Fatalf("armed start: %d %s", got.Code, got.Body.String())
+	f.get(t, "/:/timeline?ratingKey=1000000000000550&state=stopped&time=1000&duration=10000&session=arm", "X-Plex-Session-Identifier", "first")
+	if got := f.get(t, start, "X-Plex-Session-Identifier", "first"); got.Code != 400 {
+		t.Fatalf("stopped delivery reopened: %d", got.Code)
+	}
+	if got := f.get(t, strings.Replace(start, "session=arm", "session=arm2", 1), "X-Plex-Session-Identifier", "first"); got.Code != 200 {
+		t.Fatalf("new delivery after stop: %d %s", got.Code, got.Body.String())
 	}
 }
 

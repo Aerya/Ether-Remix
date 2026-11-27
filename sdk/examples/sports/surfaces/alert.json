@@ -1,0 +1,292 @@
+{
+  "schema": 1,
+  "kind": "screen",
+  "renderer": 19,
+  "screen": "sports.alert",
+  "page": "main",
+  "version": "2.0.0",
+  "title": "{context.alert.title}",
+  "presentation": "toast",
+  "sources": { "game": { "from": "liveEvent", "feed": "sports", "id": "{context.alert.ref}" } },
+  "strings": {
+    "watch": "Watch",
+    "watchOn": "Watch on {arg.channel}",
+    "multiview": "Multiview",
+    "addToMultiview": "Add to multiview",
+    "onNow": "On this channel now",
+    "dismiss": "Dismiss",
+    "press": "Press",
+    "toWatch": "to watch",
+    "toAddToMultiview": "to add to multiview"
+  },
+  "palette": { "toast": "#0b0f1a", "glass": "#0b0f1af0" },
+  "motion": { "countdown": { "keyframes": "doc:countdown", "duration": 12000, "easing": "linear", "fill": "both", "still": { "keyframes": "none", "duration": 0 } } },
+  "keyframes": { "countdown": { "0%": { "translate": "0px 0px" }, "100%": { "translate": "-100% 0px" } } },
+  "tree": {
+    "type": "box",
+    "testId": "live-alert",
+    "role": "alert",
+    "label": "{context.alert.title}. {context.alert.body}",
+    "style": {
+      "font-family": "$ui.font",
+      "border-radius": "min($ui.radiusPanel, 16px)",
+      "background-color": "$palette.toast",
+      "box-shadow": "0px 8px 22px #0000008c"
+    },
+    "children": [
+      {
+        "type": "box",
+        "style": {
+          "border-radius": "min($ui.radiusPanel, 16px)",
+          "overflow": "hidden",
+          "background-color": "$palette.glass",
+          "border": "1px solid #ffffff1f"
+        },
+        "children": [
+          {
+            "type": "box",
+            "style": { "flex-direction": "row" },
+            "children": [
+              {
+                "type": "box",
+                "a11y": { "hidden": true },
+                "style": { "width": "4px", "background-color": "$ui.inkSecondary" },
+                "states": [
+                  { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "started" }], "style": { "background-color": "$ui.live" } },
+                  { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "close" }], "style": { "background-color": "$ui.highlight" } }
+                ]
+              },
+              {
+                "type": "box",
+                "style": { "flex": "1", "padding-top": "12px", "padding-bottom": "12px", "padding-left": "14px", "padding-right": "12px", "gap": "4px" },
+                "children": [
+                  {
+                    "type": "box",
+                    "style": { "flex-direction": "row", "align-items": "center", "gap": "8px" },
+                    "children": [
+                      {
+                        "type": "text",
+                        "text": "{context.alert.title}",
+                        "tv": { "letter-spacing": "0.4px" },
+                        "style": { "font-size": "13px", "font-weight": "800", "color": "$ui.inkSecondary", "flex": "1", "line-clamp": "1" },
+                        "states": [
+                          { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "started" }], "style": { "color": "$ui.live" } },
+                          { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "close" }], "style": { "color": "$ui.highlight" } }
+                        ]
+                      },
+                      {
+                        "type": "box",
+                        "role": "button",
+                        "label": "{s:dismiss}",
+                        "testId": "live-alert-dismiss",
+                        "when": [{ "test": "env.tv", "not": true }],
+                        "press": { "action": "dismiss" },
+                        "style": { "width": "22px", "height": "22px", "align-items": "center", "justify-content": "center", "border-radius": "11px" },
+                        "hover": { "background-color": "$ui.control" },
+                        "focus": { "outline": "2px solid $ui.accent" },
+                        "children": [{ "type": "text", "text": "✕", "style": { "font-size": "14px", "font-weight": "600", "color": "$ui.inkQuiet" } }]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "text",
+                    "text": "{context.alert.body}",
+                    "when": [{ "test": "context.alert.body" }],
+                    "style": { "font-size": "14px", "font-weight": "500", "color": "$ui.ink", "font-variant-numeric": "tabular-nums", "line-clamp": "2" }
+                  },
+                  {
+                    "type": "box",
+                    "when": [
+                      { "test": "src.game.event.watch.primary.channelId" },
+                      { "test": "context.channel", "is": "ne", "value": "channel:{src.game.event.watch.primary.channelId}" }
+                    ],
+                    "style": { "flex-direction": "row", "flex-wrap": "wrap", "align-items": "center", "gap": "8px", "margin-top": "6px" },
+                    "children": [
+                      {
+                        "type": "box",
+                        "role": "button",
+                        "label": "{s:watchOn|with:channel=src.game.event.watch.primary.name}",
+                        "testId": "live-alert-watch",
+                        "press": { "action": "watch", "args": { "event": "{context.alert.ref}", "channel": "{src.game.event.watch.primary.channelId}" } },
+                        "when": [],
+                        "group": true,
+                        "style": {
+                          "flex-direction": "row",
+                          "align-items": "center",
+                          "gap": "7px",
+                          "padding": "7px 13px",
+                          "border-radius": "min($ui.radiusControl, 18px)",
+                          "background-color": "$ui.accent"
+                        },
+                        "hover": { "background-color": "$ui.ink" },
+                        "focus": { "background-color": "$ui.ink", "outline": "2px solid $ui.accent" },
+                        "tv": { "transition": "scale 160ms, background-color 160ms" },
+                        "children": [
+                          {
+                            "type": "icon",
+                            "paths": ["M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"],
+                            "style": { "width": "13px", "height": "13px", "font-size": "13px", "color": "$ui.onAccent" },
+                            "groupHover": { "color": "$ui.inkInverse" },
+                            "groupFocus": { "color": "$ui.inkInverse" }
+                          },
+                          {
+                            "type": "text",
+                            "text": "{s:watch} · {src.game.event.watch.primary.name}{src.game.event.watch.primary.number| · }",
+                            "style": { "font-size": "13px", "font-weight": "700", "color": "$ui.onAccent", "line-clamp": "1" },
+                            "groupHover": { "color": "$ui.inkInverse" },
+                            "groupFocus": { "color": "$ui.inkInverse" }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "box",
+                        "role": "button",
+                        "label": "{s:addToMultiview}",
+                        "testId": "live-alert-multiview",
+                        "press": { "action": "multiview", "args": { "channel": "{src.game.event.watch.primary.channelId}" } },
+                        "when": [{ "test": "env.canMultiview" }, { "test": "context.channel" }],
+                        "group": true,
+                        "style": {
+                          "flex-direction": "row",
+                          "align-items": "center",
+                          "gap": "7px",
+                          "padding": "7px 13px",
+                          "border-radius": "min($ui.radiusControl, 18px)",
+                          "background-color": "$ui.control"
+                        },
+                        "hover": { "background-color": "$ui.ink" },
+                        "focus": { "background-color": "$ui.ink", "outline": "2px solid $ui.accent" },
+                        "tv": { "transition": "scale 160ms, background-color 160ms" },
+                        "children": [
+                          {
+                            "type": "icon",
+                            "paths": [
+                              "M4.5 3.65h4.999a2.35 2.35 0 0 1 2.35 2.35v3.499a2.35 2.35 0 0 1 -2.35 2.35h-4.999a2.35 2.35 0 0 1 -2.35 -2.35v-3.499a2.35 2.35 0 0 1 2.35 -2.35zM4.5 5.35h5a0.65 0.65 0 0 1 0.65 0.65v3.5a0.65 0.65 0 0 1 -0.65 0.65h-5a0.65 0.65 0 0 1 -0.65 -0.65v-3.5a0.65 0.65 0 0 1 0.65 -0.65z",
+                              "M14.5 3.65h4.999a2.35 2.35 0 0 1 2.35 2.35v3.499a2.35 2.35 0 0 1 -2.35 2.35h-4.999a2.35 2.35 0 0 1 -2.35 -2.35v-3.499a2.35 2.35 0 0 1 2.35 -2.35zM14.5 5.35h5a0.65 0.65 0 0 1 0.65 0.65v3.5a0.65 0.65 0 0 1 -0.65 0.65h-5a0.65 0.65 0 0 1 -0.65 -0.65v-3.5a0.65 0.65 0 0 1 0.65 -0.65z",
+                              "M4.5 12.15h4.999a2.35 2.35 0 0 1 2.35 2.35v3.499a2.35 2.35 0 0 1 -2.35 2.35h-4.999a2.35 2.35 0 0 1 -2.35 -2.35v-3.499a2.35 2.35 0 0 1 2.35 -2.35zM4.5 13.85h5a0.65 0.65 0 0 1 0.65 0.65v3.5a0.65 0.65 0 0 1 -0.65 0.65h-5a0.65 0.65 0 0 1 -0.65 -0.65v-3.5a0.65 0.65 0 0 1 0.65 -0.65z",
+                              "M14.5 12.15h4.999a2.35 2.35 0 0 1 2.35 2.35v3.499a2.35 2.35 0 0 1 -2.35 2.35h-4.999a2.35 2.35 0 0 1 -2.35 -2.35v-3.499a2.35 2.35 0 0 1 2.35 -2.35zM14.5 13.85h5a0.65 0.65 0 0 1 0.65 0.65v3.5a0.65 0.65 0 0 1 -0.65 0.65h-5a0.65 0.65 0 0 1 -0.65 -0.65v-3.5a0.65 0.65 0 0 1 0.65 -0.65z"
+                            ],
+                            "fillRule": "evenodd",
+                            "style": { "width": "13px", "height": "13px", "font-size": "13px", "color": "$ui.ink" },
+                            "groupHover": { "color": "$ui.inkInverse" },
+                            "groupFocus": { "color": "$ui.inkInverse" }
+                          },
+                          {
+                            "type": "text",
+                            "text": "{s:multiview}",
+                            "style": { "font-size": "13px", "font-weight": "700", "color": "$ui.ink", "line-clamp": "1" },
+                            "groupHover": { "color": "$ui.inkInverse" },
+                            "groupFocus": { "color": "$ui.inkInverse" }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "text",
+                    "text": "{s:onNow}",
+                    "when": [
+                      { "test": "src.game.event.watch.primary.channelId" },
+                      { "test": "context.channel", "is": "eq", "value": "channel:{src.game.event.watch.primary.channelId}" }
+                    ],
+                    "style": { "font-size": "12px", "font-weight": "600", "color": "$ui.inkSecondary", "margin-top": "2px" }
+                  },
+                  {
+                    "type": "box",
+                    "when": [
+                      { "test": "env.tv" },
+                      { "test": "src.game.event.watch.primary.channelId" },
+                      { "test": "context.channel", "is": "ne", "value": "channel:{src.game.event.watch.primary.channelId}" },
+                      { "test": "env.canMultiview" },
+                      { "test": "context.channel" }
+                    ],
+                    "style": { "flex-direction": "row", "align-items": "center", "gap": "5px", "margin-top": "2px" },
+                    "children": [
+                      { "type": "text", "text": "{s:press}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } },
+                      {
+                        "type": "icon",
+                        "paths": ["M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      {
+                        "type": "icon",
+                        "paths": ["M6.5 4.5h3.5v15H6.5zM14 4.5h3.5v15H14z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      { "type": "text", "text": "{s:toAddToMultiview}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } }
+                    ]
+                  },
+                  {
+                    "type": "box",
+                    "when": [
+                      { "test": "env.tv" },
+                      { "test": "src.game.event.watch.primary.channelId" },
+                      { "test": "context.channel", "is": "ne", "value": "channel:{src.game.event.watch.primary.channelId}" },
+                      { "test": "env.canMultiview", "not": true }
+                    ],
+                    "style": { "flex-direction": "row", "align-items": "center", "gap": "5px", "margin-top": "2px" },
+                    "children": [
+                      { "type": "text", "text": "{s:press}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } },
+                      {
+                        "type": "icon",
+                        "paths": ["M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      {
+                        "type": "icon",
+                        "paths": ["M6.5 4.5h3.5v15H6.5zM14 4.5h3.5v15H14z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      { "type": "text", "text": "{s:toWatch}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } }
+                    ]
+                  },
+                  {
+                    "type": "box",
+                    "when": [
+                      { "test": "env.tv" },
+                      { "test": "src.game.event.watch.primary.channelId" },
+                      { "test": "context.channel", "is": "ne", "value": "channel:{src.game.event.watch.primary.channelId}" },
+                      { "test": "env.canMultiview" },
+                      { "test": "context.channel", "not": true }
+                    ],
+                    "style": { "flex-direction": "row", "align-items": "center", "gap": "5px", "margin-top": "2px" },
+                    "children": [
+                      { "type": "text", "text": "{s:press}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } },
+                      {
+                        "type": "icon",
+                        "paths": ["M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      {
+                        "type": "icon",
+                        "paths": ["M6.5 4.5h3.5v15H6.5zM14 4.5h3.5v15H14z"],
+                        "style": { "width": "11px", "height": "11px", "font-size": "11px", "color": "$ui.inkSecondary" }
+                      },
+                      { "type": "text", "text": "{s:toWatch}", "style": { "font-size": "11px", "font-weight": "500", "color": "$ui.inkQuiet" } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "a11y": { "hidden": true },
+            "style": { "height": "2px", "background-color": "#ffffff10", "overflow": "hidden" },
+            "children": [
+              {
+                "type": "box",
+                "motion": "countdown",
+                "style": { "height": "2px", "opacity": "0.7", "background-color": "$ui.inkSecondary" },
+                "states": [
+                  { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "started" }], "style": { "background-color": "$ui.live" } },
+                  { "when": [{ "test": "context.alert.kind", "is": "eq", "value": "close" }], "style": { "background-color": "$ui.highlight" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

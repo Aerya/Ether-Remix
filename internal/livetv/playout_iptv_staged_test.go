@@ -85,57 +85,57 @@ func onlyGrant(t *testing.T, s *Service) (*session, *inputGrant) {
 	return nil, nil
 }
 
-// A successful IPTV tune prepares on a staged session copy: the input grant
-// created for the stage must be re-keyed to the real session with its token
-// (and thus the URL the transcoder received) unchanged, and Stop must
-// revoke that grant and close the published relay.
-func TestIPTVStagedPublishTransfersGrantAndStopRevokes(t *testing.T) {
+// The staged grant belongs to the shared relay after publication, so a
+// same-variant viewer can keep using it after the first viewer leaves.
+func TestIPTVStagedPublishSharesRelayUntilLastViewer(t *testing.T) {
 	tc := &stagedIPTVTranscoder{info: stagedIPTVInfo()}
 	s, u, channel := stagedIPTVFixture(t, tc)
+	ctx := t.Context()
 
-	info, err := s.Tune(context.Background(), u, channel.ID, core.ClientCaps{})
+	first, err := s.Tune(ctx, u, channel.ID, core.ClientCaps{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss := liveSessionByID(s, info.ID)
-	if ss == nil {
-		t.Fatal("tuned session not registered")
-	}
-	key, grant := onlyGrant(t, s)
-	if key != ss {
-		t.Fatal("input grant was not re-keyed from the staged copy to the real session")
-	}
-	if grant == nil || grant.ctx.Err() != nil {
-		t.Fatal("transferred input grant is not live")
-	}
-	input, err := s.relayInput(ss)
+	other := &core.User{ID: 2}
+	second, err := s.Tune(ctx, other, channel.ID, core.ClientCaps{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tc.requests) != 1 || tc.requests[0].InputURL != input {
-		t.Fatalf("transcoder input %q does not use the transferred grant URL %q", tc.requests[0].InputURL, input)
+	firstSession, secondSession := liveSessionByID(s, first.ID), liveSessionByID(s, second.ID)
+	if firstSession == nil || secondSession == nil {
+		t.Fatal("tuned session missing")
 	}
-	ss.mu.Lock()
-	lease := ss.owned
-	ss.mu.Unlock()
-	if lease == nil || lease.relay == nil || len(tc.hls) != 1 || lease.relay.current() != core.HLSSession(tc.hls[0]) || lease.relay.sess.Load() != ss {
-		t.Fatal("staged relay was not published on the real session")
+	p := firstSession.owned.relay
+	inputSession, grant := onlyGrant(t, s)
+	if p == nil || secondSession.owned.relay != p || p.sess.Load() != inputSession || grant == nil || grant.ctx.Err() != nil {
+		t.Fatal("viewers did not share one relay and input grant")
 	}
-
-	if err := s.Stop(context.Background(), info.ID, u); err != nil {
+	input, err := s.relayInput(inputSession)
+	if err != nil || len(tc.requests) != 1 || tc.requests[0].InputURL != input {
+		t.Fatal("relay did not retain its original input grant")
+	}
+	for _, viewer := range []*session{firstSession, secondSession} {
+		if got, err := s.relayInput(viewer); err != nil || got != input {
+			t.Fatal("viewer could not resolve the shared relay grant")
+		}
+	}
+	if err := s.Stop(ctx, first.ID, u); err != nil {
 		t.Fatal(err)
 	}
-	if grantOf(s, ss) != nil {
-		t.Fatal("Stop left the session's input grant registered")
+	if _, err := s.relayInput(firstSession); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatal("stopped viewer still resolves the shared relay grant")
 	}
-	if grant.ctx.Err() == nil {
-		t.Fatal("Stop did not revoke the transferred input grant")
+	if got, err := s.relayInput(secondSession); err != nil || got != input {
+		t.Fatal("remaining viewer lost the shared relay grant")
 	}
-	if _, err := s.relayInput(ss); err == nil {
-		t.Fatal("revoked input grant still yields a relay URL")
+	if grant.ctx.Err() != nil || tc.hls[0].closed {
+		t.Fatal("stopping the first viewer interrupted the second viewer")
 	}
-	if !tc.hls[0].closed {
-		t.Fatal("Stop left the published relay open")
+	if err := s.Stop(ctx, second.ID, other); err != nil {
+		t.Fatal(err)
+	}
+	if grantOf(s, inputSession) != nil || grant.ctx.Err() == nil || !tc.hls[0].closed {
+		t.Fatal("last viewer left the shared relay running")
 	}
 }
 

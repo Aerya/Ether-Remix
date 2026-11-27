@@ -138,7 +138,8 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	guard := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(r.Context(), FromContext(r.Context()).User) {
+			pr := FromContext(r.Context())
+			if !(s.liveTVEnabled() || s.isCatchUpMediaRequest(r, pr)) || !s.svc().liveTV.VisibleTo(r.Context(), pr.User) {
 				writeHTTPError(w, 404)
 				return
 			}
@@ -146,7 +147,6 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 				writeHTTPError(w, 404)
 				return
 			}
-			pr := FromContext(r.Context())
 			if p, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !p.CanPlay(pr.User, pr.Remote, s.now()) {
 				writeHTTPError(w, 403)
 				return
@@ -197,6 +197,7 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	get(liveProviderPath+"/watchnow/tonight", s.handleLiveGuide)
 	get(liveProviderPath+"/watchnow/categories/{category}", s.handleLiveGuide)
 	get(liveProviderPath+"/sections/{section}/all", s.handleLiveGuide)
+	r.Get("/library/catchup/art/{key}/{kind}", s.catchUpArt)
 	get("/livetv/guide.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.svc().liveTV.ServeXMLTV(w, r, FromContext(r.Context()).User)
 	})
@@ -482,12 +483,26 @@ func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.Live
 	if p.Lens != "" {
 		md.Summary = p.Lens + "\n\n" + md.Summary
 	}
+	if mediaType == "episode" {
+		showTitle := p.Item.ShowTitle
+		if showTitle == "" && p.Item.EpisodeTitle != "" && p.Item.Title != "" && p.Item.Title != p.Item.EpisodeTitle {
+			showTitle = p.Item.Title
+		}
+		if showTitle != "" {
+			md.GrandparentTitle = showTitle
+		}
+		if p.Item.EpisodeTitle != "" {
+			md.Title = p.Item.EpisodeTitle
+		}
+	}
 	if strings.HasPrefix(p.Item.GUID, "plex://") {
 		md.GUID = p.Item.GUID
 		if p.Item.EpisodeTitle != "" {
 			md.Title = p.Item.EpisodeTitle
 		}
-		md.GrandparentTitle = p.Item.ShowTitle
+		if p.Item.ShowTitle != "" {
+			md.GrandparentTitle = p.Item.ShowTitle
+		}
 		md.GrandparentGUID = p.Item.ShowGUID
 		md.Art = liveProgrammeArt(p.Item.Key, p.Item.Art)
 		grandparentKey := p.Item.ShowKey
@@ -616,6 +631,12 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		if c, ok := byID[p.ChannelID]; ok {
 			s.applyGuideChannelThumb(r, &md, c)
 		}
+		if chi.URLParam(r, "programme") != "" && liveProgrammeOnAir(p, s.now()) {
+			// Plex for iOS and Apple TV draw the airing page's Watch button
+			// (and tune) only when the Metadata itself is onAir, not just its
+			// Media; Plex Web's can-play check reads the item's onAir too.
+			md.Extra = append(md.Extra, model.A("onAir", true))
+		}
 		out = append(out, md)
 		if captured != nil {
 			*captured = append(*captured, p)
@@ -723,11 +744,22 @@ func (s *Server) handleLiveWatchNow(w http.ResponseWriter, r *http.Request) {
 	}
 	s.write(w, r, &model.MediaContainer{Size: len(types), Identifier: frontend.LiveTVProvider, Type: types, Directory: dirs})
 }
+
+// liveHomeHubID is the Home row of the one Live source ("live"), the same
+// id every app serves; the Live TV provider's own hub list keeps
+// livetv.onnow. Both carry Plex's hub.livetv.onnow context.
+const liveHomeHubID = "live"
+
+// liveTVHub is the Live TV provider's On Now hub.
 func (s *Server) liveTVHub(r *http.Request) *model.Hub {
 	h, _ := s.liveTVHubProjection(r)
+	if h != nil {
+		h.HubIdentifier = "livetv.onnow"
+	}
 	return h
 }
 
+// liveTVHubProjection is the Home row of the Live source.
 func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row) {
 	items, channels, err := s.liveDiscoveryItems(r, "all", 96)
 	if err != nil || len(items) == 0 {
@@ -737,8 +769,8 @@ func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row)
 		items = items[:24]
 	}
 	md := s.liveDiscoveryToMetadata(r, items, channels)
-	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: "livetv.onnow", Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
-	row := frontend.Row{ID: "livetv.onnow", Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
+	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: liveHomeHubID, Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
+	row := frontend.Row{ID: liveHomeHubID, Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
 	for _, item := range items {
 		c := channels[item.ChannelID]
 		entry := &frontend.RowLiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Logo: liveLogo(c), GuideReference: c.GuideID}
@@ -938,6 +970,9 @@ func (s *Server) handleLiveSession(w http.ResponseWriter, r *http.Request) {
 // handleLiveTVPlayback hooks the universal decision/start endpoints before the
 // catalogue parser. Plex passes the tune response's /livetv/sessions key here.
 func (s *Server) handleLiveTVPlayback(w http.ResponseWriter, r *http.Request) bool {
+	if s.handleCatchUpPlayback(w, r) {
+		return true
+	}
 	if s.refuseCapability(w, r) {
 		return true
 	}

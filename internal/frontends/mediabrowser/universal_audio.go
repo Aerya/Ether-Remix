@@ -12,16 +12,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
-func (i *instance) isBookKey(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) bool {
-	if i == nil || i.host.Experience == nil || v == nil || key == 0 {
-		return false
-	}
-	d, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{
-		Viewer: v, Device: device(r), Key: key,
-	})
-	return err == nil && mbIsBookItem(d.Title)
-}
-
 func mbIsHLSContainer(container string) bool {
 	switch strings.ToLower(strings.TrimSpace(container)) {
 	case "fmp4", "mpegts", "ts", "mkv":
@@ -150,10 +140,6 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if key.IsPluginKey() && i.isBookKey(r, viewer, key) {
-		http.NotFound(w, r)
-		return
-	}
 	dev := access.Device
 	profile, wantProto, startPos := buildUniversalAudioProfile(r)
 	capability, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{
@@ -188,7 +174,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 		Intent:             frontend.PlayIntent{ExactVersion: version != "", DeclaredCaps: true, Options: opts, AllowTranscoding: &allowed, Position: startPos},
 	})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{
@@ -198,7 +184,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 		Device:   dev,
 	})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	format := frontend.StreamDirect
@@ -215,7 +201,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 	})
 	if err != nil {
 		_ = i.host.Sessions.Stop(r.Context(), access, session.ID)
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if !strings.HasPrefix(mediaURL, "/sessions/media/") || strings.ContainsAny(mediaURL, "\r\n") {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HomeLayout, Rule } from "./contract";
+import type { Rule } from "./contract";
 import { formatBytes, formatCompactNumber, formatNanos, relativeTime } from "./format";
 import {
   cacheHealth,
@@ -17,29 +17,6 @@ import {
   worstLevel,
 } from "./health";
 import { COALESCE_MS, historyReducer, initHistory } from "./history";
-import {
-  anchorsOf,
-  atFor,
-  collectionIdOf,
-  collectionSchedule,
-  collectionScheduleChanges,
-  describeWhen,
-  effectiveLength,
-  effectivePolicy,
-  freeSlot,
-  matchRank,
-  overrideCount,
-  policyChips,
-  policyIn,
-  removePolicy,
-  reorderAnchors,
-  sameLayout,
-  setCollectionSchedule,
-  setPageLength,
-  setPolicy,
-  viewersOverriding,
-  whenMatches,
-} from "./layout";
 import {
   blankSpec,
   describeRule,
@@ -142,8 +119,8 @@ describe("rules", () => {
   });
 
   it("normalizes partial specs from the server", () => {
-    const s = normalizeSpec({ name: "N", targets: { homeRow: true } as never });
-    expect(s.targets).toMatchObject({ homeRow: true, collectionsTab: true, users: "all" });
+    const s = normalizeSpec({ name: "N" });
+    expect(s.browseInApps).toBe(true);
     expect(s.rules).toEqual([]);
     expect(s.sources).toEqual([{ kind: "catalog" }]);
   });
@@ -169,219 +146,6 @@ describe("undo history", () => {
     const h = initHistory(1);
     expect(historyReducer(h, { type: "undo" })).toBe(h);
     expect(historyReducer(h, { type: "set", value: 1, at: 0 })).toBe(h);
-  });
-});
-
-describe("layout", () => {
-  const empty = (): HomeLayout => ({ global: [], viewers: [] });
-
-  it("keeps collection schedules beside the layout and saves only the edited ones", () => {
-    expect(collectionIdOf("collection:c4")).toBe("c4");
-    expect(collectionIdOf("collection.12")).toBe("12");
-    expect(collectionIdOf("collection:*")).toBeUndefined();
-    expect(collectionIdOf("short-on-time")).toBeUndefined();
-    const saved: HomeLayout = {
-      ...empty(),
-      collectionSchedules: { a: { days: [1] }, b: { months: [12] } },
-    };
-    expect(
-      sameLayout(saved, {
-        ...saved,
-        collectionSchedules: { ...saved.collectionSchedules, c: null },
-      }),
-    ).toBe(true);
-    let draft = setCollectionSchedule(saved, "a", { days: [1, 2] });
-    draft = setCollectionSchedule(draft, "b", { months: [] });
-    draft = setCollectionSchedule(draft, "c", { dayparts: ["evening"] });
-    expect(collectionSchedule(draft, "b")).toBeUndefined();
-    expect(sameLayout(draft, saved)).toBe(false);
-    expect(collectionScheduleChanges(draft, saved)).toEqual({
-      a: { days: [1, 2] },
-      b: null,
-      c: { dayparts: ["evening"] },
-    });
-    expect(collectionScheduleChanges(saved, saved)).toEqual({});
-  });
-
-  it("finds the next moment for a weekday and hour", () => {
-    const wed = new Date(2026, 9, 21, 10, 0, 0); // Wednesday 10:00
-    expect(atFor(5, 20, wed)).toEqual(new Date(2026, 9, 23, 20, 0, 0));
-    expect(atFor(3, 22, wed)).toEqual(new Date(2026, 9, 21, 22, 0, 0));
-    expect(atFor(3, 7, wed)).toEqual(new Date(2026, 9, 28, 7, 0, 0));
-  });
-
-  it("edits a layer's policies and prunes what becomes empty", () => {
-    let doc = setPolicy(empty(), "global", "home", { row: "short-on-time", status: "off" });
-    expect(doc.global).toEqual([
-      { section: "home", rows: [{ row: "short-on-time", status: "off" }] },
-    ]);
-    doc = setPolicy(doc, 2, "home", {
-      row: "short-on-time",
-      status: "always",
-      priority: 1,
-      maxDaysPerWeek: 7,
-    });
-    expect(doc.viewers).toEqual([
-      {
-        userId: 2,
-        pages: [{ section: "home", rows: [{ row: "short-on-time", status: "always" }] }],
-      },
-    ]);
-    expect(overrideCount(doc, 2)).toBe(1);
-    expect(viewersOverriding(doc, "home", "short-on-time")).toEqual([2]);
-    // Reset to global drops the override and the now-empty layer.
-    doc = removePolicy(doc, 2, "home", "short-on-time");
-    expect(doc.viewers).toEqual([]);
-    doc = removePolicy(doc, "global", "home", "short-on-time");
-    expect(doc.global).toEqual([]);
-  });
-
-  it("anchors keep one row per slot and reorder by swapping slots", () => {
-    let doc = setPolicy(empty(), "global", "home", {
-      row: "continue-watching",
-      status: "eligible",
-      slot: 1,
-    });
-    expect(policyIn(doc, "global", "home", "continue-watching")).toEqual({
-      row: "continue-watching",
-      status: "always",
-      slot: 1,
-    });
-    doc = setPolicy(doc, "global", "home", {
-      row: "top-10",
-      status: "always",
-      slot: 3,
-      minSlot: 2,
-    });
-    expect(policyIn(doc, "global", "home", "top-10")).toEqual({
-      row: "top-10",
-      status: "always",
-      slot: 3,
-    });
-    expect(freeSlot(doc, "global", "home")).toBe(2);
-    doc = reorderAnchors(doc, "global", "home", ["top-10", "continue-watching"]);
-    expect(anchorsOf(doc, "global", "home").map((a) => [a.row, a.slot])).toEqual([
-      ["top-10", 1],
-      ["continue-watching", 3],
-    ]);
-    // Anchoring another row to a held slot frees it.
-    doc = setPolicy(doc, "global", "home", { row: "trending", status: "always", slot: 1 });
-    expect(policyIn(doc, "global", "home", "top-10")?.slot).toBeUndefined();
-  });
-
-  it("resolves overrides over Global and specific matches over globs", () => {
-    const doc: HomeLayout = {
-      global: [
-        {
-          section: "home",
-          rows: [
-            { row: "because.*", status: "off" },
-            { row: "because-you-watched", status: "eligible", maxPerPage: 2 },
-            { row: "because.42", status: "always" },
-          ],
-        },
-      ],
-      viewers: [
-        { userId: 5, pages: [{ section: "home", rows: [{ row: "because.*", status: "always" }] }] },
-      ],
-    };
-    expect(
-      effectivePolicy(doc, null, "home", "home.because.42", "because-you-watched")?.policy.row,
-    ).toBe("because-you-watched");
-    expect(
-      effectivePolicy(doc, null, "home", "home.because.7", "because-you-watched")?.policy.row,
-    ).toBe("because-you-watched");
-    expect(
-      effectivePolicy(doc, null, "home", "home.because.7", "because-you-watched.x")?.policy.row,
-    ).toBe("because.*");
-    expect(effectivePolicy(doc, 5, "home", "home.because.42", "because-you-watched")).toMatchObject(
-      { layer: "override", policy: { row: "because.*" } },
-    );
-    expect(
-      effectivePolicy(doc, 5, "library:1", "movie.because.42", "because-you-watched"),
-    ).toBeNull();
-    expect(matchRank("collection:*", "collection.7", "collection:7")).toBe(1);
-  });
-
-  it("lets the later of two equally specific rules win, as the server does", () => {
-    const doc: HomeLayout = {
-      global: [
-        {
-          section: "home",
-          rows: [
-            { row: "collection:*", status: "off" },
-            { row: "collection:c1*", status: "always" },
-          ],
-        },
-      ],
-      viewers: [],
-    };
-    const at = (id: string) =>
-      effectivePolicy(doc, null, "home", `collection:${id}`, `collection:${id}`)?.policy.row;
-    expect(at("c10")).toBe("collection:c1*");
-    expect(at("c2")).toBe("collection:*");
-  });
-
-  it("resolves page lengths: viewer device, viewer page, Global device, Global page, default", () => {
-    let doc = setPageLength(empty(), "global", "home", null, 12);
-    doc = setPageLength(doc, "global", "home", "mobile", 8);
-    doc = setPageLength(doc, 3, "home", "tv", 6);
-    expect(effectiveLength(doc, 3, "home", "tv", 14)).toEqual({ n: 6, layer: "override" });
-    expect(effectiveLength(doc, 3, "home", "mobile", 14)).toEqual({ n: 8, layer: "global" });
-    expect(effectiveLength(doc, null, "home", "web", 14)).toEqual({ n: 12, layer: "global" });
-    expect(effectiveLength(doc, null, "library:2", "web", 10)).toEqual({ n: 10, layer: "default" });
-    doc = setPageLength(doc, 3, "home", "tv", undefined);
-    expect(doc.viewers).toEqual([]);
-  });
-
-  it("compares layouts ignoring server stamps and empty pages", () => {
-    const a: HomeLayout = {
-      global: [{ section: "home", rows: [] }],
-      viewers: [],
-      updatedAt: "2026-10-19T00:00:00Z",
-    };
-    expect(sameLayout(a, empty())).toBe(true);
-    expect(
-      sameLayout(setPolicy(a, "global", "home", { row: "top-10", status: "off" }), empty()),
-    ).toBe(false);
-  });
-
-  it("matches schedules including windows that wrap midnight, months and dates", () => {
-    expect(whenMatches({ days: [1, 2] }, { day: 6, hour: 20, device: "tv" })).toBe(false);
-    expect(whenMatches({ fromHour: 22, toHour: 2 }, { day: 6, hour: 1, device: "tv" })).toBe(true);
-    expect(whenMatches({ fromHour: 22, toHour: 2 }, { day: 6, hour: 12, device: "tv" })).toBe(
-      false,
-    );
-    expect(whenMatches({ devices: ["mobile"] }, { day: 6, hour: 12, device: "tv" })).toBe(false);
-    expect(whenMatches({ dayparts: ["morning"] }, { day: 6, hour: 9, device: "tv" })).toBe(true);
-    const dec = new Date(2026, 11, 20, 20);
-    expect(whenMatches({ months: [12] }, { day: 0, hour: 20, device: "tv", date: dec })).toBe(true);
-    expect(
-      whenMatches(
-        { months: [12] },
-        { day: 0, hour: 20, device: "tv", date: new Date(2026, 9, 20) },
-      ),
-    ).toBe(false);
-    expect(
-      whenMatches({ startDate: "2026-12-21" }, { day: 0, hour: 20, device: "tv", date: dec }),
-    ).toBe(false);
-    expect(
-      describeWhen({ days: [1, 2, 3, 4, 5], months: [12], devices: ["tv"] }, [
-        "Sun",
-        "Mon",
-        "Tue",
-        "Wed",
-        "Thu",
-        "Fri",
-        "Sat",
-      ]),
-    ).toBe("Weekdays · TV · Dec");
-    expect(
-      policyChips(
-        { row: "x", status: "always", slot: 2, maxSlot: 4, priority: 1.5, maxDaysPerWeek: 3 },
-        ["Sun"],
-      ),
-    ).toEqual(["Slot 2", "Not below 4", "Higher", "3 days a week"]);
   });
 });
 

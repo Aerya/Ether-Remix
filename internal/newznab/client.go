@@ -11,8 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/logredact"
-	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,8 +32,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/safefetch"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 const (
@@ -63,17 +64,18 @@ func redactURLError(err error) error {
 
 // Options tunes a Client or Manager. Zero values get sensible defaults.
 type Options struct {
-	HTTPClient     *http.Client
-	Logger         *slog.Logger
-	SearchCacheTTL time.Duration // <0 disables cache, 0 = default 6h
-	Vault          vault.Store
-	LegacyNZBDir   func() string // non-empty only while migrating
-	PublicIndexer  func(context.Context, config.Indexer) bool
-	MaxNZBBytes    int64
-	Now            func() time.Time // injected clock (tests)
-	MaxParallel    int              // Manager fan-out; 0 dispatches every configured indexer
-	MaxPerHost     int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
-	HostLimiter    *HostLimiter     // optional shared per-origin concurrency limiter
+	HTTPClient       *http.Client
+	Logger           *slog.Logger
+	SearchCacheTTL   time.Duration // <0 disables cache, 0 = default 6h
+	Vault            vault.Store
+	PluginReferences vault.Sealer
+	LegacyNZBDir     func() string // non-empty only while migrating
+	PublicIndexer    func(context.Context, config.Indexer) bool
+	MaxNZBBytes      int64
+	Now              func() time.Time // injected clock (tests)
+	MaxParallel      int              // Manager fan-out; 0 dispatches every configured indexer
+	MaxPerHost       int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
+	HostLimiter      *HostLimiter     // optional shared per-origin concurrency limiter
 	// ClientIdentity is the owner's policy for the client Ether presents to
 	// indexers; the zero value keeps the Ether identity.
 	ClientIdentity config.ClientIdentity
@@ -96,6 +98,14 @@ type Backend interface {
 	Search(ctx context.Context, req core.SearchRequest, reserve func(context.Context, string) error) ([]core.Release, error)
 	FetchNZB(ctx context.Context, r core.Release, reserve func(context.Context, string) error) ([]byte, error)
 	ResolveTorrent(ctx context.Context, r core.Release, reserve func(context.Context, string) error) (core.Release, error)
+}
+
+// CategoryBackend is a Backend that answers some category searches: an
+// installed source plugin that declared them (#792). Every other add-on
+// and Stremio source refuses a category search, the honest answer for a
+// source that is asked by title id only (#478).
+type CategoryBackend interface {
+	AnswersCategories(ctx context.Context, cats []int) bool
 }
 
 // RecentBackend is a Backend that can list a site's latest releases, the
@@ -133,25 +143,29 @@ type Client struct {
 	rate         rateLimitState
 	apiLimit     apiLimitState
 
-	cacheMu  sync.RWMutex
-	memCache map[string]memCacheEntry
-	torrents torrentDescriptorCache
-	br       breaker
+	cacheMu      sync.RWMutex
+	memCache     map[string]memCacheEntry
+	torrents     torrentDescriptorCache
+	br           breaker
+	backgroundBR breaker
 	// newznabPath is set once /api answered 404 and {base}/api/newznab
 	// worked: some indexers serve Newznab there, which Radarr and
 	// Sonarr reach through their API Path field.
 	newznabPath atomic.Bool
 
-	capsMu     sync.Mutex
-	caps       *Caps
-	capsAt     time.Time
-	capsEP     string    // capsEndpoint the cached caps came from
-	capsFailAt time.Time // last failed caps request; searches skip caps for capsRetry
+	capsMu               sync.Mutex
+	caps                 *Caps
+	capsAt               time.Time
+	capsEP               string    // capsEndpoint the cached caps came from
+	capsFailAt           time.Time // last failed foreground caps request
+	capsBackgroundFailAt time.Time
 
 	// nzbFlights coalesces concurrent FetchNZB calls per release id, so
 	// racing warm-up, playback and validation spend one grab.
-	nzbFlightMu sync.Mutex
-	nzbFlights  map[string]*nzbFlight
+	nzbFlightMu      sync.Mutex
+	nzbFlights       map[string]*nzbFlight
+	nzbRefusals      map[string]time.Time
+	nzbStoreFailures map[string]struct{}
 
 	cfgMu            sync.RWMutex
 	eventMu          sync.RWMutex
@@ -175,6 +189,7 @@ type nzbFlight struct {
 	body       []byte
 	err        error
 	cached     bool
+	keep       bool // a plugin caller needs the grab persisted even if it leaves
 	background bool // started by a background check (smaller grab share)
 	waiters    int
 	readers    int
@@ -272,8 +287,9 @@ func (c *Client) emitGrab(ctx context.Context, name string, started time.Time, r
 		return
 	}
 	localBudget := !reserved && errors.Is(err, core.ErrBudgetExhausted)
+	err = logredact.SourceError(err)
 	if err != nil && logWarn && !localBudget {
-		c.log.Warn("indexer NZB fetch failed", "indexer", c.Name(), "release", name, "err", err)
+		c.log.Warn("indexer NZB fetch failed", "indexer", c.Name(), "release", logredact.Source(name), "err", err)
 	}
 	var dur time.Duration
 	if !localBudget {
@@ -314,7 +330,7 @@ func (c *Client) UpdateConfig(cfg config.Indexer) {
 		// old endpoint's caps no longer describe this indexer.
 		c.newznabPath.Store(false)
 		c.capsMu.Lock()
-		c.capsFailAt = time.Time{}
+		c.capsFailAt, c.capsBackgroundFailAt = time.Time{}, time.Time{}
 		c.caps, c.capsAt, c.capsEP = nil, time.Time{}, ""
 		c.capsMu.Unlock()
 		c.searchModeMu.Lock()
@@ -685,13 +701,19 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 		return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
 	}
 	c.noteAPILimit(hctx, body)
-	// Newznab quota errors can arrive with HTTP 200, including NZB grabs.
-	// Detect these here so caps, searches and downloads share the same backoff.
-	if bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error")) {
+	// Error documents can arrive with HTTP 200 or with a failure status.
+	// A release-specific refusal takes precedence over account quota backoff.
+	hasErrorDocument := bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error"))
+	if resp.StatusCode != http.StatusOK || hasErrorDocument {
 		if _, perr := parseFeed(body, c.Name()); perr != nil {
 			var ae *APIError
 			if errors.As(perr, &ae) {
-				if ae.Budget {
+				now := c.now()
+				if refusal := ClassifyGrabRefusal(ae, now); refusal != nil {
+					refusal.setRetryAfter(resp.Header.Get("Retry-After"), now)
+					return nil, refusal
+				}
+				if ae.Budget && hasErrorDocument {
 					return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), perr)
 				}
 				return nil, perr
@@ -699,13 +721,6 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Indexers often still return a Newznab error document.
-		if _, perr := parseFeed(body, c.Name()); perr != nil {
-			var ae *APIError
-			if errors.As(perr, &ae) {
-				return nil, perr
-			}
-		}
 		return nil, apiError(resp.StatusCode, resp.Status)
 	}
 	c.pseRateOK() // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
@@ -743,12 +758,17 @@ func (c *Client) capsEndpoint() string {
 // and a response from the old endpoint still in flight is not kept.
 func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 	ep := c.capsEndpoint()
+	background := backgroundSearch(ctx)
 	c.capsMu.Lock()
 	if c.caps != nil && c.capsEP == ep && c.now().Sub(c.capsAt) < 24*time.Hour {
 		defer c.capsMu.Unlock()
 		return c.caps, nil
 	}
-	if !c.capsFailAt.IsZero() && c.now().Sub(c.capsFailAt) < capsRetry {
+	failedAt := c.capsFailAt
+	if background && c.capsBackgroundFailAt.After(failedAt) {
+		failedAt = c.capsBackgroundFailAt
+	}
+	if !failedAt.IsZero() && c.now().Sub(failedAt) < capsRetry {
 		c.capsMu.Unlock()
 		return nil, errCapsUnavailable
 	}
@@ -771,13 +791,18 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 	current := c.capsEndpoint() == ep // the config did not change meanwhile
 	if err != nil {
 		if current && !callerLeft(ctx, capsElapsed) && !errors.Is(err, core.ErrBudgetExhausted) {
-			c.capsFailAt = c.now()
+			if background {
+				c.capsBackgroundFailAt = c.now()
+			} else {
+				c.capsFailAt = c.now()
+			}
 		}
 		c.capsMu.Unlock()
 		return nil, err
 	}
 	if current {
-		c.caps, c.capsAt, c.capsEP, c.capsFailAt = caps, c.now(), ep, time.Time{}
+		c.caps, c.capsAt, c.capsEP = caps, c.now(), ep
+		c.capsFailAt, c.capsBackgroundFailAt = time.Time{}, time.Time{}
 	}
 	c.capsMu.Unlock()
 	if current {
@@ -848,12 +873,26 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
 	// v7: Usenet poster and upload date preserved for cross-indexer content identity.
 	// v8: Brazilian/Portuguese release language variants (PT.BR, PTBR, Dublado/Legendado, slash/plus delimiters).
-	fmt.Fprint(h, "release-parse-v8|")
+	fmt.Fprint(h, "release-parse-v8|pse-title-number-v1|") // PSE-HOOK: nombre final du titre lu comme une année — voir docs/pse/FORK.fr.md
 	if mode := c.currentSearchCatMode(); mode != searchCatDefault {
 		fmt.Fprintf(h, "catmode:%d|", mode)
 	}
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
+		if req.Lookup != nil && c.Config().IsAddon() {
+			// Only plugin sources read a typed lookup; other indexers
+			// search the text alone and keep sharing its cache entry.
+			keys := make([]string, 0, len(req.Lookup.Fields))
+			for k := range req.Lookup.Fields {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			fmt.Fprintf(h, "lookup:%s", req.Lookup.Type)
+			for _, k := range keys {
+				fmt.Fprintf(h, ":%s=%s", k, req.Lookup.Fields[k])
+			}
+			fmt.Fprint(h, "|")
+		}
 	}
 	if req.Type == core.TypeEpisode && req.Season == 0 && (c.Config().IsStremio() || c.Config().IsAddon()) {
 		// Previously these routes cached empty answers without asking season 0.
@@ -879,6 +918,9 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
+	if req.EpisodeSource == core.MetadataTVDB {
+		fmt.Fprintf(h, "|tvdb:%s", req.Released.UTC().Format(time.DateOnly))
+	}
 	if orig := strings.ToLower(strings.TrimSpace(req.OriginalTitle)); orig != "" && orig != strings.ToLower(strings.TrimSpace(req.Title)) {
 		fmt.Fprintf(h, "|%s", orig)
 	}
@@ -1128,13 +1170,14 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 	titles := queryTitles(req)
 	var attempts []url.Values
 	if isTV {
+		tvdbOrder := req.EpisodeSource == core.MetadataTVDB
 		mkWith := func(idKey, idVal string, season, episode int) url.Values {
 			v := base()
 			v.Set("t", "tvsearch")
 			if idKey != "" {
 				v.Set(idKey, idVal)
 			}
-			if season > 0 {
+			if season > 0 || (tvdbOrder && episode > 0 && idKey == "tvdbid") {
 				v.Set("season", strconv.Itoa(season))
 			}
 			if episode > 0 {
@@ -1154,16 +1197,25 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 			}
 			attempts = append(attempts, mkWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason, tvdbEp))
 		}
-		if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
+		if !tvdbOrder && req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 			attempts = append(attempts, mk("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 		}
-		if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
+		if !tvdbOrder && imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
 			attempts = append(attempts, mk("imdbid", imdb))
+		}
+		if tvdbOrder && req.Episode > 0 && !req.Released.IsZero() {
+			date := req.Released.UTC().Format("2006.01.02")
+			for _, title := range titles {
+				v := base()
+				v.Set("t", "search")
+				v.Set("q", title+" "+date)
+				attempts = append(attempts, v)
+			}
 		}
 		for _, title := range titles {
 			q := title
 			switch {
-			case req.Season > 0 && req.Episode > 0:
+			case (req.Season > 0 || tvdbOrder) && req.Episode > 0:
 				q = fmt.Sprintf("%s S%02dE%02d", title, req.Season, req.Episode)
 			case req.Season > 0:
 				q = fmt.Sprintf("%s S%02d", title, req.Season)
@@ -1249,10 +1301,10 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 					}
 					packs = append(packs, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
 				}
-				if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
+				if !tvdbOrder && req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 					packs = append(packs, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 				}
-				if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
+				if !tvdbOrder && imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
 					packs = append(packs, mkSeason("imdbid", imdb))
 				}
 				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
@@ -1346,7 +1398,7 @@ func stampMissingCategory(results []core.Release, media config.IdentityMediaType
 }
 
 func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity, media config.IdentityMediaType) ([]core.Release, error) {
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	usedNewznab := c.newznabPath.Load()
@@ -1437,6 +1489,7 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 			At:              now,
 		})
 	}
+	c.noteQuery(ctx, params.Get("t"), params.Get("q"), params, len(out), err)
 	return out, err
 }
 
@@ -1446,11 +1499,12 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 const primaryMissKey = "|primary-miss"
 
 func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core.Release, resultErr error) {
-	if _, err := core.SearchCategories(req.Category); err != nil {
+	cats, err := core.SearchCategories(req.Category)
+	if err != nil {
 		return nil, err
 	}
 	cfg := c.Config()
-	if req.Category != "" && (cfg.IsStremio() || cfg.IsAddon()) {
+	if req.Category != "" && (cfg.IsStremio() || cfg.IsAddon()) && !c.backendAnswersCategories(ctx, cfg, cats) {
 		return nil, fmt.Errorf("indexer %q does not support category searches", c.Name())
 	}
 	if !cfg.Enabled {
@@ -1479,6 +1533,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 	}
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
+		c.noteQuery(ctx, "cache", req.Title, nil, len(cached), nil)
 		return cached, nil
 	}
 	speculative := core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
@@ -1495,7 +1550,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
 		return nil, c.pseExhaustedErr(ctx) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	if c.Config().UsesBackend() {
@@ -1511,11 +1566,12 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 	media := config.IdentityMediaTypeForSearch(req)
 	id := c.identityFor(config.RequestSearch, cfg.URL, media)
 	capsStarted := time.Now()
+	br := c.searchBreaker(ctx)
 	caps, capsErr := c.Caps(ctx) // best effort; failures just mean no param gating
 	if capsErr != nil && ctx.Err() != nil {
 		capsElapsed := time.Since(capsStarted)
 		if !callerLeft(ctx, capsElapsed) {
-			c.recordSearchTimeout(ctx, capsErr, capsElapsed)
+			c.recordSearchTimeout(ctx, br, capsErr, capsElapsed)
 		}
 		return nil, capsErr
 	}
@@ -1587,7 +1643,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				width := c.br.burstLimit(maxBurstWidth)
+				width := c.searchBreaker(ctx).burstLimit(maxBurstWidth)
 				end := min(base+width, len(rest))
 				batch := rest[base:end]
 				base = end
@@ -1766,18 +1822,18 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 					}
 				}
 			}
-			if !req.Released.IsZero() && (nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
-				yymmdd := req.Released.UTC().Format("060102")
-				yyyyDot := req.Released.UTC().Format("2006.01.02")
-				for _, title := range append(slices.Clone(altTitles), titles...) {
-					vShort := base()
-					vShort.Set("t", "search")
-					vShort.Set("q", fmt.Sprintf("%s %s", title, yymmdd))
-					add(vShort)
-					vFull := base()
-					vFull.Set("t", "search")
-					vFull.Set("q", fmt.Sprintf("%s %s", title, yyyyDot))
-					add(vFull)
+			if !req.Released.IsZero() && (req.EpisodeSource == core.MetadataTVDB || nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
+				// Every title's broadcast-style YYMMDD date before any
+				// YYYY.MM.DD form, so the capped rescue reaches the date
+				// form Korean releases use for each title.
+				for _, layout := range []string{"060102", "2006.01.02"} {
+					date := req.Released.UTC().Format(layout)
+					for _, title := range append(slices.Clone(altTitles), titles...) {
+						v := base()
+						v.Set("t", "search")
+						v.Set("q", fmt.Sprintf("%s %s", title, date))
+						add(v)
+					}
 				}
 			}
 		}
@@ -1834,6 +1890,18 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 		add(v)
 	}
 	return out
+}
+
+// rescueAttemptLimit bounds Play's second-pass queries per indexer. Weekly
+// and daily broadcast shows numbered by bare episode or air date (long single
+// seasons, non-Latin originals) need each title's episode and date forms on
+// top of the retried primary queries, so they get a few more.
+func rescueAttemptLimit(req core.SearchRequest) int {
+	if isTVRequest(req) && req.Season > 0 && req.Episode > 0 && !req.Released.IsZero() &&
+		(hasNonLatinRune(req.OriginalTitle) || (req.Season == 1 && req.Episode > 20)) {
+		return 12
+	}
+	return 8
 }
 
 func hasNonLatinRune(s string) bool {
@@ -1908,16 +1976,17 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 			}
 		}
 	}()
-	ctx = withCacheAge(ctx, req.Released)
+	ctx = withCacheAge(core.WithSearchRescue(ctx), req.Released)
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
+		c.noteQuery(ctx, "cache", req.Title, nil, len(cached), nil)
 		return cached, nil
 	}
 	if c.Exhausted(ctx) {
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
 		return nil, c.pseExhaustedErr(ctx) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	if cfg := c.Config(); cfg.UsesBackend() {
@@ -2005,8 +2074,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 	if len(attempts) == 0 {
 		return nil, nil
 	}
-	if len(attempts) > 8 {
-		attempts = attempts[:8]
+	if limit := rescueAttemptLimit(req); len(attempts) > limit {
+		attempts = attempts[:limit]
 	}
 	var merged []core.Release
 	seen := map[string]bool{}
@@ -2017,7 +2086,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			width := c.br.burstLimit(len(attempts))
+			width := c.searchBreaker(ctx).burstLimit(len(attempts))
 			end := min(base+width, len(attempts))
 			batch := attempts[base:end]
 			base = end
@@ -2118,6 +2187,13 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 	return merged, nil
 }
 
+func nzbFlightKey(r core.Release) string {
+	if r.Target != nil && r.Target.PackID != "" {
+		return r.Target.PackID
+	}
+	return r.ID
+}
+
 // FetchNZB implements core.Indexer. Every call returns a slice of its own,
 // which the caller may keep or modify.
 func (c *Client) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
@@ -2141,21 +2217,20 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	if r.ID == "" {
+	flightKey := nzbFlightKey(r)
+	if flightKey == "" {
 		started := time.Now()
 		body, reserved, err := c.fetchNZB(ctx, r)
 		c.emitGrab(ctx, r.Name, started, reserved, err, true)
 		return body, true, err
 	}
 	for {
-		f, leader := c.joinNZBFlight(ctx, r)
+		f, leader := c.joinNZBFlight(ctx, flightKey, r)
 		select {
 		case <-f.done:
 		case <-ctx.Done():
-			// The shared fetch carries on for the other callers; once
-			// none is left it is cancelled (a losing health check must
-			// not finish a grab nobody will read).
-			c.leaveNZB(r.ID, f)
+			// An abandoned plugin grab can still reach the vault for its retry.
+			c.leaveNZB(flightKey, f)
 			return nil, leader, ctx.Err()
 		}
 		body := c.takeNZB(f)
@@ -2196,7 +2271,7 @@ func (c *Client) leaveNZB(id string, f *nzbFlight) {
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
 	f.readers--
-	if f.readers > 0 {
+	if f.readers > 0 || f.keep {
 		return
 	}
 	select {
@@ -2210,15 +2285,15 @@ func (c *Client) leaveNZB(id string, f *nzbFlight) {
 	f.cancel()
 }
 
-// joinNZBFlight attaches to the in-flight fetch for r.ID, or starts one.
+// joinNZBFlight attaches to the in-flight fetch for the pack or release ID, or starts one.
 // The shared fetch keeps ctx's values (budget class, trust) but not its
-// cancellation: it ends when the last caller leaves (leaveNZB), and is
-// bounded by nzbFlightTimeout. The flight is forgotten as soon as it ends,
-// so errors are not cached past it.
-func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight, bool) {
+// cancellation. Plugin grabs can finish after the last caller leaves.
+// Every fetch is bounded by nzbFlightTimeout.
+func (c *Client) joinNZBFlight(ctx context.Context, id string, r core.Release) (*nzbFlight, bool) {
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
-	if f, ok := c.nzbFlights[r.ID]; ok {
+	if f, ok := c.nzbFlights[id]; ok {
+		f.keep = f.keep || isPluginNZB(ctx)
 		f.waiters++
 		f.readers++
 		return f, false
@@ -2227,29 +2302,70 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 		c.nzbFlights = map[string]*nzbFlight{}
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nzbFlightTimeout)
-	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), waiters: 1, readers: 1, cancel: cancel}
-	c.nzbFlights[r.ID] = f
+	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), keep: isPluginNZB(ctx), waiters: 1, readers: 1, cancel: cancel}
+	c.nzbFlights[id] = f
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
 				f.err = fmt.Errorf("newznab: fetch NZB panic: %v", p)
 			}
 			c.nzbFlightMu.Lock()
-			if c.nzbFlights[r.ID] == f {
-				delete(c.nzbFlights, r.ID)
+			if c.nzbFlights[id] == f {
+				delete(c.nzbFlights, id)
 			}
 			c.nzbFlightMu.Unlock()
 			close(f.done)
 			cancel()
 		}()
+		// A known vault hit never waits for another indexer grab.
+		loadKept := func() bool {
+			body, err := c.keptNZB(fctx, r)
+			if body == nil && err == nil {
+				return false
+			}
+			f.body, f.cached, f.err = body, body != nil, err
+			if body != nil {
+				c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
+			}
+			return true
+		}
+		if loadKept() {
+			return
+		}
+		// Recheck after taking the shared lock. Another node may have
+		// saved the release while this caller waited.
+		unlock, err := c.lockNZBGrab(fctx, id)
+		if err != nil {
+			f.err = err
+			return
+		}
+		if unlock != nil {
+			defer unlock()
+			if loadKept() {
+				return
+			}
+		}
 		started := time.Now()
 		var reserved bool
-		if body := c.keptNZB(fctx, r); body != nil {
-			f.body, f.cached = body, true
-			c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
-		} else {
-			f.body, reserved, f.err = c.fetchNZB(fctx, r)
-			c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+
+		if f.err = c.nzbRefusal(fctx, r); f.err != nil {
+			return
+		}
+		f.body, reserved, f.err = c.fetchNZB(fctx, r)
+		c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		now := c.now()
+		refusal := ClassifyGrabRefusal(f.err, now)
+		var apiErr *APIError
+		if refusal == nil && isPluginNZB(fctx) && errors.As(f.err, &apiErr) && apiErr.Code == http.StatusConflict {
+			refusal = &GrabRefusal{RetryAt: now.Add(defaultRateLimitPause)}
+		}
+		if refusal != nil {
+			f.body, f.err = c.keptNZB(fctx, r)
+			f.cached = f.body != nil
+			if f.body == nil && f.err == nil {
+				f.err = refusal
+				c.rememberNZBRefusal(fctx, r, refusal.RetryAt)
+			}
 		}
 	}()
 	return f, true
@@ -2372,6 +2488,20 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 	return body, true, nil
 }
 
+// backendAnswersCategories reports whether an add-on row's backend
+// declared one of the requested categories. Stremio rows never do.
+func (c *Client) backendAnswersCategories(ctx context.Context, cfg config.Indexer, cats []int) bool {
+	if !cfg.IsAddon() || len(cats) == 0 {
+		return false
+	}
+	b, err := c.backend()
+	if err != nil {
+		return false
+	}
+	cb, ok := b.(CategoryBackend)
+	return ok && cb.AnswersCategories(ctx, cats)
+}
+
 // backend returns the search backend of a built-in site or addon.
 func (c *Client) backend() (Backend, error) {
 	if c.backends == nil {
@@ -2398,6 +2528,14 @@ func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]c
 	if incomplete {
 		core.NoteSearchIncomplete(ctx)
 	}
+	params := url.Values{}
+	if req.Season > 0 || req.Episode > 0 {
+		params.Set("season", strconv.Itoa(req.Season))
+	}
+	if req.Episode > 0 {
+		params.Set("ep", strconv.Itoa(req.Episode))
+	}
+	c.noteQuery(ctx, "source", req.Title, params, len(rels), err)
 	return rels, incomplete, err
 }
 
@@ -2586,36 +2724,71 @@ func TestCapsWithOptions(ctx context.Context, cfg config.Indexer, opts Options) 
 	return id, nil
 }
 
-func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
+func (c *Client) keptNZB(ctx context.Context, r core.Release) ([]byte, error) {
 	if c.vault == nil {
-		return nil
+		return nil, nil
 	}
-	lookup := func(source, id string) []byte {
-		key, ok, err := c.vault.ByAlias(ctx, source, id)
-		if err != nil || !ok {
-			return nil
-		}
+	read := func(key vault.Key) ([]byte, error) {
 		record, err := c.vault.Get(ctx, key)
-		if err != nil || record == nil || len(record.XML) == 0 {
-			return nil
+		if err != nil {
+			return nil, err
+		}
+		if record == nil || len(record.XML) == 0 {
+			return nil, vault.ErrPayloadMissing
 		}
 		_ = c.vault.Touch(ctx, key, true)
-		return bytes.Clone(record.XML)
+		return bytes.Clone(record.XML), nil
 	}
-	if body := lookup(c.indexerID(), r.ID); body != nil {
-		return body
+	lookup := func(source, id string) ([]byte, error) {
+		if id == "" {
+			return nil, nil
+		}
+		key, ok, err := c.vault.ByAlias(ctx, source, id)
+		if !ok || err != nil {
+			return nil, err
+		}
+		return read(key)
 	}
-	hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + r.ID))
-	id := hex.EncodeToString(hash[:])
-	if c.legacyDir != nil {
-		if dir := c.legacyDir(); dir != "" {
-			if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
-				c.keepNZB(ctx, r, body)
-				return body
-			}
+	baseIDs := nzbReleaseIDs(r)
+	ids := baseIDs
+	if isPluginNZB(ctx) {
+		ids = c.nzbIdentities(r)
+	}
+	for _, id := range ids {
+		if body, err := lookup(c.indexerID(), id); body != nil || err != nil {
+			return body, err
 		}
 	}
-	return lookup(vault.LegacyAliasIndexer, id)
+	if isPluginNZB(ctx) && strings.HasPrefix(r.ContentID, nzb.ContentIDPrefix) {
+		if body, err := read(vault.Key(r.ContentID)); !errors.Is(err, vault.ErrNotFound) {
+			return body, err
+		}
+	}
+	if names, ok := c.vault.(vault.NZBIdentityLookup); ok && isPluginNZB(ctx) && r.Name != "" && r.Size > 0 {
+		key, found, err := names.ByNZBName(ctx, r.Name, r.Size)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return read(key)
+		}
+	}
+	for _, rid := range baseIDs {
+		hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + rid))
+		id := hex.EncodeToString(hash[:])
+		if c.legacyDir != nil {
+			if dir := c.legacyDir(); dir != "" {
+				if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
+					c.keepNZB(ctx, r, body)
+					return body, nil
+				}
+			}
+		}
+		if body, err := lookup(vault.LegacyAliasIndexer, id); body != nil || err != nil {
+			return body, err
+		}
+	}
+	return nil, nil
 }
 
 func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
@@ -2624,7 +2797,56 @@ func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
 	}
 	r.IndexerID = c.indexerID()
 	private := c.publicIndexer == nil || !c.publicIndexer(ctx, c.Config())
-	if _, err := c.vault.Put(ctx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body}); err != nil {
+	aliases := c.nzbIdentities(r)[1:]
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if _, err := c.vault.Put(writeCtx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body, Aliases: aliases}); err != nil {
+		c.nzbFlightMu.Lock()
+		if c.nzbStoreFailures == nil {
+			c.nzbStoreFailures = make(map[string]struct{})
+		}
+		c.nzbStoreFailures[r.ID] = struct{}{}
+		for _, alias := range aliases {
+			c.nzbStoreFailures[alias] = struct{}{}
+		}
+		c.nzbFlightMu.Unlock()
 		c.log.Warn("could not store indexer release in vault", "indexer", r.IndexerID)
 	}
+}
+
+// kindLabel names how the indexer is searched, for diagnostics that must
+// not carry the owner's indexer name.
+func kindLabel(cfg config.Indexer) string {
+	switch {
+	case cfg.IsStremio():
+		return "stremio add-on"
+	case cfg.IsAddon():
+		return "plugin source"
+	case cfg.IsBuiltin():
+		return "built-in site"
+	case cfg.IsZilean():
+		return "zilean"
+	case cfg.IsTorrent():
+		return "torznab"
+	}
+	return "newznab"
+}
+
+// noteQuery adds one indexer request to the resolution's query log.
+func (c *Client) noteQuery(ctx context.Context, mode, query string, params url.Values, results int, err error) {
+	q := core.SearchQuery{Indexer: c.Name(), IndexerKind: kindLabel(c.Config()), Mode: mode, Query: query, Results: results}
+	if params != nil {
+		q.Season, q.Episode = params.Get("season"), params.Get("ep")
+		var ids []string
+		for _, name := range []string{"imdbid", "tmdbid", "tvdbid", "tvmazeid", "rid", "traktid"} {
+			if v := params.Get(name); v != "" {
+				ids = append(ids, name+"="+v)
+			}
+		}
+		q.IDs = strings.Join(ids, " ")
+	}
+	if err != nil {
+		q.Err = err.Error()
+	}
+	core.NoteSearchQuery(ctx, q)
 }

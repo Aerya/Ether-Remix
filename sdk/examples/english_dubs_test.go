@@ -519,7 +519,7 @@ func TestEnglishDubsManagerAndCollectionsEndToEnd(t *testing.T) {
 		if gotTypes := sk.Describe().MediaTypes; len(gotTypes) != 2 {
 			t.Fatalf("SourceKind %s MediaTypes = %v, want [movie show]", kindID, gotTypes)
 		}
-		if _, ok := pers.RowKindRegistry().Lookup(kindID); !ok {
+		if _, ok := pers.RowKindRegistry().Source(kindID); !ok {
 			t.Fatalf("expected personalize RowSourceKind %s to be registered", kindID)
 		}
 		if _, ok := reg.Get(extend.KindCollectionSource, kindID); !ok {

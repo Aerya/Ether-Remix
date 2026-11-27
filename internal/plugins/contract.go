@@ -74,6 +74,9 @@ const (
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
 	CapLiveEvents      Capability = "live_events"
+	// CapScreens lets a plugin contribute screens and surfaces that Vela
+	// draws from documents in the package (docs/plugin-screens.md).
+	CapScreens Capability = "screens"
 )
 
 // Reserved capabilities are known names a manifest may not claim in v1.
@@ -313,6 +316,9 @@ type Contributes struct {
 	// Screens declares generic top-level screens rendered natively by frontends
 	// such as Vela (spec A3).
 	Screens []ScreenMeta `json:"screens,omitempty"`
+	// Surfaces are documents drawn in host slots: player overlays, toasts,
+	// Home rows and title panels (docs/plugin-screens.md, Surfaces).
+	Surfaces []SurfaceMeta `json:"surfaces,omitempty"`
 }
 
 // MinLiveFeedIntervalSec is the lowest polling interval (in seconds) a plugin
@@ -351,6 +357,70 @@ type SourceMeta struct {
 	Class     string          `json:"class"` // debrid|usenet|indexer|direct
 	Abilities []string        `json:"abilities,omitempty"`
 	Limits    json.RawMessage `json:"limits,omitempty"`
+	// Search opts a stream_source plugin in to category searches (#792).
+	// Without it the plugin is asked by title id only and category
+	// searches refuse it.
+	Search *SourceSearchMeta `json:"search,omitempty"`
+}
+
+// SourceSearchMeta declares the category searches a stream_source plugin
+// answers on GET /ether/search: free text plus a Newznab category, and
+// optionally typed lookups. Ether routes a category search to the plugin
+// only when one of the requested categories is declared; a declared top
+// category (3000) covers its subcategories (3010, 3040).
+type SourceSearchMeta struct {
+	Categories []int    `json:"categories"`
+	Lookups    []string `json:"lookups,omitempty"`
+}
+
+// MaxSourceSearchCategories and MaxSourceSearchLookups bound a declaration.
+const (
+	MaxSourceSearchCategories = 16
+	MaxSourceSearchLookups    = 8
+)
+
+// AnswersCategories reports whether the declaration covers any of cats.
+func (s *SourceSearchMeta) AnswersCategories(cats []int) bool {
+	return len(s.MatchCategories(cats)) > 0
+}
+
+// MatchCategories returns the requested categories the declaration covers,
+// in request order.
+func (s *SourceSearchMeta) MatchCategories(cats []int) []int {
+	if s == nil {
+		return nil
+	}
+	var out []int
+	for _, c := range cats {
+		for _, d := range s.Categories {
+			if c == d || (d%1000 == 0 && c/1000 == d/1000) {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// AnswersLookup reports whether the declaration lists the lookup type.
+func (s *SourceSearchMeta) AnswersLookup(typ string) bool {
+	if s == nil || typ == "" {
+		return false
+	}
+	for _, l := range s.Lookups {
+		if l == typ {
+			return true
+		}
+	}
+	return false
+}
+
+// SourceSearch returns the plugin's category-search declaration, or nil.
+func (m Manifest) SourceSearch() *SourceSearchMeta {
+	if m.Ether == nil || m.Ether.Stremio || !m.HasCapability(CapStreamSource) || m.Ether.Contributes.Source == nil {
+		return nil
+	}
+	return m.Ether.Contributes.Source.Search
 }
 
 // ChannelsMeta is mandatory for livetv_channels.
@@ -460,13 +530,16 @@ type IntegrationMeta struct {
 
 // ListSourceMeta is one contributed list source.
 type ListSourceMeta struct {
-	Key      string          `json:"key"`
-	Label    string          `json:"label"`
-	Hint     string          `json:"hint,omitempty"`
-	Catalog  string          `json:"catalog"`
-	Params   json.RawMessage `json:"params,omitempty"`
-	MaxItems int             `json:"maxItems,omitempty"` // ≤ 2000
-	Refresh  string          `json:"refresh,omitempty"`  // ≥ 1h
+	Key     string          `json:"key"`
+	Label   string          `json:"label"`
+	Hint    string          `json:"hint,omitempty"`
+	Catalog string          `json:"catalog"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	// MaxItems is how many titles one sync of the list reads (≤ 2000;
+	// DefaultListItems when omitted). The install review shows it and the
+	// owner can lower or raise it in the plugin's limits.
+	MaxItems int    `json:"maxItems,omitempty"`
+	Refresh  string `json:"refresh,omitempty"` // ≥ 1h
 }
 
 // RankingStepMeta is one contributed ranking step (hosted only).
@@ -536,6 +609,22 @@ type MediaKindMeta struct {
 	Sync    KindSyncDecl       `json:"sync"`
 	Cache   KindCacheDecl      `json:"cache,omitempty"`
 	Match   KindMatchDecl      `json:"match,omitempty"`
+	// Related: the plugin serves POST /ether/v1/kinds/{kind}/related for its
+	// items ({item, purpose, limit} -> {label?, items: KindItem[]}): "similar"
+	// for a detail row (an artist's "Fans also like"), "continuation" for what
+	// plays after a queue ends (radio). Items are stored like live search
+	// results. Asked when a viewer opens the item or nears a queue's end.
+	Related *KindRelatedDecl `json:"related,omitempty"`
+	// Import: the plugin turns playlist links into track lists (POST
+	// /ether/v1/kinds/{kind}/import, for the sites named in links) and finds
+	// its own items for described tracks (POST .../identify), so viewers can
+	// import playlists from a link or an M3U/CSV file.
+	Import *KindImportDecl `json:"import,omitempty"`
+	// Lyrics: the plugin serves POST /ether/v1/kinds/{kind}/lyrics for its
+	// playable items ({"item": KindItem} → syncedLyrics (LRC), plainLyrics,
+	// instrumental, source; 404 when it has none). Ether asks once per item
+	// when a viewer opens the lyrics, never ahead of use.
+	Lyrics bool `json:"lyrics,omitempty"`
 }
 
 // MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
@@ -547,6 +636,7 @@ type KindLibraryDecl struct {
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
+	Experience  string             `json:"experience,omitempty"`  // watch|listen|read|gallery|live or another id; defaults by media class
 	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
@@ -618,7 +708,7 @@ func (t KindLibraryTab) EffectiveCard() string {
 
 // IsZero reports whether every field of the library declaration is empty.
 func (d KindLibraryDecl) IsZero() bool {
-	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
+	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && d.Experience == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
 }
 
 // EffectiveCard returns the library's card aspect ("poster" by default).
@@ -701,7 +791,7 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		return out
 	}
 	return []KindLibraryTab{
-		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "recommended", Label: "Recommendations", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
 }
@@ -884,6 +974,13 @@ type KindLibraryShelf struct {
 	Value     string                   `json:"value,omitempty"`     // single value for facet
 	Values    []string                 `json:"values,omitempty"`    // OR values for facet
 	Filters   *KindLibraryShelfFilters `json:"filters,omitempty"`   // facet map, TabFilter, or rule/rules list
+	// Purpose tells apps what the shelf is for, so they can draw it their
+	// own way and keep its titles out of other rows: recentContexts ("Jump
+	// back in") or liked (Liked songs).
+	Purpose string `json:"purpose,omitempty"`
+	// Layout is the shelf's default look (standard, hero, wide, tiles or
+	// tracks); an owner's look on a Recommendations page wins.
+	Layout string `json:"layout,omitempty"`
 }
 
 // EffectiveSort returns the shelf's sort field ("released" by default).
@@ -962,6 +1059,13 @@ type KindLevel struct {
 	Role      string `json:"role,omitempty"`      // free-text semantic role (e.g. artist, album, track, concert)
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
+	// Members: a list level (a playlist, a chart). Its items are roots of
+	// their own (no parent) and carry `members`, an ordered list of other
+	// items of the kind (by external id) that are their children. It is
+	// never playable and no level names it as parent; a browse of it
+	// (level=<key>, no parentId) may return the members and their parents in
+	// the same page so they are stored together.
+	Members bool `json:"members,omitempty"`
 }
 
 // KindField is one declared item field.
@@ -1025,6 +1129,35 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 	return false
 }
 
+// KindImportDecl declares a kind's playlist import support.
+type KindImportDecl struct {
+	// Links names the sites whose playlist links the plugin reads (for apps
+	// to show, e.g. "deezer"); empty when it reads none.
+	Links []string `json:"links,omitempty"`
+	// Identify: the plugin answers /identify, which file imports need.
+	Identify bool `json:"identify,omitempty"`
+}
+
+// KindRelatedDecl names which relation purposes a kind's plugin answers.
+type KindRelatedDecl struct {
+	Similar      bool `json:"similar,omitempty"`
+	Continuation bool `json:"continuation,omitempty"`
+}
+
+// Answers reports whether purpose is declared.
+func (d *KindRelatedDecl) Answers(purpose string) bool {
+	if d == nil {
+		return false
+	}
+	switch purpose {
+	case "similar":
+		return d.Similar
+	case "continuation":
+		return d.Continuation
+	}
+	return false
+}
+
 // KindBrowseDecl is how a kind library is browsed.
 type KindBrowseDecl struct {
 	Sorts        []string          `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
@@ -1043,12 +1176,23 @@ const (
 	KindSyncPush = "push"
 )
 
+// Kind sync undo modes for push-synced kinds (#766).
+//   - "snapshots" (default when omitted): journal previous copies of modified
+//     items so undo restores them; unchanged items are never snapshotted.
+//   - "ids": journal only created and touched item IDs without reading item
+//     snapshots; undo deletes only items the batch created.
+const (
+	KindSyncUndoSnapshots = "snapshots"
+	KindSyncUndoIDs       = "ids"
+)
+
 // KindSyncDecl is how a kind's items reach Ether's store. Mode is empty
 // only for a resolver-only kind, which owns no item sync; a catalog
 // provider must pick pull or push.
 type KindSyncDecl struct {
 	Mode    string `json:"mode"`              // pull|push
 	Refresh string `json:"refresh,omitempty"` // at least 15m, pull only
+	Undo    string `json:"undo,omitempty"`    // snapshots|ids, push only
 }
 
 // KindCacheDecl is the per-library blob cache budget (§5.4).
@@ -1089,7 +1233,7 @@ type FrontendAdapterMeta struct {
 	PathPrefix   string   `json:"pathPrefix"`
 	DefaultPort  int      `json:"defaultPort,omitempty"`
 	Clients      []string `json:"clients,omitempty"`
-	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan|query_credentials
 	// Libraries lists the plugin's media-kind keys this adapter publishes.
 	// Ether resolves each key to the library the kind created and admits a
 	// viewer only to the libraries they may see; a viewer who sees none of
@@ -1101,6 +1245,9 @@ type FrontendAdapterMeta struct {
 	// When omitted, conventional search subpaths (ending in /search, /search2,
 	// or /search3, with optional .json/.xml/.view suffix) are recognized.
 	SearchPaths []string `json:"searchPaths,omitempty"`
+	// Icon is the adapter's own mark on the Apps page: a path to an SVG or
+	// PNG inside the package. Without one the plugin's icon stands in.
+	Icon string `json:"icon,omitempty"`
 }
 
 // SetupMeta declares guided setup for any plugin kind (spec §8).
@@ -1129,8 +1276,13 @@ type Request struct {
 	Method   string            `json:"method"`
 	Path     string            `json:"path"`
 	Query    map[string]string `json:"query,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Body     json.RawMessage   `json:"body,omitempty"`
+	// RepeatedQuery holds every value of query keys that appeared more than
+	// once on a frontend adapter request (Subsonic sends id=1&id=2). Hosted
+	// runtimes deliver those keys as arrays; the remote wire keeps Query's
+	// first value. Host-side only.
+	RepeatedQuery map[string][]string `json:"-"`
+	Headers       map[string]string   `json:"headers,omitempty"`
+	Body          json.RawMessage     `json:"body,omitempty"`
 	// BodyBase64 carries the exact request bytes, base64-encoded, when the
 	// caller needs them byte-for-byte (frontend adapter routes). Body holds
 	// the parsed JSON value when the bytes are valid JSON; a non-JSON body
@@ -1161,9 +1313,32 @@ type FrontendBlob struct {
 	MemberIndex *int   `json:"memberIndex,omitempty"`
 }
 
+// FrontendMedia asks Ether to serve one of the plugin's own playable kind
+// items to the authenticated adapter viewer, at the adapter URL itself, with
+// Range support. Ether re-checks ownership and library visibility exactly as
+// frontend.streamURL does; the bytes never pass through the plugin. It suits
+// protocols whose clients do not follow redirects or re-request ranges long
+// after a stream ticket would have expired.
+type FrontendMedia struct {
+	ItemRef   string `json:"itemRef"`
+	PartIndex *int   `json:"partIndex,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// FrontendArt asks Ether to serve the stored artwork of one of the plugin's
+// own kind items (role poster, thumb, backdrop or logo; empty picks the
+// first). Ether fetches and caches the image itself, so a plugin cannot use it
+// to proxy arbitrary URLs.
+type FrontendArt struct {
+	ItemRef string `json:"itemRef"`
+	Role    string `json:"role,omitempty"`
+}
+
 // Response is a plugin's answer to a Request.
 type Response struct {
 	Blob    *FrontendBlob     `json:"blob,omitempty"`
+	Media   *FrontendMedia    `json:"media,omitempty"`
+	Art     *FrontendArt      `json:"art,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -1277,7 +1452,8 @@ type Host interface {
 	// ViewerHistory needs viewers.watch_history for that viewer.
 	ViewerGranted(ctx context.Context) (json.RawMessage, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) (json.RawMessage, error)
-	// SetWatchState needs viewers.write_watch_state; journalled.
+	// SetWatchState needs viewers.write_watch_state for the requested viewer.
+	// titleID is an owned playable item ref or a catalogue movie/episode ID.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	// CollectionsUpsert needs collections: write; journalled.
 	CollectionsUpsert(ctx context.Context, collection json.RawMessage) error
@@ -1341,6 +1517,15 @@ type Host interface {
 	// matching entry in contributes.events.publish; payload is schema-validated
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
+
+	// ScreensInvalidate makes every open screen and surface of this plugin
+	// read its sources again now (screens capability). It returns how many
+	// open streams heard it; nobody watching means nothing happens.
+	ScreensInvalidate(ctx context.Context) (int, error)
+	// ScreensPutRecords pushes new values for the plugin's own records
+	// ([{type, id, value}], at most 100) to open screens already showing
+	// them (screens capability).
+	ScreensPutRecords(ctx context.Context, records json.RawMessage) (int, error)
 
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language
@@ -1416,10 +1601,13 @@ type AICompleteBackendRequest struct {
 }
 
 // StreamURLOptions scopes a frontend adapter stream ticket to a specific
-// zero-based item part and/or resolver PlayableSource.ID (#576, #661).
+// zero-based item part and/or resolver PlayableSource.ID (#576, #661) and
+// optionally asks Ether to return an absolute URL using the client-visible
+// request origin or the adapter's first published address (#772).
 type StreamURLOptions struct {
 	PartIndex *int   `json:"partIndex,omitempty"`
 	Source    string `json:"source,omitempty"`
+	Absolute  bool   `json:"absolute,omitempty"`
 }
 
 // FetchRequest is one plugin outbound HTTP call.

@@ -87,7 +87,14 @@ func (h *host) KVGet(ctx context.Context, key string) ([]byte, bool, error) {
 	if _, _, err := h.record(ctx); err != nil {
 		return nil, false, err
 	}
-	return h.m.store.kvGet(ctx, h.plugin, key)
+	value, ok, err := h.m.store.kvGet(ctx, h.plugin, key)
+	if !ok || err != nil {
+		return value, ok, err
+	}
+	if normalize := h.m.kindBackends().NormalizeStoredReleaseLinks; normalize != nil {
+		value, err = normalize(ctx, value)
+	}
+	return value, ok && err == nil, err
 }
 
 func (h *host) KVPut(ctx context.Context, key string, value []byte) error {
@@ -255,9 +262,22 @@ func (h *host) SecretDelete(ctx context.Context, name string) error {
 	return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
 }
 
+var errIndexerNetwork = fmt.Errorf("%w: configured indexers must use the indexer host API (sources.resolve with kind nzb_request)", ErrPermissionDenied)
+
+// CheckIndexerNetwork rejects a plugin network request to a configured indexer.
+func (m *Manager) CheckIndexerNetwork(hostName string) error {
+	if m.deps.IsIndexerHost != nil && m.deps.IsIndexerHost(hostName) {
+		return errIndexerNetwork
+	}
+	return nil
+}
+
 // AllowNetworkHost reports whether pluginID is enabled, still holds its
 // network grant, and declared hostName in permissions.network.
 func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName string) bool {
+	if m.CheckIndexerNetwork(hostName) != nil {
+		return false
+	}
 	h := &host{m: m, plugin: pluginID}
 	r, g, err := h.record(ctx)
 	if err != nil || r.Manifest.Ether == nil {
@@ -319,6 +339,9 @@ func fetchError(host string, err error) error {
 	var blockedOp *BlockedOperatorHostError
 	if errors.As(err, &blockedOp) {
 		return blockedOp
+	}
+	if errors.Is(err, errIndexerNetwork) {
+		return errIndexerNetwork
 	}
 	reason := "network error"
 	var netErr net.Error
@@ -411,6 +434,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
+	if err := h.m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return nil, err
+	}
 	if g.revoked("network") {
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
@@ -476,6 +502,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
+		if err := h.m.CheckIndexerNetwork(next.URL.Hostname()); err != nil {
+			return err
+		}
 		redirectHeaders.Apply(next)
 		current, grants, err := h.record(next.Context())
 		if err != nil {
@@ -652,7 +681,7 @@ func (h *host) SetWatchState(ctx context.Context, viewerID int64, titleID string
 	if h.m.deps.Backends.SetWatchState == nil {
 		return ErrUnavailable
 	}
-	prev, err := h.m.deps.Backends.SetWatchState(ctx, viewerID, titleID, watched)
+	prev, err := h.m.deps.Backends.SetWatchState(ctx, h.plugin, viewerID, titleID, watched)
 	if err != nil {
 		return err
 	}
@@ -691,10 +720,10 @@ func (m *Manager) UndoAll(ctx context.Context, pluginID string) (int, error) {
 }
 
 // UndoSince reverses the plugin's changes back to and including entry
-// since (0 means all of them), newest first, so an older change is never
-// reversed underneath a later one.
+// since (0 means all of them within the retained live journal window),
+// newest first, so an older change is never reversed underneath a later one.
 func (m *Manager) UndoSince(ctx context.Context, pluginID string, since int64) (int, error) {
-	entries, err := m.store.journalList(ctx, pluginID, 10000, true)
+	entries, err := m.store.journalList(ctx, pluginID, JournalLiveMaxEntries, true)
 	if err != nil {
 		return 0, err
 	}
@@ -724,7 +753,7 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 		if m.deps.Backends.SetWatchState == nil {
 			return ErrUnavailable
 		}
-		_, err := m.deps.Backends.SetWatchState(ctx, inv.ViewerID, inv.TitleID, inv.Watched)
+		_, err := m.deps.Backends.SetWatchState(ctx, e.Plugin, inv.ViewerID, inv.TitleID, inv.Watched)
 		return err
 	case "collections.upsert":
 		var inv collectionInverse
@@ -770,11 +799,11 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 		if err := json.Unmarshal(e.Inverse, &inv); err != nil {
 			return err
 		}
-		b := m.kindBackends()
-		if b.KindUpsert == nil {
-			return ErrUnavailable
-		}
 		if len(inv.Previous) > 0 {
+			b := m.kindBackends()
+			if b.KindUpsert == nil {
+				return ErrUnavailable
+			}
 			_, err := b.KindUpsert(ctx, e.Plugin, inv.Kind, inv.Previous)
 			return err
 		}

@@ -39,7 +39,7 @@ const MOVIE_MODES: ModeOption[] = [
     title: () => t("When they can play"),
     body: () =>
       t(
-        "A new movie appears once Ether finds a release you can play with your quality settings. Ether checks for you automatically.",
+        "A new movie appears once Ether finds a release you can play with your release settings. Ether checks for you automatically.",
       ),
   },
   {
@@ -62,7 +62,7 @@ const SHOW_MODES: ModeOption[] = [
     title: () => t("When they can play"),
     body: () =>
       t(
-        "A new episode or show appears once Ether finds a release you can play with your quality settings. Ether checks for you automatically.",
+        "A new episode or show appears once Ether finds a release you can play with your release settings. Ether checks for you automatically.",
       ),
   },
   {

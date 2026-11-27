@@ -9,9 +9,18 @@ import { normalizeRules, StreamRulesFields, type StreamRules } from "../viewers/
 
 /**
  * Audio and subtitle choices for every viewer, unless a profile sets its own.
- * Saved to the household record (`/stream-preferences/0`).
+ * Saved to the household record (`/stream-preferences/0`). Playback shows the
+ * audio rows and the subtitle rows on their own tabs; the draft is one, so
+ * edits on both save together.
  */
-export function HouseholdAudio() {
+export function HouseholdAudio({
+  part,
+  hidden = false,
+}: {
+  part: "audio" | "subtitles";
+  /** Keeps the draft and its save bar while another sub-tab is showing. */
+  hidden?: boolean;
+}) {
   const rules = useAsync(
     async (signal) =>
       normalizeRules(await apiFetch<StreamRules>("/stream-preferences/0", { signal })),
@@ -40,7 +49,7 @@ export function HouseholdAudio() {
 
   return (
     <>
-      {rules.error ? (
+      {hidden ? null : rules.error ? (
         <ErrorPanel error={rules.error} onRetry={() => void rules.reload()} />
       ) : !draft ? (
         <LoadingRows rows={4} />
@@ -49,7 +58,7 @@ export function HouseholdAudio() {
           <p className="max-w-3xl text-sm text-fg-muted">
             {t("Every viewer uses these unless their profile sets its own.")}
           </p>
-          <StreamRulesFields value={draft} onChange={setDraft} disabled={saving} />
+          <StreamRulesFields value={draft} onChange={setDraft} disabled={saving} part={part} />
         </>
       )}
       <SaveBar

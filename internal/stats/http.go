@@ -127,13 +127,12 @@ func (s *Service) Handler() http.Handler {
 }
 func (s *Service) period(r *http.Request) (time.Time, time.Time, int64) {
 	now := s.opts.Now().UTC()
-	until := now.Add(time.Second)
-	since := now.AddDate(0, 0, -30)
+	since, until := s.daysWindow(30)
 	if year, err := strconv.Atoi(r.URL.Query().Get("year")); err == nil && year >= 2000 && year <= now.Year() {
 		since = time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
 		until = since.AddDate(1, 0, 0)
 	} else if days, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && days > 0 && days <= 3660 {
-		since = now.AddDate(0, 0, -days)
+		since, until = s.daysWindow(days)
 	}
 	user, _ := strconv.ParseInt(r.URL.Query().Get("user"), 10, 64)
 	return since, until, user

@@ -10,13 +10,21 @@ import (
 // Administrative actions, setup, catalogue sync and background jobs use
 // owner-granted limits.
 func ViewerRequestPath(path string) bool {
-	for _, prefix := range []string{"/stream/", "/catalog/", "/meta/", "/subtitles/", "/ether/open", "/ether/metadata/", "/ether/subtitles/", "/ether/markers"} {
+	for _, prefix := range []string{"/stream/", "/catalog/", "/meta/", "/subtitles/", "/ether/open", "/ether/search", "/ether/files/", "/ether/metadata/", "/ether/subtitles/", "/ether/markers"} {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
 	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
-		strings.HasPrefix(path, "/ether/v1/live/")
+		strings.HasPrefix(path, "/ether/v1/live/") ||
+		strings.HasPrefix(path, "/ether/v1/screens/")
+}
+
+// IsSourceSearchPath identifies a stream_source plugin's category search
+// (/ether/search) and release file listing (/ether/files/{id}) routes (#792).
+func IsSourceSearchPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return p == "/ether/search" || strings.HasPrefix(p, "/ether/files/")
 }
 
 // KindSyncPath identifies a media kind's background catalogue calls (browse,
@@ -69,7 +77,7 @@ func BackgroundPoolPath(path string) bool {
 // frontend-adapter requests or background jobs cannot starve playback.
 func ResolvePoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
-	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") {
+	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") || IsSourceSearchPath(p) {
 		return true
 	}
 	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
@@ -122,6 +130,10 @@ func DeadlineFor(path string) time.Duration {
 		return 2 * time.Second
 	case strings.HasPrefix(p, "/ether/open"), strings.HasPrefix(p, "/stream/"):
 		return 3 * time.Second
+	case IsSourceSearchPath(p):
+		// A category search or file listing asks the plugin's own tracker
+		// or engine live; the caller's search deadline still bounds it.
+		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/tool"):
 		return 15 * time.Second
 	case strings.HasPrefix(p, "/ether/job"):
@@ -141,6 +153,12 @@ func DeadlineFor(path string) time.Duration {
 		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/live/"):
 		return 15 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/screens/"):
+		// A screen's data read or action: a viewer is waiting on it.
+		if strings.Contains(p, "/actions/") {
+			return 8 * time.Second
+		}
+		return 4 * time.Second
 	default:
 		return 30 * time.Second
 	}

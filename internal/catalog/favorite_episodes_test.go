@@ -138,12 +138,12 @@ func TestFavoriteEpisodesQueryDrivenByFavorites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := `SELECT ` + prefixedCols("e") + favoritesTitleJoin + ` WHERE f.viewer_id=? AND f.kind='title' AND ` + where + ` ORDER BY t.sort_title ASC, e.season ASC, e.episode ASC, e.key ASC LIMIT ? OFFSET ?`
+	q := `SELECT ` + prefixedCols("e") + c.favoritesJoin() + ` WHERE f.viewer_id=? AND f.kind='title' AND ` + where + ` ORDER BY t.sort_title ASC, e.season ASC, e.episode ASC, e.key ASC LIMIT ? OFFSET ?`
 	p := plan(q, append([]any{int64(7)}, append(args, 10, 0)...)...)
 	if !strings.Contains(p, "favorites_items") {
 		t.Fatalf("the page was not driven by the favorite rows:\n%s", p)
 	}
-	cq := `SELECT COUNT(*)` + favoritesTitleJoin + ` WHERE f.viewer_id=? AND f.kind='title' AND ` + where
+	cq := `SELECT COUNT(*)` + c.favoritesJoin() + ` WHERE f.viewer_id=? AND f.kind='title' AND ` + where
 	pc := plan(cq, append([]any{int64(7)}, args...)...)
 	if !strings.Contains(pc, "favorites_items") {
 		t.Fatalf("the count was not driven by the favorite rows:\n%s", pc)

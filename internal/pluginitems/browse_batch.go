@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 type browseBatchEntry struct {
@@ -20,8 +21,7 @@ type browseBatchEntry struct {
 	level       string
 	parentRef   string
 	tally       browseTallyInfo
-	baseWhere   string
-	baseArgs    []any
+	plan        browseQueryPlan
 	empty       bool
 }
 
@@ -66,7 +66,7 @@ func (s *Service) BrowseBatch(ctx context.Context, queries []BrowseQuery) ([]Bro
 			fallbacks = append(fallbacks, i)
 			continue
 		}
-		if err := checkFacetValueBound(q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+		if err := checkFacetValueBound(q.AnyGroups, q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
 			return nil, err
 		}
 		limit := q.Limit
@@ -97,22 +97,21 @@ func (s *Service) BrowseBatch(ctx context.Context, queries []BrowseQuery) ([]Bro
 		var active []int
 		for i := range eligible {
 			e := &eligible[i]
-			if e.tally.totalExact && e.tally.total == 0 {
+			if (e.tally.totalExact && e.tally.total == 0) || e.tally.knownEmpty {
 				e.empty = true
 				out[e.idx] = BrowsePage{Items: []core.KindItem{}}
 				continue
 			}
-			bw, bArgs, _, empty, err := s.buildBrowsePredicates(ctx, e.q, e.parentRef, e.level, e.col, e.kind, e.desc, e.defaultDesc, e.limit, e.tally)
+			plan, err := s.buildBrowsePlan(ctx, e.q, e.parentRef, e.level, e.col, e.kind, e.desc, e.defaultDesc, e.limit, e.tally)
 			if err != nil {
 				return nil, err
 			}
-			if empty {
+			if plan.empty {
 				e.empty = true
 				out[e.idx] = BrowsePage{Items: []core.KindItem{}}
 				continue
 			}
-			e.baseWhere = bw
-			e.baseArgs = bArgs
+			e.plan = plan
 			active = append(active, i)
 		}
 
@@ -120,32 +119,60 @@ func (s *Service) BrowseBatch(ctx context.Context, queries []BrowseQuery) ([]Bro
 			refsByEntry := make([][]core.ItemRef, len(eligible))
 			uniqueRefs := make([]core.ItemRef, 0, len(active)*8)
 			seenRef := make(map[core.ItemRef]struct{}, len(active)*8)
+			isPG := store.DialectOf(s.db) == store.Postgres
 
 			const maxUnionArms = 40
 			for start := 0; start < len(active); start += maxUnionArms {
 				chunk := active[start:min(start+maxUnionArms, len(active))]
 				arms := make([]string, len(chunk))
-				var args []any
+				var cteDefs []string
+				var cteArgs []any
+				var armArgs []any
 				for armIdx, ei := range chunk {
 					e := &eligible[ei]
 					dir := "ASC"
 					if e.desc {
 						dir = "DESC"
 					}
+					var subSQL string
+					if e.plan.driver == nil {
+						subSQL = fmt.Sprintf(
+							`SELECT i.item_ref, i.%s AS sort_col FROM plugin_items i WHERE %s ORDER BY i.%s %s, i.item_ref ASC LIMIT ?`,
+							e.col, e.plan.baseWhere, e.col, dir,
+						)
+					} else {
+						drvName := fmt.Sprintf("_drv_%d", armIdx)
+						if isPG {
+							cteDefs = append(cteDefs, fmt.Sprintf("%s AS MATERIALIZED (\n\t%s\n)", drvName, e.plan.driver.cteSQL))
+							subSQL = fmt.Sprintf(
+								`SELECT i.item_ref, i.%s AS sort_col FROM %s _d CROSS JOIN LATERAL (SELECT i.item_ref, i.%s FROM plugin_items i WHERE i.item_ref = _d.item_ref AND %s LIMIT 1) i ORDER BY i.%s %s, i.item_ref ASC LIMIT ?`,
+								e.col, drvName, e.col, e.plan.baseWhere, e.col, dir,
+							)
+						} else {
+							cteDefs = append(cteDefs, fmt.Sprintf("%s(item_ref) AS (\n\t%s\n)", drvName, e.plan.driver.cteSQL))
+							subSQL = fmt.Sprintf(
+								`SELECT i.item_ref, i.%s AS sort_col FROM %s _d CROSS JOIN plugin_items i WHERE i.item_ref = _d.item_ref AND %s ORDER BY i.%s %s, i.item_ref ASC LIMIT ?`,
+								e.col, drvName, e.plan.baseWhere, e.col, dir,
+							)
+						}
+						cteArgs = append(cteArgs, e.plan.driver.cteArgs...)
+					}
 					arms[armIdx] = fmt.Sprintf(
-						`SELECT * FROM (SELECT CAST(? AS INTEGER) AS shelf_idx, sub.item_ref, ROW_NUMBER() OVER (ORDER BY sub.sort_col %s, sub.item_ref ASC) AS pos FROM (SELECT i.item_ref, i.%s AS sort_col FROM plugin_items i WHERE %s ORDER BY i.%s %s, i.item_ref ASC LIMIT ?) sub) arm%d`,
-						dir, e.col, e.baseWhere, e.col, dir, armIdx,
+						`SELECT * FROM (SELECT CAST(? AS INTEGER) AS shelf_idx, sub.item_ref, ROW_NUMBER() OVER (ORDER BY sub.sort_col %s, sub.item_ref ASC) AS pos FROM (%s) sub) arm%d`,
+						dir, subSQL, armIdx,
 					)
-					args = append(args, ei)
-					args = append(args, e.baseArgs...)
-					args = append(args, e.limit+1)
+					armArgs = append(armArgs, ei)
+					armArgs = append(armArgs, e.plan.baseArgs...)
+					armArgs = append(armArgs, e.limit+1)
 				}
-				querySQL := `WITH batch AS (
-	` + strings.Join(arms, "\n\tUNION ALL\n\t") + `
-)
+				cteDefs = append(cteDefs, "batch AS (\n\t"+strings.Join(arms, "\n\tUNION ALL\n\t")+"\n)")
+				querySQL := "WITH " + strings.Join(cteDefs, ",\n") + `
 SELECT shelf_idx, item_ref, pos
 FROM batch
 ORDER BY shelf_idx ASC, pos ASC`
+				args := make([]any, 0, len(cteArgs)+len(armArgs))
+				args = append(args, cteArgs...)
+				args = append(args, armArgs...)
 
 				rows, err := s.db.QueryContext(ctx, querySQL, args...)
 				if err != nil {
@@ -242,7 +269,7 @@ ORDER BY shelf_idx ASC, pos ASC`
 
 // resolveBrowseBatchTallies computes browseTallyInfo for every eligible batch
 // entry using one memoized plugin_item_tally read and batched PK-prefix queries
-// on plugin_item_field_tally grouped by (level, field).
+// on plugin_item_field_tally / plugin_item_person_tally grouped by (level, field).
 func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.LibraryID, entries []browseBatchEntry) error {
 	libTally, err := s.libraryTally(ctx, libraryID)
 	if err != nil {
@@ -255,13 +282,15 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 
 	kindRec, kindErr := s.GetKindByLibrary(ctx, libraryID)
 	fieldTypes := map[string]string{}
+	var declaredPeople []string
 	if kindErr == nil {
 		for _, fd := range kindRec.Decl.Fields {
 			fieldTypes[fd.Key] = fd.Type
 		}
+		declaredPeople = declaredPeopleFields(kindRec.Decl)
 	}
 
-	type pendingFieldProbe struct {
+	type pendingSingleProbe struct {
 		entryIdx     int
 		levels       []string // {""} for anyLevel
 		field        string
@@ -271,19 +300,59 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		levelTotal   int
 		singleLevel  bool
 	}
+	type pendingMultiProbe struct {
+		entryIdx    int
+		levels      []string // {""} for anyLevel
+		active      []activeBrowseFacet
+		personID    int64
+		singleLevel bool
+	}
 	type groupKey struct {
 		level string
 		field string
 	}
-	groups := map[groupKey]map[string]struct{}{}
-	var pending []pendingFieldProbe
+	textGroups := map[groupKey]map[string]struct{}{}
+	personGroups := map[groupKey]map[int64]struct{}{}
+	addTextGroup := func(tallyLevels []string, field string, vals []string) {
+		for _, lv := range tallyLevels {
+			gk := groupKey{level: lv, field: field}
+			set := textGroups[gk]
+			if set == nil {
+				set = map[string]struct{}{}
+				textGroups[gk] = set
+			}
+			for _, v := range vals {
+				set[v] = struct{}{}
+			}
+		}
+	}
+	addPersonGroup := func(tallyLevels []string, field string, pids []int64) {
+		for _, lv := range tallyLevels {
+			gk := groupKey{level: lv, field: field}
+			set := personGroups[gk]
+			if set == nil {
+				set = map[int64]struct{}{}
+				personGroups[gk] = set
+			}
+			for _, pid := range pids {
+				set[pid] = struct{}{}
+			}
+		}
+	}
+
+	var (
+		pendingSingle []pendingSingleProbe
+		pendingMulti  []pendingMultiProbe
+	)
 
 	for i := range entries {
 		e := &entries[i]
 		q := e.q
-		if e.parentRef != "" || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0 {
+		if e.parentRef != "" || len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) {
 			continue
 		}
+		noExtraFilters := q.Policy.Passive() && q.TabPolicy.Passive() && !q.Hidden && q.PersonID <= 0 && q.Watched == nil && q.MaxContentRating == "" && len(q.ExcludeKeys) == 0
+
 		var (
 			levels        []string
 			anyLevel      bool
@@ -297,7 +366,7 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 			}
 		case e.level != "":
 			levels = []string{e.level}
-		case q.AnyLevel:
+		case q.AnyLevel || q.PersonID > 0:
 			anyLevel = true
 		default:
 			if kindErr != nil || len(kindRec.Decl.Levels) == 0 {
@@ -316,57 +385,18 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		}
 		singleLevel := libTotal > 0 && levelTotal == libTotal && (!defaultedRoot || len(kindRec.Decl.Levels) == 1)
 
-		type activeFacet struct {
-			mode facetMode
-			key  string
-			vals []string
-		}
-		var active []activeFacet
-		collect := func(m map[string][]string, mode facetMode) {
-			for _, k := range sortedFacetKeys(m) {
-				vals := dedupCleanValues(m[k])
-				if len(vals) == 0 {
-					continue
-				}
-				active = append(active, activeFacet{mode: mode, key: k, vals: vals})
-				if len(active) > 1 {
-					return
-				}
+		active, hasDisjunction := collectActiveBrowseFacets(q)
+		noExtraFilters = noExtraFilters && !hasDisjunction
+		if len(active) == 0 && q.PersonID <= 0 {
+			if noExtraFilters {
+				e.tally = browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}
+			} else {
+				e.tally = browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}
 			}
-		}
-		collect(q.Facets, facetAny)
-		if len(active) <= 1 {
-			collect(q.AllFacets, facetAll)
-		}
-		if len(active) <= 1 {
-			collect(q.ExcludeFacets, facetNone)
-		}
-
-		if len(active) == 0 {
-			e.tally = browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}
 			continue
 		}
-		if len(active) > 1 || envelopeFacet(active[0].key) || kindErr != nil {
+		if kindErr != nil {
 			e.tally = browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}
-			continue
-		}
-		f := active[0]
-		var singleValued bool
-		switch fieldTypes[f.key] {
-		case "string", "enum", "bool":
-			singleValued = true
-		case "strings":
-			singleValued = false
-		default:
-			e.tally = browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}
-			continue
-		}
-		if !singleValued && len(f.vals) > 1 && f.mode != facetAny {
-			e.tally = browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}
-			continue
-		}
-		if singleValued && f.mode == facetAll && len(f.vals) > 1 {
-			e.tally = browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}
 			continue
 		}
 
@@ -374,98 +404,214 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		if anyLevel {
 			tallyLevels = []string{""}
 		}
-		for _, lv := range tallyLevels {
-			gk := groupKey{level: lv, field: f.key}
-			set := groups[gk]
-			if set == nil {
-				set = map[string]struct{}{}
-				groups[gk] = set
-			}
-			for _, v := range f.vals {
-				set[v] = struct{}{}
+
+		if noExtraFilters && len(active) == 1 {
+			f := active[0]
+			if !envelopeFacet(f.key) && isTalliedTextType(fieldTypes[f.key]) {
+				singleValued := isSingleValuedTextType(fieldTypes[f.key])
+				if singleValued && f.mode == facetAll && len(f.vals) > 1 {
+					e.tally = browseTallyInfo{totalExact: true, total: 0, knownEmpty: true, libTotal: libTotal, singleLevel: singleLevel}
+					continue
+				}
+				if singleValued || len(f.vals) == 1 || f.mode == facetAny {
+					addTextGroup(tallyLevels, f.key, f.vals)
+					pendingSingle = append(pendingSingle, pendingSingleProbe{
+						entryIdx:     i,
+						levels:       tallyLevels,
+						field:        f.key,
+						vals:         f.vals,
+						mode:         f.mode,
+						singleValued: singleValued,
+						levelTotal:   levelTotal,
+						singleLevel:  singleLevel,
+					})
+					continue
+				}
 			}
 		}
-		pending = append(pending, pendingFieldProbe{
-			entryIdx:     i,
-			levels:       tallyLevels,
-			field:        f.key,
-			vals:         f.vals,
-			mode:         f.mode,
-			singleValued: singleValued,
-			levelTotal:   levelTotal,
-			singleLevel:  singleLevel,
+
+		contradiction := false
+		for _, a := range active {
+			if a.mode == facetNone || envelopeFacet(a.key) {
+				continue
+			}
+			ft := fieldTypes[a.key]
+			if isSingleValuedTextType(ft) && a.mode == facetAll && len(a.vals) > 1 {
+				contradiction = true
+				break
+			}
+			if isTalliedTextType(ft) {
+				addTextGroup(tallyLevels, a.key, a.vals)
+				continue
+			}
+			if ft == "people" {
+				pids := parsePeopleFacetIDs(a.vals)
+				if len(pids) == 0 {
+					contradiction = true
+					break
+				}
+				addPersonGroup(tallyLevels, a.key, pids)
+			}
+		}
+		if !contradiction && q.PersonID > 0 {
+			if !core.IsPluginPersonID(q.PersonID) || len(declaredPeople) == 0 {
+				contradiction = true
+			} else {
+				for _, fk := range declaredPeople {
+					addPersonGroup(tallyLevels, fk, []int64{q.PersonID})
+				}
+			}
+		}
+		if contradiction {
+			e.tally = browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: singleLevel}
+			continue
+		}
+		pendingMulti = append(pendingMulti, pendingMultiProbe{
+			entryIdx:    i,
+			levels:      tallyLevels,
+			active:      active,
+			personID:    q.PersonID,
+			singleLevel: singleLevel,
 		})
 	}
 
-	if len(pending) == 0 {
+	if len(pendingSingle) == 0 && len(pendingMulti) == 0 {
 		return nil
 	}
 
-	// Execute one batched PK-prefix query per (level, field) group.
-	type tallyRowKey struct {
+	// Execute one batched PK-prefix query per (level, field) group on field tallies.
+	type textRowKey struct {
 		level string
 		field string
 		val   string
 	}
-	counts := make(map[tallyRowKey]int, len(pending)*2)
-	groupKeys := make([]groupKey, 0, len(groups))
-	for gk := range groups {
-		groupKeys = append(groupKeys, gk)
-	}
-	slices.SortFunc(groupKeys, func(a, b groupKey) int {
-		if c := strings.Compare(a.level, b.level); c != 0 {
-			return c
+	textCounts := make(map[textRowKey]int, (len(pendingSingle)+len(pendingMulti))*2)
+	if len(textGroups) > 0 {
+		groupKeys := make([]groupKey, 0, len(textGroups))
+		for gk := range textGroups {
+			groupKeys = append(groupKeys, gk)
 		}
-		return strings.Compare(a.field, b.field)
-	})
+		slices.SortFunc(groupKeys, func(a, b groupKey) int {
+			if c := strings.Compare(a.level, b.level); c != 0 {
+				return c
+			}
+			return strings.Compare(a.field, b.field)
+		})
 
-	const chunkSize = 250
-	for _, gk := range groupKeys {
-		vals := make([]string, 0, len(groups[gk]))
-		for v := range groups[gk] {
-			vals = append(vals, v)
-		}
-		slices.Sort(vals)
-		for start := 0; start < len(vals); start += chunkSize {
-			chunk := vals[start:min(start+chunkSize, len(vals))]
-			ph := make([]string, len(chunk))
-			args := make([]any, 0, 3+len(chunk))
-			args = append(args, int64(libraryID), gk.level, gk.field)
-			for i, v := range chunk {
-				ph[i] = "?"
-				args = append(args, v)
+		isPG := store.DialectOf(s.db) == store.Postgres
+		const chunkSize = 250
+		for _, gk := range groupKeys {
+			vals := make([]string, 0, len(textGroups[gk]))
+			for v := range textGroups[gk] {
+				vals = append(vals, v)
 			}
-			rows, err := s.db.QueryContext(ctx,
-				`SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ? AND v_text IN (`+strings.Join(ph, ",")+`)`,
-				args...)
-			if err != nil {
-				return err
-			}
-			for rows.Next() {
-				var v string
-				var cnt int
-				if err := rows.Scan(&v, &cnt); err != nil {
+			slices.Sort(vals)
+			for start := 0; start < len(vals); start += chunkSize {
+				chunk := vals[start:min(start+chunkSize, len(vals))]
+				var qSQL strings.Builder
+				args := make([]any, 0, 3+2*len(chunk))
+				qSQL.WriteString(`SELECT v_text, cnt FROM plugin_item_field_tally WHERE library_id = ? AND level = ? AND field = ?`)
+				args = append(args, int64(libraryID), gk.level, gk.field)
+				if isPG {
+					appendPGMD5In(&qSQL, &args, "v_text", chunk)
+				} else {
+					ph := make([]string, len(chunk))
+					for i, v := range chunk {
+						ph[i] = "?"
+						args = append(args, v)
+					}
+					qSQL.WriteString(` AND v_text IN (` + strings.Join(ph, ",") + `)`)
+				}
+				rows, err := s.db.QueryContext(ctx, qSQL.String(), args...)
+				if err != nil {
+					return err
+				}
+				for rows.Next() {
+					var v string
+					var cnt int
+					if err := rows.Scan(&v, &cnt); err != nil {
+						rows.Close()
+						return err
+					}
+					textCounts[textRowKey{level: gk.level, field: gk.field, val: v}] = cnt
+				}
+				if err := rows.Err(); err != nil {
 					rows.Close()
 					return err
 				}
-				counts[tallyRowKey{level: gk.level, field: gk.field, val: v}] = cnt
-			}
-			if err := rows.Err(); err != nil {
 				rows.Close()
-				return err
 			}
-			rows.Close()
 		}
 	}
 
-	for _, p := range pending {
+	// Execute one batched PK-prefix query per (level, field) group on person tallies.
+	type personRowKey struct {
+		level string
+		field string
+		pid   int64
+	}
+	personCounts := make(map[personRowKey]int, len(personGroups)*2)
+	if len(personGroups) > 0 {
+		groupKeys := make([]groupKey, 0, len(personGroups))
+		for gk := range personGroups {
+			groupKeys = append(groupKeys, gk)
+		}
+		slices.SortFunc(groupKeys, func(a, b groupKey) int {
+			if c := strings.Compare(a.level, b.level); c != 0 {
+				return c
+			}
+			return strings.Compare(a.field, b.field)
+		})
+		const chunkSize = 250
+		for _, gk := range groupKeys {
+			pids := make([]int64, 0, len(personGroups[gk]))
+			for pid := range personGroups[gk] {
+				pids = append(pids, pid)
+			}
+			slices.Sort(pids)
+			for start := 0; start < len(pids); start += chunkSize {
+				chunk := pids[start:min(start+chunkSize, len(pids))]
+				ph := make([]string, len(chunk))
+				args := make([]any, 0, 3+len(chunk))
+				args = append(args, int64(libraryID), gk.level, gk.field)
+				for i, pid := range chunk {
+					ph[i] = "?"
+					args = append(args, pid)
+				}
+				rows, err := s.db.QueryContext(ctx,
+					`SELECT v_int, cnt FROM plugin_item_person_tally WHERE library_id = ? AND level = ? AND field = ? AND v_int IN (`+strings.Join(ph, ",")+`)`,
+					args...)
+				if err != nil {
+					return err
+				}
+				for rows.Next() {
+					var pid int64
+					var cnt int
+					if err := rows.Scan(&pid, &cnt); err != nil {
+						rows.Close()
+						return err
+					}
+					personCounts[personRowKey{level: gk.level, field: gk.field, pid: pid}] = cnt
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					return err
+				}
+				rows.Close()
+			}
+		}
+	}
+
+	for _, p := range pendingSingle {
 		multiOrMultiVal := !p.singleValued && len(p.vals) > 1 && p.mode == facetAny
+		perEntryText := make(map[browseTextTallyKey]int, len(p.vals))
 		var sumCnt, maxCnt int
 		for _, v := range p.vals {
 			valCnt := 0
 			for _, lv := range p.levels {
-				valCnt += counts[tallyRowKey{level: lv, field: p.field, val: v}]
+				valCnt += textCounts[textRowKey{level: lv, field: p.field, val: v}]
 			}
+			perEntryText[browseTextTallyKey{field: p.field, val: v}] = valCnt
 			sumCnt += valCnt
 			if valCnt > maxCnt {
 				maxCnt = valCnt
@@ -473,7 +619,7 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		}
 		if multiOrMultiVal {
 			if sumCnt == 0 {
-				entries[p.entryIdx].tally = browseTallyInfo{totalExact: true, total: 0, libTotal: libTotal, singleLevel: p.singleLevel}
+				entries[p.entryIdx].tally = browseTallyInfo{totalExact: true, total: 0, knownEmpty: true, libTotal: libTotal, singleLevel: p.singleLevel}
 			} else {
 				entries[p.entryIdx].tally = browseTallyInfo{
 					lowerBound:         maxCnt,
@@ -481,26 +627,92 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 					singleLevel:        p.singleLevel,
 					positiveTextField:  p.field,
 					positiveTextValues: p.vals,
+					talliesActive:      true,
+					textCounts:         perEntryText,
 				}
 			}
 			continue
 		}
 		if p.mode == facetNone {
 			entries[p.entryIdx].tally = browseTallyInfo{
-				totalExact:  true,
-				total:       max(0, p.levelTotal-sumCnt),
-				libTotal:    libTotal,
-				singleLevel: p.singleLevel,
+				totalExact:    true,
+				total:         max(0, p.levelTotal-sumCnt),
+				libTotal:      libTotal,
+				singleLevel:   p.singleLevel,
+				talliesActive: true,
+				textCounts:    perEntryText,
 			}
 			continue
 		}
 		entries[p.entryIdx].tally = browseTallyInfo{
 			totalExact:         true,
 			total:              sumCnt,
+			knownEmpty:         sumCnt == 0,
 			libTotal:           libTotal,
 			singleLevel:        p.singleLevel,
 			positiveTextField:  p.field,
 			positiveTextValues: p.vals,
+			talliesActive:      true,
+			textCounts:         perEntryText,
+		}
+	}
+
+	for _, p := range pendingMulti {
+		perEntryText := map[browseTextTallyKey]int{}
+		perEntryPerson := map[browsePersonTallyKey]int{}
+		knownEmpty := false
+		for _, a := range p.active {
+			if a.mode == facetNone || envelopeFacet(a.key) {
+				continue
+			}
+			ft := fieldTypes[a.key]
+			if isTalliedTextType(ft) {
+				sumCnt := 0
+				for _, v := range a.vals {
+					valCnt := 0
+					for _, lv := range p.levels {
+						valCnt += textCounts[textRowKey{level: lv, field: a.key, val: v}]
+					}
+					perEntryText[browseTextTallyKey{field: a.key, val: v}] = valCnt
+					if a.mode == facetAll && valCnt == 0 {
+						knownEmpty = true
+					}
+					sumCnt += valCnt
+				}
+				if sumCnt == 0 {
+					knownEmpty = true
+				}
+				continue
+			}
+			if ft == "people" {
+				for _, pid := range parsePeopleFacetIDs(a.vals) {
+					valCnt := 0
+					for _, lv := range p.levels {
+						valCnt += personCounts[personRowKey{level: lv, field: a.key, pid: pid}]
+					}
+					perEntryPerson[browsePersonTallyKey{field: a.key, pid: pid}] = valCnt
+				}
+			}
+		}
+		if p.personID > 0 {
+			for _, fk := range declaredPeople {
+				valCnt := 0
+				for _, lv := range p.levels {
+					valCnt += personCounts[personRowKey{level: lv, field: fk, pid: p.personID}]
+				}
+				perEntryPerson[browsePersonTallyKey{field: fk, pid: p.personID}] = valCnt
+			}
+		}
+		if knownEmpty {
+			entries[p.entryIdx].tally = browseTallyInfo{knownEmpty: true, totalExact: true, total: 0, libTotal: libTotal, singleLevel: p.singleLevel}
+			continue
+		}
+		entries[p.entryIdx].tally = browseTallyInfo{
+			libTotal:      libTotal,
+			singleLevel:   p.singleLevel,
+			talliesActive: true,
+			textCounts:    perEntryText,
+			personCounts:  perEntryPerson,
 		}
 	}
 	return nil

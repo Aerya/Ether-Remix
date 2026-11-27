@@ -52,7 +52,7 @@ func (a *App) buildLiveTV() error {
 		}
 	}, RemoteUploadCap: a.remoteUploadCap, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
-			a.resolver.SourcesChanged(context.Background())
+			a.resolver.VODCatalogChanged(context.Background())
 		}
 	}, BreakInput: a.channelBreakInput, BreakAnalyzer: &markers.BreakAnalyzer{DB: a.db, FFmpeg: ffmpeg, OnEvidence: a.opts.BreakEvidenceObserver, Hardware: func() core.HWAccel {
 		if a.transcoder == nil {
@@ -86,7 +86,10 @@ func (a *App) buildLiveTV() error {
 		}
 		a.playback.Prewarm(ctx, u, key, core.ClientCaps{Product: "Ether Live TV", ClientID: "ether-channel-prewarm", MaxHeight: 1080, MaxBitrateKbps: 6000, BroadcastBitrateKbps: 6000, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"}, Containers: []string{"mp4", "mkv"}}, core.PrewarmOptions{Reason: core.PrewarmDetail, StartOffset: at, DuringPlayback: true, PrefetchBytes: 32 << 20})
 		return nil
-	}})
+	}, TimeshiftMinutes: func() int { return a.cfg.Read().LiveTV.EffectiveTimeshiftMinutes() },
+		TimeshiftBudgetBytes: func() int64 { return a.cfg.Read().EffectiveCache().BudgetBytes },
+		TimeshiftDir:         a.cfg.Read().Transcode.TempDir,
+	})
 	if err != nil {
 		return err
 	}

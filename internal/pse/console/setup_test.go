@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/pse/latestfilter"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 )
 
@@ -151,5 +152,32 @@ func TestSetupUnchangedValueDoesNotPinEnvironment(t *testing.T) {
 	code, _ := do(t, h, "POST", "/setup/apply", setupApplyBody(t, p))
 	if code != 200 || *applied != 0 || len(stored()) != 0 {
 		t.Fatal("no-op wrote settings")
+	}
+}
+
+// The setup API must coexist with the newer dedicated Jellyfin/Emby editor.
+func TestSetupPreservesLatestFiltersAndRejectsAnObsoletePreview(t *testing.T) {
+	h, _, stored := newHandler(t)
+	p := setupReview(t, h, map[string]any{"PSE_FRENCH": "on"})
+	code, filters := do(t, h, "GET", "/jellyfin-latest", "")
+	if code != 200 {
+		t.Fatalf("latest editor: %d %v", code, filters)
+	}
+	code, out := do(t, h, "PUT", "/jellyfin-latest", `{"movie":{"exclude":[{"field":"genre","op":"in","value":["Animation"]}]},"show":{}}`)
+	if code != 200 {
+		t.Fatalf("save latest filters: %d %v", code, out)
+	}
+	before := stored()[latestfilter.Key]
+	code, _ = do(t, h, "POST", "/setup/apply", setupApplyBody(t, p))
+	if code != 409 {
+		t.Fatalf("stale setup accepted: %d", code)
+	}
+	p = setupReview(t, h, map[string]any{"PSE_FRENCH": "on"})
+	code, _ = do(t, h, "POST", "/setup/apply", setupApplyBody(t, p))
+	if code != 200 {
+		t.Fatalf("fresh setup: %d", code)
+	}
+	if before == "" || stored()[latestfilter.Key] != before {
+		t.Fatal("latest filters lost")
 	}
 }

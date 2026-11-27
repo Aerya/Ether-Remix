@@ -77,7 +77,7 @@ var anonymousStreamRoutes = map[route.Route]bool{
 func validStreamAlias(id, name string) bool {
 	name = strings.ToLower(name)
 	if themeParentID(id) != "" {
-		return name == "stream" || name == "stream.m4a"
+		return name == "stream" || name == "stream.m4a" || name == "stream.mp3"
 	}
 	switch {
 	case name == "stream", strings.HasPrefix(name, "stream."), name == "universal", name == "master.m3u8", name == "main.m3u8":

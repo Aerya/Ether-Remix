@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -203,7 +205,7 @@ func TestEngineRefreshesRevokedLinks(t *testing.T) {
 }
 
 func TestEngineErrorClassification(t *testing.T) {
-	t.Run("link keeps failing is missing", func(t *testing.T) {
+	t.Run("reissued links with media HTTP 404 are transient", func(t *testing.T) {
 		r := newEngineRig(t, 256<<10, -1)
 		r.media.mu.Lock()
 		r.media.status["realdebrid-1"] = http.StatusNotFound
@@ -221,7 +223,7 @@ func TestEngineErrorClassification(t *testing.T) {
 		}
 		r.media.mu.Unlock()
 		_, err = src.ReadAt(make([]byte, 10), 0)
-		if !errors.Is(err, core.ErrArticleMissing) {
+		if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrOriginalLost) || errors.Is(err, core.ErrArticleMissing) {
 			t.Fatalf("got %v (link calls %d)", err, prov.callCount("link"))
 		}
 	})
@@ -279,23 +281,47 @@ func TestEngineCheck(t *testing.T) {
 }
 
 func TestEngineHedgesSlowFirstByte(t *testing.T) {
-	r := newEngineRig(t, 256<<10, 30*time.Millisecond)
-	r.media.mu.Lock()
-	r.media.stall["realdebrid-1|bytes=0-262143"] = 3 * time.Second // foreground owns the full head run before read-ahead
-	r.media.mu.Unlock()
-	src, err := r.eng.Open(context.Background(), r.rel.ID, r.pl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer src.Close()
-	buf := make([]byte, 1000)
-	if _, err := src.ReadAt(buf, 0); err != nil || !bytes.Equal(buf, r.media.data[:1000]) {
-		t.Fatalf("read %v", err)
-	}
-	st := r.eng.Stats()
-	if st.Hedges == 0 || st.HedgeWins == 0 {
-		t.Fatalf("stats %+v", st)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		cancelled := make(chan struct{})
+		primary := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(req.Context())
+			trace.GotConn(httptrace.GotConnInfo{})
+			<-req.Context().Done()
+			close(cancelled)
+			return nil, req.Context().Err()
+		})}
+		const payload = "media block"
+		hedge := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Body:       io.NopCloser(strings.NewReader(payload)),
+				Request:    req,
+			}, nil
+		})}
+		e := NewEngine(nil, EngineOptions{HTTPClient: primary, HedgeClient: hedge, HedgeDelay: time.Second})
+		defer e.Close()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		resp, _, err := e.get(ctx, "https://example.invalid/media", 0, int64(len(payload)-1), int64(len(payload)), true, make(chan struct{}, 2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if string(got) != payload || err != nil {
+			t.Fatalf("hedged read = %q, %v", got, err)
+		}
+		synctest.Wait()
+		select {
+		case <-cancelled:
+		default:
+			t.Fatal("winning hedge did not cancel the stalled primary")
+		}
+		st := e.Stats()
+		if st.Hedges == 0 || st.HedgeWins == 0 {
+			t.Fatalf("stats %+v", st)
+		}
+	})
 }
 
 func TestEngineConcurrentReadersShareBlocks(t *testing.T) {

@@ -133,6 +133,20 @@ func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, lates
 			i.writePersonalActivity(w, r, viewer, n, latest, offset, limit)
 			return
 		}
+		if n, e := strconv.ParseInt(view, 10, 64); e == nil && (n == collectionsViewNumber || n == liveTVViewNumber) {
+			// The Collections and Live TV folders are this frontend's own
+			// views, not libraries: nothing in them is recently added or
+			// resumable (Jellyfin answers an empty list). Findroid asks
+			// Latest for every movies/tvshows/boxsets view on Home and shows
+			// "Invalid HTTP status in response: 404" for the whole page when
+			// one of them fails.
+			if latest {
+				i.replyItems(w, r, []any{})
+			} else {
+				i.replyItems(w, r, i.queryResult([]any{}, 0, offset))
+			}
+			return
+		}
 	}
 	service, ok := i.host.Experience.(frontend.LibraryActivity)
 	if !ok {
@@ -160,13 +174,14 @@ func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, lates
 		}
 		var rows []frontend.LatestItem
 		if grouped, ok := i.host.Experience.(frontend.LibraryActivityGrouping); ok {
-			rows, err = grouped.LatestAddedGrouped(r.Context(), viewer, device(r), view, count, group)
+			rows, err = grouped.LatestAddedGrouped(r.Context(), viewer, device(r), view, pseLatestFetch(view, count), group) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		} else if group {
-			rows, err = service.LatestAdded(r.Context(), viewer, device(r), view, count)
+			rows, err = service.LatestAdded(r.Context(), viewer, device(r), view, pseLatestFetch(view, count)) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		} else {
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		rows = pseFilterLatest(view, rows, count) // PSE-HOOK: genres exclus des derniers ajouts — voir docs/pse/FORK.fr.md
 		for _, row := range rows {
 			titles = append(titles, row.Title)
 			if row.AddedAt != nil {
@@ -339,6 +354,7 @@ func (i *instance) writeListedTitles(w http.ResponseWriter, r *http.Request, vie
 	ratingFacts := i.pageRatingFacts(r, viewer, titles)
 	i.fillSeriesTitles(r, viewer, titles)
 	r = i.pageEditions(r, viewer, keys)
+	i.primeTitleLibraries(r, viewer, titles)
 	items := make([]any, 0, len(titles))
 	for _, title := range titles {
 		item := i.itemDTO(title, states[title.Key])

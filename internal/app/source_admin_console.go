@@ -8,6 +8,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/sourceadmin"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 	"github.com/braedonsaunders/ether/internal/usenet"
 )
 
@@ -69,6 +70,29 @@ func (a *App) remoteSourceAdminDeps(d *admin.Deps) {
 			return failure(err)
 		}
 		return map[string]any{"used": response.Cache.Used, "budget": response.Cache.Budget, "mode": a.cfg.Get().Cache.Mode}
+	}
+	d.TestProviderSpeed = func(ctx context.Context, kind, id string) speedtest.Result {
+		operation := sourceadmin.SpeedUsenet
+		if kind == "debrid" {
+			operation = sourceadmin.SpeedDebrid
+		}
+		playing, _ := a.providerSpeedPlayback()
+		response, err := a.callSourceAdmin(ctx, sourceadmin.Request{Operation: operation, ResourceID: id})
+		if err != nil || response.Speed == nil {
+			return speedtest.Result{Status: "unavailable"}
+		}
+		result := *response.Speed
+		// The source node measures delivery; this node observes playback.
+		if result.Status == "ok" {
+			if result.StreamsPlaying == 0 {
+				result.StreamsPlaying = playing
+			}
+			if typical, _ := a.playback.ProviderSpeedEvidence(); typical > 0 {
+				result.TypicalMbps = typical
+			}
+			a.saveSpeedResult(ctx, kind, id, result)
+		}
+		return result
 	}
 	d.TestUsenet = func(ctx context.Context, input config.UsenetProvider) error {
 		for _, v := range a.cfg.Get().Usenet.Providers {

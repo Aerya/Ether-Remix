@@ -3,6 +3,7 @@ package playback
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,5 +339,63 @@ func TestMetadataProbeRespectsDisabledSettings(t *testing.T) {
 				t.Fatalf("disabled probe resolved/probed: %d/%d", r, p)
 			}
 		})
+	}
+}
+
+// failingOpening fails the warm-up's opening prefetch once with a transient
+// error; later prefetches (Play's own) succeed.
+type failingOpening struct {
+	core.Engine
+	failed   chan context.Context
+	attempts atomic.Int32
+}
+
+func (e *failingOpening) Prefetch(ctx context.Context, release string, nzb []byte, off, n int64) error {
+	if e.attempts.Add(1) == 1 {
+		e.failed <- ctx
+		return context.DeadlineExceeded
+	}
+	return e.Engine.Prefetch(ctx, release, nzb, off, n)
+}
+
+// A usenet warm-up publishes its source before it proves the opening. When
+// that proof fails transiently, the entry stays for the detail page, but a
+// Play that joins it (promoted by a play-metadata request) must not wait on
+// the warm-up that already ended. Before, Play waited until its own context
+// ended, on every attempt, for the entry's hour-long lifetime (#779).
+func TestPlayDoesNotWaitOnAWarmUpWhoseOpeningFailed(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	h.resolver.mu.Lock()
+	h.resolver.candidates[0].Protocol = core.ProtocolUsenet
+	h.resolver.mu.Unlock()
+	engine := &failingOpening{Engine: h.engine, failed: make(chan context.Context, 1)}
+	h.m.deps.Engine = engine
+	caps := defaultCaps("appletv")
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("warm skipped")
+	}
+	select {
+	case ctx := <-engine.failed:
+		<-ctx.Done() // the warm-up has returned
+	case <-time.After(10 * time.Second):
+		t.Fatal("opening prefetch not reached")
+	}
+	id := identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey, surface: h.m.playbackSurface(string(caps.Protocol))}
+	h.m.mu.Lock()
+	e := h.m.warm[id]
+	h.m.mu.Unlock()
+	if e == nil {
+		t.Fatal("a transient opening failure dropped the warm entry")
+	}
+	e.markPromoted() // a play-metadata request joined it while it ran
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ps, err := h.m.Prepare(ctx, owner, movieKey, caps)
+	if err != nil {
+		t.Fatalf("Prepare waited on the failed warm-up: %v", err)
+	}
+	if ps.Resolution == nil || ps.Resolution.Release.ID != "r1" {
+		t.Fatalf("resolution = %+v", ps.Resolution)
 	}
 }

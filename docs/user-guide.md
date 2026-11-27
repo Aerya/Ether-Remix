@@ -76,6 +76,13 @@ directly or remux for the device, trying up to three next-ranked releases
 before it accepts a video transcode; an audio-only conversion does not count
 as a reason to switch.
 
+Jellyfin library rows list the same menu: **Auto**, then each version set under
+**Releases › Profiles › Version menu** (by default one same-quality version).
+Infuse builds its movie and episode pages from those rows, so its version
+button lists them. Infuse's own **Play Version** setting (Auto, Highest
+Quality, Lowest Quality or Ask) decides whether it asks; long-press Play to
+pick another version later.
+
 ## Silo apps
 
 Silo support is in development. Ether's Silo surface uses port 8090 by default;
@@ -144,11 +151,11 @@ and a Newznab URL for Usenet. Finally choose a cache folder and budget.
 Out of the box there is no server quality cap, at home or away: each device
 plays the best release it can show (phones up to 1080p, TVs and streaming boxes
 up to 4K), and the app's own quality setting still applies. To limit quality,
-open **Quality › Profiles**. Edit a profile and select **Away** under **Default for** to cap people watching away
+open **Releases › Profiles**. Edit a profile and select **Away** under **Default for** to cap people watching away
 from home (for example with the 1080p profile), or set the shared **Remote bitrate
 limit** in Mbps (0 means no limit). To limit one device, app or viewer,
-add a rule under **Quality › Rules**. A rule wins over the Away profile.
-**Check quality**, its own tab under **Quality**, shows the quality a viewer gets
+add a rule under **Releases › Rules**. A rule wins over the Away profile.
+**Check quality**, its own tab under **Releases**, shows the quality a viewer gets
 in an app, at home or away, and which rule decided.
 Ether supplies no media, provider accounts or indexer access.
 
@@ -259,7 +266,7 @@ added as Torznab URLs with protocol **Torrent (Torznab)**; Ether adds `/api`.
 ### Which source plays
 
 Ether never trades quality for speed. Among releases of the same quality, it
-puts the source that starts faster first. Set this under **Quality › Profiles ›
+puts the source that starts faster first. Set this under **Releases › Profiles ›
 Which source goes first**. It applies to every profile:
 
 - **Start fastest:** once both sources have enough plays, the one with
@@ -272,7 +279,7 @@ Which source goes first**. It applies to every profile:
   when the first has nothing that plays.
 
 The best release from the other source is checked at the same time, and both
-remain available for failover. **Quality › Pinned** (when you find a title) and **History** show when
+remain available for failover. **Releases › Pinned** (when you find a title) and **History** show when
 routing moved a release, and why.
 
 ## Sites
@@ -354,7 +361,7 @@ in Ether's **Viewers** page after signing in. A viewer's page has the tabs
 **Overview**, **Home**, **Taste**, **Recent activity**, **Audio & subtitles**,
 **Limits**, **Sign-in & devices** and **Lists & alerts**. Use **Limits** for
 content and playback limits. To cap one viewer's quality, add a rule under
-**Quality › Rules**. Each viewer keeps their own history and recommendations.
+**Releases › Rules**. Each viewer keeps their own history and recommendations.
 
 ## Libraries, catalogue and Home
 
@@ -487,11 +494,11 @@ what you want to change:
 | Task | Where to look |
 | --- | --- |
 | Connect providers and indexers | **Sources** |
-| Inspect a failed source search | **Quality › History**, then open the attempt |
+| Inspect a failed source search | **Releases › History**, then open the attempt |
 | Inspect observed playback | **Activity › History** — movies, shows and music in one chronological table |
 | Explore music listening trends | **Activity › Listening** — daily counts, time heatmap and rankings, filtered by period and user |
 | Change one viewer's track preferences | **Viewers › viewer › Audio & subtitles** |
-| Change household audio and subtitles | **Playback › Audio & subtitles** |
+| Change household audio and subtitles | **Playback › Audio** and **Playback › Subtitles** |
 | Arrange rows in Plex | **Home** |
 | Set up poster providers | **Integrations** |
 | Pick the poster source | **Metadata › Artwork** |
@@ -513,21 +520,39 @@ Detail pages can list several versions of a title, such as 4K, a
 high-compatibility 1080p release or an extended cut. Right after the automatic
 choice, other releases of the same cut, resolution and HDR type are listed,
 named by quality, audio, size and release group, so you can switch if one
-fails. **Quality › Profiles › Version menu › Same-quality versions to offer** sets
+fails. **Releases › Profiles › Version menu › Same-quality versions to offer** sets
 how many (0 to 3; 1 by default, 0 turns the extra versions off). Choose one with Plex's **Play Version**; otherwise Ether picks the
 best version for the device. Turn on **Offer alternatives at every resolution**
 to distribute that count across the available resolutions instead. With one
-alternative, the menu can show two 4K, two 1080p and two 720p releases when
-eligible results exist. Auto counts as the first release in its resolution,
-stays first in the menu, and the total stays within seven entries. Ether gives
-each resolution a place before filling extra copies, removes duplicate files,
-and preserves profile and device limits. Turn on **Offer each source at every
-resolution** to keep one WEB-DL, Blu-ray and Remux choice at each resolution
-that appears, so a lighter WEB-DL still shows beside a tier full of remuxes;
-Auto is unchanged and still follows your profile. **Offer higher versions**
-remains a
-separate opt-in for choices above the profile's resolution ceiling. The new
-mode is off by default.
+alternative, the menu can list a 4K, a 1080p and a 720p release, then one more
+of each, when eligible results exist. Auto stays first in the menu, and the
+total stays within seven entries. Ether gives each resolution a place before
+filling extra copies, removes duplicate files, and preserves profile and device
+limits. Turn on **Offer each source at every resolution** to add a Remux, a
+Blu-ray encode and a WEB release (WEB-DL or WEBRip) at each resolution, so a
+lighter WEB-DL still shows beside a tier full of remuxes. Higher resolutions
+come first when they do not all fit: on a 4K profile that is Auto plus the 4K
+and 1080p choices. Auto is unchanged and still follows your profile. **Offer
+higher versions** remains a separate opt-in for choices above the profile's
+resolution ceiling. These modes are off by default.
+
+For finer control, `resolver.sourceVersions` in `config.json` sets each source
+at each resolution to `"offer"`, `"required"` or `"off"` (an omitted cell is
+off), and replaces the single switch when present. Restart Ether after editing
+the file:
+
+```json
+"sourceVersions": {
+  "2160": { "remux": "offer", "web": "required" },
+  "1080": { "remux": "offer", "web": "required" }
+}
+```
+
+A **required** choice is listed ahead of every offered choice and alternative,
+so the seven-entry limit never drops it; it is the best release of that source
+at that resolution that your profile and the device allow. Offered choices fill
+the remaining places, higher resolutions first. Every app's version menu
+(Plex, Jellyfin, Emby, Vela and Silo) lists the same choices.
 
 Plex may check whether these versions are available before Play. These checks
 keep the existing 2-second default so slow sources do not hold up detail pages.
@@ -567,6 +592,8 @@ file under these names:
   (default on) keeps soft encode rungs under Direct Stream / video-copy when
   `abrLadder` is on; set it false to advertise only the copy primary.
 - `usenet.minIdle`: warm provider connections kept ready for playback.
+- `usenet.loadMode`: `inOrder` (default) or `balanced`; see
+  [Source interruptions](#source-interruptions).
 
 Preview thumbnails appear while a title plays and fill in as playback
 progresses.
@@ -671,14 +698,14 @@ unknown, only the season-and-episode numbering is used.
 
 Every quality profile ranks releases for one kind of title, **Movies** or
 **Shows**, as in Radarr and Sonarr. The **Movies | Shows** picker on
-**Quality › Profiles** shows that kind's profiles with their **At home** and
+**Releases › Profiles** shows that kind's profiles with their **At home** and
 **Away** defaults, and **Add profile** creates one of the kind shown. A movie
 profile and a show profile can share a name, such as *1080p*, and still have
 different settings. A profile's **Applies to** in its editor offers **Movies**
 or **Shows**; moving a profile to the other kind takes the rules that used it
 along, and a default it can no longer serve moves to another profile.
 
-A rule under **Quality › Rules** applies to movies, to shows, or to both. A
+A rule under **Releases › Rules** applies to movies, to shows, or to both. A
 rule for both names a profile that exists for movies and for shows; movies
 then use the movie profile of that name and shows the show one.
 
@@ -695,7 +722,7 @@ profile.
 
 ## Import a quality profile
 
-Coming from Radarr, Sonarr, or another guide? Open **Quality › Profiles** and
+Coming from Radarr, Sonarr, or another guide? Open **Releases › Profiles** and
 select **Movies** or **Shows**, choose **Add profile**, then **Import a
 preset quality profile**. Movies import from Radarr's guide and shows from
 Sonarr's. Choose a profile for that media, such as
@@ -732,7 +759,7 @@ it.
 
 ### Keep imported profiles in sync
 
-**Quality › Profiles › Keep imported profiles in sync** updates profiles
+**Releases › Profiles › Keep imported profiles in sync** updates profiles
 imported from TRaSH Guides or Profilarr. Turn it on with the switch in the
 card's header, then choose how often to **Check for changes** (6 hours to 7
 days). The card shows when the last sync ran. Until you import a profile, it
@@ -779,7 +806,7 @@ log says what changed.
 
 ## Choose and fix releases
 
-**Quality** explains and overrides which release plays for each title.
+**Releases** explains and overrides which release plays for each title.
 
 - **Pinned** starts with **Find a release**: find a movie, or a show then a
   season and episode, to list every release the indexers return. Each one
@@ -1144,6 +1171,16 @@ for articles the other providers lack, so a busy primary never spends block
 data. **Sources › Stats** shows how many requests each provider took over from
 a busy one this month.
 
+If you pay for several comparable unlimited accounts, set **Server load** on
+the Usenet providers page to **Balanced**. Every account that is not a backfill
+account then takes requests, the least busy first, so they share the work
+instead of the first one carrying it. List order no longer decides which
+account goes first, and because the accounts share one tier, the take-over
+count above stays near zero. For each file, Ether asks an account that keeps
+missing that file's articles after the others, but still asks it when they miss
+too. Backfill accounts behave the same in both modes. **In order** suits a
+second account you want to use only for overflow.
+
 If a server refuses connections because the account is at its limit, Ether
 learns that limit by itself. The provider list then shows, for example,
 "using 47 of 50 connections (server limit learned)". When the server states its
@@ -1225,6 +1262,11 @@ no playable media. Unknown dates and wholly future seasons stay hidden. Autoplay
 Continue Watching and alternate episode-order lists keep their released episodes.
 Turning the option off removes access to these placeholders and their artwork.
 **Show upcoming movies**, also off by default, lists movies before their release date.
+
+An app's **Refresh metadata** (Infuse: **Update Metadata**) refreshes that one
+title from TMDB when the owner asks; a season or episode refreshes its show.
+Other viewers get the same refusal Plex and Jellyfin give non-administrators.
+Repeat requests for the same title within 10 minutes do nothing new.
 
 ## Metadata artwork
 

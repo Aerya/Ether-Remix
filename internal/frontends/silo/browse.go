@@ -1,6 +1,7 @@
 package silo
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,8 +32,8 @@ func titleDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
 	if t.Language != "" {
 		out["original_language"] = t.Language
 	}
-	if !t.Released.IsZero() {
-		out["release_date"] = t.Released.Format("2006-01-02")
+	if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+		out["release_date"] = date.Format("2006-01-02")
 	}
 	if t.Type == "show" && t.Status != "" {
 		out["show_status"] = strings.ReplaceAll(strings.ToLower(t.Status), " ", "_")
@@ -261,6 +262,11 @@ func (i *instance) views(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, map[string]any{"id": wire, "name": view.Name, "type": kind, "sort_order": n + 1})
 	}
+	if lib, ok := i.host.LiveTV.(frontend.CatchUpLibrary); ok {
+		if visible, err := lib.CatchUpLibraryVisible(r.Context(), v); err == nil && visible {
+			items = append(items, map[string]any{"id": frontend.CatchUpLibraryID, "name": frontend.CatchUpLibraryName, "type": "series", "sort_order": len(items) + 1})
+		}
+	}
 	if !published {
 		if _, ok := i.nowAvailableTitles(r, v); ok {
 			items = append([]any{map[string]any{"id": nowAvailableLibraryID, "name": nowAvailableTitle, "type": "mixed", "sort_order": 0}}, items...)
@@ -295,7 +301,7 @@ func (i *instance) pluginLibraryRows(r *http.Request, v *frontend.Viewer, placem
 	if !plugin {
 		return nil, false, nil
 	}
-	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view)
+	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view, "")
 	if err != nil {
 		return nil, true, err
 	}
@@ -331,6 +337,10 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(frontend.WithRequestMemo(r.Context()))
+	if r.PathValue("library") == frontend.CatchUpLibraryID {
+		i.catchUpSections(w, r, v, credential)
+		return
+	}
 	var configGen uint64
 	if i.host.PageFreshness != nil {
 		configGen = i.host.PageFreshness().Config
@@ -401,6 +411,20 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 	used := map[string]bool{}
 	partial := false
 	for _, row := range rows {
+		// Plugin surface rows are drawn by Vela from the plugin's document;
+		// Silo has no documents and the rows carry no titles.
+		if row.Layout.Present.Surface != nil {
+			continue
+		}
+		if len(row.Entries) > 0 && row.Entries[0].Kind == frontend.RowEntryCollection {
+			views, err := i.host.Experience.Views(r.Context(), v)
+			if err != nil {
+				partial = true
+			} else if section := i.collectionSection(r, v, credential, row, views); section != nil {
+				sections = append(sections, section)
+			}
+			continue
+		}
 		var items []any
 		var e error
 		if row.Purpose == frontend.RowLive {
@@ -438,8 +462,18 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		// so a library whose rows were all promoted rendered as "Movies is
 		// empty". Featured is a Home distinction.
 		featured := row.Promoted && placement != frontend.PlacementLibrary
+		// The row's Look: a Hero row is featured (drawn in the hero). Every
+		// other layout (Standard, Wide, Tiles, Track list) is a plain
+		// section; "" leaves the app's own choice.
+		switch row.Layout.Present.Layout {
+		case "":
+		case "hero":
+			featured = true
+		default:
+			featured = false
+		}
 		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
-		if !row.More {
+		if !row.More || row.RankedTop10 {
 			section["total_count"] = len(items)
 		}
 		sections = append(sections, section)
@@ -714,6 +748,10 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
+	if id := r.PathValue("id"); frontend.IsCatchUpGUID(id) {
+		i.catchUpDetail(w, r, v, credential, id)
+		return
+	}
 	if rawChannel, err := ids.ParseGUID(ids.Channel, r.PathValue("id")); err == nil {
 		channelGUID, _ := ids.GUID(ids.Channel, rawChannel)
 		i.liveChannelDetail(w, r, v, credential, channelGUID)
@@ -872,6 +910,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		if e == nil {
 			versions, offers, e := i.sourceVersions(r, frontend.VersionScope{Viewer: v, Device: dev, Protocol: "silo", Caps: capability.Client}, d)
 			if e != nil {
+				if writeIndexersPaused(w, e, r.Header.Get("Accept-Language")) {
+					return
+				}
 				http.Error(w, "Unavailable", 503)
 				return
 			}
@@ -1236,13 +1277,13 @@ func (i *instance) homeCapabilities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
-	reply(w, 200, map[string]any{"state": "available", "allowed": true, "section_item_limit_max": 100})
+	reply(w, 200, map[string]any{"state": "available", "allowed": true, "section_item_limit_max": 100, "collection_rows": true})
 }
 func (i *instance) browseRoutes() error {
 	for _, entry := range []struct {
 		path string
 		h    http.HandlerFunc
-	}{{"/api/v2/home/capabilities", i.homeCapabilities}, {"/api/v2/user/libraries", i.views}, {"/api/v2/home/sections", i.sections}, {"/api/v2/library/{library}/sections", i.sections}, {"/api/v2/recommendations/discover", i.discover}, {"/api/v2/recommendations/similar/{id}", i.similar}, {"/api/v2/watch/{id}", i.detail}, {"/api/v2/catalog/items/{id}/versions", i.detail}, {"/api/v2/catalog/items/{id}", i.detail}} {
+	}{{"/api/v2/home/capabilities", i.homeCapabilities}, {"/api/v2/user/libraries", i.views}, {"/api/v2/home/sections", i.sections}, {"/api/v2/home/sections/{id}/items", i.homeSectionItems}, {"/api/v2/library/{library}/sections", i.sections}, {"/api/v2/recommendations/discover", i.discover}, {"/api/v2/recommendations/similar/{id}", i.similar}, {"/api/v2/watch/{id}", i.detail}, {"/api/v2/catalog/items/{id}/versions", i.detail}, {"/api/v2/catalog/items/{id}", i.detail}} {
 		if err := i.router.Handle("GET", entry.path, entry.h); err != nil {
 			return err
 		}

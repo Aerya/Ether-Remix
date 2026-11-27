@@ -425,7 +425,7 @@ func TestSeriesMetadataUsesCanonicalKeysForVirtualOrder(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	inst.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stremio/grant/meta/series/tmdb:42.json", nil))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"id":"tmdb:42:3:8"`) || !strings.Contains(rec.Body.String(), `"season":1`) || !strings.Contains(rec.Body.String(), `"episode":2`) {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"id":"ether:`+key.String()+`"`) || !strings.Contains(rec.Body.String(), `"season":1`) || !strings.Contains(rec.Body.String(), `"episode":2`) {
 		t.Fatalf("metadata: %d %s", rec.Code, rec.Body.String())
 
 	}

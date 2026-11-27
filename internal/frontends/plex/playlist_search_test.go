@@ -15,6 +15,7 @@ func TestPlaylistSearchAndRecentProjection(t *testing.T) {
 	defer f.srv.Close()
 	a, _ := f.pls.Create(context.Background(), ownerUser.ID, "Night", []core.RatingKey{fightClub.Key})
 	b, _ := f.pls.Create(context.Background(), ownerUser.ID, "Night Watch", []core.RatingKey{bbE1.Key})
+	c, _ := f.pls.Create(context.Background(), ownerUser.ID, "Night Empty", nil)
 	_, _ = f.pls.Create(context.Background(), friendUser.ID, "Night Secret", nil)
 	f.pls.pls[a.Key].AddedAt = fixedNow.Add(-48 * time.Hour)
 	f.pls.pls[b.Key].AddedAt = fixedNow.Add(-24 * time.Hour)
@@ -29,8 +30,16 @@ func TestPlaylistSearchAndRecentProjection(t *testing.T) {
 		}
 	}
 	body := f.get(t, "/hubs/search?query=Night&contentDirectoryID=1").Body.String()
-	if !strings.Contains(body, a.Key.String()) || strings.Contains(body, b.Key.String()) {
+	if !strings.Contains(body, a.Key.String()) || strings.Contains(body, b.Key.String()) || strings.Contains(body, c.Key.String()) {
 		t.Fatal(body)
+	}
+	// Roku sends contentDirectoryID=1,2,playlists (or playlists alone); the
+	// explicit "playlists" directory token must admit matching playlists.
+	for _, dirs := range []string{"1,2,playlists", "playlists"} {
+		body = f.get(t, "/library/search?query=Night&contentDirectoryID="+dirs).Body.String()
+		if !strings.Contains(body, a.Key.String()) || !strings.Contains(body, b.Key.String()) || !strings.Contains(body, c.Key.String()) || strings.Contains(body, "Night Secret") {
+			t.Fatalf("contentDirectoryID=%s: %s", dirs, body)
+		}
 	}
 	body = f.get(t, "/hubs/search?query=Night&contentDirectoryID=01").Body.String()
 	if strings.Contains(body, a.Key.String()) || strings.Contains(body, b.Key.String()) {

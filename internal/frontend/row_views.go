@@ -9,8 +9,11 @@ import (
 // ID binds one immutable snapshot and changes on refresh.
 type RowView struct {
 	// ExpiresAt bounds caching of this immutable visit. Zero means unknown.
-	ExpiresAt   time.Time
-	ID          string
+	ExpiresAt time.Time
+	ID        string
+	// Key is the row's identity across visits: the experience row id
+	// (Row.ID, e.g. "home.continue"), which stays put when ID is re-minted.
+	Key         string
 	Title, Kind string
 	Purpose     RowPurpose
 	Layout      RowLayout
@@ -62,4 +65,10 @@ type RowViews interface {
 // page belongs to the same viewer/device/surface; admission remains atomic.
 type RowViewPages interface {
 	ResolveRowViews(context.Context, []RowViewPageRequest) ([]RowViewPage, error)
+}
+
+// RowViewValidator rechecks a bounded set of published visits without
+// creating new snapshots or issuing interaction handles.
+type RowViewValidator interface {
+	ValidateRowViews(context.Context, []RowViewPageRequest) error
 }

@@ -48,11 +48,65 @@ func (i *instance) clientCompatibilityRoutes() error {
 		}
 	}
 	if i.protocol == "jellyfin" {
+		if err := i.router.Handle("GET", "/System/Configuration/Encoding", http.HandlerFunc(i.encodingOptions)); err != nil {
+			return err
+		}
 		if err := i.router.Handle("POST", "/ClientLog/Document", http.HandlerFunc(i.clientLogDocument)); err != nil {
 			return err
 		}
 	}
 	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+}
+
+// encodingOptions exposes Jellyfin's encoding configuration contract with
+// software defaults. Ether manages its encoders through its own settings.
+func (i *instance) encodingOptions(w http.ResponseWriter, r *http.Request) {
+	if v, _, err := i.viewer(r); err != nil || v == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	jsonReply(w, map[string]any{
+		"EncodingThreadCount":                -1,
+		"EnableFallbackFont":                 false,
+		"EnableAudioVbr":                     false,
+		"DownMixAudioBoost":                  2,
+		"DownMixStereoAlgorithm":             "None",
+		"MaxMuxingQueueSize":                 2048,
+		"EnableThrottling":                   false,
+		"ThrottleDelaySeconds":               180,
+		"EnableSegmentDeletion":              false,
+		"SegmentKeepSeconds":                 720,
+		"HardwareAccelerationType":           "none",
+		"EnableTonemapping":                  false,
+		"EnableVppTonemapping":               false,
+		"EnableVideoToolboxTonemapping":      false,
+		"TonemappingAlgorithm":               "bt2390",
+		"TonemappingMode":                    "auto",
+		"TonemappingRange":                   "auto",
+		"TonemappingDesat":                   0,
+		"TonemappingPeak":                    100,
+		"TonemappingParam":                   0,
+		"VppTonemappingBrightness":           16,
+		"VppTonemappingContrast":             1,
+		"H264Crf":                            23,
+		"H265Crf":                            28,
+		"DeinterlaceDoubleRate":              false,
+		"DeinterlaceMethod":                  "yadif",
+		"EnableDecodingColorDepth10Hevc":     true,
+		"EnableDecodingColorDepth10Vp9":      true,
+		"EnableDecodingColorDepth10HevcRext": false,
+		"EnableDecodingColorDepth12HevcRext": false,
+		"EnableEnhancedNvdecDecoder":         true,
+		"PreferSystemNativeHwDecoder":        true,
+		"EnableIntelLowPowerH264HwEncoder":   false,
+		"EnableIntelLowPowerHevcHwEncoder":   false,
+		"EnableHardwareEncoding":             false,
+		"AllowHevcEncoding":                  false,
+		"AllowAv1Encoding":                   false,
+		"EnableSubtitleExtraction":           true,
+		"HardwareDecodingCodecs":             []string{},
+		"AllowOnDemandMetadataBasedKeyframeExtractionForExtensions": []string{"mkv"},
+	})
 }
 
 // clientLogDocument accepts a client log upload the way Jellyfin 10.10
@@ -244,12 +298,23 @@ func (i *instance) themeStream(w http.ResponseWriter, r *http.Request) {
 	i.host.Themes.ServeTheme(w, r, d.Title)
 }
 
-func (i *instance) themeSourceDTO(themeID, path string) map[string]any {
+// themeStreamPath names the static stream with the cached container's
+// extension (mp3 from Plex's theme service, m4a from the fallback).
+func themeStreamPath(themeID, container string) string {
+	return "/Audio/" + themeID + "/stream." + container
+}
+
+func (i *instance) themeSourceDTO(themeID, container string) map[string]any {
+	path := themeStreamPath(themeID, container)
+	codec := "aac"
+	if container == "mp3" {
+		codec = "mp3"
+	}
 	media := frontend.MediaInfo{
-		Container: "m4a",
+		Container: container,
 		Estimated: true,
 		Streams: []frontend.StreamInfo{
-			{Index: 0, Type: "audio", Codec: "aac", Channels: 2, Default: true},
+			{Index: 0, Type: "audio", Codec: codec, Channels: 2, Default: true},
 		},
 	}
 	source := i.mediaSourceDTO(themeID, media)
@@ -277,17 +342,21 @@ func (i *instance) themeMedia(w http.ResponseWriter, r *http.Request) {
 	empty := i.queryResult([]any{}, 0, 0)
 	empty["OwnerId"] = ownerID
 	songs := empty
-	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil && i.host.Themes.Theme(d.Title, true) {
+	container := ""
+	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil {
+		container = i.host.Themes.Theme(d.Title, true)
+	}
+	if container != "" {
 		themeID := themeWireID(d.Title.Key)
-		path := "/Audio/" + themeID + "/stream.m4a"
-		source := i.themeSourceDTO(themeID, path)
+		source := i.themeSourceDTO(themeID, container)
+		path := themeStreamPath(themeID, container)
 		songs = i.queryResult([]any{map[string]any{
 			"Id":                themeID,
 			"ServerId":          i.info.ID,
 			"Name":              d.Title.Title,
 			"Type":              "Audio",
 			"MediaType":         "Audio",
-			"Container":         "m4a",
+			"Container":         container,
 			"IsFolder":          false,
 			"Path":              path,
 			"UserData":          i.userDataDTO(themeID, frontend.WatchStatus{}),
@@ -550,12 +619,15 @@ func (i *instance) themePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if i.host.Themes == nil || !i.host.Themes.Theme(d.Title, false) {
+	container := ""
+	if i.host.Themes != nil {
+		container = i.host.Themes.Theme(d.Title, false)
+	}
+	if container == "" {
 		http.NotFound(w, r)
 		return
 	}
-	path := "/Audio/" + wireID + "/stream.m4a"
-	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, path)}})
+	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, container)}})
 }
 
 // Negative item GUIDs reserve a stateless audio identity separate from the

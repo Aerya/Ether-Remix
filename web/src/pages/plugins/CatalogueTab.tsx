@@ -27,6 +27,7 @@ import { Section } from "../../components/layout";
 import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { apiFetch, errorMessage } from "../../lib/api";
+import { confirmLibraryRebuild } from "./rebuildLibrary";
 import { invalidateRegistry } from "../../lib/extend";
 import { useStreamEvent } from "../../lib/stream";
 import { PermissionSheet, RuntimeLimitsCard } from "./PermissionSheet";
@@ -193,12 +194,14 @@ export function CatalogueTab({
     if (!selected || !preview) return;
     setInstalling(true);
     setInstallErr(null);
-    try {
-      const installed = await apiFetch<PluginSummary>("/plugins/install", {
+    const install = (rebuildConfirmation?: string) =>
+      apiFetch<PluginSummary>("/plugins/install", {
         method: "POST",
         body: JSON.stringify({
           kind: "catalogue",
           id: selected.id,
+          replaceLibraries: rebuildConfirmation ? true : undefined,
+          rebuildConfirmation,
           grants: {
             viewers: preview.needsViewers ? viewers : undefined,
             folders: preview.needsFolders ? folders : undefined,
@@ -207,6 +210,12 @@ export function CatalogueTab({
           shadow,
           acceptAddedPermissions: !!preview.addedPermissions?.length,
         }),
+      });
+    try {
+      const installed = await install().catch(async (error: unknown) => {
+        const confirmation = await confirmLibraryRebuild(error);
+        if (!confirmation) throw error;
+        return install(confirmation);
       });
       invalidateRegistry();
       setSelected(null);

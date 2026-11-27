@@ -96,7 +96,7 @@ export default function Sources() {
         ) : null
       }
     >
-      {!stats && top !== "iptv" ? (
+      {!stats && top !== "iptv" && top !== "usenet" ? (
         <p className="text-sm text-fg-muted">
           {t("Drag a card to choose which account Ether tries first.")}
         </p>

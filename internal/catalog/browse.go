@@ -839,18 +839,9 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			args = append(args, values...)
 		}
 	} else if !membershipOnly && !f.CatalogCandidates {
-		if policy := c.viewerFilter(f.CatalogViewerID, false); policy != nil {
-			clause, a := c.policySQLHidden(f.CatalogViewerID, policy)
-			conds = append(conds, clause)
-			args = append(args, a...)
-			// A strict viewer's rules fail closed on rows without details whose
-			// fields they cannot judge, as FilterVisibility and safety do.
-			if !policy.Passive() && c.strictViewer(f.CatalogViewerID, f.MaxContentRating != "") {
-				if u := policy.SQLUndecidable(); u != "0=1" {
-					conds = append(conds, "NOT (t.detail=0 AND "+u+")")
-				}
-			}
-		}
+		rules, ruleArgs := c.browseViewerRules(f)
+		conds = append(conds, rules...)
+		args = append(args, ruleArgs...)
 	}
 	if len(f.ExtraRules) > 0 || f.ExtraFallback != "" {
 		extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, membershipOnly, f.CatalogViewerID)
@@ -1341,6 +1332,22 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		args = append(args, values...)
 	}
 	return strings.Join(conds, " AND "), args, nil
+}
+
+func (c *Catalog) browseViewerRules(f core.Filter) ([]string, []any) {
+	policy := c.viewerFilter(f.CatalogViewerID, false)
+	if policy == nil {
+		return nil, nil
+	}
+	clause, args := c.policySQLHidden(f.CatalogViewerID, policy)
+	conds := []string{clause}
+	// Strict viewers cannot see rows whose missing facts make a rule undecidable.
+	if !policy.Passive() && c.strictViewer(f.CatalogViewerID, f.MaxContentRating != "") {
+		if unknown := policy.SQLUndecidable(); unknown != "0=1" {
+			conds = append(conds, "NOT (t.detail=0 AND "+unknown+")")
+		}
+	}
+	return conds, args
 }
 
 func escapeLike(s string) string {

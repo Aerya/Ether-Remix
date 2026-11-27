@@ -97,11 +97,11 @@ func profileReason(q config.Quality, caps core.ClientCaps, user *core.User, name
 	}
 	switch choice.source {
 	case ProfileFromRule:
-		return "a client rule chose it for this " + clientLabel(caps)
-	case ProfileFromRemote:
-		return "it is the profile for remote viewers"
+		return "a quality rule chose it for this " + clientLabel(caps)
+	case ProfileFromDefaultAway:
+		return "it is the default profile for viewers away from home"
 	case ProfileFromDefault:
-		return "it is the default, and no client rule matched this " + clientLabel(caps)
+		return "it is the default, and no quality rule matched this " + clientLabel(caps)
 	}
 	return "it is the first profile"
 }

@@ -142,6 +142,7 @@ func consoleKindPresentationInput(decl plugins.MediaKindMeta) libraries.KindPres
 			Role:      lv.Role,
 			Playable:  lv.Playable,
 			Container: lv.Container,
+			Members:   lv.Members,
 		}
 	}
 	return libraries.KindPresentationInput{
@@ -429,6 +430,7 @@ func (c *librariesConsole) handler() http.Handler {
 	mux.HandleFunc("POST /{$}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Sources           []string                `json:"sources"`
+			MetadataSource    *string                 `json:"metadataSource"`
 			Name              string                  `json:"name"`
 			Rules             []core.LibraryExclusion `json:"rules"`
 			VisibilityDefault string                  `json:"visibilityDefault"`
@@ -450,12 +452,24 @@ func (c *librariesConsole) handler() http.Handler {
 		if body.Present != nil {
 			present = *body.Present
 		}
+		media := core.MediaType(core.NormalizeRuleMediaType(string(body.MediaType)))
+		var source string
+		if body.MetadataSource == nil {
+			source = string(c.app.defaultMetadataSource(media))
+		} else {
+			source = *body.MetadataSource
+			if !c.app.validLibraryMetadataSource(media, source) {
+				libJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metadata_source"})
+				return
+			}
+		}
+		option := libraries.WithMetadataSource(source)
 		var lib core.Library
 		var err error
 		if body.CollectionID > 0 {
-			lib, err = c.app.libraries.CreateCollection(r.Context(), body.Name, body.CollectionID, body.MediaType, present)
+			lib, err = c.app.libraries.CreateCollection(r.Context(), body.Name, body.CollectionID, body.MediaType, present, option)
 		} else {
-			lib, err = c.app.libraries.Create(r.Context(), body.Name, body.MediaType, body.Rules, body.VisibilityDefault, present)
+			lib, err = c.app.libraries.Create(r.Context(), body.Name, body.MediaType, body.Rules, body.VisibilityDefault, present, option)
 		}
 		if err != nil {
 			libError(w, libErrStatus(err), "Could not create the library")
@@ -507,6 +521,7 @@ func (c *librariesConsole) handler() http.Handler {
 		var body struct {
 			CollectionID      *int64                    `json:"collectionId"`
 			Sources           *[]string                 `json:"sources"`
+			MetadataSource    *string                   `json:"metadataSource"`
 			Name              *string                   `json:"name"`
 			Hidden            *bool                     `json:"hidden"`
 			Sort              *int                      `json:"sort"`
@@ -519,6 +534,11 @@ func (c *librariesConsole) handler() http.Handler {
 			Tabs              *[]core.LibraryTab        `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
+			return
+		}
+		if body.MetadataSource != nil && (lib.Source == core.LibraryPlugin ||
+			!c.app.validLibraryMetadataSource(lib.MediaType, *body.MetadataSource)) {
+			libJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metadata_source"})
 			return
 		}
 		ctx := r.Context()
@@ -601,12 +621,8 @@ func (c *librariesConsole) handler() http.Handler {
 		}
 		if body.QualityProfile != nil {
 			name := strings.TrimSpace(*body.QualityProfile)
-			media := core.MediaMovie
-			if lib.MediaType == core.TypeShow {
-				media = core.MediaTV
-			}
 			if name != "" {
-				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name, media)
+				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name)
 				if lib.Source == core.LibraryPlugin || !valid {
 					libError(w, http.StatusBadRequest, "Could not update the quality profile")
 					return
@@ -652,6 +668,12 @@ func (c *librariesConsole) handler() http.Handler {
 				}
 			}
 		}
+		if body.MetadataSource != nil {
+			if err := svc.SetMetadataSource(ctx, lib.ID, *body.MetadataSource); err != nil {
+				libJSON(w, libErrStatus(err), map[string]string{"code": "metadata_source_write_failed"})
+				return
+			}
+		}
 		if sectionsChanged {
 			c.app.publishLibrarySections()
 		}
@@ -671,6 +693,7 @@ func (c *librariesConsole) handler() http.Handler {
 			libError(w, libErrStatus(err), "Could not delete the library")
 			return
 		}
+		c.app.cleanupLibraryQualityRules(lib.ID)
 		if lib.Source == core.LibraryPlugin && c.app.pluginsRT != nil && c.app.pluginsRT.pluginitems != nil {
 			c.app.pluginsRT.pluginitems.StopKindSync(lib.PluginID, lib.KindKey)
 		}
@@ -1187,6 +1210,12 @@ func sourceCandidateFromPlayable(src core.PlayableSource) core.SourceCandidate {
 		if c.Magnet == "" {
 			c.Magnet = strings.TrimSpace(src.Release.Magnet)
 		}
+		if c.TorrentRef == "" {
+			c.TorrentRef = strings.TrimSpace(src.Release.TorrentRef)
+		}
+		if c.NZBRef == "" {
+			c.NZBRef = strings.TrimSpace(src.Release.NZBRef)
+		}
 		if c.TorrentURL == "" {
 			c.TorrentURL = strings.TrimSpace(src.Release.TorrentURL)
 		}
@@ -1240,6 +1269,10 @@ func candidateRefForPlayable(src core.PlayableSource, c core.SourceCandidate) st
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentRef != "":
+		return "torrentref:" + c.TorrentRef
+	case c.NZBRef != "":
+		return "nzbref:" + c.NZBRef
 	case c.TorrentURL != "":
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
@@ -1497,7 +1530,7 @@ func (c *librariesConsole) handleCachePut(w http.ResponseWriter, r *http.Request
 	// Owner quota overrides are session-lived; the kind's declared cap (or
 	// the 2 GiB default) applies again at restart.
 	ns.SetQuota(blobcache.Quota{MaxBytes: body.MaxBytes, TTL: time.Duration(body.TTLSeconds) * time.Second})
-	ns.Sweep()
+	ns.Sweep(0)
 	libJSON(w, http.StatusOK, cacheDTO(lib, ns))
 }
 
@@ -1510,7 +1543,7 @@ func (c *librariesConsole) handleCacheSweep(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	ns.Sweep()
+	ns.Sweep(0)
 	libJSON(w, http.StatusOK, cacheDTO(lib, ns))
 }
 

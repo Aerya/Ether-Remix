@@ -54,8 +54,11 @@ type Options struct {
 	// costs a few statements instead of several per title.
 	PreloadTitles func(context.Context, []core.RatingKey)
 	Changed       func(context.Context, int64, Subject)
-	Now           func() time.Time
-	Marked        core.TransactionalMarkedPlaylists
+	// TitleRole names what a title is ("movie", "show", "track", "album",
+	// "artist" …) from stored metadata, for role lists; "" when unknown.
+	TitleRole func(context.Context, core.RatingKey) string
+	Now       func() time.Time
+	Marked    core.TransactionalMarkedPlaylists
 }
 type Service struct {
 	o   Options
@@ -115,7 +118,8 @@ func valid(s Subject) bool {
 		if s.Kind == KindCollection {
 			return key.Kind() == core.KindCollection || key.Kind() == core.KindSmart
 		}
-		return key.Kind() == core.KindMovie || key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode
+		// A plugin library's items (a track, an album, an artist, a book) are titles like any other.
+		return key.IsPluginKey() || key.Kind() == core.KindMovie || key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode
 	}
 	return true
 }
@@ -158,6 +162,13 @@ func (s *Service) setMany(ctx context.Context, viewer *core.User, subjects []Sub
 	if len(unique) == 0 {
 		return nil, nil
 	}
+	// Roles are read before the transaction: a stored-metadata read per subject.
+	roles := make(map[Subject]string, len(unique))
+	if on {
+		for _, subject := range unique {
+			roles[subject] = roleOf(ctx, s.o, subject)
+		}
+	}
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -197,7 +208,7 @@ func (s *Service) setMany(ctx context.Context, viewer *core.User, subjects []Sub
 	for _, subject := range unique {
 		var result sql.Result
 		if on {
-			result, err = tx.ExecContext(ctx, `INSERT INTO favorites_items(viewer_id,kind,subject_id,added_at,sort_order) VALUES(?,?,?,?,COALESCE((SELECT MIN(sort_order)-1 FROM favorites_items WHERE viewer_id=? AND kind=?),0)) ON CONFLICT(viewer_id,kind,subject_id) DO NOTHING`, viewer.ID, string(subject.Kind), subject.ID, s.o.Now().UnixNano(), viewer.ID, string(subject.Kind))
+			result, err = tx.ExecContext(ctx, `INSERT INTO favorites_items(viewer_id,kind,subject_id,added_at,sort_order,role) VALUES(?,?,?,?,COALESCE((SELECT MIN(sort_order)-1 FROM favorites_items WHERE viewer_id=? AND kind=?),0),?) ON CONFLICT(viewer_id,kind,subject_id) DO NOTHING`, viewer.ID, string(subject.Kind), subject.ID, s.o.Now().UnixNano(), viewer.ID, string(subject.Kind), roles[subject])
 		} else {
 			result, err = tx.ExecContext(ctx, `DELETE FROM favorites_items WHERE viewer_id=? AND kind=? AND subject_id=?`, viewer.ID, string(subject.Kind), subject.ID)
 		}

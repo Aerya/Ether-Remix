@@ -105,9 +105,9 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 					if entry.Kind != frontend.RowEntryTitle || entry.Title == nil {
 						continue
 					}
-					show := entry.Title.ShowKey
-					if show == 0 && (entry.Title.Type == core.TypeEpisode || entry.Title.Type == core.TypeSeason) {
-						show = core.ShowKey(entry.Title.Key.TMDB())
+					show := seriesOfTitle(*entry.Title)
+					if show == entry.Title.Key {
+						continue
 					}
 					if show != 0 && !seenParent[show] {
 						seenParent[show] = true
@@ -188,15 +188,23 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 		if e != nil {
 			return nil, e
 		}
-		byID := make(map[string]frontend.Row, len(placements))
-		for _, placement := range placements {
-			byID[placement.ID] = placement
-		}
 		original := out
-		out = make([]frontend.Row, 0, len(indices))
-		for _, index := range indices {
-			row := original[index]
-			placement := byID[row.ID]
+		out = make([]frontend.Row, 0, len(placements))
+		next := 0
+		for _, placement := range placements {
+			if IsSurfaceRow(placement) {
+				// Plugin surface stubs carry no titles; only Vela draws
+				// plugin documents, so other apps never receive them.
+				if protocol == "vela" {
+					out = append(out, placement)
+				}
+				continue
+			}
+			if next >= len(indices) || original[indices[next]].ID != placement.ID {
+				continue
+			}
+			row := original[indices[next]]
+			next++
 			row.Layout, row.Style, row.Rank = placement.Layout, placement.Style, placement.Rank
 			row.PreviewOnFocus = placement.PreviewOnFocus
 			row.RankedTop10 = placement.RankedTop10
@@ -224,6 +232,9 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 	for i := range out {
 		row := &out[i]
 		row.Situation = situation
+		if IsSurfaceRow(*row) {
+			continue
+		}
 		row.Layout.RankedTop10 = row.RankedTop10
 		if row.RankedTop10 {
 			row.Entries = row.Entries[:min(10, len(row.Entries))]

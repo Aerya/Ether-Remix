@@ -301,7 +301,7 @@ func newHTTPZipReaderAt(ctx context.Context, hc *http.Client, rawURL string, dec
 		if gotTotal != total {
 			return fmt.Errorf("unexpected Content-Range %q (want total %d)", cr, total)
 		}
-		if err := checkContentRange(cr, start, total); err != nil {
+		if err := checkContentRange(cr, start, total-1, total); err != nil {
 			return err
 		}
 		if int64(len(body)) != tailLen {
@@ -326,7 +326,7 @@ func newHTTPZipReaderAt(ctx context.Context, hc *http.Client, rawURL string, dec
 			if total <= 0 {
 				return nil, fmt.Errorf("missing Content-Range total in %q", cr)
 			}
-			if total == declaredSize && checkContentRange(cr, start, total) == nil && int64(len(body)) == tailLen {
+			if total == declaredSize && checkContentRange(cr, start, total-1, total) == nil && int64(len(body)) == tailLen {
 				r.size = total
 				r.tailOff = start
 				r.tail = body
@@ -429,7 +429,7 @@ func (r *httpZipReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if status != http.StatusPartialContent {
 		return 0, fmt.Errorf("debrid: zip range read HTTP %d", status)
 	}
-	if err := checkContentRange(cr, off, r.size); err != nil {
+	if err := checkContentRange(cr, off, off+want-1, r.size); err != nil {
 		return 0, err
 	}
 	n := copy(p[:want], body)

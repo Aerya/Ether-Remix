@@ -67,7 +67,7 @@ func (p *playIdentities) liveVariantIDs() ([]int64, []variantRef) {
 		}
 		for _, v := range e.variants {
 			if !v.Auto {
-				refs = append(refs, variantRef{key: k.key, releaseID: v.Release.ID})
+				refs = append(refs, variantRef{key: k.key, releaseID: versionIdentity(v)})
 			}
 		}
 	}

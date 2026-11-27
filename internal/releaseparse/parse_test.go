@@ -371,6 +371,33 @@ func TestRevisionCourAndAnimeFlags(t *testing.T) {
 	}
 }
 
+// A "Part 2" label decides the episode only when the number is counted
+// within the cour; season-counted SxxEyy keeps its own reading (#796).
+func TestPartLabelReadings(t *testing.T) {
+	ep := func(season, episode int) core.SearchRequest {
+		return core.SearchRequest{Type: core.TypeEpisode, Season: season, Episode: episode}
+	}
+	mapped := core.SearchRequest{Type: core.TypeEpisode, Season: 1, Episode: 12, Anime: true, Cour: 2, CourEpisode: 1}
+	anime := ep(5, 9)
+	anime.Anime = true
+	for _, tc := range []struct {
+		name string
+		req  core.SearchRequest
+		want bool
+	}{
+		{"Show.S05.Part.2.S05E09.1080p.WEB-DL", ep(5, 9), true},
+		{"Show.S05.Part.2.S05E09.1080p.WEB-DL", anime, false},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 01 (1080p)", ep(1, 1), false},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 01 (1080p)", mapped, true},
+		{"[SubsPlease] Eighty-Six S01 Part 2 - 12 (1080p)", mapped, false},
+		{"Eighty-Six.S01.Part.2.S01E12.1080p", mapped, true},
+	} {
+		if got := EpisodeMatchesRequest(Parse(tc.name), tc.req); got != tc.want {
+			t.Errorf("%q for %+v = %v, want %v", tc.name, tc.req, got, tc.want)
+		}
+	}
+}
+
 func TestDualAudioVsBareDualParsing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -385,5 +412,79 @@ func TestDualAudioVsBareDualParsing(t *testing.T) {
 		if !reflect.DeepEqual(got.Languages, tc.want) {
 			t.Errorf("%q Languages = %v, want %v", tc.name, got.Languages, tc.want)
 		}
+	}
+}
+
+func TestTitleTooGenericAndLeadingFragment(t *testing.T) {
+	for _, tc := range []struct {
+		title string
+		want  bool
+	}{
+		{"", true},
+		{"---", true},
+		{"The", true},
+		{"A", true},
+		{"An", true},
+		{"Le", true},
+		{"La", true},
+		{"Les", true},
+		{"El", true},
+		{"Los", true},
+		{"Las", true},
+		{"Der", true},
+		{"Die", true},
+		{"Das", true},
+		{"Il", true},
+		{"Gli", true},
+		{"De La", true},
+		{"In The", true},
+		{"Of A", true},
+		{"The & A", true},
+		{"X", true},
+		{"It", true},
+		{"Up", true},
+		{"TV", true},
+		{"L.A.", true},
+		{"Los It", true},
+		{"愛", true},
+		{"괴물", false},
+		{"怪物", false},
+		{"One", false},
+		{"CSI", false},
+		{"Star", false},
+		{"The Wire", false},
+		{"The Mentalist", false},
+		{"Los Simpsons", false},
+		{"This Is Us", false},
+		{"Pilote Spatial", false},
+	} {
+		if got := TitleTooGeneric(tc.title); got != tc.want {
+			t.Errorf("TitleTooGeneric(%q) = %v, want %v", tc.title, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		parsed, want string
+		frag         bool
+	}{
+		{"The", "The Mentalist", true},
+		{"Star", "Star Trek", true},
+		{"Star Trek", "Star Trek: The Next Generation", true},
+		{"Walking", "The Walking Dead", true},
+		{"The Walking", "The Walking Dead", true},
+		{"Dragon Ball", "Dragon Ball Z", true},
+		{"Mentalist", "The Mentalist", false},
+		{"The Mentalist", "The Mentalist", false},
+		{"Los Simpsons", "Los Simpson", false},
+		{"Los Simpsons", "The Simpsons", false},
+		{"Pilote Spatial", "Space Pilot", false},
+		{"Los Viajeros", "The Travelers", false},
+		{"", "The Mentalist", false},
+	} {
+		if got := TitleLeadingFragment(tc.parsed, tc.want); got != tc.frag {
+			t.Errorf("TitleLeadingFragment(%q, %q) = %v, want %v", tc.parsed, tc.want, got, tc.frag)
+		}
+	}
+	if p := Parse("The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB"); p.Title != "The" || !TitleTooGeneric(p.Title) || !TitleLeadingFragment(p.Title, "The Mentalist") {
+		t.Fatalf("parsed=%+v generic=%v frag=%v", p, TitleTooGeneric(p.Title), TitleLeadingFragment(p.Title, "The Mentalist"))
 	}
 }

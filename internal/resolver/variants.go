@@ -45,12 +45,11 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	if max <= 0 || max > maxVariants {
 		max = maxVariants
 	}
-	media := titleMedia(req.Title)
 	q := s.qualityCfg()
-	libProfile := s.libProfileForTitle(ctx, req.Title)
-	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
-	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
-	sreq := searchRequestFor(req.Title)
+	dec := decideProfile(q, req.Client, req.User, titleTarget(req.Title, s.membershipFor(ctx, req.Title)))
+	req.Client = dec.caps
+	profile := dec.profile
+	sreq := s.cachedSearchRequest(req.Title)
 	results, ok := s.peekSearchCache(searchCacheKey(sreq))
 	titleVC := s.viewerTitleChoiceForResolve(req, nil)
 	showVC := s.viewerShowChoiceForResolve(req)
@@ -122,8 +121,8 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	var vs []core.ReleaseVariant
 	rcfg := s.resolverCfg()
 	wanted := wantedAudio(profile, req.User, s.catalogLanguage())
-	if rcfg.AlternativesPerSource || rcfg.AlternativesPerResolution {
-		vs = pickResolutionVariants(req.Title, profile, autoRel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
+	if _, perSource := rcfg.SourceVersionPlan(); perSource || rcfg.AlternativesPerResolution {
+		vs = slotPlanVariants(req.Title, s.configuredSlots(profile, req.Client, max), pool, autoRel, req, titleVC, wanted)
 	} else {
 		vs = pickVariants(req.Title, req.Client, profile, autoRel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
 	}
@@ -280,6 +279,17 @@ func (s *Service) peekSearchCache(key string) ([]core.Release, bool) {
 	e, ok := s.searchCache[key]
 	s.mu.RUnlock()
 	if !ok || !s.now().Before(e.expires) {
+		return nil, false
+	}
+	return append([]core.Release(nil), e.results...), true
+}
+
+// peekSearchCacheFor is peekSearchCache for an entry that answers req.
+func (s *Service) peekSearchCacheFor(req core.SearchRequest) ([]core.Release, bool) {
+	s.mu.RLock()
+	e, ok := s.searchCache[searchCacheKey(req)]
+	s.mu.RUnlock()
+	if !ok || !s.now().Before(e.expires) || !e.serves(req) {
 		return nil, false
 	}
 	return append([]core.Release(nil), e.results...), true
@@ -554,6 +564,9 @@ func variantLabel(rel core.Release, kind string) string {
 // "Auto · 1080p WEB-DL · DD+ 5.1 · FLUX".
 func autoLabel(rel core.Release) string {
 	parts := []string{"Auto", qualityPhrase(rel.Info)}
+	if e := strings.TrimSpace(rel.Info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if a := audioPhrase(rel.Info); a != "" {
 		parts = append(parts, a)
 	}
@@ -568,6 +581,9 @@ func autoLabel(rel core.Release) string {
 // Anything the release name does not say is left out.
 func alternativeLabel(rel core.Release) string {
 	parts := []string{qualityPhrase(rel.Info)}
+	if e := strings.TrimSpace(rel.Info.Edition); e != "" {
+		parts = append(parts, e) // PSE-HOOK: montage dans le libellé de version — voir docs/pse/FORK.fr.md
+	}
 	if a := audioPhrase(rel.Info); a != "" {
 		parts = append(parts, a)
 	}
@@ -632,6 +648,11 @@ func qualityPhrase(info core.ReleaseInfo) string {
 		parts = append(parts, src)
 	}
 	return strings.Join(parts, " ")
+}
+
+// EstimateReleaseMedia returns the resolver's playback estimate for a ranked release.
+func (s *Service) EstimateReleaseMedia(t *core.Title, rel core.Release, wanted []string) core.MediaInfo {
+	return estimateVariantInfo(t, sizedForEpisode(rel), wanted)
 }
 
 // estimateVariantInfo derives the expected MediaInfo from a parsed release

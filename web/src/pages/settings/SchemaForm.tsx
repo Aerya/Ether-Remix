@@ -3,6 +3,7 @@ import { parseDuration, formatDuration, type DurationUnit } from "./duration";
 import { SettingAnchor } from "../../components/SettingFocus";
 import { SettingsRow } from "../../components/SettingsRow";
 import {
+  Badge,
   Button,
   Input,
   Select,
@@ -12,17 +13,17 @@ import {
   Switch,
   Textarea,
 } from "@braedonsaunders/appkit-ui";
-import { X } from "lucide-react";
+import { ChevronDown, Plus, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ListInput, MapInput, NumberInput, SecretInput } from "../../components/fields";
 import { TitleSearch, viewerName } from "../../components/pickers";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { getLocale, t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
-import { api } from "../../lib/api";
+import { api, errorMessage, isAbort } from "../../lib/api";
 import { textOf, useRegistry, type ExtendText } from "../../lib/extend";
 import { humanizeKey, isPlainObject } from "../../lib/format";
-import { useAsync } from "../../lib/hooks";
+import { useAsync, useDebouncedValue } from "../../lib/hooks";
 import { REDACTED } from "../../lib/types";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 
@@ -87,9 +88,12 @@ export type FieldDef =
       label: string;
       help?: ReactNode;
       kind: "multiSelect" | "orderedList";
-      options: { value: string; label: string }[];
+      options: { value: string; label: string; description?: string }[];
       /** Runtime option source when options is empty (plugin /ether/options). */
       optionsFrom?: string;
+      /** Search runtime options as the owner types (plugin /ether/options/{key}?q=…). */
+      search?: boolean;
+      placeholder?: string;
       numeric?: boolean;
     }
   | { key: string; label: string; help?: ReactNode; kind: "language" }
@@ -116,10 +120,18 @@ export interface FieldGroup {
    * household can leave at their defaults.
    */
   more?: FieldDef[];
+  /** Collapsed by default as a disclosure section (plugin SettingsSchema.groups[].advanced). */
+  advanced?: boolean;
 }
 
 /** Loads runtime options for a field whose schema names an optionsFrom source. */
 export type LoadOptions = (field: string) => Promise<{ value: string; label: string }[]>;
+/** Searches runtime options as the owner types for a `search: true` field. */
+export type SearchOptions = (
+  field: string,
+  query: string,
+  signal: AbortSignal,
+) => Promise<{ value: string; label: string; description?: string }[]>;
 
 // ---- Served schemas ---------------------------------------------------------
 // Mirror of internal/config/schema (SPEC section 5.5). Built-in forms and
@@ -359,6 +371,7 @@ export function SchemaField(props: {
   errors?: Record<string, string>;
   path: string;
   loadOptions?: LoadOptions;
+  searchOptions?: SearchOptions;
   disabled?: boolean;
 }) {
   if (props.def.kind === "hidden") return null;
@@ -377,6 +390,7 @@ function SchemaFieldBody({
   errors,
   path,
   loadOptions,
+  searchOptions,
   disabled,
 }: {
   def: FieldDef;
@@ -386,6 +400,7 @@ function SchemaFieldBody({
   errors?: Record<string, string>;
   path: string;
   loadOptions?: LoadOptions;
+  searchOptions?: SearchOptions;
   disabled?: boolean;
 }) {
   const isDisabled = Boolean(disabled || (def.kind === "bool" && def.disabled));
@@ -416,6 +431,7 @@ function SchemaFieldBody({
               errors={errors}
               error={errorForPath(errors, `${path}.${field.key}`)}
               loadOptions={loadOptions}
+              searchOptions={searchOptions}
               disabled={isDisabled}
               onChange={(v) => onChange({ ...nested, [field.key]: v })}
             />
@@ -520,6 +536,7 @@ function SchemaFieldBody({
           onChange={onChange}
           description={description}
           loadOptions={loadOptions}
+          searchOptions={searchOptions}
         />
       );
     case "orderedList":
@@ -698,6 +715,7 @@ type RowProps<D> = {
   onChange: (v: unknown) => void;
   description: ReactNode;
   loadOptions?: LoadOptions;
+  searchOptions?: SearchOptions;
   disabled?: boolean;
 };
 
@@ -705,7 +723,9 @@ type OptionDef = Extract<FieldDef, { kind: "select" | "multiSelect" | "orderedLi
 
 /** Static options, or runtime options loaded once for an optionsFrom field. */
 function useFieldOptions(def: OptionDef, loadOptions?: LoadOptions) {
-  const [loaded, setLoaded] = useState<{ value: string; label: string }[] | null>(null);
+  const [loaded, setLoaded] = useState<
+    { value: string; label: string; description?: string }[] | null
+  >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const from = def.options.length ? undefined : def.optionsFrom;
   useEffect(() => {
@@ -786,14 +806,78 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map((v) => String(v)) : [];
 }
 
+/** Displays a readable label for a saved value, supporting opaque JSON `{ name }` values. */
+function savedOptionLabel(raw: string): string {
+  if (raw.startsWith("{")) {
+    try {
+      const name: unknown = JSON.parse(raw)?.name;
+      if (typeof name === "string" && name) return name;
+    } catch {
+      /* opaque option */
+    }
+  }
+  return raw;
+}
+
 function MultiSelectRow({
   def,
   value,
   onChange,
   description,
   loadOptions,
+  searchOptions,
 }: RowProps<Extract<FieldDef, { kind: "multiSelect" | "orderedList" }>>) {
+  const selected = useMemo(() => stringList(value), [value]);
+  const emit = (next: string[]) => onChange(def.numeric ? next.map(Number) : next);
+  if (def.kind === "multiSelect" && def.search && searchOptions) {
+    return (
+      <SearchMultiSelectRow
+        def={def}
+        selected={selected}
+        onChange={emit}
+        description={description}
+        searchOptions={searchOptions}
+      />
+    );
+  }
+  return (
+    <StaticMultiSelectRow
+      def={def}
+      selected={selected}
+      onChange={emit}
+      description={description}
+      loadOptions={loadOptions}
+    />
+  );
+}
+
+function StaticMultiSelectRow({
+  def,
+  selected,
+  onChange,
+  description,
+  loadOptions,
+}: {
+  def: Extract<FieldDef, { kind: "multiSelect" | "orderedList" }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+  description: ReactNode;
+  loadOptions?: LoadOptions;
+}) {
   const { options, loading, loadError } = useFieldOptions(def, loadOptions);
+  // Keep saved values that aren't in the option list visible as chips.
+  const mergedOptions = useMemo(() => {
+    if (!selected.length) return options;
+    const known = new Set(options.map((o) => o.value));
+    const extra: { value: string; label: string; description?: string }[] = [];
+    for (const v of selected) {
+      if (v && !known.has(v)) {
+        known.add(v);
+        extra.push({ value: v, label: savedOptionLabel(v) });
+      }
+    }
+    return extra.length ? [...options, ...extra] : options;
+  }, [options, selected]);
   return (
     <SettingsRow
       stacked
@@ -806,11 +890,11 @@ function MultiSelectRow({
       }
     >
       <MultiSelect
-        value={stringList(value)}
-        onChange={(next) => onChange(def.numeric ? next.map(Number) : next)}
-        options={options}
+        value={selected}
+        onChange={onChange}
+        options={mergedOptions}
         ariaLabel={def.label}
-        placeholder={loading ? t("Loading…") : t("Choose…")}
+        placeholder={loading ? t("Loading…") : (def.placeholder ?? t("Choose…"))}
         searchPlaceholder={t("Search…")}
         noMatchesLabel={t("No matches")}
         clearLabel={t("Clear")}
@@ -818,6 +902,240 @@ function MultiSelectRow({
         clearable
         maxVisibleValues={4}
       />
+    </SettingsRow>
+  );
+}
+
+function SearchMultiSelectRow({
+  def,
+  selected,
+  onChange,
+  description,
+  searchOptions,
+}: {
+  def: Extract<FieldDef, { kind: "multiSelect" | "orderedList" }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+  description: ReactNode;
+  searchOptions: SearchOptions;
+}) {
+  const [query, setQuery] = useState("");
+  const debounced = useDebouncedValue(query, 200);
+  const [open, setOpen] = useState(false);
+  const [results, setResults] = useState<{ value: string; label: string; description?: string }[]>(
+    [],
+  );
+  const [searchedQuery, setSearchedQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [knownLabels, setKnownLabels] = useState<Record<string, string>>({});
+
+  const uniqueSelected = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of selected) {
+      if (v && !seen.has(v)) {
+        seen.add(v);
+        out.push(v);
+      }
+    }
+    return out;
+  }, [selected]);
+  const selectedSet = useMemo(() => new Set(uniqueSelected), [uniqueSelected]);
+
+  useEffect(() => {
+    const needle = debounced.trim();
+    if (!needle) {
+      setResults([]);
+      setError(null);
+      setLoading(false);
+      setSearchedQuery("");
+      return;
+    }
+    const ctl = new AbortController();
+    setLoading(true);
+    setError(null);
+    searchOptions(def.key, needle, ctl.signal)
+      .then((opts) => {
+        if (ctl.signal.aborted) return;
+        const seen = new Set<string>();
+        const deduped = opts.filter((o) => !seen.has(o.value) && seen.add(o.value));
+        setResults(deduped);
+        setSearchedQuery(needle);
+        if (deduped.length) {
+          setKnownLabels((prev) => {
+            let next: Record<string, string> | null = null;
+            for (const o of deduped) {
+              if (prev[o.value] !== o.label) {
+                if (!next) next = { ...prev };
+                next[o.value] = o.label;
+              }
+            }
+            return next ?? prev;
+          });
+        }
+      })
+      .catch((e: unknown) => {
+        if (ctl.signal.aborted || isAbort(e)) return;
+        setResults([]);
+        setSearchedQuery(needle);
+        setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!ctl.signal.aborted) setLoading(false);
+      });
+    return () => ctl.abort();
+  }, [debounced, def.key, searchOptions]);
+
+  const labelOf = (v: string) =>
+    def.options.find((o) => o.value === v)?.label ?? knownLabels[v] ?? savedOptionLabel(v);
+
+  const add = (opt: { value: string; label: string }) => {
+    setKnownLabels((prev) =>
+      prev[opt.value] === opt.label ? prev : { ...prev, [opt.value]: opt.label },
+    );
+    if (!selectedSet.has(opt.value)) {
+      onChange([...uniqueSelected, opt.value]);
+    }
+  };
+
+  const remove = (val: string) => {
+    onChange(uniqueSelected.filter((v) => v !== val));
+  };
+
+  const clearQuery = () => {
+    setQuery("");
+    setResults([]);
+    setError(null);
+    setSearchedQuery("");
+    setOpen(false);
+  };
+
+  const trimmed = query.trim();
+  const showEmpty =
+    open &&
+    !loading &&
+    !error &&
+    Boolean(trimmed) &&
+    searchedQuery === trimmed &&
+    results.length === 0;
+
+  return (
+    <SettingsRow stacked title={def.label} description={description}>
+      <div className="space-y-2">
+        {uniqueSelected.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {uniqueSelected.map((v) => {
+              const label = labelOf(v);
+              return (
+                <Badge
+                  key={v}
+                  variant="secondary"
+                  className="gap-1 py-1 pl-2 pr-1 text-xs font-medium text-fg"
+                >
+                  <span className="max-w-56 truncate">{label}</span>
+                  <button
+                    type="button"
+                    aria-label={t("Remove {name}", { name: label })}
+                    onClick={() => remove(v)}
+                    className="ml-0.5 rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    <X size={12} aria-hidden />
+                  </button>
+                </Badge>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="relative">
+          <Search
+            size={14}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle"
+            aria-hidden
+          />
+          <Input
+            aria-label={def.label}
+            className={query ? "pl-8 pr-8" : "pl-8"}
+            value={query}
+            placeholder={def.placeholder ?? t("Search…")}
+            onFocus={() => {
+              if (query.trim()) setOpen(true);
+            }}
+            onChange={(e) => {
+              const next = e.currentTarget.value;
+              setQuery(next);
+              if (!next.trim()) {
+                setResults([]);
+                setError(null);
+                setSearchedQuery("");
+                setOpen(false);
+              } else {
+                setOpen(true);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setOpen(false);
+            }}
+          />
+          {query ? (
+            <button
+              type="button"
+              aria-label={t("Clear")}
+              onClick={clearQuery}
+              className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r-md text-fg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <X size={14} aria-hidden />
+            </button>
+          ) : null}
+        </div>
+        {open && loading ? <p className="text-xs text-fg-muted">{t("Searching…")}</p> : null}
+        {open && error ? (
+          <p role="status" className="text-xs text-danger">
+            {error}
+          </p>
+        ) : null}
+        {showEmpty ? <p className="text-xs text-fg-muted">{t("No matches")}</p> : null}
+        {open && results.length > 0 ? (
+          <ul
+            role="listbox"
+            aria-label={t("Search results")}
+            className="max-h-60 space-y-0.5 overflow-auto rounded-lg border border-border bg-bg-subtle p-1"
+          >
+            {results.map((opt) => {
+              const picked = selectedSet.has(opt.value);
+              return (
+                <li key={opt.value} role="presentation">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={picked}
+                    disabled={picked}
+                    onClick={() => add(opt)}
+                    className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-surface-hover disabled:opacity-60"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-fg">{opt.label}</span>
+                      {opt.description ? (
+                        <span className="block truncate text-xs text-fg-muted">
+                          {opt.description}
+                        </span>
+                      ) : null}
+                    </span>
+                    {picked ? (
+                      <Badge variant="secondary">{t("Added")}</Badge>
+                    ) : (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-fg-muted">
+                        {t("Add")}
+                        <Plus size={14} aria-hidden />
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+      </div>
     </SettingsRow>
   );
 }
@@ -1110,6 +1428,76 @@ function MoreFields({
   );
 }
 
+/** A collapsible advanced group (plugin SettingsSchema.groups[].advanced). */
+function CollapsibleGroup({
+  group,
+  value,
+  onChange,
+  errors,
+  prefix,
+  loadOptions,
+  searchOptions,
+}: {
+  group: FieldGroup;
+  value: Obj;
+  onChange: (v: Obj) => void;
+  errors: Record<string, string>;
+  prefix: string;
+  loadOptions?: LoadOptions;
+  searchOptions?: SearchOptions;
+}) {
+  const hasError = [...group.fields, ...(group.more ?? [])].some((f) =>
+    hasFieldError(f, errors, prefix),
+  );
+  const [open, setOpen] = useState(hasError);
+  useEffect(() => {
+    if (hasError) setOpen(true);
+  }, [hasError]);
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-surface">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-3 px-5 py-3.5 text-left text-sm font-medium text-fg hover:bg-surface-hover"
+      >
+        <span className="min-w-0">
+          <span className="block">{group.title || t("Advanced")}</span>
+          {group.description ? (
+            <span className="mt-0.5 block text-xs font-normal text-fg-muted">
+              {group.description}
+            </span>
+          ) : null}
+        </span>
+        <ChevronDown
+          size={16}
+          className={
+            open ? "shrink-0 rotate-180 transition-transform" : "shrink-0 transition-transform"
+          }
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div className="divide-y divide-border border-t border-border">
+          {group.fields.map((f) => (
+            <SchemaField
+              key={f.key}
+              def={f}
+              value={value[f.key]}
+              path={`${prefix}.${f.key}`}
+              error={errorForPath(errors, `${prefix}.${f.key}`)}
+              errors={errors}
+              loadOptions={loadOptions}
+              searchOptions={searchOptions}
+              onChange={(v) => onChange({ ...value, [f.key]: v })}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function SchemaGroups({
   groups,
   value,
@@ -1118,6 +1506,7 @@ export function SchemaGroups({
   prefix,
   footer,
   loadOptions,
+  searchOptions,
 }: {
   groups: FieldGroup[];
   value: Obj;
@@ -1126,37 +1515,42 @@ export function SchemaGroups({
   prefix: string;
   footer?: ReactNode;
   loadOptions?: LoadOptions;
+  searchOptions?: SearchOptions;
 }) {
+  const primaryGroups = useMemo(() => groups.filter((g) => !g.advanced), [groups]);
+  const advancedGroups = useMemo(() => groups.filter((g) => g.advanced), [groups]);
   const [active, setActive] = useState("0");
   useEffect(() => {
-    const at = groups.findIndex((g) =>
+    const at = primaryGroups.findIndex((g) =>
       [...g.fields, ...(g.more ?? [])].some((f) => hasFieldError(f, errors, prefix)),
     );
     if (at >= 0) setActive(String(at));
-  }, [errors, groups, prefix]);
+  }, [errors, primaryGroups, prefix]);
   const known = new Set(groups.flatMap((g) => [...g.fields, ...(g.more ?? [])].map((f) => f.key)));
   const extra = Object.keys(value).filter((k) => !known.has(k));
-  return (
+  const hasAdvanced = advancedGroups.length > 0;
+  const sectionFooter = hasAdvanced ? undefined : footer;
+  const body = (
     <>
-      {groups.length + (extra.length ? 1 : 0) > 1 && (
+      {primaryGroups.length + (extra.length ? 1 : 0) > 1 && (
         <SubtabNav
           ariaLabel={t("Settings categories")}
           active={active}
           onSelect={setActive}
           tabs={[
-            ...groups.map((g, i) => ({ key: String(i), label: g.title || t("General") })),
+            ...primaryGroups.map((g, i) => ({ key: String(i), label: g.title || t("General") })),
             ...(extra.length ? [{ key: "advanced", label: t("Advanced") }] : []),
           ]}
         />
       )}
-      {groups
+      {primaryGroups
         .filter((_, i) => String(i) === active)
         .map((g) => (
           <SettingsSection
             key={g.id ?? g.title ?? "general"}
             title={g.title}
             description={g.description}
-            footer={footer}
+            footer={sectionFooter}
           >
             {g.fields.map((f) => (
               <SchemaField
@@ -1167,6 +1561,7 @@ export function SchemaGroups({
                 error={errorForPath(errors, `${prefix}.${f.key}`)}
                 errors={errors}
                 loadOptions={loadOptions}
+                searchOptions={searchOptions}
                 onChange={(v) => onChange({ ...value, [f.key]: v })}
               />
             ))}
@@ -1185,6 +1580,7 @@ export function SchemaGroups({
                     error={errors[`${prefix}.${f.key}`]}
                     errors={errors}
                     loadOptions={loadOptions}
+                    searchOptions={searchOptions}
                     onChange={(v) => onChange({ ...value, [f.key]: v })}
                   />
                 ))}
@@ -1192,11 +1588,11 @@ export function SchemaGroups({
             ) : null}
           </SettingsSection>
         ))}
-      {extra.length && (active === "advanced" || groups.length === 0) ? (
+      {extra.length && (active === "advanced" || primaryGroups.length === 0) ? (
         <SettingsSection
           title={t("Advanced")}
           description={t("Additional options this server supports.")}
-          footer={footer}
+          footer={sectionFooter}
         >
           <GenericFields
             value={value}
@@ -1207,8 +1603,26 @@ export function SchemaGroups({
           />
         </SettingsSection>
       ) : null}
+      {advancedGroups.map((g, idx) => (
+        <CollapsibleGroup
+          key={g.id ?? g.title ?? `advanced-${idx}`}
+          group={g}
+          value={value}
+          onChange={onChange}
+          errors={errors}
+          prefix={prefix}
+          loadOptions={loadOptions}
+          searchOptions={searchOptions}
+        />
+      ))}
+      {hasAdvanced && footer ? (
+        <div className="flex items-center justify-end gap-2 rounded-xl border border-border bg-bg-subtle px-5 py-3">
+          {footer}
+        </div>
+      ) : null}
     </>
   );
+  return hasAdvanced ? <div className="space-y-4">{body}</div> : body;
 }
 
 /** Labels/help for Advanced keys that would otherwise read as raw camelCase. */

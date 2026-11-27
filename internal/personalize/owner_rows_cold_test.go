@@ -18,7 +18,7 @@ type gatedCollections struct {
 	calls int
 }
 
-func (g *gatedCollections) HomeRowsFor(ctx context.Context, _ *core.User, _ core.HubContext) ([]core.CollectionRow, error) {
+func (g *gatedCollections) LayoutRow(ctx context.Context, _ *core.User, _ core.HubContext, id string) (*core.CollectionRow, error) {
 	g.mu.Lock()
 	g.calls++
 	gate := g.gate
@@ -31,7 +31,13 @@ func (g *gatedCollections) HomeRowsFor(ctx context.Context, _ *core.User, _ core
 			return nil, ctx.Err()
 		}
 	}
-	return rows, nil
+	for i := range rows {
+		if rows[i].CollectionID == id {
+			r := rows[i]
+			return &r, nil
+		}
+	}
+	return nil, core.ErrNotFound
 }
 
 func (g *gatedCollections) setGate(c chan struct{}) {
@@ -59,15 +65,13 @@ func ownerSectionHarness(t *testing.T) (*harness, *gatedCollections, func(time.T
 		for j := 0; j < 6; j++ {
 			picks = append(picks, cat.titles[movieKey(8, j)])
 		}
-		cols.rows = []core.CollectionRow{{CollectionID: "6", SectionRow: true, HomeRow: true,
+		cols.rows = []core.CollectionRow{{CollectionID: "6",
 			Hub: core.Hub{ID: "collection.6", Title: "Marvel Cinematic Universe", Type: core.TypeMovie, Items: picks}}}
 		o.Collections = cols
 	})
 	ctx := context.Background()
-	if _, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1",
-		Rows: []core.RowPolicy{{Row: "collection:6", Status: "always", Slot: 1}}}}}); err != nil {
-		t.Fatal(err)
-	}
+	_ = ctx
+	mustSavePage(t, h.e, rpage(libPage(1), prow(KindCollectionPrefix+"6", core.PlacementPinned, 1)))
 	u := core.User{ID: 1, IsOwner: true}
 	h.rebuild(u)
 	movies := func(at time.Time) []core.Hub {

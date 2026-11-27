@@ -13,21 +13,36 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
-func (i *instance) resolveID(r *http.Request, viewer *frontend.Viewer, device frontend.Device, typ string, id ids.StremioID) (frontend.RatingKey, error) {
-	if id.Source == "tmdb" {
-		return ids.StremioTMDBKey(typ, id)
-	}
-	mediaType := frontend.MediaType("movie")
-	if typ == "series" {
-		mediaType = "show"
-	} else if typ != "movie" {
+const catalogKeyPrefix = "ether:"
+
+func (i *instance) resolveCatalogID(r *http.Request, viewer *frontend.Viewer, device frontend.Device, typ, raw string, stream bool) (frontend.RatingKey, error) {
+	kind, mediaType := frontend.KindMovie, frontend.TypeMovie
+	switch typ {
+	case "movie":
+	case "series":
+		kind, mediaType = frontend.KindShow, frontend.TypeShow
+		if stream {
+			kind = frontend.KindEpisode
+		}
+	default:
 		return 0, ids.ErrInvalid
 	}
-	req := frontend.ExternalRequest{Source: "imdb", ID: id.ID, Type: mediaType}
-	if id.HasEpisode {
-		if typ != "series" {
+	if value, ok := strings.CutPrefix(raw, catalogKeyPrefix); ok {
+		key, err := frontend.ParseRatingKey(value)
+		if err != nil || key.Kind() != kind {
 			return 0, ids.ErrInvalid
 		}
+		return key, nil
+	}
+	id, err := ids.ParseStremio(raw)
+	if err != nil || id.HasEpisode != (kind == frontend.KindEpisode) {
+		return 0, ids.ErrInvalid
+	}
+	if id.Source == "tmdb" && !id.HasEpisode {
+		return ids.StremioTMDBKey(typ, id)
+	}
+	req := frontend.ExternalRequest{Source: id.Source, ID: id.ID, Type: mediaType}
+	if id.HasEpisode {
 		req.Season = &id.Season
 		req.Episode = &id.Episode
 	}
@@ -66,12 +81,7 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		id, e := ids.ParseStremio(rawID)
-		if e != nil || (typ == "series" && !id.HasEpisode) {
-			http.NotFound(w, r)
-			return
-		}
-		key, err = i.resolveID(r, viewer, device, typ, id)
+		key, err = i.resolveCatalogID(r, viewer, device, typ, rawID, true)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -100,9 +110,16 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	plan := frontend.PlanRequest{Viewer: viewer, Device: device, Protocol: "stremio", Item: key, Caps: profile.Client, Intent: frontend.PlayIntent{Options: frontend.DecideOptions{DirectPlay: true}}}
 	lazy, err := i.host.LazyStreams.Issue(ctx, credential, plan)
 	if err != nil {
+		if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+			return
+		}
 		var reqLang *frontend.RequiredAudioLanguageError
 		if errors.As(err, &reqLang) {
 			http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if errors.Is(err, frontend.ErrNotFound) {
+			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
@@ -117,6 +134,14 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	// lazy URL will play with, so the pick does not wait for them.
 	if warm, ok := i.host.LazyStreams.(frontend.LazyStreamWarmer); ok {
 		warm.Warm(ctx, credential, plan)
+	}
+	// PSE-HOOK: aucun flux quand aucune source n'existe — voir docs/pse/FORK.fr.md
+	if i.pseNoSource(ctx, w, credential, plan) {
+		return
+	}
+	// PSE-HOOK: liste de versions, affichage et nombre réglés par le lien — voir docs/pse/FORK.fr.md
+	if i.pseVersionStreams(ctx, w, r, credential, viewer, device, plan, base, lazy) {
+		return
 	}
 	base.Path = strings.TrimSuffix(base.Path, "/image/") + lazy
 	stream := map[string]any{"name": "Ether", "url": base.String()}

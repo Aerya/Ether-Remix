@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -67,6 +68,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	var busyValue bool
 	mgr, err := plugins.New(plugins.Deps{
 		EventBus:          a.EventBus(),
+		IsIndexerHost:     a.isConfiguredIndexerHost,
 		EventRegistry:     a.EventRegistry(),
 		FlowActions:       a.FlowsActions(),
 		ReadRuntimeConfig: func() config.Plugins { return a.cfg.Read().Plugins },
@@ -205,37 +207,13 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 				return json.Marshal(map[string]any{"titles": out})
 			},
 			CatalogGet: func(ctx context.Context, id string) (json.RawMessage, error) {
-				var title *core.Title
-				var err error
-				switch {
-				case strings.HasPrefix(id, "imdb:"):
-					title, err = a.catalog.ByExternalID(ctx, "imdb", strings.TrimPrefix(id, "imdb:"))
-				case strings.HasPrefix(id, "tmdb:"):
-					var n int64
-					n, err = strconv.ParseInt(strings.TrimPrefix(id, "tmdb:"), 10, 64)
-					if err == nil && n > 0 {
-						title, err = a.catalog.Get(ctx, core.MovieKey(n))
-						if errors.Is(err, core.ErrNotFound) {
-							title, err = a.catalog.Get(ctx, core.ShowKey(n))
-						}
-					} else if err == nil {
-						err = errors.New("invalid TMDB id")
-					}
-				default:
-					var key core.RatingKey
-					key, err = core.ParseRatingKey(id)
-					if err == nil {
-						title, err = a.catalog.Get(ctx, key)
-					}
-				}
+				title, err := a.pluginCatalogTitle(ctx, id)
 				if err != nil {
 					return nil, err
 				}
-				if title == nil {
-					return nil, core.ErrNotFound
-				}
 				return json.Marshal(map[string]any{"id": title.Key.String(), "title": title.Title, "type": title.Type, "year": title.Year, "tmdbId": title.IDs.TMDB, "imdbId": title.IDs.IMDB, "genres": title.Genres, "posterPath": title.PosterPath, "summary": title.Summary})
 			},
+			SetWatchState: a.setPluginWatchState,
 			ViewerHistory: func(ctx context.Context, viewerID int64, limit, offset int) (json.RawMessage, error) {
 				if viewerID <= 0 || limit <= 0 || limit > 200 || offset < 0 || offset > 2000 {
 					return nil, errors.New("invalid history page")
@@ -345,7 +323,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	log := a.log.With("component", "plugins-remote")
 	tunnel := remote.NewTunnelServer(remote.TunnelOptions{Auth: auth, Logger: log})
-	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), Logger: log}
+	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), CheckHost: mgr.CheckIndexerNetwork, Logger: log}
 	mgr.RegisterRuntime("remote", factory.RuntimeFactory())
 	mgr.SetSidecarState(factory.SidecarState)
 	// A sidecar that (re)connects is checked at once, so the console does
@@ -490,6 +468,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	} else if a.sourceProber != nil {
 		probeStream = a.sourceProber.Probe
 	}
+	var pluginNZBs adapters.PluginNZBStore
+	if a.indexers != nil && a.opts.FixtureMedia == nil {
+		pluginNZBs = a.indexers
+	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
 		Manager:       mgr,
 		Libraries:     a.libraries,
@@ -497,6 +479,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Blobs:         blobs,
 		Catalog:       kindCatalog,
 		Indexer:       idx,
+		PluginNZBs:    pluginNZBs,
+		Sources:       a.streamSources(),
 		Resolver:      a.resolver,
 		Debrid:        deb,
 		Engine:        eng,
@@ -505,9 +489,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
 			return err
 		},
-		ProbeCache:  a.playback,
-		ProbeStream: probeStream,
-		Logger:      a.log,
+		ProbeCache:    a.playback,
+		ProbeStream:   probeStream,
+		Logger:        a.log,
+		PreparingWait: adapters.DefaultKindPreparingWait,
 	})
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	cachePartial := blobs.HostPartialBackend(kindCatalog.QuotaFor)
@@ -517,14 +502,19 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		admitUsenetCheck = a.availability.AdmitPluginUsenetCheck
 	}
 	mgr.SetKindBackends(plugins.KindBackends{
+		NormalizeStoredReleaseLinks: kindResolver.NormalizeStoredReleaseLinks,
+
 		KindUpsert:                 itemsSvc.KindUpsert,
 		KindUpsertStats:            itemsSvc.KindUpsertWithStats,
+		KindUpsertUndo:             itemsSvc.KindUpsertWithUndo,
 		KindDelete:                 itemsSvc.KindDelete,
 		KindItems:                  itemsSvc.KindItems,
 		KindItemsByID:              itemsSvc.KindItemsByID,
 		KindItemCount:              itemsSvc.PluginItemCount,
 		KindVisible:                a.adapterKindVisible(),
 		KindBrowse:                 a.adapterKindBrowse(),
+		KindExpand:                 a.adapterKindExpand(),
+		KindLiveSearch:             a.adapterKindLiveSearch(),
 		ResolveSources:             kindResolver.ResolveSources,
 		ResolveSourcesResult:       kindResolver.ResolveSourcesWithResult,
 		PeekUsenetCheck:            kindResolver.PeekUsenetCheck,
@@ -538,6 +528,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		StreamURLOptions:           a.adapterStreamURLOptions(adapterTickets),
 		MediaProbe:                 kindResolver.ProbeMedia,
 	})
+	mgr.SetKindViewerState(adapterViewerState{app: a})
 
 	if err := mgr.Start(ctx); err != nil {
 		cancelRun()
@@ -631,7 +622,14 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		stopState = a.state.Subscribe(func(ev state.Event) {
 			var name string
 			switch ev.Kind {
-			case state.EventCompleted, state.EventScrobble:
+			case state.EventScrobble:
+				// Plugin marks already have watch events with origin-aware
+				// delivery. They are not legacy playback completions.
+				if strings.HasPrefix(string(ev.Origin.Surface), events.PluginPrefix) {
+					return
+				}
+				name = plugins.EventPlaybackCompleted
+			case state.EventCompleted:
 				name = plugins.EventPlaybackCompleted
 			case state.EventProgress:
 				name = plugins.NormalizePlayback("update", ev.State)
@@ -811,6 +809,11 @@ func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.Kin
 	if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
 		return nil, core.ErrNotFound
 	}
+	if app := core.LiveApp(ctx); app != "" {
+		if _, _, ok := presentLibraryForProtocol(piv.Library.Present, core.Protocol(app), kindCatalog.RootMediaType(ctx, piv.Library)); !ok {
+			return nil, core.ErrNotFound
+		}
+	}
 	if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
 		return nil, core.ErrNotFound
 	}
@@ -819,4 +822,46 @@ func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.Kin
 	}
 	t := piv.Title
 	return &t, nil
+}
+
+// isConfiguredIndexerHost reserves plugin egress to configured API hosts.
+func (a *App) isConfiguredIndexerHost(host string) bool {
+	if a.cfg == nil {
+		return false
+	}
+	if matchesIndexerHost(a.cfg.Read().Prowlarr.URL, host) {
+		return true
+	}
+	if a.indexers == nil {
+		return false
+	}
+	if a.indexers.IsIndexerHost(host) {
+		return true
+	}
+	if a.sites == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	for _, client := range a.indexers.Clients() {
+		cfg := client.Config()
+		if !cfg.IsBuiltin() {
+			continue
+		}
+		site, err := a.sites.Definition(ctx, cfg.Definition)
+		if err != nil {
+			continue
+		}
+		for _, link := range site.Links {
+			if matchesIndexerHost(link, host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchesIndexerHost(rawURL, host string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && u.Hostname() != "" && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }

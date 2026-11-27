@@ -1253,3 +1253,363 @@ globalThis.handle = function(req) {
 		}
 	})
 }
+
+type steppedReader struct {
+	data        []byte
+	pos         int
+	step        int
+	onFirstRead func()
+	readCalled  bool
+}
+
+func (r *steppedReader) Read(p []byte) (int, error) {
+	if !r.readCalled {
+		r.readCalled = true
+		if r.onFirstRead != nil {
+			r.onFirstRead()
+		}
+	}
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	limit := len(p)
+	if r.step > 0 && r.step < limit {
+		limit = r.step
+	}
+	n := copy(p[:limit], r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestFetchToCacheResumeEvictsNearFullAndResumesAfterQuotaRefusal(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	rec := installContent(t, env)
+	rec.Manifest.Ether.Permissions.Network = []string{"data.example.test"}
+	var err error
+	rec.ManifestRaw, err = json.Marshal(rec.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = env.m.store.upsert(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	libraryKey := core.PluginLibraryKey(rec.ID, "recording")
+
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	advance := func(d time.Duration) { now = now.Add(d) }
+
+	const nsQuota int64 = 8192
+	const sharedCap int64 = 12288
+	blobs, err := blobcache.Open(t.TempDir(), blobcache.Options{
+		SweepPeriod: -1,
+		SharedCap:   sharedCap,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blobs.Close()
+
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: nsQuota}
+	})
+	cachePartial := blobs.HostPartialBackend(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: nsQuota}
+	})
+	env.m.SetKindBackends(KindBackends{
+		CachePut:     cachePut,
+		CacheOpen:    cacheOpen,
+		CacheDelete:  cacheDelete,
+		CachePartial: cachePartial,
+	})
+	h := env.m.HostFor(rec.ID)
+	ns := blobs.Namespace(libraryKey, blobcache.Quota{MaxBytes: nsQuota})
+
+	callResume := func(rawURL, name string) (FetchCacheResult, error) {
+		args, _ := json.Marshal([]any{map[string]any{
+			"url":        rawURL,
+			"libraryKey": libraryKey,
+			"name":       name,
+			"resume":     true,
+		}})
+		raw, err := CallDataHost(withCallPath(ctx, "/ether/job/import"), h, "http.fetchToCache", args)
+		if err != nil {
+			return FetchCacheResult{}, err
+		}
+		var out FetchCacheResult
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal FetchCacheResult: %v", err)
+		}
+		return out, nil
+	}
+
+	// 1. Near-full namespace (7800 / 8192 bytes) accepts a 2400-byte resumable
+	//    fetch by reserving up front and evicting the oldest non-open blobs,
+	//    never evicting an open blob even when it has the oldest LastOpen.
+	openRef, err := ns.Put(ctx, "open-oldest.bin", bytes.NewReader(bytes.Repeat([]byte("O"), 1950)), 1950)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openSrc, err := ns.Open(openRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute)
+	if _, err := ns.Put(ctx, "old-1.bin", bytes.NewReader(bytes.Repeat([]byte("1"), 1950)), 1950); err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute)
+	if _, err := ns.Put(ctx, "old-2.bin", bytes.NewReader(bytes.Repeat([]byte("2"), 1950)), 1950); err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute)
+	newerRef, err := ns.Put(ctx, "newer.bin", bytes.NewReader(bytes.Repeat([]byte("N"), 1950)), 1950)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, count := ns.Stats(); used != 7800 || count != 4 {
+		t.Fatalf("initial near-full Stats = (%d, %d), want (7800, 4)", used, count)
+	}
+
+	largePayload := bytes.Repeat([]byte("L"), 2400)
+	var preReadUsed int64
+	var preReadBlobs int
+	env.m.client = &http.Client{
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			hdr := make(http.Header)
+			hdr.Set("ETag", `"large-v1"`)
+			body := &steppedReader{
+				data: largePayload,
+				step: 600,
+				onFirstRead: func() {
+					// Up-front reservation must already have evicted old-1 and old-2
+					// before a single byte of the response body is read.
+					preReadUsed, preReadBlobs = ns.Stats()
+				},
+			}
+			return &http.Response{
+				StatusCode:    200,
+				ContentLength: int64(len(largePayload)),
+				Header:        hdr,
+				Body:          io.NopCloser(body),
+				Request:       r,
+			}, nil
+		}),
+	}
+	res, err := callResume("https://data.example.test/large.bin", "large.bin")
+	if err != nil {
+		t.Fatalf("large resumable fetch in near-full namespace failed: %v", err)
+	}
+	if preReadUsed != 3900 || preReadBlobs != 2 {
+		t.Fatalf("stats before first body read = (%d, %d), want (3900, 2) from upfront eviction", preReadUsed, preReadBlobs)
+	}
+	wantLargeHash := sha256.Sum256(largePayload)
+	if res.Blob != "blob:"+hex.EncodeToString(wantLargeHash[:]) || res.Size != int64(len(largePayload)) {
+		t.Fatalf("large fetch result = %+v, want blob:%x size=%d", res, wantLargeHash, len(largePayload))
+	}
+	if _, ok := ns.LookupKey("old-1.bin"); ok {
+		t.Fatal("expected old-1.bin to be evicted")
+	}
+	if _, ok := ns.LookupKey("old-2.bin"); ok {
+		t.Fatal("expected old-2.bin to be evicted")
+	}
+	if _, ok := ns.LookupKey("open-oldest.bin"); !ok {
+		t.Fatal("open blob was evicted despite active Open handle")
+	}
+	if _, ok := ns.LookupKey("newer.bin"); !ok {
+		t.Fatal("newer.bin was evicted unnecessarily")
+	}
+	if err := openSrc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Shared global cap near-full across namespaces evicts the oldest closed
+	//    blob from another namespace when this namespace itself has headroom.
+	nsOther := blobs.Namespace("other-lib", blobcache.Quota{MaxBytes: nsQuota})
+	advance(time.Minute)
+	if _, err := nsOther.Put(ctx, "other-old.bin", bytes.NewReader(bytes.Repeat([]byte("X"), 5600)), 5600); err != nil {
+		t.Fatal(err)
+	}
+	// Refresh ns blobs so other-old.bin is globally the least-recently-opened blob.
+	advance(time.Minute)
+	for _, ref := range []blobcache.Ref{openRef, newerRef, blobcache.Ref(res.Blob)} {
+		src, oerr := ns.Open(ref)
+		if oerr != nil {
+			t.Fatalf("reopen %s: %v", ref, oerr)
+		}
+		_ = src.Close()
+	}
+	globalPayload := bytes.Repeat([]byte("G"), 1500)
+	env.m.client = &http.Client{
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			hdr := make(http.Header)
+			hdr.Set("ETag", `"global-v1"`)
+			return &http.Response{
+				StatusCode:    200,
+				ContentLength: int64(len(globalPayload)),
+				Header:        hdr,
+				Body:          io.NopCloser(bytes.NewReader(globalPayload)),
+				Request:       r,
+			}, nil
+		}),
+	}
+	if _, err := callResume("https://data.example.test/global.bin", "global.bin"); err != nil {
+		t.Fatalf("fetch requiring global cap eviction failed: %v", err)
+	}
+	if _, ok := nsOther.LookupKey("other-old.bin"); ok {
+		t.Fatal("expected other-old.bin to be evicted for shared cap headroom")
+	}
+
+	// 3. Quota-refused partial keeps its bytes (both on mid-stream write refusal
+	//    and on up-front 206 reserve refusal), resumes from the saved offset once
+	//    open blobs close, and idle quota-refused partials still expire on TTL.
+	ns.Purge()
+	advance(time.Minute)
+	pinARef, err := ns.Put(ctx, "pin-a.bin", bytes.NewReader(bytes.Repeat([]byte("A"), 3000)), 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinASrc, err := ns.Open(pinARef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute)
+	pinBRef, err := ns.Put(ctx, "pin-b.bin", bytes.NewReader(bytes.Repeat([]byte("B"), 3000)), 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinBSrc, err := ns.Open(pinBRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumePayload := bytes.Repeat([]byte("R0123456"), 400) // 3200 bytes
+	const resumeETag = `"quota-resume-v1"`
+	var seenRanges []string
+	var body2 *steppedReader
+	step := 0
+	env.m.client = &http.Client{
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			step++
+			seenRanges = append(seenRanges, r.Header.Get("Range"))
+			hdr := make(http.Header)
+			hdr.Set("ETag", resumeETag)
+			switch step {
+			case 1:
+				// Unknown Content-Length streams 500-byte chunks: 2000 bytes fit
+				// (6000 open + 2000 partial <= 8192), then chunk 5 hits quota.
+				return &http.Response{
+					StatusCode:    200,
+					ContentLength: -1,
+					Header:        hdr,
+					Body:          io.NopCloser(&steppedReader{data: resumePayload, step: 500}),
+					Request:       r,
+				}, nil
+			case 2:
+				// Open blobs still block the remaining 1200 bytes; up-front Reserve
+				// must reject before reading any body bytes and keep the 2000-byte partial.
+				hdr.Set("Content-Range", fmt.Sprintf("bytes 2000-%d/%d", len(resumePayload)-1, len(resumePayload)))
+				body2 = &steppedReader{data: resumePayload[2000:], step: 500}
+				return &http.Response{
+					StatusCode:    206,
+					ContentLength: int64(len(resumePayload) - 2000),
+					Header:        hdr,
+					Body:          io.NopCloser(body2),
+					Request:       r,
+				}, nil
+			case 3:
+				// After open blobs close, resume from byte 2000 evicts pin-a and completes.
+				hdr.Set("Content-Range", fmt.Sprintf("bytes 2000-%d/%d", len(resumePayload)-1, len(resumePayload)))
+				return &http.Response{
+					StatusCode:    206,
+					ContentLength: int64(len(resumePayload) - 2000),
+					Header:        hdr,
+					Body:          io.NopCloser(bytes.NewReader(resumePayload[2000:])),
+					Request:       r,
+				}, nil
+			default:
+				t.Fatalf("unexpected step %d", step)
+				return nil, nil
+			}
+		}),
+	}
+
+	if _, err := callResume("https://data.example.test/quota-resume.bin", "quota-resume.bin"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("attempt 1 err = %v, want ErrQuotaExceeded", err)
+	}
+	if pBytes, pCount := ns.PartialStats(); pBytes != 2000 || pCount != 1 {
+		t.Fatalf("partial after mid-stream quota refusal = (%d, %d), want (2000, 1)", pBytes, pCount)
+	}
+
+	if _, err := callResume("https://data.example.test/quota-resume.bin", "quota-resume.bin"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("attempt 2 err = %v, want ErrQuotaExceeded", err)
+	}
+	if body2 == nil || body2.readCalled {
+		t.Fatal("attempt 2 read response body despite up-front Reserve failure")
+	}
+	if pBytes, pCount := ns.PartialStats(); pBytes != 2000 || pCount != 1 {
+		t.Fatalf("partial after 206 reserve quota refusal = (%d, %d), want (2000, 1)", pBytes, pCount)
+	}
+
+	// Release open handles so the oldest closed blob can now be evicted.
+	_ = pinASrc.Close()
+	_ = pinBSrc.Close()
+
+	resumed, err := callResume("https://data.example.test/quota-resume.bin", "quota-resume.bin")
+	if err != nil {
+		t.Fatalf("attempt 3 resume after closing open blobs failed: %v", err)
+	}
+	wantResumeHash := sha256.Sum256(resumePayload)
+	if resumed.Blob != "blob:"+hex.EncodeToString(wantResumeHash[:]) || resumed.Size != int64(len(resumePayload)) || resumed.Status != 206 {
+		t.Fatalf("resumed result = %+v, want blob:%x size=%d status=206", resumed, wantResumeHash, len(resumePayload))
+	}
+	if wantRanges := []string{"", "bytes=2000-", "bytes=2000-"}; fmt.Sprint(seenRanges) != fmt.Sprint(wantRanges) {
+		t.Fatalf("seen Range headers = %v, want %v", seenRanges, wantRanges)
+	}
+	if _, ok := ns.LookupKey("pin-a.bin"); ok {
+		t.Fatal("expected oldest closed blob pin-a.bin to be evicted")
+	}
+	if _, ok := ns.LookupKey("pin-b.bin"); !ok {
+		t.Fatal("expected newer blob pin-b.bin to remain")
+	}
+	if pBytes, pCount := ns.PartialStats(); pBytes != 0 || pCount != 0 {
+		t.Fatalf("partial stats after commit = (%d, %d), want (0, 0)", pBytes, pCount)
+	}
+
+	// Verify an unresumed quota-refused partial still expires past DefaultPartialTTL.
+	pinBSrc, err = ns.Open(pinBRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedSrc, err := ns.Open(blobcache.Ref(resumed.Blob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.m.client = &http.Client{
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			hdr := make(http.Header)
+			hdr.Set("ETag", `"expire-me"`)
+			return &http.Response{
+				StatusCode:    200,
+				ContentLength: -1,
+				Header:        hdr,
+				Body:          io.NopCloser(&steppedReader{data: bytes.Repeat([]byte("E"), 3000), step: 500}),
+				Request:       r,
+			}, nil
+		}),
+	}
+	if _, err := callResume("https://data.example.test/expire.bin", "expire.bin"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("expire partial fetch err = %v, want ErrQuotaExceeded", err)
+	}
+	if pBytes, pCount := ns.PartialStats(); pBytes != 1500 || pCount != 1 {
+		t.Fatalf("staged bytes before TTL expiry = (%d, %d), want (1500, 1)", pBytes, pCount)
+	}
+	_ = pinBSrc.Close()
+	_ = resumedSrc.Close()
+	advance(blobcache.DefaultPartialTTL + time.Minute)
+	ns.Sweep(0)
+	if pBytes, pCount := ns.PartialStats(); pBytes != 0 || pCount != 0 {
+		t.Fatalf("quota-refused partial did not expire after DefaultPartialTTL: (%d, %d)", pBytes, pCount)
+	}
+}

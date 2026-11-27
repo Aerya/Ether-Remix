@@ -61,7 +61,7 @@ func (s *Service) attachSources(ctx context.Context, l Library) (Library, error)
 			marker := "remix-source-library-" + id
 			collection = existing[marker]
 			if collection == "" {
-				sp := core.CollectionSpec{Name: choice.Name, MediaType: TypeMixed, Sources: []core.CollectionSource{{Kind: "releaseSource", Label: strings.TrimPrefix(id, "indexer:")}}, Match: "all", Sort: "source", Refresh: "live", Enabled: true, LocalOnly: true, TemplateID: marker, Targets: core.CollectionTargets{Users: core.AllUsers()}}
+				sp := core.CollectionSpec{Name: choice.Name, MediaType: TypeMixed, Sources: []core.CollectionSource{{Kind: "releaseSource", Label: strings.TrimPrefix(id, "indexer:")}}, Match: "all", Sort: "source", Refresh: "live", Enabled: true, LocalOnly: true, TemplateID: marker, BrowseInApps: false}
 				made, e := creator.CreateSpec(ctx, sp)
 				if e != nil {
 					return l, e

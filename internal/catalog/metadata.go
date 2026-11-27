@@ -177,7 +177,7 @@ func (c *Catalog) MaterializeMetadata(ctx context.Context, provider string, req 
 }
 
 func (c *Catalog) needsMaterializedReleaseHydration(t *core.Title) bool {
-	if t == nil || c.tmdb() == nil {
+	if t == nil || !c.TMDBConfigured() {
 		return false
 	}
 	if t.Released.IsZero() {
@@ -187,7 +187,7 @@ func (c *Catalog) needsMaterializedReleaseHydration(t *core.Title) bool {
 }
 
 func (c *Catalog) fetchMaterializedRelease(ctx context.Context, record *core.Title) *tmdb.ReleaseDates {
-	if record == nil || c.tmdb() == nil {
+	if record == nil || !c.TMDBConfigured() {
 		return nil
 	}
 	switch record.Type {

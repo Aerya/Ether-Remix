@@ -38,7 +38,7 @@ async function pickLanguage(pickerLabel: string, languageName: string) {
 it("opens an empty installation with nullable language lists and saves ordered language picks", async () => {
   let saved: Record<string, unknown> | undefined;
   const { fake } = renderApp(
-    "/playback/subtitles",
+    "/playback/audio",
     {},
     extraRoutes((method, path, body) => {
       if (path !== "/stream-preferences/0") return undefined;

@@ -156,8 +156,12 @@ func planPlaylist(tl *Timeline, container string, name func(n int) string, disco
 		fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", initSegmentName(container))
 	}
 	n := tl.Total()
-	if n == 0 {
-		n = limit
+	if event {
+		if n == 0 {
+			n = limit
+		} else {
+			n = min(n, limit)
+		}
 	}
 	for i := 0; i < n; i++ {
 		if i > 0 && discont != nil && discont(i) {

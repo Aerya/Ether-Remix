@@ -10,11 +10,13 @@ import (
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -651,5 +653,214 @@ func TestAdapterKindVisibleAndBrowseRules(t *testing.T) {
 	})
 	if err != nil || pExact.Total == nil || *pExact.Total != 3 {
 		t.Fatalf("total=exact multi-value strings Total = %v, err=%v; want 3", pExact.Total, err)
+	}
+}
+
+// TestAdapterOriginHeaderAndAbsoluteStreamURL verifies (#772) that frontend
+// adapters receive X-Ether-Origin computed with trusted proxies only (stripping
+// any client-supplied X-Ether-Origin and ignoring spoofed forwarding headers
+// from untrusted peers), and that frontend.streamURL(item, { absolute: true })
+// prepends that origin or falls back to the adapter's first path-prefixed
+// published address while keeping the default root-relative.
+func TestAdapterOriginHeaderAndAbsoluteStreamURL(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	if a.libraries == nil || a.pluginsRT == nil || a.pluginsRT.pluginitems == nil {
+		t.Skip("no libraries or plugin runtime in this build")
+	}
+
+	local, err := identity.NewLocal(a.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerID, err := local.CreateViewer(ctx, "origin-viewer", "password-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.users.RefreshViewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const pluginID = "community.example.kodi"
+	const adapterKey = "kodi"
+	adapterID := string(frontendadapter.AdapterID(pluginID, adapterKey))
+
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Server.TrustedProxyCIDRs = []string{"10.0.0.5/32"}
+		if c.Frontends == nil {
+			c.Frontends = map[string]config.Frontend{}
+		}
+		c.Frontends[adapterID] = config.Frontend{
+			Enabled:            true,
+			PublishedAddresses: []string{"https://pub.example.com/ether/"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := []byte(`{
+	  "id": "community.example.kodi",
+	  "version": "1.0.0",
+	  "name": "Kodi Bridge",
+	  "description": "Origin and absolute stream URL test",
+	  "ether": {
+	    "protocol": 1,
+	    "kind": "content",
+	    "summary": "Origin and absolute stream URL test",
+	    "runtime": { "kind": "hosted", "entry": "dist/plugin.js" },
+	    "capabilities": ["catalog_provider", "frontend_adapter"],
+	    "contributes": {
+	      "mediaKinds": [{
+	        "key": "video",
+	        "label": "Videos",
+	        "library": { "name": "Videos" },
+	        "levels": [{ "key": "video", "label": "Video", "playable": true }],
+	        "present": { "adapterOnly": true },
+	        "sync": { "mode": "push" }
+	      }],
+	      "frontendAdapters": [{
+	        "key": "kodi",
+	        "label": "Kodi",
+	        "pathPrefix": "/kodi",
+	        "protocolHint": "custom",
+	        "auth": "none_lan",
+	        "libraries": ["video"]
+	      }]
+	    }
+	  }
+	}`)
+	itemRef := core.NewItemRef(pluginID, "video", "clip-1").String()
+	script := []byte(fmt.Sprintf(`function handle(req) {
+	  if (req.path === "/ether/health") return { status: 200, body: { status: "ok" } };
+	  if (req.path === "/ether/configure") return { status: 200, body: { errors: {} } };
+	  if (req.path === "/ether/v1/frontend/kodi/play") {
+	    return {
+	      status: 200,
+	      headers: { "Content-Type": "application/json" },
+	      body: {
+	        origin: (req.headers && req.headers["X-Ether-Origin"]) || "",
+	        rel: ether.frontend.streamURL(%q).url,
+	        abs: ether.frontend.streamURL(%q, { absolute: true }).url
+	      }
+	    };
+	  }
+	  return { status: 404, body: { error: { code: "not_found", message: "not found" } } };
+	}`, itemRef, itemRef))
+
+	preview, err := a.pluginsRT.mgr.PreviewInstall(ctx, plugins.Source{
+		Kind:     "studio",
+		Manifest: manifest,
+		Files:    map[string][]byte{"dist/plugin.js": script},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := a.pluginsRT.mgr.Install(ctx, preview, plugins.InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := a.libraries.UpsertPluginLibrary(ctx, pluginID, "video", libraries.PluginLibraryDecl{Name: "Videos"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pluginsRT.pluginitems.UpsertKind(ctx, pluginID, lib.ID, rec.Manifest.Ether.Contributes.MediaKinds[0], false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.pluginsRT.pluginitems.UpsertItems(ctx, pluginID, "video", []core.KindItem{
+		{ID: "clip-1", Level: "video", Title: "Clip 1", Playable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := adapterManager{Manager: a.pluginsRT.mgr, app: a}
+	decl := frontendadapter.Declaration{
+		PluginID:  pluginID,
+		Libraries: []core.LibraryID{lib.ID},
+		Meta:      plugins.FrontendAdapterMeta{Key: adapterKey, PathPrefix: "/kodi", Auth: frontendadapter.AuthNoneLAN},
+	}
+	f, err := frontendadapter.New(decl, mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := f.Mount(ctx, frontend.Host{
+		LANViewer: func(context.Context, *http.Request) (*core.Viewer, error) {
+			return a.users.PolicyUser(ctx, viewerID)
+		},
+		RequestOrigin: func(req *http.Request) (clientnet.RequestOrigin, bool) {
+			return clientnet.Origin(req, a.trustedProxyPrefixes()...)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type playReply struct {
+		Origin string `json:"origin"`
+		Rel    string `json:"rel"`
+		Abs    string `json:"abs"`
+	}
+	call := func(req *http.Request) playReply {
+		t.Helper()
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+		var out playReply
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %q: %v", w.Body.String(), err)
+		}
+		return out
+	}
+
+	// 1. Trusted proxy: honours X-Forwarded-Proto/-Host/-Prefix and strips inbound X-Ether-Origin.
+	trustedReq := httptest.NewRequest(http.MethodGet, "http://172.17.0.2:32450/kodi/play", nil)
+	trustedReq.RemoteAddr = "10.0.0.5:43210"
+	trustedReq.Header.Set("X-Forwarded-Proto", "https")
+	trustedReq.Header.Set("X-Forwarded-Host", "media.example.com")
+	trustedReq.Header.Set("X-Forwarded-Prefix", "/sub/")
+	trustedReq.Header.Set("X-Ether-Origin", "https://spoof.invalid")
+	got := call(trustedReq)
+	if got.Origin != "https://media.example.com/sub" {
+		t.Fatalf("trusted origin = %q, want https://media.example.com/sub", got.Origin)
+	}
+	if !strings.HasPrefix(got.Rel, frontendadapter.KindMediaPath) {
+		t.Fatalf("default streamURL = %q, want root-relative %s...", got.Rel, frontendadapter.KindMediaPath)
+	}
+	wantTrustedPrefix := "https://media.example.com/sub" + frontendadapter.KindMediaPath
+	if !strings.HasPrefix(got.Abs, wantTrustedPrefix) {
+		t.Fatalf("trusted absolute streamURL = %q, want prefix %q", got.Abs, wantTrustedPrefix)
+	}
+	if grant, err := a.pluginsRT.adapterTickets.Redeem(strings.TrimPrefix(got.Abs, wantTrustedPrefix)); err != nil || grant.ItemID != itemRef || grant.ViewerID != viewerID {
+		t.Fatalf("redeem trusted ticket = %+v, err = %v", grant, err)
+	}
+
+	// 2. Untrusted spoof: ignores X-Forwarded-* and strips inbound X-Ether-Origin.
+	spoofReq := httptest.NewRequest(http.MethodGet, "http://192.168.1.20:32450/kodi/play", nil)
+	spoofReq.RemoteAddr = "203.0.113.9:55000"
+	spoofReq.Header.Set("X-Forwarded-Proto", "https")
+	spoofReq.Header.Set("X-Forwarded-Host", "evil.example.com")
+	spoofReq.Header.Set("X-Forwarded-Prefix", "/evil")
+	spoofReq.Header.Set("X-Ether-Origin", "https://spoof.invalid")
+	got = call(spoofReq)
+	if got.Origin != "http://192.168.1.20:32450" {
+		t.Fatalf("untrusted origin = %q, want http://192.168.1.20:32450", got.Origin)
+	}
+	if wantPrefix := "http://192.168.1.20:32450" + frontendadapter.KindMediaPath; !strings.HasPrefix(got.Abs, wantPrefix) {
+		t.Fatalf("untrusted absolute streamURL = %q, want prefix %q", got.Abs, wantPrefix)
+	}
+
+	// 3. Container bridge Host with no trusted forwarding headers: omits X-Ether-Origin
+	// and falls back to the adapter's first path-prefixed published address.
+	bridgeReq := httptest.NewRequest(http.MethodGet, "http://172.17.0.2:32450/kodi/play", nil)
+	bridgeReq.RemoteAddr = "192.168.1.50:55001"
+	bridgeReq.Header.Set("X-Ether-Origin", "https://spoof.invalid")
+	got = call(bridgeReq)
+	if got.Origin != "" {
+		t.Fatalf("container bridge origin = %q, want empty", got.Origin)
+	}
+	if wantPrefix := "https://pub.example.com/ether" + frontendadapter.KindMediaPath; !strings.HasPrefix(got.Abs, wantPrefix) {
+		t.Fatalf("published fallback streamURL = %q, want prefix %q", got.Abs, wantPrefix)
 	}
 }

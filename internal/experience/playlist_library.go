@@ -85,10 +85,11 @@ func (s *Service) ViewerPlaylistContents(ctx context.Context, viewer *core.Viewe
 		if !ok {
 			continue
 		}
-		entries = append(entries, frontend.PlaylistEntry{
-			EntryID: entryIDs[idx],
-			Title:   title,
-		})
+		entry := frontend.PlaylistEntry{EntryID: entryIDs[idx], Title: title}
+		if idx < len(playlist.ItemAddedAt) {
+			entry.AddedAt = playlist.ItemAddedAt[idx]
+		}
+		entries = append(entries, entry)
 		visibleKeys = append(visibleKeys, itemKey)
 	}
 	header := *playlist
@@ -139,20 +140,45 @@ func (s *Service) CreateViewerPlaylist(ctx context.Context, viewer *core.Viewer,
 // RenameViewerPlaylist updates a viewer-owned mutable playlist's name and
 // returns the updated playlist with visible item keys.
 func (s *Service) RenameViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name string) (*core.Playlist, error) {
+	return s.EditViewerPlaylist(ctx, viewer, key, &name, nil)
+}
+
+var _ frontend.ViewerPlaylistEditor = (*Service)(nil)
+
+// MaxPlaylistSummary bounds a playlist's description.
+const MaxPlaylistSummary = 1000
+
+// EditViewerPlaylist changes a viewer-owned mutable playlist's name and/or
+// description and returns it with visible item keys.
+func (s *Service) EditViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name, summary *string) (*core.Playlist, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, playlist, err := s.mutablePlaylist(ctx, viewer, key)
 	if err != nil {
 		return nil, err
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 200 {
+	edit := core.PlaylistEdit{}
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" || len(trimmed) > 200 {
+			return nil, frontend.ErrBadPlaylist
+		}
+		edit.Title = &trimmed
+	}
+	if summary != nil {
+		trimmed := strings.TrimSpace(*summary)
+		if len(trimmed) > MaxPlaylistSummary {
+			return nil, frontend.ErrBadPlaylist
+		}
+		edit.Summary = &trimmed
+	}
+	if edit.Title == nil && edit.Summary == nil {
 		return nil, frontend.ErrBadPlaylist
 	}
 	editor, ok := s.d.Playlists.(core.PlaylistEditor)
 	if !ok {
 		return nil, core.ErrNotAvailable
 	}
-	updated, err := editor.EditPlaylist(ctx, v.ID, playlist.Key, core.PlaylistEdit{Title: &name})
+	updated, err := editor.EditPlaylist(ctx, v.ID, playlist.Key, edit)
 	if err != nil {
 		return nil, err
 	}

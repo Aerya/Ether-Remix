@@ -22,12 +22,12 @@ func (s *Service) PSEKeys(ctx context.Context, id string, user *core.User) []cor
 	if row.owner != 0 && (user == nil || user.ID != row.owner) {
 		return nil
 	}
-	if !row.spec.Targets.Users.Includes(user) {
+	if row.spec.Users != nil && !row.spec.Users.Includes(user) {
 		return nil
 	}
 	// Sans le filtre de découverte : l'indexeur et les exceptions de langue
 	// partent de ces titres, y compris ceux qui ne sont pas encore lisibles.
-	keys, err := s.serveMembers(ctx, row, user, false)
+	keys, err := s.pseServeMembers(ctx, row, user, false)
 	if err != nil {
 		return nil
 	}
@@ -60,7 +60,7 @@ func WithPSEDiscovery(fn func(context.Context, []core.RatingKey) ([]core.RatingK
 // sorties à venir montre par nature des titres pas encore disponibles :
 // elle échappe au filtre.
 func (s *Service) serve(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
-	keys, err := s.serveMembers(ctx, row, user, wait)
+	keys, err := s.pseServeMembers(ctx, row, user, wait)
 	if err != nil || s.pseDiscovery == nil || row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed" {
 		return keys, err
 	}

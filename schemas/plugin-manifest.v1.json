@@ -71,7 +71,8 @@
               "kind_resolver",
               "frontend_adapter",
               "matcher",
-              "live_events"
+              "live_events",
+              "screens"
             ]
           },
           "type": "array",
@@ -450,6 +451,9 @@
                   "defaultPort": {
                     "type": "integer"
                   },
+                  "icon": {
+                    "type": "string"
+                  },
                   "key": {
                     "type": "string"
                   },
@@ -713,6 +717,20 @@
                     },
                     "type": "array"
                   },
+                  "import": {
+                    "properties": {
+                      "identify": {
+                        "type": "boolean"
+                      },
+                      "links": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "key": {
                     "type": "string"
                   },
@@ -740,6 +758,9 @@
                             "podcast",
                             "photo"
                           ]
+                        },
+                        "members": {
+                          "type": "boolean"
                         },
                         "parent": {
                           "type": "string"
@@ -769,6 +790,10 @@
                           "year",
                           "date"
                         ]
+                      },
+                      "experience": {
+                        "pattern": "^[a-z][a-z0-9-]{0,31}$",
+                        "type": "string"
                       },
                       "icon": {
                         "type": "string"
@@ -958,7 +983,13 @@
                             "label": {
                               "type": "string"
                             },
+                            "layout": {
+                              "type": "string"
+                            },
                             "level": {
+                              "type": "string"
+                            },
+                            "purpose": {
                               "type": "string"
                             },
                             "sort": {
@@ -1331,7 +1362,13 @@
                                   "label": {
                                     "type": "string"
                                   },
+                                  "layout": {
+                                    "type": "string"
+                                  },
                                   "level": {
+                                    "type": "string"
+                                  },
+                                  "purpose": {
                                     "type": "string"
                                   },
                                   "sort": {
@@ -1377,6 +1414,9 @@
                       }
                     },
                     "type": "object"
+                  },
+                  "lyrics": {
+                    "type": "boolean"
                   },
                   "match": {
                     "properties": {
@@ -1476,6 +1516,17 @@
                     },
                     "type": "object"
                   },
+                  "related": {
+                    "properties": {
+                      "continuation": {
+                        "type": "boolean"
+                      },
+                      "similar": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "sync": {
                     "properties": {
                       "mode": {
@@ -1483,6 +1534,12 @@
                       },
                       "refresh": {
                         "type": "string"
+                      },
+                      "undo": {
+                        "enum": [
+                          "snapshots",
+                          "ids"
+                        ]
                       }
                     },
                     "type": "object"
@@ -1695,8 +1752,51 @@
             "screens": {
               "items": {
                 "properties": {
-                  "feed": {
+                  "actions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "args": {
+                          "additionalProperties": {
+                            "properties": {
+                              "enum": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "max": {
+                                "type": "integer"
+                              },
+                              "min": {
+                                "type": "integer"
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "type": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        },
+                        "confirm": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "contentRating": {
                     "type": "string"
+                  },
+                  "default": {
+                    "type": "boolean"
                   },
                   "frontends": {
                     "items": {
@@ -1710,99 +1810,19 @@
                   "id": {
                     "type": "string"
                   },
-                  "sections": {
-                    "items": {
-                      "properties": {
-                        "entityKind": {
-                          "type": "string"
-                        },
-                        "feed": {
-                          "type": "string"
-                        },
-                        "id": {
-                          "type": "string"
-                        },
-                        "league": {
-                          "type": "string"
-                        },
-                        "leagues": {
-                          "items": {
-                            "properties": {
-                              "abbr": {
-                                "type": "string"
-                              },
-                              "id": {
-                                "type": "string"
-                              },
-                              "logo": {
-                                "type": "string"
-                              },
-                              "name": {
-                                "type": "string"
-                              }
-                            },
-                            "type": "object"
-                          },
-                          "type": "array"
-                        },
-                        "limit": {
-                          "type": "integer"
-                        },
-                        "query": {
-                          "properties": {
-                            "category": {
-                              "type": "string"
-                            },
-                            "favorites": {
-                              "type": "boolean"
-                            },
-                            "feed": {
-                              "type": "string"
-                            },
-                            "league": {
-                              "type": "string"
-                            },
-                            "state": {
-                              "items": {
-                                "enum": [
-                                  "pre",
-                                  "in",
-                                  "post",
-                                  "delayed",
-                                  "postponed",
-                                  "canceled"
-                                ]
-                              },
-                              "type": "array"
-                            },
-                            "window": {
-                              "enum": [
-                                "today",
-                                "week",
-                                "recent"
-                              ]
-                            }
-                          },
-                          "type": "object"
-                        },
-                        "title": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "enum": [
-                            "hero",
-                            "events",
-                            "table",
-                            "schedule",
-                            "leagues",
-                            "entities"
-                          ]
-                        }
+                  "pages": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
                       },
-                      "type": "object"
+                      "type": "array"
                     },
-                    "type": "array"
+                    "type": "object"
                   },
+                  "placement": {
+                    "type": "string"
+                  },
+                  "sections": {},
                   "title": {
                     "type": "string"
                   }
@@ -1892,7 +1912,38 @@
                     "direct"
                   ]
                 },
-                "limits": true
+                "limits": true,
+                "search": {
+                  "additionalProperties": false,
+                  "description": "Opt a stream_source plugin in to category searches (GET /ether/search). Ether routes an indexer_search with a category only to source plugins that declared one of the requested Newznab categories; a top category (3000) covers its subcategories (3010, 3040). Answers use the stream route's shape: lazy releases are listed on GET /ether/files/{id} and opened on GET /ether/open/{id}?file=\u0026fileIndex=; the bytes stream as a Range source on the plugin's permissions.network hosts.",
+                  "properties": {
+                    "categories": {
+                      "items": {
+                        "maximum": 8999,
+                        "minimum": 1000,
+                        "type": "integer"
+                      },
+                      "maxItems": 16,
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "lookups": {
+                      "description": "Typed lookups the plugin answers (for example album or book); a caller's lookup fields reach the plugin as lookup.\u003cfield\u003e query parameters.",
+                      "items": {
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+                        "type": "string"
+                      },
+                      "maxItems": 8,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "categories"
+                  ],
+                  "type": "object"
+                }
               },
               "required": [
                 "class"

@@ -516,6 +516,8 @@ type Stream struct {
 	DOVIRPUPresent       *bool   `plex:"DOVIRPUPresent"`
 	DOVIVersion          string  `plex:"DOVIVersion,omitempty"`
 	Format               string  `plex:"format,omitempty"`
+	Timed                *bool   `plex:"timed"`
+	Provider             string  `plex:"provider,omitempty"`
 	FrameRate            float64 `plex:"frameRate,omitempty"`
 	HasScalingMatrix     *bool   `plex:"hasScalingMatrix"`
 	Height               int     `plex:"height,omitempty"`
@@ -539,24 +541,29 @@ type Stream struct {
 
 // Hub is a row of items.
 type Hub struct {
-	Meta           *Meta  `plex:"Meta,object"`
-	RankedTop10    bool   `plex:"-"`
-	PreviewOnFocus bool   `plex:"-"`
-	HubKey         string `plex:"hubKey,omitempty"`
-	UpNext         *bool  `plex:"upNext"`
-	Key            string `plex:"key,omitempty"`
-	Title          string `plex:"title"`
-	Type           string `plex:"type"`
-	HubIdentifier  string `plex:"hubIdentifier"`
-	Context        string `plex:"context"`
-	Size           int    `plex:"size"`
-	TotalSize      *int   `plex:"totalSize"`
-	More           bool   `plex:"more"`
-	Style          string `plex:"style,omitempty"`
-	Promoted       *bool  `plex:"promoted"`
-	Random         *bool  `plex:"random"`
-	Source         string `plex:"source,omitempty"`
-	Identifier     string `plex:"identifier,omitempty"`
+	Meta           *Meta `plex:"Meta,object"`
+	RankedTop10    bool  `plex:"-"`
+	PreviewOnFocus bool  `plex:"-"`
+	// Layout is the page row's look (core RowLook style: standard, hero,
+	// wide, tiles, tracks; "" = the app's default).
+	Layout string `plex:"-"`
+	// Library is the library of a one-row-per-library page row (0 = any).
+	Library       int64  `plex:"-"`
+	HubKey        string `plex:"hubKey,omitempty"`
+	UpNext        *bool  `plex:"upNext"`
+	Key           string `plex:"key,omitempty"`
+	Title         string `plex:"title"`
+	Type          string `plex:"type"`
+	HubIdentifier string `plex:"hubIdentifier"`
+	Context       string `plex:"context"`
+	Size          int    `plex:"size"`
+	TotalSize     *int   `plex:"totalSize"`
+	More          bool   `plex:"more"`
+	Style         string `plex:"style,omitempty"`
+	Promoted      *bool  `plex:"promoted"`
+	Random        *bool  `plex:"random"`
+	Source        string `plex:"source,omitempty"`
+	Identifier    string `plex:"identifier,omitempty"`
 
 	Metadata  []Metadata  `plex:"Metadata"`
 	Directory []Directory `plex:"Directory"`
@@ -564,6 +571,10 @@ type Hub struct {
 
 // SearchResult wraps one /library/search hit.
 type SearchResult struct {
+	GUID      string         `plex:"guid,omitempty"`
+	Name      string         `plex:"name,omitempty"`
+	Year      int            `plex:"year,omitempty"`
+	Lifespan  string         `plex:"lifespan,omitempty"`
 	Score     float64        `plex:"score"`
 	Metadata  *Metadata      `plex:"Metadata,object"`
 	Directory *Directory     `plex:"Directory,object"`

@@ -44,3 +44,26 @@ func TestCachedGetDoesNotRefreshAndKeepsVisibilityGates(t *testing.T) {
 		t.Fatal("cache-only read made a network request")
 	}
 }
+
+func TestPersistsArtworkManyMatchesScalar(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "offline", 503) }))
+	defer srv.Close()
+	c := newTestCatalog(t, srv)
+	ctx := context.Background()
+	stored := core.MovieKey(41)
+	if err := c.UpsertTitle(ctx, core.Title{Key: stored, Type: core.TypeMovie, IDs: core.IDs{TMDB: 41}, Title: "Stored"}, true); err != nil {
+		t.Fatal(err)
+	}
+	absent := core.MovieKey(999)
+	collection := core.CollectionKey(7)
+	playlist := core.PlaylistKey(9)
+	keys := []core.RatingKey{stored, absent, stored, collection, playlist}
+	got := c.PersistsArtworkMany(ctx, keys)
+	for _, k := range keys {
+		want := c.PersistsArtwork(ctx, k)
+		v, ok := got[k]
+		if !ok || v != want {
+			t.Fatalf("PersistsArtworkMany[%s] = (%v, %v), want (%v, true)", k, v, ok, want)
+		}
+	}
+}

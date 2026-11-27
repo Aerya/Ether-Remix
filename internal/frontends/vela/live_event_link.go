@@ -2,9 +2,7 @@ package vela
 
 import (
 	"context"
-	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -104,32 +102,4 @@ func (i *instance) refreshSessionLiveEvent(ctx context.Context, viewer *frontend
 	}
 	s.liveProgrammeKey = progKey
 	s.publishLiveEventLocked(ref)
-}
-
-// liveTicker serves GET /vela/v0/live/ticker?screen= (A6), returning a compact,
-// viewer-scoped, spoiler-filtered list of live events for Vela's overlay ticker.
-func (i *instance) liveTicker(w http.ResponseWriter, r *http.Request) {
-	v, _, e := i.viewer(r)
-	if e != nil {
-		fail(w, e, r)
-		return
-	}
-	if i.host.LiveEventTicker == nil {
-		i.unavailable(w, r)
-		return
-	}
-	screen := strings.TrimSpace(r.URL.Query().Get("screen"))
-	items, err := i.host.LiveEventTicker.LiveTicker(r.Context(), v, screen)
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	if items == nil {
-		items = []frontend.LiveTickerItem{}
-	}
-	res := object{"events": items}
-	if screen != "" {
-		res["screen"] = screen
-	}
-	send(w, 200, res)
 }

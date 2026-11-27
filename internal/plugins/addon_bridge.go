@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -33,6 +34,11 @@ func (m *Manager) AddonFetch(ctx context.Context, id, route string) (Response, e
 	}
 	if !rec.Enabled {
 		return Response{}, ErrDisabled
+	}
+	if u, err := url.Parse(rec.SourceURL); err == nil {
+		if err := m.CheckIndexerNetwork(u.Hostname()); err != nil {
+			return Response{}, err
+		}
 	}
 	if rec.Manifest.IsStremioOnly() {
 		return m.Call(ctx, id, Request{Method: http.MethodGet, Path: route})

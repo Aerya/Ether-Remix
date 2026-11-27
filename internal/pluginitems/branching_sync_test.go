@@ -288,4 +288,48 @@ func TestBranchingParentTallyRebuiltOnChunkedReindexUpgradeAndStartup(t *testing
 	if g := afterStartup[ref("art-1")]; g.ChildCount != 2 || g.LeafCount != 3 || g.ByLevel["album"] != 1 || g.ByLevel["concert"] != 1 {
 		t.Fatalf("after ensureParentTallies art-1 = %+v, want ChildCount=2 LeafCount=3 album=1 concert=1", g)
 	}
+
+	// 3. The row-by-row repair leaves exactly what a full rebuild writes:
+	// stray rows deleted, wrong counts corrected, missing rows added.
+	tallyRows := func() map[string][2]int64 {
+		rows, err := db.QueryContext(ctx, `SELECT parent_ref, child_level, child_count, leaf_count FROM plugin_item_parent_tally WHERE library_id = ?`, int64(libID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[string][2]int64{}
+		for rows.Next() {
+			var parent, level string
+			var c, l int64
+			if err := rows.Scan(&parent, &level, &c, &l); err != nil {
+				t.Fatal(err)
+			}
+			out[parent+"|"+level] = [2]int64{c, l}
+		}
+		return out
+	}
+	for _, q := range []string{
+		`INSERT INTO plugin_item_parent_tally(library_id, parent_ref, child_level, child_count, leaf_count) VALUES(?, 'ghost', 'album', 5, 5)`,
+		`UPDATE plugin_item_parent_tally SET leaf_count = 99 WHERE library_id = ? AND child_level = 'track'`,
+		`DELETE FROM plugin_item_parent_tally WHERE library_id = ? AND child_level = 'concert'`,
+	} {
+		if _, err := db.ExecContext(ctx, q, int64(libID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.ensureParentTallies(ctx)
+	repaired := tallyRows()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuildKindParentTallyTx(ctx, tx, libID, fullDecl); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt := tallyRows(); !maps.Equal(repaired, rebuilt) {
+		t.Fatalf("repaired tally = %v, full rebuild = %v", repaired, rebuilt)
+	}
 }

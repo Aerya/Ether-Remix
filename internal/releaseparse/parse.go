@@ -15,14 +15,14 @@ import (
 var (
 	reYear                 = regexp.MustCompile(`\b(188[89]|189\d|19\d{2}|20\d{2})\b`)
 	reTemporadaSE          = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}])T(\d{1,2})E(\d{1,3})\b`)
-	reSE                   = regexp.MustCompile(`(?i)\bS(\d{1,3})[\s\p{So}\x{FE0F}\x{200D}-]*E(\d{1,4})((?:\s*E\d{1,4})*)(?:\s*-\s*E?(\d{1,4}))?(?:v(\d))?\b`)
+	reSE                   = regexp.MustCompile(`(?i)\bS(\d{1,4})[\s\p{So}\x{FE0F}\x{200D}-]*E(\d{1,4})((?:\s*E\d{1,4})*)(?:\s*-\s*E?(\d{1,4}))?(?:v(\d))?\b`)
 	reSpanishCapUnderscore = regexp.MustCompile(`(?i)\b(Cap(?:[ií]tulo)?[.\s]*\d{1,4})_(\d{1,4})\b`)
 	reSpanishEpisode       = regexp.MustCompile(`(?i)\b(?:Cap|Cap[ií]tulo)\s*(\d{3,4})(?:\s*(?:-|al|a)\s*(?:Cap(?:[ií]tulo)?\s*)?(\d{1,4}))?\b`)
 	reSpanishShortEpisode  = regexp.MustCompile(`(?i)\b(?:Cap|Cap[ií]tulo)\s*0?([1-9]\d?)(?:\s*(?:-|al|a)\s*(?:Cap(?:[ií]tulo)?\s*)?0?([1-9]\d?))?\b`)
 	reBracketedSpanishCap  = regexp.MustCompile(`(?i)\[\s*(?:Cap|Cap[ií]tulo)\b`)
-	reSeasonAndEp          = regexp.MustCompile(`(?i)\b(?:(?:Season|Series|Saison|Stagione|Temporada)\s*(\d{1,2})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\b[\s-]*(?:\b(?:Episode|Ep)\s*(\d{1,4})\b|\bE(\d{2,4})\b)`)
-	reSeasonOnly           = regexp.MustCompile(`(?i)\bS(\d{1,2})(?:\s*(?:-|to)\s*S?(\d{1,2}))?\b`)
-	reSeasonWord           = regexp.MustCompile(`(?i)\b(?:Seasons?|Saison|Stagione|Temporada)\s*(\d{1,2})(?:\s*(?:-|to)\s*(?:Seasons?|S)?\s*(\d{1,2}))?\b`)
+	reSeasonAndEp          = regexp.MustCompile(`(?i)\b(?:(?:Season|Series|Saison|Stagione|Temporada)\s*(\d{1,4})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\b[\s-]*(?:\b(?:Episode|Ep)\s*(\d{1,4})\b|\bE(\d{2,4})\b)`)
+	reSeasonOnly           = regexp.MustCompile(`(?i)\bS(\d{1,4})(?:\s*(?:-|to)\s*S?(\d{1,4}))?\b`)
+	reSeasonWord           = regexp.MustCompile(`(?i)\b(?:Seasons?|Saison|Stagione|Temporada)\s*(\d{1,4})(?:\s*(?:-|to)\s*(?:Seasons?|S)?\s*(\d{1,4}))?\b`)
 	reOrdinalSeasonWord    = regexp.MustCompile(`(?i)\b([1-9]\d?)(?:st|nd|rd|th)\s+Season(?:\s*(?:-|to)\s*([1-9]\d?)(?:st|nd|rd|th)\s+Season)?\b`)
 	rePrecedingOrdinal     = regexp.MustCompile(`(?i)\b([1-9]\d?)(?:st|nd|rd|th)\s+Season[\s-]*$`)
 	reXEpisode             = regexp.MustCompile(`(?i)\b(\d{1,2})x(\d{1,3})(?:\s*-\s*(?:\d{1,2}x)?(\d{1,3}))?(?:\s+(?:из|of)\s+(\d{1,3}))?\b`)
@@ -36,7 +36,7 @@ var (
 	reAbsoluteBracket     = regexp.MustCompile(`(?i)(?:^|\s)-\s+(\d{1,4})(?:\s*v\d{1,2})?(?:\s*[\[(]|\s*$|\s+(?:END|FINAL)\b)`)
 	reAbsoluteTag         = regexp.MustCompile(`(?i)\s-\s(\d{1,4})(?:\s*v\d{1,2})?`)
 	reDashNumber          = regexp.MustCompile(`\s-\s(\d{1,4})(?:\s*v\d{1,2})?\b`)
-	reSeasonShortDashEp   = regexp.MustCompile(`(?i)\bS(\d{1,2})\s+-\s+(\d{1,4})(?:v\d{1,2})?\b`)
+	reSeasonShortDashEp   = regexp.MustCompile(`(?i)\bS(\d{1,4})\s+-\s+(\d{1,4})(?:v\d{1,4})?\b`)
 	reSeasonDashEp        = regexp.MustCompile(`(?i)\b(?:(?:Season|Saison|Stagione|Temporada)\s*(\d{1,2})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\s+-\s+(\d{1,4})(?:v\d{1,2})?\b`)
 	reOrdinalSeasonEp     = regexp.MustCompile(`(?i)\b([1-9]\d?)(?:st|nd|rd|th)\s+Season\s+(?:E(\d{1,3})|(\d{2,3}))(?:v\d{1,2})?\b`)
 	reSeasonCourDashEp    = regexp.MustCompile(`(?i)\b(?:S(\d{1,2})|(?:Season|Saison|Stagione|Temporada)\s*(\d{1,2})|([1-9]\d?)(?:st|nd|rd|th)\s+Season)\s+(?:Part|Cour)\s*(\d{1,2})(?:\s+-\s+|\s+E?)(\d{1,3})(?:v(\d))?\b`)
@@ -750,6 +750,7 @@ func parseStandardEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
 			if season >= 1 && season <= 50 && cour >= 1 && cour <= 10 && episode >= 1 {
 				info.Seasons = []int{season}
 				info.Cour = cour
+				info.CourRelative = true
 				info.Episodes = []int{episode}
 				return loc[0]
 			}
@@ -778,8 +779,16 @@ func parseStandardEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
 			info.Episodes = []int{episode}
 			return at
 		}
-		if loc := reSeasonWord.FindStringSubmatchIndex(spaced); loc != nil {
+		for _, loc := range reSeasonWord.FindAllStringSubmatchIndex(spaced, -1) {
 			m := submatches(spaced, loc)
+			// A bare year after a season word can be the release year
+			// ("The Four Seasons 1981"). Explicit episode markers and
+			// S2026 syntax can still identify year-numbered seasons.
+			if m[2] == "" && reYear.MatchString(m[1]) {
+				if _, yearAt := parseYearAt(spaced); yearAt == loc[2] {
+					continue
+				}
+			}
 			info.Seasons = seasonRange(m)
 			info.FullSeason = true
 			return loc[0]
@@ -1530,6 +1539,8 @@ func parseAudio(upper string) (string, bool) {
 		return "dts", atmos
 	case containsAny(upper, " FLAC"):
 		return "flac", atmos
+	case strings.Contains(upper, " ALAC "):
+		return "alac", atmos
 	case containsAny(upper, " OPUS"):
 		return "opus", atmos
 	case containsAny(upper, "AC3", " DD5", " DD ", " DD-", "DOLBY DIGITAL"):

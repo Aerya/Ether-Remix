@@ -165,11 +165,17 @@ func (c *Catalog) reloadSearchRows(ctx context.Context, titles []core.Title) []c
 // A search waits at most searchRemoteWait for TMDB when the mirror has too
 // few matches, and searchRemoteGrace when it already has enough.
 const (
-	searchRemoteWait  = time.Second
-	searchRemoteGrace = 150 * time.Millisecond
+	// searchChildDiscount ranks a season or episode found by its own name
+	// after the films, series and people that match as well: the many talk
+	// show episodes called "Tom Hanks" follow his films, and episodes of
+	// other series called "Breaking Bad" follow the series and its film.
+	searchChildDiscount  = 0.82
+	searchRemoteWait     = time.Second
+	searchRemoteGrace    = 150 * time.Millisecond
+	coldSourceSearchWait = 2 * time.Second
 )
 
-// Search reaches all of TMDB; matched titles join the browsable set.
+// Search combines indexed titles with hits from configured metadata sources.
 func (c *Catalog) Search(ctx context.Context, query string, types []core.MediaType, limit int) ([]core.Title, error) {
 	return c.searchWithOpts(ctx, query, types, limit, false)
 }
@@ -188,7 +194,13 @@ func (c *Catalog) searchWithOpts(ctx context.Context, query string, types []core
 	if limit <= 0 {
 		limit = 20
 	}
-	items, err := c.searchTitlesOpts(ctx, query, types, limit, 0, unfiltered)
+	coldCtx := ctx
+	if core.ExplicitSearch(ctx) && !c.TMDBConfigured() {
+		// A query with a trailing year can take two passes. Both share
+		// the same provider allowance.
+		coldCtx = WithReadWaitBudget(ctx, coldSourceSearchWait)
+	}
+	items, err := c.searchTitlesOpts(ctx, coldCtx, query, types, limit, 0, unfiltered)
 	if err != nil || len(items) > 0 {
 		return items, err
 	}
@@ -196,7 +208,7 @@ func (c *Catalog) searchWithOpts(ctx context.Context, query string, types []core
 	if year == 0 {
 		return items, nil
 	}
-	return c.searchTitlesOpts(ctx, title, types, limit, year, unfiltered)
+	return c.searchTitlesOpts(ctx, coldCtx, title, types, limit, year, unfiltered)
 }
 
 // Only interpret a final, separated year after the literal query found nothing.
@@ -220,7 +232,7 @@ func searchTitleYear(query string) (string, int) {
 	return title, year
 }
 
-func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []core.MediaType, limit, year int, unfiltered bool) ([]core.Title, error) {
+func (c *Catalog) searchTitlesOpts(ctx, coldCtx context.Context, query string, types []core.MediaType, limit, year int, unfiltered bool) ([]core.Title, error) {
 	// Track origins so visibility and final hydration retain the different
 	// local and remote semantics.
 	localKeys := make(map[core.RatingKey]bool)
@@ -345,6 +357,22 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 				}
 			}
 		}
+		// Resolve effective orders for stored results after selecting and
+		// hydrating the page. Provider hits can still be unopened summaries.
+		var stored []core.Title
+		var at []int
+		for i, t := range items {
+			if t.Type != core.TypeMovie && localKeys[t.Key] {
+				stored = append(stored, t)
+				at = append(at, i)
+			}
+		}
+		if err := c.ProjectEpisodeTitles(ctx, stored); err != nil {
+			return nil, err
+		}
+		for j, i := range at {
+			items[i] = stored[j]
+		}
 		// Posters last, on the final page: ranking never sees them. A long-
 		// tail hit whose poster is unknown is looked up under posterWait;
 		// one that misses it shows Ether's generated poster this time.
@@ -378,6 +406,9 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 			seen[t.Key] = true
 			if t.SearchScore == 0 {
 				t.SearchScore = scoreSearchText(sq, &t)
+				if t.Type == core.TypeSeason || t.Type == core.TypeEpisode {
+					t.SearchScore *= searchChildDiscount
+				}
 			}
 			out = append(out, t)
 		}
@@ -396,6 +427,12 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 	// every type until the index's first build, from the literal match.
 	var localErr error
 	ix := c.searchIndex(ctx, !noReadWait(ctx))
+	if ix == nil && c.searchIndexBuilding() {
+		// Just after startup the index is still being built: the literal
+		// match answers without franchises, aliases or spelling, so a
+		// client that can ask again (core.WithSearchPending) does.
+		core.SearchPendingFrom(ctx).Mark()
+	}
 	deferredLocal = year == 0 && !wantSeason && !wantEpisode && (unfiltered || (c.visibilityFor(ctx).Passive() && c.config().ReleaseMode != config.ModeDigital))
 	if ix != nil && (wantMovie || wantTV) {
 		keys, scores := c.searchKeys(ix, sq, wantMovie, wantTV, max(limit*3, 30))
@@ -489,7 +526,7 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		}
 		tailAnswered = tailAnswers(tail, scores)
 		if len(tail) > 0 {
-			if prefetch := c.posterPrefetch; prefetch != nil {
+			if prefetch := c.posterPrefetch; prefetch != nil && !core.IsShortSearch(query) {
 				prefetch(ctx, tail) // posters (L), overlapping the TMDB wait
 			}
 			out = mergeTailHits(out, tail, scores, limit)
@@ -510,16 +547,29 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		}
 		return finish(out)
 	}
-	if c.tmdb() == nil || (!wantMovie && !wantTV) {
+	// A one- or two-letter prefix answers from the mirror's indexes only:
+	// asking TMDB on every keystroke is work the next one throws away.
+	if (!wantMovie && !wantTV) || core.IsShortSearch(query) {
+		return localAnswer()
+	}
+	tmdbReady := c.TMDBConfigured()
+	sources := c.sourceSearches(wantMovie, wantTV)
+	if !tmdbReady && len(sources) == 0 {
 		return localAnswer()
 	}
 	kinds := fmt.Sprintf("%t%t", wantMovie, wantTV)
-	searchKey := "search:" + kinds + ":" + strconv.Itoa(limit) + ":" + query
-	remoteKey := c.config().Language + ":" + searchKey
+	language := c.config().Language
+	searchKey := fmt.Sprintf("search:%t:%s:%d:%d:%s:%q", tmdbReady, kinds, limit, year, language, query)
+	for _, source := range sources {
+		searchKey += "|" + string(source.ID())
+	}
 	// TMDB widens the search beyond the mirror. It runs detached and is
 	// waited for briefly: a search never waits long on the provider, and
 	// results that arrive late answer the next one (remoteSearches).
-	fetch := func(ctx context.Context) (any, error) {
+	fetchTMDB := func(ctx context.Context) ([]core.Title, error) {
+		if !tmdbReady {
+			return nil, nil
+		}
 		var remote []core.Title
 		if wantMovie && wantTV {
 			for page := 1; page <= 3 && len(remote) < limit*2; page++ {
@@ -559,10 +609,18 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 				remote = append(remote, c.tvToTitle(ctx, s))
 			}
 		}
+		return remote, nil
+	}
+	fetch := func(ctx context.Context) (any, error) {
+		remote, err := fetchTMDB(ctx)
+		remote = append(remote, c.searchSourceRows(ctx, sources, core.MetadataSearch{Title: query, Year: year, Language: language}, wantMovie, wantTV, min(max(limit, 20), 100))...)
+		if len(remote) == 0 && err != nil {
+			return nil, err
+		}
 		// Search hits are summaries in memory only: a title is stored when
 		// someone opens it (Get), never because it matched a search.
 		c.rememberListSummaries(remote)
-		c.remoteSearches.put(remoteKey, remote, c.now())
+		c.remoteSearches.put(searchKey, remote, c.now())
 		return remote, nil
 	}
 	wait := searchRemoteWait
@@ -577,16 +635,24 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		// they are immediate.
 		wait = searchRemoteGrace
 	}
-	if noReadWait(ctx) {
+	if !tmdbReady && core.ExplicitSearch(ctx) {
+		wait = 0
+		if len(out) == 0 {
+			wait = coldSourceSearchWait
+			ctx = coldCtx
+		}
+	} else if noReadWait(ctx) {
 		wait = 0
 	}
 	// A detached search that finished answers the next one: its hits are
 	// summaries in memory, never stored, so the mirror cannot.
-	remote, ok := c.remoteSearches.get(remoteKey, c.now())
+	remote, ok := c.remoteSearches.get(searchKey, c.now())
 	if !ok {
 		got, err := c.hydrateValue(ctx, searchKey, wait, fetch)
 		if err != nil {
-			// TMDB is slow, failing or still answering: the mirror's matches stand.
+			if len(sources) > 0 && errors.Is(err, errHydrating) && c.refreshing(searchKey) {
+				core.SearchPendingFrom(ctx).Mark()
+			}
 			return localAnswer()
 		}
 		remote, _ = got.([]core.Title)
@@ -704,15 +770,26 @@ func (c *Catalog) searchLiteral(ctx context.Context, query, types string, year, 
 	return c.queryTitlesRows(ctx, false, partial, q, args...)
 }
 
-// List returns TMDB curated/trending lists with a short in-memory TTL.
+// List returns curated and trending rows from a configured metadata source.
 func (c *Catalog) List(ctx context.Context, list string, t core.MediaType, limit int) ([]core.Title, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	if list == "trending_day" || list == "trending_week" {
+	tmdbReady := c.TMDBConfigured()
+	if tmdbReady && (list == "trending_day" || list == "trending_week") {
 		return c.trendingList(ctx, list, t, limit)
 	}
-	cacheKey := fmt.Sprint(core.CatalogCandidates(ctx)) + list + "|" + string(t) + "|" + strconv.Itoa(limit) + fmt.Sprint("|viewer:", core.CatalogViewerID(ctx), "|revision:", c.ViewerRulesRevision(&core.User{ID: core.CatalogViewerID(ctx)}))
+	cacheKey := fmt.Sprint(tmdbReady, core.CatalogCandidates(ctx)) + list + "|" + string(t) + "|" + strconv.Itoa(limit) + fmt.Sprint("|viewer:", core.CatalogViewerID(ctx), "|revision:", c.ViewerRulesRevision(&core.User{ID: core.CatalogViewerID(ctx)}))
+	var sources []core.MetadataSource
+	if !tmdbReady {
+		sources = c.metadataListSources(list, t)
+		if len(sources) == 0 {
+			return nil, nil
+		}
+		for _, source := range sources {
+			cacheKey += "|" + string(source.ID())
+		}
+	}
 	c.listMu.Lock()
 	if e, ok := c.listCache[cacheKey]; ok && c.now().Before(e.expires) {
 		items := append([]core.Title(nil), e.items...)
@@ -720,19 +797,22 @@ func (c *Catalog) List(ctx context.Context, list string, t core.MediaType, limit
 		return c.releasedTitles(ctx, c.FilterVisibility(ctx, items)), nil
 	}
 	c.listMu.Unlock()
-	if c.tmdb() == nil {
-		// Offline fallback: best-effort browse by popularity/rating.
-		sortOrder := core.SortPopularity
-		if list == "top_rated" {
-			sortOrder = core.SortRating
-		}
-		page, err := c.Browse(ctx, core.BrowseQuery{Filter: core.Filter{Type: t}, Sort: sortOrder, Desc: true, Limit: limit})
-		if err != nil {
+	if !tmdbReady {
+		items, err := c.sourceListRows(ctx, sources, list, t, limit)
+		if err != nil || len(items) == 0 {
 			return nil, err
 		}
-		return page.Items, nil
+		items = limitTitles(c.releasedTitles(ctx, c.FilterVisibility(ctx, items)), limit)
+		c.rememberListSummaries(items)
+		c.listMu.Lock()
+		c.listCache[cacheKey] = listEntry{items: append([]core.Title(nil), items...), expires: c.now().Add(c.listTTL)}
+		c.listMu.Unlock()
+		return items, nil
 	}
 	items, err := c.fetchList(ctx, list, t, limit)
+	if errors.Is(err, tmdb.ErrNoKey) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -917,7 +997,7 @@ func (c *Catalog) similar(ctx context.Context, key core.RatingKey, limit int) ([
 			}
 		}
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		// Offline: same genres via browse is the recommender's job; return nothing.
 		return []core.Title{}, nil
 	}
@@ -998,7 +1078,7 @@ func (c *Catalog) collection(ctx context.Context, tmdbCollection int64) (string,
 		return "", nil, err
 	}
 	if len(items) > 0 {
-		if c.tmdb() != nil && c.now().Sub(time.Unix(fetchedAt, 0)) > collectionRefreshAfter {
+		if c.TMDBConfigured() && c.now().Sub(time.Unix(fetchedAt, 0)) > collectionRefreshAfter {
 			_ = c.hydrate(ctx, fmt.Sprintf("collection-refresh:%d", tmdbCollection), 0, func(ctx context.Context) error {
 				_, _, err := c.fetchCollection(ctx, tmdbCollection)
 				return err
@@ -1009,7 +1089,7 @@ func (c *Catalog) collection(ctx context.Context, tmdbCollection int64) (string,
 		}
 		return name, c.releasedTitles(ctx, items), nil
 	}
-	if c.tmdb() != nil {
+	if c.TMDBConfigured() {
 		return c.fetchCollection(ctx, tmdbCollection)
 	}
 	return "", nil, core.ErrNotFound
@@ -1251,8 +1331,9 @@ func (c *Catalog) byExternalID(ctx context.Context, source, id string, typ core.
 		// Return the detail-enriched version.
 		return c.getOrStored(ctx, items[0].Key, allowUnfiltered)
 	}
-	if c.tmdb() == nil {
-		return nil, core.ErrNotFound
+	fromSource, sourceErr := c.findSourceExternal(ctx, externalMetadataIDs(source, id), typ, allowUnfiltered)
+	if !errors.Is(sourceErr, core.ErrNotFound) || !c.TMDBConfigured() {
+		return fromSource, sourceErr
 	}
 	found, err := c.tmdb().FindByExternalID(ctx, source, id)
 	if err != nil {

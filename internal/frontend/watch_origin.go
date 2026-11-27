@@ -89,6 +89,11 @@ type PendingWatchState interface {
 	HasPendingWatch(int64) bool
 }
 
+// PendingWatchKeys lists titles with uncommitted watch updates.
+type PendingWatchKeys interface {
+	PendingKeys(int64) []RatingKey
+}
+
 // RecentlyViewedSettingsState reads history filtered by recently-viewed settings.
 type RecentlyViewedSettingsState interface {
 	RecentlyViewedSettings(context.Context, int64, time.Time, int) ([]HistoryEntry, error)
@@ -124,4 +129,20 @@ type WatchMutation struct {
 }
 type WatchMutationWriter interface {
 	ApplyWatchMutation(context.Context, int64, RatingKey, WatchMutation) error
+}
+
+// OfflineProgress is a sessionless playback observation. The caller supplies
+// the request receive time so the device's clock cannot advance server state.
+type OfflineProgress struct {
+	Position, Duration     time.Duration
+	ObservedAt, ReceivedAt time.Time
+	Played                 bool
+}
+
+type OfflineProgressState interface {
+	ApplyOfflineProgress(context.Context, int64, RatingKey, OfflineProgress) (TimelinePersistenceResult, error)
+}
+
+type OfflineProgressWriter interface {
+	SetOfflineProgress(context.Context, *Viewer, RatingKey, OfflineProgress) error
 }

@@ -20,8 +20,13 @@ import {
 import { useState } from "react";
 import { ChipGroup } from "../../components/fields";
 import { useViewers, viewerName } from "../../components/pickers";
-import { translatePermissionLine, type RuntimeLimits } from "./types";
-import { t } from "../../i18n";
+import {
+  listItemsLine,
+  translatePermissionLine,
+  type ListItemsGrant,
+  type RuntimeLimits,
+} from "./types";
+import { getLocale, t } from "../../i18n";
 
 export function ViewerGrantsPicker({
   value,
@@ -370,6 +375,7 @@ export function PermissionSheet({
   pendingOperatorHosts,
   onChangeOperatorHosts,
   addedPermissions,
+  listItems,
   ownDraft = false,
 }: {
   permissions: string[];
@@ -387,9 +393,22 @@ export function PermissionSheet({
   pendingOperatorHosts?: string[];
   onChangeOperatorHosts?: (next: string[]) => void;
   addedPermissions?: string[];
+  /** The list sync size asked for and allowed, when the plugin has lists. */
+  listItems?: ListItemsGrant;
 }) {
   const lines =
     permissions.length > 0 ? permissions : [t("Needs no access to your server or the network")];
+  const listLine = listItems ? listItemsLine(listItems.requested) : "";
+  const showLine = (line: string) => {
+    const text = translatePermissionLine(line);
+    // Your global limit allows less than the plugin asks: say so here.
+    return listItems && text === listLine && listItems.granted < listItems.requested
+      ? t("{line}; your limit allows {count}", {
+          line: text,
+          count: new Intl.NumberFormat(getLocale()).format(listItems.granted),
+        })
+      : text;
+  };
   const noAccess =
     lines.length === 1 && lines[0] === "Needs no access to your server or the network";
 
@@ -430,7 +449,7 @@ export function PermissionSheet({
               ) : (
                 <Shield size={16} className="mt-0.5 shrink-0 text-fg-muted" aria-hidden />
               )}
-              <span>{translatePermissionLine(line)}</span>
+              <span>{showLine(line)}</span>
             </li>
           ))}
         </ul>
@@ -467,9 +486,11 @@ export function PermissionSheet({
 export function RuntimeLimitsCard({
   limits,
   requested,
+  listItems,
 }: {
   limits?: RuntimeLimits;
   requested?: Partial<RuntimeLimits>;
+  listItems?: ListItemsGrant;
 }) {
   if (!limits) return null;
   const resources: { label: string; value: (l?: Partial<RuntimeLimits>) => React.ReactNode }[] = [
@@ -518,6 +539,17 @@ export function RuntimeLimitsCard({
               <td className="text-center">{resource.value(limits)}</td>
             </tr>
           ))}
+          {listItems ? (
+            <tr>
+              <th className="py-1 text-left">{t("Titles per list")}</th>
+              <td className="text-center">
+                {new Intl.NumberFormat(getLocale()).format(listItems.requested)}
+              </td>
+              <td className="text-center">
+                {new Intl.NumberFormat(getLocale()).format(listItems.granted)}
+              </td>
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>

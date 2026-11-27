@@ -78,7 +78,7 @@
                     "id": "recommended",
                     "key": "/hubs/sections/1",
                     "type": "hub",
-                    "title": "Recommended",
+                    "title": "Recommendations",
                     "context": "content.discover",
                     "symbol": "star"
                   },
@@ -134,7 +134,7 @@
                     "id": "recommended",
                     "key": "/hubs/sections/2",
                     "type": "hub",
-                    "title": "Recommended",
+                    "title": "Recommendations",
                     "context": "content.discover",
                     "symbol": "star"
                   },

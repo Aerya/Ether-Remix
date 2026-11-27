@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"time"
@@ -58,7 +59,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if s.live || s.restored {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
-	caps := s.caps
+	caps := s.versionAdmission.caps
 	b.stampViewerTranscoding(viewer, &caps)
 	viewer, err = b.confirm(ctx, viewer, caps)
 	if err != nil {
@@ -66,7 +67,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	}
 	var title *core.Title
 	if isPlugin {
-		if in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item); ierr == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item {
+		if in, ierr := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item); ierr == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item {
 			title = in.Title
 		} else {
 			return frontend.PlayPlan{}, core.ErrNotFound
@@ -102,7 +103,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	var chosen *core.ReleaseVariant
 	if isPlugin {
 		if b.deps.KindVersions != nil {
-			if variants, verr := b.deps.KindVersions(ctx, viewer, s.public.Item); verr == nil {
+			if variants, verr := b.deps.KindVersions(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item); verr == nil {
 				for j := range variants {
 					if variants[j].ID == targetSelector || variants[j].Release.ID == targetSelector {
 						chosen = &variants[j]
@@ -131,6 +132,32 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		targetSelector = ""
 	}
 
+	entry, ok := b.bindings.Get(sessionID)
+	if !ok {
+		return frontend.PlayPlan{}, core.ErrNotAvailable
+	}
+	opts := s.versionAdmission.opts
+	opts.AudioStream, opts.SubtitleStream = -1, -1
+	planReq := frontend.PlanRequest{
+		Protocol: s.public.Protocol,
+		Viewer:   viewer,
+		Device:   s.public.Device,
+		Item:     s.public.Item,
+		Caps:     caps,
+		Intent: frontend.PlayIntent{
+			Options:          opts,
+			Position:         position,
+			AllowTranscoding: s.allowTranscoding,
+			DeclaredCaps:     true,
+			ExactVersion:     !isAuto,
+			OriginalPlayback: entry.Requested.OriginalPlayback,
+		},
+	}
+	if !isPlugin && isAuto && !entry.Requested.AudioSet && !s.manualSubtitle &&
+		(s.allowTranscoding == nil || *s.allowTranscoding) {
+		ctx = b.withSourceDecision(ctx, planReq)
+	}
+
 	var previous *core.PlaySession
 	var existed bool
 	var ps *core.PlaySession
@@ -144,7 +171,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		} else {
 			previous, existed = kp.SessionForKind(viewer.ID, caps.ClientID, s.public.Item)
 		}
-		in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item)
+		in, ierr := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item)
 		if ierr != nil || in == nil {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
@@ -216,84 +243,72 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	committed := false
 	pinned := false
 	defer func() {
-		if !committed && !sameSource {
+		if committed {
+			return
+		}
+		if !sameSource {
 			b.releasePlanSource(ps.ID, pinned)
+		} else if pinned {
+			if pins, ok := b.deps.Playback.(core.PlaybackRevisionPin); ok {
+				pins.UnpinSourceRevision(ps.ID)
+			}
 		}
 	}()
 
-	opts := s.opts
-	opts.AudioStream = -1
-	opts.SubtitleStream = -1
-	planReq := frontend.PlanRequest{
-		Protocol: s.public.Protocol,
-		Viewer:   viewer,
-		Device:   s.public.Device,
-		Item:     s.public.Item,
-		Caps:     caps,
-		Intent: frontend.PlayIntent{
-			Options:          opts,
-			Position:         position,
-			AllowTranscoding: s.allowTranscoding,
-			DeclaredCaps:     true,
-		},
+	// Capture the revision used to map and admit the tracks.
+	etag := sourceRevision(ps)
+	if sameSource && s.sourcePinned && (etag == "" || etag != s.sourceETag) {
+		return frontend.PlayPlan{}, frontend.ErrSourceGone
+	}
+	if planReq.Protocol == "vela" && ps.Info.Estimated {
+		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
+	}
+	before := ps
+	if !sameSource {
+		before, _ = b.deps.Playback.Session(s.playID)
+	}
+	manualSubtitle := false
+	if before != nil {
+		manualSubtitle = carryVersionTracks(s, before.Info, ps.Info, sameSource, &planReq.Intent)
 	}
 	if b.deps.SelectScopedTracks != nil || b.deps.SelectTracks != nil {
 		var selected core.DecideOptions
 		var terr error
 		if b.deps.SelectScopedTracks != nil {
-			selected, terr = b.deps.SelectScopedTracks(ctx, viewer, s.public.Device, title, ps.Info, planReq.Intent.Options, false, false)
+			selected, terr = b.deps.SelectScopedTracks(ctx, viewer, s.public.Device, title, ps.Info, planReq.Intent.Options, planReq.Intent.AudioSet, planReq.Intent.SubtitleSet)
 		} else {
-			selected, terr = b.deps.SelectTracks(ctx, viewer, title, ps.Info, planReq.Intent.Options, false, false)
+			selected, terr = b.deps.SelectTracks(ctx, viewer, title, ps.Info, planReq.Intent.Options, planReq.Intent.AudioSet, planReq.Intent.SubtitleSet)
 		}
 		if terr != nil {
 			return frontend.PlayPlan{}, terr
 		}
 		planReq.Intent.Options = selected
 	}
+	// A carried rule choice can still be dropped by normal admission.
+	planReq.Intent.SubtitleSet = manualSubtitle
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideProfile(ps, planReq)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &planReq, s.clientCap, b.admitPlanDecision)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if b.videoOff(planReq.Caps) && decisionEncodesVideo(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
-			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-			Cause:         core.ErrVideoTranscodingDisabled,
+	if dec.Reason == "original_runtime" && etag == "" {
+		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
+	}
+	if sameSource && s.sourcePinned {
+		current, ok := b.deps.Playback.Session(ps.ID)
+		if !ok || sourceRevision(current) != etag {
+			return frontend.PlayPlan{}, frontend.ErrSourceGone
 		}
-	}
-	if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
-	}
-	if (dec.Kind == core.DecisionDirectPlay && !planReq.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !planReq.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
-	}
-	if s.public.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		hlsAllowed, _ := b.hlsPlanOutput(ps, planReq, dec)
-		httpAllowed := false
-		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
-			httpAllowed, _ = b.httpPlanOutput(ps, planReq, dec)
-		}
-		if !hlsAllowed && !httpAllowed {
-			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, planReq)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
-			if b.videoOff(planReq.Caps) {
-				if hlsDec, ok := b.hlsOutputDecision(ps, planReq.Caps, planReq.Intent.Options, s.allowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
-					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
-					outErr.Cause = core.ErrVideoTranscodingDisabled
-				}
-			}
-			return frontend.PlayPlan{}, outErr
-		}
-	}
-	if !sameSource {
+	} else {
 		var pinErr error
+		planReq.ExpectedSourceETag = etag
 		ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &planReq, ps, dec, pinned)
 		if pinErr != nil {
 			return frontend.PlayPlan{}, pinErr
 		}
 	}
 
-	etag := sourceRevision(ps)
 	relID := ""
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
@@ -301,15 +316,15 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	normHandle := normalizeVersionHandle(versionHandle)
 
 	if !sameSource {
-		if err := b.retireAudio(ctx, s); err != nil {
-			return frontend.PlayPlan{}, err
-		}
-		if b.deps.Transcoder != nil {
-			b.transcodeStop(sessionID)
-		}
 		if scoped, ok := b.deps.Playback.(core.SurfaceScopedPlayback); !ok || !scoped.MarkSurfaceOpened(ps.ID) {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
+	}
+
+	if err := b.retireAudio(ctx, s); err != nil {
+		return frontend.PlayPlan{}, err
+	}
+	if !sameSource {
 		if binding, ok := b.deps.Playback.(interface {
 			BindClientSession(context.Context, string, string) error
 		}); ok {
@@ -317,6 +332,9 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 				return frontend.PlayPlan{}, err
 			}
 		}
+	}
+	if b.deps.Transcoder != nil {
+		b.transcodeStop(sessionID)
 	}
 
 	b.mu.Lock()
@@ -333,26 +351,44 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		b.transferPlanSourceLocked(ps.ID)
 		stopOld = b.releaseSessionSourceLocked(oldPlayID)
 		live.trickplay = nil
-		live.format = ""
+		live.trickplayStarted = false
+		live.originalSubstituted = false
+		// A previous original grant may already be in the decoder.
+		if oldPinned || s.originalReplaced {
+			live.grant = rand.Text()
+			live.public.MediaPath = "/sessions/media/" + sessionID + "/" + live.grant + "/file"
+		}
 	}
+	live.format = ""
+	live.qualityCapped = false
+	live.originalFailure, live.originalReplaced, live.originalAwaitingProgress = false, false, false
+	live.originalPosition, live.originalAudio, live.originalSubtitle = nil, nil, nil
+	live.originalResumeAt = 0
 	live.playID = ps.ID
-	live.caps.NoVideoTranscode = caps.NoVideoTranscode
+	live.caps = planReq.Caps
 	live.opts = planReq.Intent.Options
+	live.manualSubtitle = planReq.Intent.SubtitleSet
 	live.decision = dec
 	live.versionHandle = normHandle
 	live.exactRelease = relID
-	if !sameSource {
+	live.autoRelease = isAuto
+	if !sameSource || pinned {
 		live.sourcePinned = pinned
 	}
 	live.sourceETag = etag
 	live.streamPosition = position
+	media := publicMedia(ps.Info)
+	live.public.Media = &media
 	live.public.PlayMethod = playMethod(dec.Kind)
 	committed = true
 	b.mu.Unlock()
 
+	planReq.Intent.AudioSet = planReq.Intent.AudioSet && entry.Requested.AudioSet
+	entry.PlayID, entry.Requested, entry.Decision, entry.Info = ps.ID, planReq.Intent, dec, ps.Info
+	entry.Caps, entry.Opts, entry.Offset, entry.Started, entry.UpdatedAt = planReq.Caps, planReq.Intent.Options, position, false, b.deps.Now()
+	b.bindings.Put(entry)
 	if !sameSource {
-		b.bindings.Put(&Binding[frontend.PlayIntent]{ID: sessionID, UserID: viewer.ID, ClientID: live.clientID, Key: live.public.Item, PlayID: ps.ID, PlaybackID: live.playbackID, Requested: planReq.Intent, Decision: dec, Info: ps.Info, Caps: live.caps, Opts: live.opts, UpdatedAt: b.deps.Now()})
-		b.owners.BindFor("broker", viewer.ID, live.clientID, live.public.Item, live.playbackID, ps.ID, true, b.deps.Now())
+		b.owners.BindFor("broker", viewer.ID, s.clientID, s.public.Item, s.playbackID, ps.ID, true, b.deps.Now())
 		if oldHold != nil {
 			oldHold.Close(true)
 		}
@@ -373,22 +409,55 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	hls, hlsContainer := b.hlsPlanOutput(ps, planReq, dec)
 	httpOK, httpContainer := b.httpPlanOutput(ps, planReq, dec)
 	return frontend.PlayPlan{
-		SourceChosenAt:      sourceChosenAt,
-		DecisionAt:          decisionAt,
-		ID:                  sessionID,
-		Media:               publicMedia(ps.Info),
-		Decision:            dec,
-		SelectedSubtitle:    sideSubtitleStream(ps, planReq, dec),
-		DirectPlay:          direct,
-		DirectStream:        remux,
-		Transcoding:         transcoding,
-		VideoTranscodingOff: b.videoOff(planReq.Caps),
-		HLS:                 hls,
-		HLSContainer:        hlsContainer,
-		HTTP:                httpOK,
-		HTTPContainer:       httpContainer,
-		ETag:                etag,
-		VersionHandle:       normHandle,
-		ReleaseID:           relID,
+		SourceChosenAt:        sourceChosenAt,
+		DecisionAt:            decisionAt,
+		ID:                    sessionID,
+		Media:                 media,
+		Decision:              dec,
+		SelectedSubtitle:      sideSubtitleStream(ps, planReq, dec),
+		DirectPlay:            direct,
+		DirectStream:          remux,
+		Transcoding:           transcoding,
+		VideoTranscodingOff:   b.videoOff(planReq.Caps),
+		HLS:                   hls,
+		HLSContainer:          hlsContainer,
+		HTTP:                  httpOK,
+		HTTPContainer:         httpContainer,
+		ETag:                  etag,
+		VersionHandle:         normHandle,
+		ReleaseID:             relID,
+		OriginalOverClientCap: originalChoice,
 	}, nil
+}
+
+// carryVersionTracks translates selections through track metadata. Stream
+// indices only identify tracks within a single source.
+func carryVersionTracks(s *brokerSession, before, next core.MediaInfo, sameSource bool, intent *frontend.PlayIntent) bool {
+	subtitleSet := s.manualSubtitle
+	audio, subtitle := s.decision.AudioStream, s.opts.SubtitleStream
+	if s.originalAudio != nil && validObservedTrack(before, "audio", *s.originalAudio) {
+		audio = *s.originalAudio
+	}
+	if s.originalSubtitle != nil && validObservedTrack(before, "subtitle", *s.originalSubtitle) {
+		subtitle = *s.originalSubtitle
+		subtitleSet = subtitleSet || subtitle != s.opts.SubtitleStream
+	}
+	match := func(kind string, index int) int {
+		if sameSource && validObservedTrack(next, kind, index) {
+			return index
+		}
+		track, fit := matchRecoveryTrack(before, next, kind, index)
+		// An unrelated track should not override the new version's rules.
+		if fit != 1 {
+			return -1
+		}
+		return track
+	}
+	if track := match("audio", audio); track >= 0 {
+		intent.Options.AudioStream, intent.AudioSet = track, true
+	}
+	if track := match("subtitle", subtitle); track >= 0 || subtitleSet {
+		intent.Options.SubtitleStream, intent.SubtitleSet = track, true
+	}
+	return subtitleSet
 }

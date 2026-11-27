@@ -2,6 +2,7 @@ package experience
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -260,5 +261,58 @@ func TestPluginAlbumChildrenOrderByDiscAndTrack(t *testing.T) {
 	}
 	if descPage.Items[0].Title != "Jóga" || descPage.Items[len(descPage.Items)-1].Title != "5 Years" {
 		t.Fatalf("unexpected desc title order: %+v", descPage.Items)
+	}
+}
+
+// A list (a playlist) presented as a MediaBrowser album keeps its own order:
+// its members come from many albums, so the album disc/track order would
+// regroup them by album.
+func TestPluginListChildrenKeepListOrder(t *testing.T) {
+	ctx := context.Background()
+	viewer := &core.User{ID: 1, AllowedLibraries: []core.LibraryID{9}}
+	musicLib := core.Library{
+		ID:       9,
+		Key:      "plugin:music:music",
+		Name:     "Music",
+		Source:   core.LibraryPlugin,
+		PluginID: "music.plugin",
+		KindKey:  "music",
+		Present:  mediaBrowserPresentation("music", map[string]string{"playlist": "MusicAlbum", "track": "Audio"}),
+	}
+	listKey := core.PluginKey(500)
+	list := core.Title{Key: listKey, Type: core.TypeMovie, MediaClass: core.MediaClassMusic, MediaRole: core.MediaRolePlaylist, MBItemType: "MusicAlbum", Title: "Calm"}
+	members := []core.Title{
+		{Key: core.PluginKey(301), Type: core.TypeMovie, MBItemType: "Audio", Title: "Zephyr", ParentKey: core.PluginKey(31), ParentTitle: "Winds", Disc: 0, ItemIndex: 1},
+		{Key: core.PluginKey(302), Type: core.TypeMovie, MBItemType: "Audio", Title: "Alma", ParentKey: core.PluginKey(32), ParentTitle: "Alma", Disc: 0, ItemIndex: 2},
+		{Key: core.PluginKey(303), Type: core.TypeMovie, MBItemType: "Audio", Title: "Mist", ParentKey: core.PluginKey(33), ParentTitle: "Bright", Disc: 0, ItemIndex: 3},
+	}
+	pl := &spyMusicPluginLibraries{
+		fakePluginLibraries: fakePluginLibraries{libs: []core.Library{musicLib}},
+		browsePage:          PluginBrowsePage{Items: []core.Title{list}, Total: 1},
+		children:            map[core.RatingKey][]core.Title{listKey: members},
+	}
+	svc := &Service{d: ServiceDeps{
+		Active:          func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		PluginLibraries: pl,
+		Protocol:        "jellyfin",
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.MediaBrowser != nil {
+				return mt, p.MediaBrowser.CollectionType, true
+			}
+			return mt, "", false
+		},
+	}}
+	for _, q := range []frontend.ItemQuery{{Limit: 50}, {Sort: core.SortIndex, Limit: 50}, {Sort: core.SortTitle, Limit: 50}} {
+		page, err := svc.Children(ctx, viewer, core.Device{}, listKey, q)
+		if err != nil {
+			t.Fatalf("Children(%+v): %v", q, err)
+		}
+		var got []string
+		for _, it := range page.Items {
+			got = append(got, it.Title)
+		}
+		if fmt.Sprint(got) != "[Zephyr Alma Mist]" {
+			t.Fatalf("Children(%+v) = %v, want list order", q, got)
+		}
 	}
 }

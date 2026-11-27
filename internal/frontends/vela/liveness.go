@@ -149,7 +149,7 @@ func (i *instance) checkDisconnectedSession(id string, s *playSession) {
 		baseCtx = context.Background()
 	}
 	stopCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-	err := i.host.Sessions.Stop(stopCtx, frontend.SessionAccess{Viewer: viewer, Device: dev, Protocol: "vela"}, id)
+	err := i.stopPlayback(stopCtx, frontend.SessionAccess{Viewer: viewer, Device: dev, Protocol: "vela"}, id, s)
 	cancel()
 
 	s.mu.Lock()

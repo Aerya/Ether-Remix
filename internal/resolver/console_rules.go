@@ -85,7 +85,7 @@ func (h *consoleAPI) previewRules(w http.ResponseWriter, r *http.Request) {
 		var trace Trace
 		// Console preview is device-neutral, just like normal release search.
 		caps := core.ClientCaps{}
-		candidates, _, err := h.s.rankCandidatesLocal(ctx, core.ResolveRequest{Title: title, Client: caps}, searchRequestFor(title), in.Profile, results, &trace, "", false)
+		candidates, _, err := h.s.rankCandidatesLocal(ctx, core.ResolveRequest{Title: title, Client: caps}, h.s.cachedSearchRequest(title), in.Profile, results, &trace, "", false)
 		if err != nil {
 			h.fail(w, err)
 			return

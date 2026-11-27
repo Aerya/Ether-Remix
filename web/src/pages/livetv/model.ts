@@ -167,7 +167,9 @@ export type Channel = {
 };
 /** The lineup identity the paged console API returns; no stream or programme payload. */
 export type ChannelSummary = Omit<Channel, "epoch" | "seed" | "shuffle" | "items"> &
-  Partial<Pick<Channel, "epoch" | "seed" | "shuffle" | "items">>;
+  Partial<Pick<Channel, "epoch" | "seed" | "shuffle" | "items">> & {
+    readonly archiveDays?: number;
+  };
 export type ChannelCounts = {
   all: number;
   live: number;

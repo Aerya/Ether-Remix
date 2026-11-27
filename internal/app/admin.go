@@ -16,6 +16,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/markers"
@@ -89,17 +91,14 @@ func (a *App) buildAdmin() http.Handler {
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
-		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
-			return func(ctx context.Context, token string) bool {
-				if auth.IsOwnerSession(token) {
-					u, err := a.users.OwnerSession(ctx, token)
-					return err == nil && u.IsOwner
-				}
-				u, err := a.users.Authenticate(ctx, token)
-				return err == nil && u.IsOwner
+		ResolveOwnerToken: func(ctx context.Context, token string) (*core.User, error) {
+			if auth.IsOwnerSession(token) {
+				return a.users.OwnerSession(ctx, token)
 			}
-		}(context.Background()),
-		Sessions: a.users,
+			return a.users.Authenticate(ctx, token)
+		},
+		Sessions:          a.users,
+		TestProviderSpeed: a.testProviderSpeed,
 		TestUsenet: func(ctx context.Context, p config.UsenetProvider) error {
 			if a.fetcher != nil {
 				return a.fetcher.TestProvider(ctx, p)
@@ -197,7 +196,7 @@ func (a *App) buildAdmin() http.Handler {
 				return map[string]string{"error": "ffmpeg not found"}
 			}
 			accel := a.transcoder.HWAccel()
-			hw := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus()}
+			hw := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus(), "videoEncoderLimit": a.transcoder.VideoEncoderLimit()}
 			if vendor := transcode.GPUVendor(accel.Device); vendor != "" {
 				hw["vendor"] = vendor
 			}
@@ -239,34 +238,7 @@ func (a *App) buildAdmin() http.Handler {
 		RenameViewer:    a.renameViewer,
 		ViewerDirectory: a.viewerDirectory,
 		Personalization: a.personalize,
-		LayoutLibraries: func(ctx context.Context) ([]admin.LayoutLibrary, error) {
-			if a.libraries == nil {
-				return []admin.LayoutLibrary{}, nil
-			}
-			libs, err := a.libraries.List(ctx)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]admin.LayoutLibrary, 0, len(libs))
-			for _, l := range libs {
-				lType := string(l.MediaType)
-				if l.Source == core.LibraryPlugin {
-					lType = "plugin"
-				} else if l.MediaType != core.TypeMovie && l.MediaType != core.TypeShow {
-					continue
-				}
-				out = append(out, admin.LayoutLibrary{
-					ID:      int(l.ID),
-					Name:    l.Name,
-					Slug:    l.Key,
-					Type:    lType,
-					Section: "library:" + strconv.Itoa(int(l.ID)),
-				})
-			}
-			return out, nil
-		},
-		PluginLibraryRows: a.pluginLibraryLayoutRows,
-		Collections:       a.collections,
+		Collections:     a.collections,
 		AddonCatalogImports: func() admin.AddonCatalogImporter {
 			if a.pluginsRT == nil || a.pluginsRT.catalogImports == nil {
 				return nil
@@ -274,6 +246,9 @@ func (a *App) buildAdmin() http.Handler {
 			return a.pluginsRT.catalogImports
 		}(),
 		CatalogHelper:      a.collections,
+		TitleManagement:    a,
+		MetadataSources:    a.metadataSources,
+		PluginTitleDetail:  a.pluginTitleDetail,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,
 		WaitingReleaseKeys: func(ctx context.Context) []core.RatingKey {
@@ -320,6 +295,9 @@ func (a *App) buildAdmin() http.Handler {
 		SyncPlexFriends:       a.syncPlexFriends,
 		ListPlexUsers:         a.listPlexUsers,
 		Prerolls:              a.prerollAdmin(),
+	}
+	if a.stats != nil {
+		deps.ActivityStats = a.stats
 	}
 	if a.users != nil {
 		deps.EnsurePlexFriend = a.users.EnsurePlexFriend
@@ -764,50 +742,126 @@ func (a *App) viewerDirectory(ctx context.Context) ([]admin.ViewerRecord, error)
 	return out, nil
 }
 
-func (a *App) pluginLibraryLayoutRows(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error) {
-	var svc *surfaceExperience
-	if a.frontends != nil && a.frontends.siloExperience != nil {
-		svc = a.frontends.siloExperience
-	} else if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
-		if raw, err := a.newSurfaceExperience("silo"); err == nil {
-			svc, _ = raw.(*surfaceExperience)
-		}
+// pluginTitleDetail resolves a plugin-library rating key for the console's
+// GET /ether/api/catalog/title/{key} route without triggering live container
+// expansion. Child items without their own artwork (such as music tracks under
+// an album) inherit HTTP(S) poster/backdrop URLs from their nearest ancestor.
+func (a *App) pluginTitleDetail(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if a == nil || !key.IsPluginKey() || a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+		return nil, core.ErrNotFound
 	}
-	if svc == nil || svc.Service == nil {
-		return []core.RowDescriptor{}, []core.HomeRow{}, nil
-	}
-	v := viewer
-	if v == nil || v.ID <= 0 {
-		if owner, err := a.users.Owner(ctx); err == nil && owner != nil {
-			v = owner
-		} else {
-			v = &core.User{ID: 1, IsOwner: true}
-		}
-	}
-	viewID := strconv.Itoa(libraryID)
-	sec := "library:" + viewID
-	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, viewID)
+	lookupCtx := core.WithNoContainerExpand(ctx)
+	piv, err := a.pluginsRT.kindCatalog.Item(lookupCtx, key)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	descs := make([]core.RowDescriptor, 0, len(cands))
-	rows := make([]core.HomeRow, 0, len(cands))
-	for _, r := range cands {
-		descs = append(descs, core.RowDescriptor{
-			HubID:    r.ID,
-			Title:    r.Title,
-			Kind:     r.Kind,
-			Sections: []string{sec},
-			Group:    "collections",
-		})
-		rows = append(rows, core.HomeRow{
-			HubID:  r.ID,
-			Title:  r.Title,
-			Kind:   r.Kind,
-			Source: core.RowSourcePrecomposed,
-			Items:  r.Items,
-			Hub:    core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)},
-		})
+	title := piv.Title
+	poster, backdrop := pluginItemArtwork(piv)
+	if poster == "" || backdrop == "" {
+		seen := map[core.RatingKey]bool{key: true}
+		queue := make([]core.RatingKey, 0, len(title.MediaParents)+2)
+		enqueueAncestors := func(t core.Title) {
+			if t.ParentKey != 0 {
+				queue = append(queue, t.ParentKey)
+			}
+			for _, p := range t.MediaParents {
+				if p.Key != 0 {
+					queue = append(queue, p.Key)
+				}
+			}
+			if t.ShowKey != 0 {
+				queue = append(queue, t.ShowKey)
+			}
+		}
+		enqueueAncestors(title)
+		const maxAncestorLookups = 8
+		for i := 0; i < len(queue) && len(seen) <= maxAncestorLookups; i++ {
+			ancKey := queue[i]
+			if !ancKey.IsPluginKey() || seen[ancKey] {
+				continue
+			}
+			seen[ancKey] = true
+			anc, aerr := a.pluginsRT.kindCatalog.Item(lookupCtx, ancKey)
+			if aerr != nil {
+				continue
+			}
+			ap, ab := pluginItemArtwork(anc)
+			if poster == "" && ap != "" {
+				poster = ap
+			}
+			if backdrop == "" && ab != "" {
+				backdrop = ab
+			}
+			if poster != "" && backdrop != "" {
+				break
+			}
+			enqueueAncestors(anc.Title)
+		}
 	}
-	return descs, rows, nil
+	if title.Type == core.TypeEpisode && pluginHTTPURL(title.StillPath) == "" {
+		title.StillPath = ""
+	}
+	if pluginHTTPURL(title.PosterPath) == "" && poster != "" {
+		title.PosterPath = poster
+	}
+	if pluginHTTPURL(title.BackdropPath) == "" && backdrop != "" {
+		title.BackdropPath = backdrop
+	}
+	return &title, nil
+}
+
+func pluginHTTPURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return ""
+}
+
+func pluginItemArtwork(piv experience.PluginItemView) (poster, backdrop string) {
+	t := piv.Title
+	if t.Type == core.TypeEpisode {
+		poster = pluginHTTPURL(t.StillPath)
+	}
+	if poster == "" {
+		poster = pluginHTTPURL(t.PosterPath)
+	}
+	backdrop = pluginHTTPURL(t.BackdropPath)
+	if poster != "" && backdrop != "" {
+		return poster, backdrop
+	}
+	var thumb, fallback string
+	for _, img := range piv.Images {
+		u := pluginHTTPURL(img.Path)
+		if u == "" {
+			continue
+		}
+		switch img.Kind {
+		case frontend.ImagePoster:
+			if poster == "" {
+				poster = u
+			}
+		case frontend.ImageThumb:
+			if thumb == "" {
+				thumb = u
+			}
+		case frontend.ImageBackdrop:
+			if backdrop == "" {
+				backdrop = u
+			}
+		case frontend.ImageLogo, frontend.ImageBanner:
+		default:
+			if fallback == "" {
+				fallback = u
+			}
+		}
+	}
+	if poster == "" {
+		if thumb != "" {
+			poster = thumb
+		} else if fallback != "" {
+			poster = fallback
+		}
+	}
+	return poster, backdrop
 }

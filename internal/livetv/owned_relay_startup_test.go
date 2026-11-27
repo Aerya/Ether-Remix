@@ -282,7 +282,7 @@ func TestOwnedRelayTuneReadyAndPlaylistTiming(t *testing.T) {
 					seg1At: origin.Add(1 * time.Second),
 					seg2At: origin.Add(4800 * time.Millisecond), // 3.8 s after seg 1
 				}
-				if err := p.adopt("synthetic-relay", hls, func() {}, info, dec, 2*time.Second); err != nil {
+				if err := p.adopt("synthetic-relay", hls, func() {}, info, dec, 2*time.Second, true); err != nil {
 					t.Fatal(err)
 				}
 				lease := s.runRelay(ss, p)

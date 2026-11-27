@@ -10,6 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/safety"
 	"github.com/braedonsaunders/ether/internal/viewerpolicy"
 )
@@ -59,10 +60,7 @@ func (a *App) viewerCapabilities(local *identity.Local, experience frontend.Expe
 			out.BlockedTags = &tags
 			rating := v.MaxContentRating
 			out.MaxRating = &rating
-			cap := a.safety.BitrateLimit(v)
-			if remoteCap := a.cfg.Read().Transcode.RemoteMaxBitrateKbps; remoteCap > 0 && (cap == 0 || remoteCap < cap) {
-				cap = remoteCap
-			}
+			cap := resolver.ApplyClientRulesForMedia(a.cfg.Read().Quality, core.ClientCaps{Remote: true}, v, core.MediaAny).MaxBitrateKbps
 			out.RemoteBitrateKbps = &cap
 		}
 		limit := playback.UserStreamLimit(a.cfg.Read(), v)

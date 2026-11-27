@@ -25,6 +25,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	_ "image/png"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -332,19 +333,28 @@ func (s *Service) Artwork(ctx context.Context, key core.RatingKey) (Artwork, err
 	e = json.Unmarshal([]byte(raw), &v)
 	return v, e
 }
+func validVariantPath(path string) bool {
+	if artwork.ValidPath(path) {
+		return true
+	}
+	u, err := url.Parse(path)
+	return err == nil && u.Scheme == "https" && u.Host == "artworks.thetvdb.com" &&
+		u.User == nil && !u.ForceQuery && u.RawQuery == "" && u.Fragment == "" && u.Path != ""
+}
+
 func (s *Service) SaveArtwork(ctx context.Context, key core.RatingKey, v Artwork) error {
 	if len(v.Posters) > 50 || len(v.Backdrops) > 50 {
 		return errors.New("maximum 50 artwork variants")
 	}
 	for _, list := range [][]Variant{v.Posters, v.Backdrops} {
 		for _, a := range list {
-			if !artwork.ValidPath(a.Path) || len(a.Tags) > 20 {
+			if !validVariantPath(a.Path) || len(a.Tags) > 20 {
 				return errors.New("invalid artwork variant")
 			}
 		}
 	}
 	for _, p := range []string{v.PinnedPoster, v.PinnedBackdrop} {
-		if p != "" && !artwork.ValidPath(p) {
+		if p != "" && !validVariantPath(p) {
 			return errors.New("invalid pinned artwork")
 		}
 	}
@@ -432,6 +442,18 @@ func (s *Service) Version(ctx context.Context, u *core.User, t *core.Title, lang
 	return hex.EncodeToString(hash[:8])
 }
 
+func (s *Service) metadataImage(ctx context.Context, path string, width int) ([]byte, string, error) {
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+		if images, ok := s.o.Images.(interface {
+			GetUntrustedURL(context.Context, string) ([]byte, string, error)
+		}); ok {
+			return images.GetUntrustedURL(ctx, path)
+		}
+		return nil, "", core.ErrNotAvailable
+	}
+	return s.o.Images.Get(ctx, path, width)
+}
+
 // Poster decodes bounded images and uses a bounded generated-image cache.
 func (s *Service) Poster(ctx context.Context, u *core.User, t *core.Title, lang string) ([]byte, string, error) {
 	if s.o.Images == nil {
@@ -442,7 +464,7 @@ func (s *Service) Poster(ctx context.Context, u *core.User, t *core.Title, lang 
 		return nil, "", err
 	}
 	if t.Type == core.TypeEpisode && !cfg.BadgesOnEpisodes() {
-		return s.o.Images.Get(ctx, t.StillPath, 500)
+		return s.metadataImage(ctx, t.StillPath, 500)
 	}
 	ctx = context.WithValue(ctx, previewSettingsKey{}, cfg)
 	path, _ := s.Paths(ctx, u, t, lang)
@@ -454,7 +476,7 @@ func (s *Service) Poster(ctx context.Context, u *core.User, t *core.Title, lang 
 	if p, ok := s.o.Images.(posterSource); ok {
 		data, ct, err = p.GetPoster(ctx, t, path, 500)
 	} else {
-		data, ct, err = s.o.Images.Get(ctx, path, 500)
+		data, ct, err = s.metadataImage(ctx, path, 500)
 	}
 	if err != nil {
 		return nil, "", err
@@ -551,14 +573,14 @@ func (s *Service) Backdrop(ctx context.Context, u *core.User, t *core.Title, lan
 		return nil, "", errors.New("artwork unavailable")
 	}
 	_, path := s.Paths(ctx, u, t, lang)
-	return s.o.Images.Get(ctx, path, 1280)
+	return s.metadataImage(ctx, path, 1280)
 }
 
 func (s *Service) Logo(ctx context.Context, t *core.Title) ([]byte, string, error) {
 	if s.o.Images == nil {
 		return nil, "", errors.New("artwork unavailable")
 	}
-	return s.o.Images.Get(ctx, t.LogoPath, 500)
+	return s.metadataImage(ctx, t.LogoPath, 500)
 }
 
 func (s *Service) visible(u *core.User, t *core.Title) bool {

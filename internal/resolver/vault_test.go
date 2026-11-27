@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -83,7 +84,7 @@ func TestLibraryReplayCutoffFingerprintAndDeadFallback(t *testing.T) {
 			case "dead":
 				v.entry.HealthAt = time.Time{}
 			}
-			res, err := s.resolve(context.Background(), req, p)
+			res, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +128,7 @@ func TestVaultPreferReplayAndAlternates(t *testing.T) {
 				{Key: "lower", Kind: vault.KindUsenet, Name: "The.Signal.1999.720p.WEB-DL.H264-ALT", Size: 4000 << 20, ProfileFP: "older", Health: vault.HealthOK, HealthAt: time.Now()},
 			}
 
-			res, err := s.resolve(context.Background(), req, p)
+			res, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -162,7 +163,7 @@ func TestVaultPreferredOnlyFailuresSkipLiveSearchAndPreserveTransientError(t *te
 		s := New(idx, fakeHealth{}, nil, testCfg(), Options{Vault: v, Verifier: v})
 		defer s.Close()
 
-		_, err := s.resolve(context.Background(), req, p)
+		_, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 		if !errors.Is(err, core.ErrNotAvailable) {
 			t.Fatalf("err = %v, want ErrNotAvailable", err)
 		}
@@ -186,7 +187,7 @@ func TestVaultPreferredOnlyFailuresSkipLiveSearchAndPreserveTransientError(t *te
 		s := New(idx, fakeHealth{}, nil, testCfg(), Options{Vault: v, Verifier: v})
 		defer s.Close()
 
-		_, err := s.resolve(context.Background(), req, p)
+		_, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 		if !errors.Is(err, nntpErr) {
 			t.Fatalf("err = %v, want %v", err, nntpErr)
 		}
@@ -236,7 +237,7 @@ func TestVaultPreferMissingFallsBackToLiveSearch(t *testing.T) {
 	defer s.Close()
 	v.entry.ProfileFP = ProfileFingerprint(p, wantedAudio(p, req.User, s.catalogLanguage()))
 
-	res, err := s.resolve(context.Background(), req, p)
+	res, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +255,7 @@ func TestVaultPreferDeadMarksDeadAndFallsBackToLiveSearch(t *testing.T) {
 	defer s.Close()
 	v.entry.ProfileFP = ProfileFingerprint(p, wantedAudio(p, req.User, s.catalogLanguage()))
 
-	res, err := s.resolve(context.Background(), req, p)
+	res, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +283,7 @@ func TestVaultPreferredOnlyEmptyPreferDoesNotReturnArbitraryVaultRelease(t *test
 	if hit != nil || retry || err != nil {
 		t.Fatalf("PreferredOnly with empty Prefer must not return vault hit: hit=%+v retry=%v err=%v", hit, retry, err)
 	}
-	if _, err := s.resolve(context.Background(), req, p); err != nil {
+	if _, err := s.resolve(context.Background(), req, p, config.Quality{}, profileDecision{}); err != nil {
 		t.Fatal(err)
 	}
 	if idx.searches.Load() == 0 {

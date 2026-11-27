@@ -91,6 +91,9 @@ func (s *Service) clearVisibility() {
 	s.visibilityMu.Unlock()
 }
 
+// InvalidateTitleMatches drops remembered visibility after bindings move.
+func (s *Service) InvalidateTitleMatches() { s.clearVisibility() }
+
 type currentPolicyKey struct{}
 
 // FilterDiscoveryCurrent bypasses node-local visibility and resolver memos for

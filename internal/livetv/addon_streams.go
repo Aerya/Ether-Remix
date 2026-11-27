@@ -181,7 +181,7 @@ func (s *Service) GuideWindow() (from, until time.Time) {
 // Fetch: listings outside the guide window are dropped, as are channels
 // that are neither among channels nor mapped to src by the owner.
 func (s *Service) ParseSourceGuide(ctx context.Context, src Source, channels []Channel, r io.Reader) (XMLGuide, error) {
-	allow, err := s.guideAllow(ctx, src, channels, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
+	filter, err := s.sourceGuideFilter(ctx, src, channels, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
 	if err != nil {
 		return XMLGuide{}, err
 	}
@@ -190,8 +190,7 @@ func (s *Service) ParseSourceGuide(ctx context.Context, src Source, channels []C
 		return XMLGuide{}, err
 	}
 	defer closeReader(rd)
-	from, until := s.GuideWindow()
-	g, _, err := parseXMLTV(rd, guideFilter{From: from, Until: until, IDs: allow})
+	g, _, err := parseXMLTV(rd, filter)
 	return g, err
 }
 

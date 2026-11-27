@@ -34,8 +34,13 @@ func TestItemDetailOmitsEstimatedTracks(t *testing.T) {
 				if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &item) != nil {
 					t.Fatal(w.Code, w.Body.String())
 				}
+				streams, array := item["MediaStreams"].([]any)
 				_, present := item["MediaStreams"]
-				if present == estimated {
+				if estimated && protocol == "emby" {
+					if present {
+						t.Fatalf("Emby exposed estimated tracks: %s", w.Body.String())
+					}
+				} else if !array || (len(streams) == 0) != estimated {
 					t.Fatalf("estimated=%v: %s", estimated, w.Body.String())
 				}
 			})

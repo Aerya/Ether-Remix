@@ -10,6 +10,7 @@ import { t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { invalidateRegistry } from "../../lib/extend";
 import { PermissionSheet, RuntimeLimitsCard } from "./PermissionSheet";
+import { confirmLibraryRebuild } from "./rebuildLibrary";
 import {
   isPrivateUrl,
   kindIcon,
@@ -96,7 +97,7 @@ export function InstallDrawer({
     }
   };
 
-  const runInstall = async () => {
+  const runInstall = async (rebuildConfirmation?: string) => {
     if (!preview) return;
     setBusy(true);
     setError(null);
@@ -115,6 +116,8 @@ export function InstallDrawer({
             },
             shadow,
             acceptAddedPermissions: !!preview.addedPermissions?.length,
+            replaceLibraries: rebuildConfirmation ? true : undefined,
+            rebuildConfirmation,
           }),
         );
         installed = await apiFetch<PluginSummary>("/plugins/install", {
@@ -136,6 +139,8 @@ export function InstallDrawer({
             shadow,
             acceptAddedPermissions:
               preview.addedPermissions && preview.addedPermissions.length > 0 ? true : undefined,
+            replaceLibraries: rebuildConfirmation ? true : undefined,
+            rebuildConfirmation,
           }),
         });
       }
@@ -145,6 +150,10 @@ export function InstallDrawer({
       reset();
       onInstalled(targetId);
     } catch (e) {
+      if (!rebuildConfirmation) {
+        const confirmation = await confirmLibraryRebuild(e);
+        if (confirmation) return runInstall(confirmation);
+      }
       setError(e);
     } finally {
       setBusy(false);
@@ -350,6 +359,7 @@ export function InstallDrawer({
             <RuntimeLimitsCard
               limits={preview.runtimeLimits}
               requested={preview.manifest.ether?.runtime?.limits}
+              listItems={preview.listItems}
             />
             <PermissionSheet
               permissions={preview.permissions}
@@ -365,6 +375,7 @@ export function InstallDrawer({
               pendingOperatorHosts={preview.pendingOperatorHosts}
               onChangeOperatorHosts={setOperatorHosts}
               addedPermissions={preview.addedPermissions}
+              listItems={preview.listItems}
             />
 
             <div className="rounded-xl border border-border bg-surface px-4 py-2">

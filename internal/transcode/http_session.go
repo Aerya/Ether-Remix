@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -90,26 +89,9 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 		return nil, err
 	}
 	encoding := req.Info.Video() != nil && !req.Decision.VideoCopy
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return nil, errors.New("transcode: manager closed")
+	if err := m.admitStartEncoding(ctx, req, life, encoding); err != nil {
+		return nil, err
 	}
-	if !req.LiveInput && encoding && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff()) {
-		m.mu.Unlock()
-		return nil, ErrVideoTranscodingDisabled
-	}
-	if encoding && m.cfg.MaxTranscodes > 0 {
-		if m.encodingLocked("") >= m.cfg.MaxTranscodes {
-			m.preemptBackgroundLocked()
-		}
-		if n := m.encodingLocked(""); n >= m.cfg.MaxTranscodes {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("%w (%d running)", ErrTooManyTranscodes, n)
-		}
-	}
-	life.encoding.Store(encoding)
-	m.mu.Unlock()
 	// Attach uses dir for cleanup and any staged external sidecars.
 	dir := filepath.Join(m.tempDir, "http-"+unsafeID.ReplaceAllString(id, "_")+"-"+randomHex(4))
 	stub := &Session{
