@@ -35,6 +35,10 @@ export const REMIX_UPDATES = [
     ],
     items: [
       [
+        "Un addon Stremio n’a plus besoin de deux copies de l’URL du proxy : le bloc « Proxy de l’addon · requêtes et lecture » remplit les deux. Les réglages séparés restent disponibles en mode avancé.",
+        "A Stremio addon no longer needs two copies of the proxy URL: the “Addon proxy · requests and playback” block fills both. Separate settings remain available as an advanced option.",
+      ],
+      [
         "Le parcours rejoint la version stable avec Stremio/Nuvio, les exclusions des derniers ajouts Jellyfin/Emby et les découvertes musicales Digarr/AudioMuse. Les connexions et jetons se configurent dans leurs éditeurs ; les intentions ne les activent pas.",
         "The journey joins stable with Stremio/Nuvio, Jellyfin/Emby latest-item exclusions and Digarr/AudioMuse music discovery. Connections and tokens are configured in their editors; intentions do not enable them.",
       ],

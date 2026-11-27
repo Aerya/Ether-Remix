@@ -1,5 +1,5 @@
 import { indexerOrigin } from "../../pse/indexerOrigin";
-import { SourceProxyFields } from "../../pse/SourceProxyFields";
+import { AddonProxyFields } from "../../pse/AddonProxyFields"; // PSE-HOOK: proxy unique d’un addon Stremio — voir docs/pse/FORK.fr.md
 import {
   Alert,
   AlertDescription,
@@ -857,29 +857,12 @@ export function IndexerList({
                     }
                   />
                 </SettingsRow>
-                <SourceProxyFields
-                  title={
-                    getLocale().startsWith("fr")
-                      ? "Proxy des requêtes · manifeste et recherches"
-                      : "Request proxy · manifest and searches"
-                  }
-                  value={draft.requestProxy}
-                  onChange={(requestProxy) => set({ requestProxy })}
+                {/* PSE-HOOK: proxy unique d’un addon Stremio — voir docs/pse/FORK.fr.md */}
+                <AddonProxyFields
+                  requestProxy={draft.requestProxy}
+                  streamProxy={draft.streamProxy}
+                  onChange={set}
                 />
-                <SourceProxyFields
-                  title={
-                    getLocale().startsWith("fr")
-                      ? "Proxy de lecture · flux HTTP de cet addon"
-                      : "Playback proxy · this addon’s HTTP streams"
-                  }
-                  value={draft.streamProxy}
-                  onChange={(streamProxy) => set({ streamProxy })}
-                />
-                <p className="text-sm text-fg-muted">
-                  {getLocale().startsWith("fr")
-                    ? "Le proxy de lecture concerne les flux récupérés par Remix. Pour un torrent résolu par un compte débrideur de Remix, le proxy du compte s’applique. Les appels effectués par un addon distant restent sous son contrôle."
-                    : "The playback proxy applies to streams fetched by Remix. Torrents resolved through a Remix debrid account use that account’s proxy. Calls made by a remote addon remain under its control."}
-                </p>
               </>
             )}
             {stat && draft.dailyLimit > 0 ? (
