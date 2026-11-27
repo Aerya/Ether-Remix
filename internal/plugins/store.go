@@ -21,6 +21,8 @@ import (
 )
 
 func init() {
+	// v13 (Remix): upstream v12; v12 already tracks KV usage here.
+	store.Register("plugins", 13, `ALTER TABLE plugins_installed ADD COLUMN replace_libraries INTEGER NOT NULL DEFAULT 0;`)
 	store.Register("plugins", 7, `ALTER TABLE plugins_installed ADD COLUMN manifest_refresh_hours INTEGER NOT NULL DEFAULT 1;`)
 
 	// v12 (Remix): per-plugin KV usage, kept with every KV write, so a put checks
@@ -184,6 +186,7 @@ type Record struct {
 	// them: EffectiveEther leaves them out.
 	RolesOff             []Capability
 	ManifestRefreshHours int
+	ReplaceLibraries     bool `json:"-"`
 }
 
 // Health is one plugin's health and impact record.
@@ -264,11 +267,11 @@ type storage struct {
 func (s *storage) record(ctx context.Context, id string) (Record, error) {
 	var r Record
 	var man, updMan, updFiles string
-	var en, ver, sh, au int
+	var en, ver, sh, au, replace int
 	var inst, upd int64
 	var rolesOff string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off,manifest_refresh_hours FROM plugins_installed WHERE id=?`, id).
-		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff, &r.ManifestRefreshHours)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off,manifest_refresh_hours,replace_libraries FROM plugins_installed WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff, &r.ManifestRefreshHours, &replace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -308,6 +311,7 @@ func (s *storage) record(ctx context.Context, id string) (Record, error) {
 	r.Manifest.rolesOff = r.RolesOff
 	r.Enabled, r.Verified, r.Shadow, r.AutoUpdate = en == 1, ver == 1, sh == 1, au == 1
 	r.updateManifest, r.updateFiles = updMan, updFiles
+	r.ReplaceLibraries = replace == 1
 	r.InstalledAt, r.UpdatedAt = time.Unix(inst, 0).UTC(), time.Unix(upd, 0).UTC()
 	return r, nil
 }
@@ -346,10 +350,10 @@ func (s *storage) upsert(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_installed(id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name,version=excluded.version,kind=excluded.kind,manifest=excluded.manifest,source_kind=excluded.source_kind,source_url=excluded.source_url,enabled=excluded.enabled,verified=excluded.verified,shadow=excluded.shadow,auto_update=excluded.auto_update,update_version=excluded.update_version,update_manifest=excluded.update_manifest,update_files=excluded.update_files,prev_version=excluded.prev_version,updated_at=excluded.updated_at`,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plugins_installed(id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,replace_libraries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,version=excluded.version,kind=excluded.kind,manifest=excluded.manifest,source_kind=excluded.source_kind,source_url=excluded.source_url,enabled=excluded.enabled,verified=excluded.verified,shadow=excluded.shadow,auto_update=excluded.auto_update,update_version=excluded.update_version,update_manifest=excluded.update_manifest,update_files=excluded.update_files,prev_version=excluded.prev_version,updated_at=excluded.updated_at,replace_libraries=excluded.replace_libraries`,
 		r.ID, r.Name, r.Version, r.Kind, string(r.ManifestRaw), r.SourceKind, sealedURL,
-		bi(r.Enabled), bi(r.Verified), bi(r.Shadow), bi(r.AutoUpdate), r.UpdateVersion, r.updateManifest, r.updateFiles, r.PrevVersion, timeOr(r.InstalledAt, now), now)
+		bi(r.Enabled), bi(r.Verified), bi(r.Shadow), bi(r.AutoUpdate), r.UpdateVersion, r.updateManifest, r.updateFiles, r.PrevVersion, timeOr(r.InstalledAt, now), now, bi(r.ReplaceLibraries))
 	return err
 }
 

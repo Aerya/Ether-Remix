@@ -30,6 +30,7 @@ type SyncOptions struct {
 	FullWalk    bool   // force a full browse walk even if a change cursor exists
 	Concurrency int    // max concurrent child browse requests (default MaxSyncConcurrency = 4)
 	Caller      Caller // optional override for Service's configured Caller
+	rebuildOnly bool   // A pushed batch arrived while the kind has a pending rebuild.
 }
 
 // SyncResult reports the outcome of a SyncKind run.
@@ -298,17 +299,8 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	if s == nil || s.db == nil {
 		return SyncResult{}, fmt.Errorf("pluginitems: nil service")
 	}
-	if !s.leader() {
+	if !opts.rebuildOnly && !s.leader() {
 		return SyncResult{}, nil
-	}
-	caller := opts.Caller
-	if caller == nil {
-		s.workersMu.Lock()
-		caller = s.caller
-		s.workersMu.Unlock()
-	}
-	if caller == nil {
-		return SyncResult{}, fmt.Errorf("pluginitems: nil plugin route caller")
 	}
 
 	syncMu := s.syncLock(pluginID, kindKey)
@@ -322,8 +314,22 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	if err != nil {
 		return SyncResult{}, err
 	}
-	if rec.Decl.Sync.Mode == plugins.KindSyncPush || rec.Decl.Sync.Mode == "" {
+	rec, err = s.rebuildKind(ctx, rec)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	if opts.rebuildOnly || rec.Decl.Sync.Mode == plugins.KindSyncPush || rec.Decl.Sync.Mode == "" {
 		return SyncResult{}, nil
+	}
+
+	caller := opts.Caller
+	if caller == nil {
+		s.workersMu.Lock()
+		caller = s.caller
+		s.workersMu.Unlock()
+	}
+	if caller == nil {
+		return SyncResult{}, fmt.Errorf("pluginitems: nil plugin route caller")
 	}
 
 	state, err := s.SyncStateOf(ctx, pluginID, kindKey)

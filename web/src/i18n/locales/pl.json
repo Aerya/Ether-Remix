@@ -8806,6 +8806,7 @@
   },
   "m_1896095e6f5bf2": "Zostanie ponownie sprawdzone pod kątem sprawności, gdy następnym razem będzie kandydatem.",
   "m_18969be245c683": "Odpiąć „{title}”?",
+  "m_1897e9736cf4c7": "Odbuduj i zainstaluj",
   "m_189a21208e55a9": "Wydarzenia na żywo pojawią się tutaj, gdy kanał znów zacznie działać.",
   "m_189a38f201f485": "Anuluj ponowne uruchomienie",
   "m_189a59134a29dd": {
@@ -8900,6 +8901,7 @@
   "m_18cb5aae13b5b6": "Przerwa przed ponowną próbą",
   "m_18cc2c92567fa5": "Żadne pole nie pasuje.",
   "m_18cce9c74cc9f4": "Odcinek pilotażowy",
+  "m_18cd6d66255241": "Odbudować zmienioną bibliotekę?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Aby to włączyć, połącz ten serwer ze swoim kontem Plex.",
   "m_18cf943a2b12c6": "Ile z następnego odcinka pobrać z wyprzedzeniem.",
@@ -9448,6 +9450,7 @@
   "m_1a44ace02fcbe8": "Dodatkowe opcje obsługiwane przez ten serwer.",
   "m_1a44b93c65889f": "Po ilu sekundach oglądania tytułu Ether zapisuje punkt wznowienia we wszystkich aplikacjach. 0 zachowuje wartość domyślną: 5% długości tytułu.",
   "m_1a45134f2ae116": "Jeden wiersz łączący biblioteki.",
+  "m_1a45e671c5598f": "Przy następnej synchronizacji Ether usunie elementy z objętych zmianą bibliotek i ich dane z pamięci podręcznej, a następnie odbuduje biblioteki z wtyczki. Postęp oglądania, ulubione i przynależność do kolekcji zostaną zachowane dla elementów przywróconych przez wtyczkę z tym samym identyfikatorem.",
   "m_1a463369546cbe": "Szukaj w {name}",
   "m_1a463f39cec097": "Studio",
   "m_1a46a61e987645": "Konta, które mogą logować się jako ten widz.",

@@ -318,6 +318,7 @@ func writeErr(w http.ResponseWriter, status int, code, msg string, fields []Fiel
 
 func (m *Manager) fail(w http.ResponseWriter, err error) {
 	var ve *ValidationError
+	var levelChange *libraryLevelChangeError
 	var pie *PermissionIncreaseError
 	var runtimeError *wasm.Error
 	var input *CollectionInputError
@@ -328,6 +329,11 @@ func (m *Manager) fail(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusBadRequest, "validation", runtimeError.Message, nil)
 	case errors.Is(err, ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", "That plugin is not installed.", nil)
+	case errors.As(err, &levelChange):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{
+			"code": "library_levels_changed", "message": "Some fields need attention.",
+			"fields": levelChange.Fields, "confirmation": levelChange.confirmation,
+		}})
 	case errors.As(err, &ve):
 		writeErr(w, http.StatusBadRequest, "validation", "Some fields need attention.", ve.Fields)
 	case errors.As(err, &pie):
@@ -437,6 +443,10 @@ type installRequest struct {
 	AutoUpdate             bool                       `json:"autoUpdate"`
 	Shadow                 bool                       `json:"shadow"`
 	AcceptAddedPermissions bool                       `json:"acceptAddedPermissions"`
+	// ReplaceLibraries confirms rebuilding the libraries of kinds whose
+	// shape changed (levels), which an update cannot do additively.
+	ReplaceLibraries    bool   `json:"replaceLibraries"`
+	RebuildConfirmation string `json:"rebuildConfirmation"`
 }
 
 func (req installRequest) source() Source {
@@ -514,7 +524,7 @@ func (m *Manager) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		src = Source{Kind: "pkg", Pkg: b}
-		opts = InstallOptions{Grants: req.Grants, Settings: req.Settings, AutoUpdate: req.AutoUpdate, Shadow: req.Shadow, AcceptAddedPermissions: req.AcceptAddedPermissions}
+		opts = InstallOptions{Grants: req.Grants, Settings: req.Settings, AutoUpdate: req.AutoUpdate, Shadow: req.Shadow, AcceptAddedPermissions: req.AcceptAddedPermissions, ReplaceLibraries: req.ReplaceLibraries, requireRebuildConfirmation: true, rebuildConfirmation: req.RebuildConfirmation}
 	} else if strings.HasPrefix(r.Header.Get("Content-Type"), "application/octet-stream") ||
 		strings.HasPrefix(r.Header.Get("Content-Type"), "application/zip") {
 		b, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
@@ -530,7 +540,7 @@ func (m *Manager) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		src = req.source()
-		opts = InstallOptions{Grants: req.Grants, Settings: req.Settings, AutoUpdate: req.AutoUpdate, Shadow: req.Shadow, AcceptAddedPermissions: req.AcceptAddedPermissions}
+		opts = InstallOptions{Grants: req.Grants, Settings: req.Settings, AutoUpdate: req.AutoUpdate, Shadow: req.Shadow, AcceptAddedPermissions: req.AcceptAddedPermissions, ReplaceLibraries: req.ReplaceLibraries, requireRebuildConfirmation: true, rebuildConfirmation: req.RebuildConfirmation}
 	}
 	p, err := m.PreviewInstall(r.Context(), src)
 	if err != nil {
@@ -949,10 +959,12 @@ func (m *Manager) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		AcceptAddedPermissions bool `json:"acceptAddedPermissions"`
+		AcceptAddedPermissions bool   `json:"acceptAddedPermissions"`
+		ReplaceLibraries       bool   `json:"replaceLibraries"`
+		RebuildConfirmation    string `json:"rebuildConfirmation"`
 	}
 	_ = decode(r, &body)
-	rec, err := m.ApplyUpdate(r.Context(), r.PathValue("id"), body.AcceptAddedPermissions)
+	rec, err := m.applyUpdate(r.Context(), r.PathValue("id"), InstallOptions{AcceptAddedPermissions: body.AcceptAddedPermissions, ReplaceLibraries: body.ReplaceLibraries, requireRebuildConfirmation: true, rebuildConfirmation: body.RebuildConfirmation})
 	if err != nil {
 		m.fail(w, err)
 		return

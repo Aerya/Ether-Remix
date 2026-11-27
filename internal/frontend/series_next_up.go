@@ -57,10 +57,15 @@ func SeriesNextUp(eps []Title, st map[RatingKey]WatchStatus, series RatingKey, r
 // LoadSeriesNextUp loads one series' episodes through exp.Children and selects
 // the next episode. Children is invoked only with that series key.
 func LoadSeriesNextUp(ctx context.Context, exp Experience, viewer *Viewer, device Device, series RatingKey, resumable bool) (*Title, error) {
-	if exp == nil || series == 0 || series.Kind() != KindShow {
+	if exp == nil || series == 0 || (series.Kind() != KindShow && !series.IsPluginItemKey()) {
 		return nil, nil
 	}
-	page, err := exp.Children(ctx, viewer, device, series, SeriesNextUpQuery())
+	q := SeriesNextUpQuery()
+	if series.IsPluginItemKey() {
+		q.ChildScanLimit = SeriesNextUpLimit
+		q.SuppressExpand = true
+	}
+	page, err := exp.Children(ctx, viewer, device, series, q)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +83,7 @@ func LoadSeriesNextUp(ctx context.Context, exp Experience, viewer *Viewer, devic
 func regularSeriesEpisodes(eps []Title, series RatingKey) []Title {
 	out := make([]Title, 0, len(eps))
 	for _, ep := range eps {
-		if ep.Key.Kind() != KindEpisode {
+		if ep.Key.Kind() != KindEpisode && !(ep.Key.IsPluginItemKey() && ep.Type == core.TypeEpisode && ep.ShowKey == series) {
 			continue
 		}
 		// Specials are skipped later by their presented season (an episode

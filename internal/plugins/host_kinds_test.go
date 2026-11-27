@@ -437,8 +437,8 @@ func TestInstallMediaKindsUpgradeGateAndPurgeSetup(t *testing.T) {
 	if _, err := env.m.Install(ctx, pShrunk, InstallOptions{AcceptAddedPermissions: true}); err == nil {
 		t.Fatal("expected non-additive kind upgrade to be refused without ReplaceLibraries")
 	}
-	if _, err := env.m.Install(ctx, pShrunk, InstallOptions{AcceptAddedPermissions: true, ReplaceLibraries: true}); err != nil {
-		t.Fatalf("upgrade with ReplaceLibraries: %v", err)
+	if saved, err := env.m.Install(ctx, pShrunk, InstallOptions{AcceptAddedPermissions: true, ReplaceLibraries: true}); err != nil || !saved.ReplaceLibraries {
+		t.Fatalf("upgrade with ReplaceLibraries: approved=%t err=%v", saved.ReplaceLibraries, err)
 	}
 
 	// Purge removes plugins_setup rows.

@@ -87,7 +87,7 @@ func TestPluginItemsSliceC(t *testing.T) {
 
 func testKindInstallAndUpgrade(t *testing.T) {
 	ctx := context.Background()
-	s, _ := openTestService(t, Options{})
+	s, db := openTestService(t, Options{})
 
 	decl := sampleBookDecl()
 	rec, err := s.UpsertKind(ctx, "community.books", 10, decl, false)
@@ -115,11 +115,25 @@ func testKindInstallAndUpgrade(t *testing.T) {
 		t.Fatalf("additive upgrade: rec=%+v err=%v", rec3, err)
 	}
 
-	// Seed an item so we can verify replaceContents behavior on breaking upgrades.
-	if _, err := s.UpsertItems(ctx, "community.books", "book", []core.KindItem{
+	// Seed a parent, a playable child and a part with viewer state.
+	items := []core.KindItem{
 		{ID: "series-1", Level: "series", Title: "Dune Chronicles"},
-	}); err != nil {
+		{ID: "book-1", ParentID: "series-1", Level: "book", Title: "Dune", Playable: true},
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", items); err != nil {
 		t.Fatalf("UpsertItems: %v", err)
+	}
+	bookRef := core.NewItemRef("community.books", "book", "book-1")
+	parts := []core.KindItemPart{{Name: "Chapter One"}}
+	before, err := s.SaveParts(ctx, bookRef, parts, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (user_id BIGINT NOT NULL, rating_key BIGINT NOT NULL, PRIMARY KEY (user_id, rating_key))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO state_watch(user_id, rating_key) VALUES (1, ?)`, int64(before[0].Key)); err != nil {
+		t.Fatal(err)
 	}
 
 	// Breaking change (shrinking enum) without replaceContents must be rejected.
@@ -129,14 +143,42 @@ func testKindInstallAndUpgrade(t *testing.T) {
 		t.Fatal("expected error on breaking upgrade without replaceContents")
 	}
 
-	// Breaking change WITH replaceContents=true purges items and succeeds.
+	item, _, err := s.GetByRef(ctx, core.NewItemRef("community.books", "book", "series-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Consent queues the rebuild. The installed declaration changes only once
+	// the sync consumes it, and the refreshed item keeps its viewer identity.
 	rec4, err := s.UpsertKind(ctx, "community.books", 10, declBreaking, true)
-	if err != nil || rec4.SchemaVersion != 3 {
+	if err != nil || rec4.SchemaVersion != 2 {
 		t.Fatalf("breaking upgrade with replaceContents: rec=%+v err=%v", rec4, err)
+	}
+	rec4, err = s.rebuildKind(ctx, rec4)
+	if err != nil || rec4.SchemaVersion != 3 {
+		t.Fatalf("rebuild: rec=%+v err=%v", rec4, err)
 	}
 	tally, err := s.LibraryTally(ctx, 10)
 	if err != nil || tally["series"] != 0 {
 		t.Fatalf("expected purged tally after replaceContents, got %v (err=%v)", tally, err)
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", items); err != nil {
+		t.Fatal(err)
+	}
+	if restored, _, err := s.GetByKey(ctx, item.Key); err != nil || restored.ID != item.ID {
+		t.Fatalf("item identity changed across rebuild: %v %v", restored, err)
+	}
+	// A later sync has nothing to consume and leaves newly rebuilt items.
+	if rec, err := s.rebuildKind(ctx, rec4); err != nil || rec.SchemaVersion != rec4.SchemaVersion {
+		t.Fatalf("replayed rebuild: %v, %v", rec, err)
+	}
+	after, err := s.SaveParts(ctx, bookRef, parts, "test")
+	if err != nil || len(after) != 1 || after[0].Key != before[0].Key {
+		t.Fatalf("part identity changed across rebuild: %v, %v", after, err)
+	}
+	var watched core.RatingKey
+	if err := db.QueryRowContext(ctx, `SELECT rating_key FROM state_watch WHERE user_id = 1`).Scan(&watched); err != nil || watched != after[0].Key {
+		t.Fatalf("part watch state lost across rebuild: %v, %v", watched, err)
 	}
 }
 

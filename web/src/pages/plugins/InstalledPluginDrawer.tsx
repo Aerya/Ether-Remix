@@ -31,6 +31,7 @@ import { StatusDot } from "../../components/status";
 import { getLocale, t, tn } from "../../i18n";
 import { ApiError, apiFetch } from "../../lib/api";
 import { invalidateRegistry, setPluginEnabled } from "../../lib/extend";
+import { confirmLibraryRebuild } from "./rebuildLibrary";
 import { PluginActivity } from "./drawer/PluginActivity";
 import { usePluginCalls } from "./drawer/calls";
 import { healthSummary } from "./drawer/health";
@@ -254,17 +255,25 @@ export function InstalledPluginDrawer({
       if (!ok) return;
     }
     await run("update", async () => {
-      try {
-        await apiFetch<PluginSummary>(`/plugins/${encodeURIComponent(detail.id)}/update`, {
+      const update = (rebuildConfirmation?: string) =>
+        apiFetch<PluginSummary>(`/plugins/${encodeURIComponent(detail.id)}/update`, {
           method: "POST",
-          body: JSON.stringify({ acceptAddedPermissions: pendingPerms.length > 0 }),
+          body: JSON.stringify({
+            acceptAddedPermissions: pendingPerms.length > 0,
+            replaceLibraries: rebuildConfirmation ? true : undefined,
+            rebuildConfirmation,
+          }),
         });
+      try {
+        await update();
       } catch (e) {
         if (e instanceof ApiError && e.code === "permission_increase" && e.fields) {
           setPendingPerms(e.fields.map((f) => f.message));
           return;
         }
-        throw e;
+        const confirmation = await confirmLibraryRebuild(e);
+        if (!confirmation) throw e;
+        await update(confirmation);
       }
       setPendingPerms([]);
       await reload();

@@ -243,3 +243,9 @@ La sélection explicite d’un créneau de version peut retenter une autre relea
 - Conserver les migrations Remix déjà publiées : `plugins/11` est la cadence des plugins ; le compteur KV amont utilise `plugins/12`. `collections/10` normalise les types ; les références explicites amont utilisent `collections/13` et `collections/14`.
 - Les audiences historiques des collections sont conservées dans `users`, indépendamment du placement des rangées. Les modèles de disposition utilisent `personalize_pages` et convertissent les anciens documents.
 - `pse_rows.go` raccorde les imports Xperience/Jukebox aux pages de recommandations sans rétablir les rangées retirées par le propriétaire.
+
+## Synchronisation du 27 novembre 2026
+
+Révision Ether intégrée : `37b6e020059ad04afb3a82e439a8e767b8bbe494`. Le remplacement des bibliothèques de plugins exige une confirmation explicite. Les rangées À suivre Jellyfin/Emby respectent la série demandée, y compris pour les épisodes de plugins.
+
+La migration Ether `plugins` 12 (`replace_libraries`) devient 13 dans Remix : les versions 11 (cadence) et 12 (compteurs KV) sont déjà utilisées et doivent rester inchangées pour les bases existantes. Conserver aussi `manifest_refresh_hours` dans le modèle et la lecture SQL.

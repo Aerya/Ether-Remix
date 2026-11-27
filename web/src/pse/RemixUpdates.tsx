@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-26-upstream-recommendations",
+    id: "2026-11-27-upstream-plugin-libraries",
     version: "current",
+    date: "2026-11-27",
+    title: ["Bibliothèques de plugins et synchronisation Ether", "Plugin libraries and Ether sync"],
+    items: [
+      [
+        "Les plugins peuvent remplacer leurs bibliothèques après confirmation explicite. La synchronisation Ether préserve les réglages de rafraîchissement, les quotas et la cadence des plugins Remix.",
+        "Plugins can replace their libraries after explicit confirmation. Ether sync preserves Remix plugin refresh settings, quotas and scheduling.",
+      ],
+      [
+        "Jellyfin et Emby : la rangée À suivre respecte la série demandée, y compris pour les épisodes issus des plugins.",
+        "Jellyfin and Emby: Next Up respects the requested series, including plugin episodes.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-26-upstream-recommendations",
+    version: "0.2.37-remix.153.1",
     date: "2026-11-26",
     title: ["Recommandations et synchronisation Ether", "Recommendations and Ether sync"],
     items: [
