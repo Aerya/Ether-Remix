@@ -207,7 +207,9 @@ func (s *Service) Start() {
 			if s.d.Active != nil && s.d.Active() {
 				continue
 			}
-			if err := s.Step(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, errNothingToDo) {
+			// An exhausted daily budget is normal; keep ticking for maintenance
+			// and let indexing resume when the UTC daily budget resets.
+			if err := s.Step(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, errNothingToDo) && !errors.Is(err, core.ErrBudgetExhausted) {
 				s.d.Logger.Warn("pse release indexer step failed", "err", err)
 			}
 		}
