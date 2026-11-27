@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-27-upstream-plugin-libraries",
+    id: "2026-11-27-digarr-discovery",
     version: "current",
+    date: "2026-11-27",
+    title: ["Découvertes musicales Digarr", "Digarr music discovery"],
+    items: [
+      [
+        "Playlists → Digarr : recommandations par spectateur avec un jeton personnel en lecture seule, recherche des albums correspondants et création de playlists personnelles. Connecteur facultatif ; la lecture dépend des sources musicales configurées.",
+        "Playlists → Digarr: per-viewer recommendations with a personal read-only token, matching album search and personal playlist creation. Optional connector; playback depends on configured music sources.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-27-upstream-plugin-libraries",
+    version: "0.2.37-remix.154.1",
     date: "2026-11-27",
     title: ["Bibliothèques de plugins et synchronisation Ether", "Plugin libraries and Ether sync"],
     items: [

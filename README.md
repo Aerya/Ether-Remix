@@ -49,6 +49,8 @@ Sans ISRC commun, les correspondances musicales exigent un artiste et un titre c
 
 **Playlists programmées** : mixes personnels renouvelés, suivi de playlists Deezer/Spotify/ListenBrainz et recommandations AudioMuse facultatives, avec cadence par spectateur et conservation du dernier contenu en cas d’échec. [Configuration et limites](docs/pse/MUSIC-FLOWS.fr.md).
 
+Découvertes musicales [Digarr](docs/pse/DIGARR.fr.md) : recommandations par spectateur et import des albums correspondants en playlists personnelles.
+
 Ether-Remix a son propre groupe **Remix** dans le menu de gauche, au-dessus de **Bibliothèque**. Il s’ouvre en **mode Simple** pour les débutants : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. L’assistant en quatre étapes se lance au premier lancement sans source, et le **Diagnostic** explique pourquoi rien ne se lance. L’interrupteur **Expert** du groupe ajoute toutes les autres pages, sans rien retirer. [Guide](docs/pse/GUIDE.fr.md#nav-demarrage-rapide).
 
 La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.
