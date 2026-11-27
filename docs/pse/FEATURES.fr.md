@@ -60,7 +60,6 @@ La vue **Indexation → Releases** est toujours accessible. Sources, réglages e
 <a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
 <a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
 
-
 Les refus AllDebrid `MAGNET_TOO_MANY` suspendent uniquement les nouveaux ajouts après des refus répétés : les torrents déjà présents et les liens fichiers restent utilisables. La bibliothèque de releases ne transforme pas un hash inconnu en lien de fichier.
 
 **Renouvellement du lien pendant la lecture** : par défaut, quand le serveur média d’un debrid tombe en panne pendant une lecture (5xx, coupure, 429), Remix demande un nouveau lien, voire un autre fournisseur. Sur un compte partagé, ces demandes entament le quota de liens et peuvent bloquer les autres utilisateurs. Dans **Sources → Debrid**, choisissez **Garder le lien et réessayer** (`debrid.playbackRelink` = `"replay"`) : Remix réessaie le lien existant lors des erreurs du serveur média, sans demander systématiquement un nouveau lien. Un lien réellement mort (401, 403, 404, 410, redirection) reste renouvelé ; dans ce mode, au plus une fois toutes les 30 secondes par fichier. Le changement s’applique sans redémarrage.
@@ -94,6 +93,10 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 <a id="nav-des-bibliotheques-et-collections-personnalisees"></a>
 
 ### Des bibliothèques et collections personnalisées
+
+Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur : bibliothèques Remix au choix par spectateur, avec ou sans les sections de base, dans Plex, Stremio et Jellyfin. Dans Jellyfin, des règles d'exclusion (genre, pays, langue…, comme dans « Modifier la collection ») retirent des titres (ex. animation, documentaires) des derniers ajouts de Films et Séries.
+
+Les **modèles de disposition** enregistrent l’accueil, les bibliothèques et la présentation des collections : sauvegardez l’existant, dupliquez A/B/C et réappliquez une variante avec retour en arrière. Les bibliothèques à thème Plex peuvent combiner dossiers locaux et sources indexées et cibler tous les utilisateurs ou une sélection ; les contenus privés restent filtrés par spectateur.
 
 Les **modèles de disposition** enregistrent l’accueil, les bibliothèques et la présentation des collections : sauvegardez l’existant, dupliquez A/B/C et réappliquez une variante avec retour en arrière. Les bibliothèques à thème Plex peuvent combiner dossiers locaux et sources indexées et cibler tous les utilisateurs ou une sélection ; les contenus privés restent filtrés par spectateur.
 
@@ -142,6 +145,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 - Vérifiez l’aperçu, choisissez le spectateur destinataire et suivez les titres retrouvés ou manquants. Les imports créent des copies personnelles sans remplacer vos autres playlists.
 - Synchronisez les profils Deezer publics, Last.fm et ListenBrainz ; gérez vos playlists personnelles depuis les clients Subsonic.
 - **Playlists programmées** : mixes personnels renouvelés et suivi Deezer/Spotify/ListenBrainz par spectateur ; cadence, actualisation manuelle, suspension et diagnostic des titres manquants. AudioMuse facultatif pour les titres locaux déjà analysés. [Guide et limites](MUSIC-FLOWS.fr.md).
+- **Digarr facultatif** : recommandations d’artistes et d’albums par spectateur, recherche des albums correspondants dans le catalogue Deezer et création de playlists personnelles. Jeton personnel en lecture seule ; aucune validation ou acquisition déclenchée dans Digarr. [Configuration et limites](DIGARR.fr.md).
 - **Playlists iBroadcast** : activez leur import pour chaque compte connecté ; ordre des titres et répétitions conservés, actualisation sans doublons, sans modification chez iBroadcast.
 - Explorez les **tops par pays, écoutes récentes, titres les plus écoutés et nouveautés des artistes suivis**. Genres, artistes similaires, radios et mix sont proposés selon le client.
 
@@ -153,7 +157,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 - Remix s’ouvre sur les statistiques : anneaux de progression colorés, historique à barres fines, recherches, erreurs, quotas, durées et résultats par source en direct.
 - Consultez l’historique **par jour, semaine, mois ou année**, en valeurs par période ou cumulées, avec filtres films, séries, animés et sources.
 - Comparez le catalogue local aux totaux TMDB et retrouvez les opérations dans le journal d’activité.
-- Les séries en cours restent dans « Continuer à regarder » même après plusieurs mois sans lecture, avec leur prochain épisode. Le tri suit le dernier visionnage, sauf quand l’épisode suivant non vu est sorti dans la fenêtre des nouveaux épisodes (60 jours par défaut) : la série est alors classée à sa date de sortie, même si son dernier visionnage est très ancien. 200 séries de l’historique sont examinées (au plus 100 sur Plex, contre 50 auparavant). Une saison hebdomadaire que le spectateur n’a pas commencée retombe à son ancien rang 60 jours après la sortie de l’épisode suivant. Plex conserve une limite de 40 éléments et les masquages du spectateur. La sélection consulte uniquement l’historique du spectateur concerné, sans parcourir celui des autres comptes.
+- Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. Toutes les séries en cours y figurent, et la rangée s'affiche instantanément : l'épisode suivant de chaque série est calculé à l'avance, à chaque visionnage ou nouvel épisode. Le nombre de séries examinées sert de repli pendant le premier remplissage ; les droits, les masquages et les limites de présentation du client restent applicables. Seul l’historique du spectateur concerné est utilisé.
 - L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez « Récupérer tout l’historique depuis ce serveur » pour compléter un ancien import ; les états locaux plus récents restent prioritaires.
 - Connectez Remix à **Scrob comme un serveur Jellyfin** et choisissez dans Scrob le sens et la fréquence des synchronisations : historique de visionnage et notes, dans un sens ou les deux. Le webhook pour les événements en temps réel (délai maximal de **60 secondes**) et les bibliothèques « Vus et notés » sont facultatifs. Les arrêts et changements de lecture sont relayés par session, sans doublons.
 - Associez **Last.fm** à chaque utilisateur pour ses écoutes musicales et retrouvez les statistiques dans la Vue d’ensemble.
@@ -170,6 +174,8 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 <a id="nav-la-base-ether-enrichie-par-remix"></a>
 
 ### La base Ether, enrichie par Remix
+
+Une bibliothèque, une rangée ou une collection n'affiche que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue, aucun préchauffage debrid. Les détails ne partent qu'à l'ouverture d'une fiche ou à la lecture. Réglage `PSE_LIGHT_LISTS` (console Remix), actif par défaut.
 
 - **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs. Les bibliothèques par sources de catalogue, les améliorations IPTV et le classement des releases d’Ether coexistent avec les filtres et sources Remix.
@@ -192,8 +198,18 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
 
+### Stremio et Nuvio
+
+**Stremio** — Extension personnelle ; adresse HTTPS nécessaire. Deux liens au choix par profil : avec les catalogues (Films, Séries et une rangée par collection des bibliothèques Remix accordées) ou uniquement les fichiers (lecture seule). Affichage (Direct, Compact, Détaillé) et nombre de versions par qualité (4K, 1080p, 720p) réglables par lien : le flux Auto puis les meilleures releases classées de chaque qualité.
+
+**Nuvio** — Liaison par spectateur (Profil › Connexion et appareils › Nuvio) : connexion par code, choix du profil Nuvio, reprise et historique synchronisés dans les deux sens (Nuvio → Ether toutes les 5 minutes, réglable ; Ether → Nuvio à l'arrêt d'une lecture ou d'un « vu »), installation du lien Stremio du spectateur dans Nuvio en un clic. L'addon déclare aussi les ressources Stremio `player` et `library` pour Nuvio TV 1.2.0-beta.2 ou plus. L'historique d'un compte est conservé entièrement : le contrôle parental ne s'applique qu'à la lecture, pas à l'import.
+
 ### Recommandations et collections (26 novembre 2026)
 
 La page **Recommandations** remplace l’ancien éditeur de disposition : choisissez l’accueil ou une bibliothèque, puis placez les rangées et leurs variantes par spectateur. Une collection définit les titres ; « Parcourir dans les applications » règle sa présence dans l’onglet Collections. Les anciens placements sont convertis au démarrage.
 
 Les modèles de disposition capturent désormais les pages de recommandations. Les modèles précédents restent applicables et les droits d’accès aux collections restent ceux de la configuration actuelle. Xperience et Jukebox proposent leurs rangées une seule fois : une suppression ultérieure par le propriétaire est conservée. La synchronisation des catalogues reste exécutée en arrière-plan et indique le nombre de titres reçus et la limite appliquée.
+
+### Bibliothèques de plugins
+
+Les bibliothèques de plugins peuvent être reconstruites après confirmation explicite. La synchronisation Ether conserve les réglages de rafraîchissement, les quotas et la cadence des plugins Remix.

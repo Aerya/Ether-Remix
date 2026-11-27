@@ -1,6 +1,4 @@
 <p align="center">
-
-Le dépôt est désormais hébergé dans **[Remix-Media](https://github.com/Remix-Media/Ether-Remix)**. L’adresse Docker historique `ghcr.io/aerya/ether-remix:latest` reste prise en charge par un miroir ; aucune modification n’est requise pour les installations existantes. La nouvelle adresse est `ghcr.io/remix-media/ether-remix:latest`. [Transition Docker](docs/pse/DOCKER-MIGRATION.fr.md).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/ether-remix-signature-dark.svg">
     <img src=".github/assets/ether-remix-signature-light.svg" width="560" alt="Ether Remix">
@@ -9,59 +7,20 @@ Le dépôt est désormais hébergé dans **[Remix-Media](https://github.com/Remi
 
 # Ether-Remix
 
-Les bibliothèques de plugins peuvent être reconstruites après confirmation explicite. La synchronisation Ether conserve les réglages de rafraîchissement, les quotas et la cadence des plugins Remix.
-
 **Films, séries, animés et musique dans vos applications habituelles.**
 
-Ether-Remix est un serveur multimédia à la demande, basé sur [Ether](https://github.com/braedonsaunders/ether). Il réunit vos sources distantes et vos fichiers locaux, avec un catalogue orienté français, des bibliothèques personnalisées et un suivi par spectateur. Vous fournissez les sources et les comptes nécessaires à la lecture.
+Ether-Remix réunit vos sources distantes et vos fichiers locaux dans un serveur multimédia à la demande, basé sur [Ether](https://github.com/braedonsaunders/ether). Il ajoute un catalogue orienté français, des bibliothèques personnalisées, la musique et un suivi par spectateur.
 
-**Français · [English](README.en.md)** · Docker **amd64 / arm64** · **GPL-3.0**
+**Français · [English](README.en.md)** · Docker **amd64 / arm64** · **GPL-3.0** · Bêta : bugs et changements incompatibles possibles
 
-[Installation](#demarrer) · [Fonctionnalités](#fonctionnalites) · [Applications](#applications) · [Documentation](#documentation)
+[Fonctionnalités](#fonctionnalites) · [Sources](#sources) · [Applications](#applications) · [Installation](#demarrer) · [Documentation](#documentation)
 
-## Ether, en bref
-
-Ether est un serveur multimédia **à la demande**. Il présente un catalogue issu de TMDB dans les applications que vous utilisez déjà, sans rien télécharger à l’avance. Son étendue dépend des réglages du serveur. Quand vous lancez un titre, il choisit la meilleure release sur vos comptes debrid et vos fournisseurs Usenet, vérifie qu’elle fonctionne, puis la lit en flux. Ce fonctionnement ne nécessite ni Sonarr, ni Radarr, ni client de téléchargement, ni montage à scanner. Il peut tourner à côté d’un Plex, Jellyfin ou Emby existant.
-
-Ether s’adapte à chaque application : c’est un serveur Plex pour les applications Plex, un serveur Jellyfin pour Infuse ou Swiftfin, et ainsi de suite. Chaque spectateur a son compte et son accueil personnalisé, et retrouve sa progression d’une application à l’autre. Les limites de flux et le contrôle parental s’appliquent partout.
-
-L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur et le type d’appareil pour comparer l’aperçu au client. Les recommandations propres à Films et Séries restent dans leurs pages ; elles ne sont plus ajoutées en bloc à l’accueil par les requêtes par bibliothèque de Plex.
-
-## Remix, en bref
-
-La synchronisation Ether du 26 novembre réunit la personnalisation de l’accueil et des bibliothèques dans **Recommandations**. Les collections définissent leur contenu ; leurs rangées se placent sur ces pages. Les anciens placements, modèles de disposition et restrictions par spectateur sont repris. Les imports Xperience/Jukebox, la musique et les contrôles stricts des releases restent disponibles.
-
-Les épisodes sans année dans le nom sont admis après vérification du catalogue local : année de série connue, titre complet, épisode exact et absence d’homonyme connu. Une année contradictoire reste refusée ; une erreur de catalogue conserve le contrôle strict.
-
-Les **modèles de disposition** enregistrent l’accueil, les bibliothèques et la présentation des collections : sauvegardez l’existant, dupliquez A/B/C et réappliquez une variante avec retour en arrière. Les bibliothèques à thème Plex peuvent combiner dossiers locaux et sources indexées et cibler tous les utilisateurs ou une sélection ; les contenus privés restent filtrés par spectateur. [Guide des dispositions et du partage](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees).
-
-Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. La recherche automatique prépare les releases à l’avance sans télécharger les vidéos ; les recherches et imports alimentent le même index, réutilisé à la lecture.
-
-Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. La vue **Sources → Fichiers locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
-
-Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut. L’index des **pre** (bêta ; annonces de releases FR / MULTi / VOSTFR, flux personnels facultatifs) alimente aussi le catalogue sans écrire de fichier.
-
-**aMule et Soulseek (slskd)** sont aussi disponibles : recherche de films, épisodes et morceaux, téléchargement à la lecture et lecture après réception complète, avec commandes manuelles et suivi des transferts. Ils nécessitent les services externes compatibles et un dossier monté dans Remix. [Configuration et limites](docs/pse/PEER.fr.md).
-
-Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos comptes iBroadcast dans Plexamp, les clients Jellyfin ou les applications Subsonic. Les sources musicales et les comptes debrid activés assurent la lecture ; les playlists se parcourent, s’importent et se gèrent par utilisateur. Dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif. iBroadcast privilégie la qualité originale (Premium) et se replie automatiquement sur le MP3 128 kb/s si l’original est refusé.
-
-Sans ISRC commun, les correspondances musicales exigent un artiste et un titre concordants : les homonymes partiels, sous-titres différents et versions incompatibles sont refusés. Un ISRC identique ne suffit pas à accepter un extrait trop court. Si une synchronisation Deezer, Last.fm ou ListenBrainz échoue, les playlists précédentes sont conservées.
-
-**Playlists programmées** : mixes personnels renouvelés, suivi de playlists Deezer/Spotify/ListenBrainz et recommandations AudioMuse facultatives, avec cadence par spectateur et conservation du dernier contenu en cas d’échec. [Configuration et limites](docs/pse/MUSIC-FLOWS.fr.md).
-
-Découvertes musicales [Digarr](docs/pse/DIGARR.fr.md) : recommandations par spectateur et import des albums correspondants en playlists personnelles.
-
-Ether-Remix a son propre groupe **Remix** dans le menu de gauche, au-dessus de **Bibliothèque**. Il s’ouvre en **mode Simple** pour les débutants : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. L’assistant en quatre étapes se lance au premier lancement sans source, et le **Diagnostic** explique pourquoi rien ne se lance. L’interrupteur **Expert** du groupe ajoute toutes les autres pages, sans rien retirer. [Guide](docs/pse/GUIDE.fr.md#nav-demarrage-rapide).
-
-La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.
+Vous fournissez les sources et comptes nécessaires. Pour le debrid et Usenet, Remix cherche une release conforme à vos critères puis la lit en flux, sans téléchargement préalable obligatoire ni Sonarr/Radarr, client de téléchargement ou montage à scanner. Il peut coexister avec un Plex, Jellyfin ou Emby existant. Les sources facultatives ont leurs propres besoins de stockage, précisés ci-dessous. La présence d’un titre au catalogue ne garantit pas sa lecture.
 
 <a id="nav-fonctionnalites-remix"></a>
 <a id="fonctionnalites"></a>
-
 <a id="nav-films-series-et-animes-selon-vos-preferences"></a>
 <a id="nav-vos-videos-locales-films-et-videos-personnelles"></a>
-<a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
-<a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
 <a id="nav-sous-titres-externes-et-traduction-avec-submaker"></a>
 <a id="nav-des-bibliotheques-et-collections-personnalisees"></a>
 <a id="nav-la-musique-dans-vos-applications"></a>
@@ -69,96 +28,103 @@ La configuration rapide **JukeBox** aide à créer vos bibliothèques et collect
 <a id="nav-statistiques-et-suivi"></a>
 <a id="nav-une-interface-adaptee-a-vos-habitudes"></a>
 <a id="nav-la-base-ether-enrichie-par-remix"></a>
+<a id="ether-en-bref"></a>
+<a id="remix-en-bref"></a>
+<a id="ce-que-fait-remix"></a>
 
-**Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet** : dans **Remix → Lecture → Priorités**, activez **Configuration rapide**, cochez Alkodiques uniquement, Usenet, client torrent Ether-Remix et/ou Seedstrem, puis ordonnez-les librement (↑ / ↓ ou glisser-déposer). Après les filtres obligatoires, Remix épuise les releases utilisables d’une source avant la suivante ; les autres addons Stremio (dont Debrider) interviennent en dernier recours. [Guide](docs/pse/QUICK_SOURCES.fr.md).
+## Ce que vous pouvez faire
 
-## Ce que fait Remix
-
-Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options, les sources et les limites de chaque usage.
-
-| Usage | Fonctionnalités |
+| Usage | Possibilités |
 | --- | --- |
-| Films, séries et animés | Préférences VF/MULTi, qualité, catalogue filtré, exceptions VOSTFR et sous-titres SubMaker. |
-| Sources vidéo | Debrid, Usenet, addons Stremio, Prowlarr/Jackett/NZBHydra2, base StreamFusion Reborn et SeerrCatalog. Clients torrent, XDCC et FTP/SFTP en option. |
-| Fichiers locaux | Vidéos et musique depuis vos dossiers ou montages réseau, sans déplacer ni supprimer les originaux. |
-| Bibliothèques et accueil | Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur : bibliothèques Remix au choix par spectateur, avec ou sans les sections de base, dans Plex, Stremio et Jellyfin. Dans Jellyfin, des règles d'exclusion (genre, pays, langue…, comme dans « Modifier la collection ») retirent des titres (ex. animation, documentaires) des derniers ajouts de Films et Séries. |
-| Musique | Catalogue Deezer, sources musicales activées (dont OpenDeezer, avec votre compte Deezer), fichiers locaux et iBroadcast ; accès depuis Plexamp, Jellyfin ou Subsonic, avec playlists personnelles. |
-| Suivi | Progression et historique par spectateur, activité vidéo et musicale, Scrob, Last.fm et statistiques des sources. |
-| Continuer à regarder | Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. Toutes les séries en cours y figurent, et la rangée s'affiche instantanément : l'épisode suivant de chaque série est calculé à l'avance, à chaque visionnage ou nouvel épisode. |
-| Listes légères | Une bibliothèque, une rangée ou une collection n'affiche que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue, aucun préchauffage debrid. Les détails ne partent qu'à l'ouverture d'une fiche ou à la lecture. Réglage `PSE_LIGHT_LISTS` (console Remix), actif par défaut. |
+| **Films, séries et animés** | Catalogue TMDB, préférences VF/MULTi, qualité, exceptions VOSTFR, sous-titres et traduction SubMaker. |
+| **Musique** | Catalogue Deezer, fichiers locaux et iBroadcast ; favoris, historique, playlists personnelles, imports et mixes programmés. |
+| **Bibliothèques et accueil** | Collections à thème, configuration JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. |
+| **Sources et lecture** | Priorités configurables, recherche anticipée et index commun des releases ; contrôle de l’identité du média, des langues et de la qualité. |
+| **Spectateurs et suivi** | Accès privés ou partagés, contrôle parental et limites de flux ; reprise entre applications, nouveaux épisodes dans « Continuer à regarder », Scrob, Last.fm et statistiques. |
+| **Console** | Interface française, assistant de démarrage, modes Simple/Expert, diagnostics et réglages d’apparence. |
 
+Dans **Recommandations**, composez l’accueil et les rangées des bibliothèques pour vos spectateurs. Les modèles permettent de sauvegarder et réappliquer une disposition. Le partage s’applique aussi aux bibliothèques Remix dans Plex, Stremio et Jellyfin ; Jellyfin propose des exclusions pour ses derniers ajouts. [Fonctionnalités détaillées](docs/pse/FEATURES.fr.md).
+
+Les dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif. Remix signale les fichiers absents ou problématiques sans supprimer les originaux. Les listes légères évitent les enrichissements pendant le défilement ; les détails sont chargés à l’ouverture d’une fiche ou à la lecture.
+
+<a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
+<a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
 <a id="nav-des-sources-reunies-et-une-recherche-anticipee"></a>
+<a id="sources"></a>
+<a id="un-seul-index-de-releases"></a>
 
-## Un seul index de releases
+## Sources et intégrations
 
-Les recherches et imports conservent dans un index commun les références conformes aux critères Remix actifs. Les liens hors critères sont refusés ; les anciens liens sont nettoyés après actualisation des profils et exceptions. À la lecture, Remix propose les références encore utilisables, applique les critères de langue et de qualité, puis recherche d’autres sources si nécessaire. L’identité du film ou de l’épisode reste vérifiée ; une référence enregistrée ne garantit pas sa disponibilité.
+Les sources de catalogue décrivent les contenus ; une source de lecture fournit leur accès. Choisissez uniquement les intégrations utiles à votre installation.
 
-Le recalcul du catalogue lisible conserve les compteurs précédents jusqu’à la publication complète des nouveaux résultats. Une interruption conserve aussi la signature précédente ; le prochain cycle peut réessayer. Le calcul dispose d’un budget indépendant de 30 minutes et publie ses écritures par lots dans une seule transaction.
+| Source ou service | Rôle et prérequis |
+| --- | --- |
+| **Debrid / Usenet** | Lecture à la demande avec vos comptes et fournisseurs ; priorités, quotas et solutions de repli configurables. |
+| **Prowlarr, Jackett, NZBHydra2 / addons Stremio** | Recherche de releases et, selon l’addon, accès aux flux. Une voie de lecture compatible reste nécessaire. |
+| **StreamFusion Reborn / SeerrCatalog / Pre** | Import ou enrichissement du catalogue et des références. SeerrCatalog nécessite son service externe ; Pre, en bêta, fournit des annonces, pas des liens de lecture. |
+| **Client torrent / Seedstrem / XDCC Grabscher** | Téléchargement sur disque ; Seedstrem et Grabscher nécessitent leurs services externes. Sources facultatives. |
+| **FTP / SFTP** | Lecture distante possible sans copie complète, avec cache ; serveur et accès requis. Facultatif. |
+| **aMule / Soulseek (slskd)** | Recherche vidéo et musicale, transferts manuels ou à la lecture ; lecture après réception complète. Services externes et dossier partagé requis. |
+| **Fichiers locaux / iBroadcast** | Vos vidéos et fichiers audio depuis des dossiers ou montages réseau ; bibliothèques musicales iBroadcast avec vos comptes. |
+| **Sources musicales** | Catalogue Deezer et lecture via les sources activées : notamment Eclipse, Audius, DMM/debrid et OpenDeezer avec votre propre compte Deezer. |
+| **Deezer / Spotify / ListenBrainz / Last.fm** | Parcours, import ou synchronisation de playlists selon le service ; suivi de playlists et mixes personnels programmés. |
+| **AudioMuse / Digarr** | AudioMuse suggère des morceaux locaux déjà analysés ; Digarr recommande artistes/albums et permet de créer des playlists depuis les albums retrouvés. Services externes facultatifs, sans garantie de disponibilité audio. |
 
-Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquement des releases**, prépare les contenus du catalogue en arrière-plan. Les sources se choisissent sur la même page ; cadence et budgets sont dans les réglages avancés. Désactiver cette recherche conserve l’index, sa consultation et son utilisation à la lecture.
-
-La recherche de fond ne télécharge ni ne débride les fichiers. Un addon distant peut néanmoins effectuer ses propres appels. Pour les séries, le passage initial couvre **S01E01** : les autres épisodes sont enregistrés au fil des recherches, sans garantie de saison complète. [Fonctionnement de l’index](docs/pse/RELEASE_LIBRARY.fr.md).
-
-Les fichiers AllDebrid vérifiés peuvent être prioritaires lorsqu’ils respectent le profil. Les quotas suspendent les comptes concernés, les tentatives de secours sont limitées et le renouvellement des liens peut être réglé pour éviter des appels inutiles. [AllDebrid et proxys](docs/alldebrid-mediaflow.md).
-
-Quand aucune source n’est disponible à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche au lieu de rester bloqués.
-Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique son nom et l’heure de reprise, et précise si aucune autre source n’a de release. Sans `Retry-After`, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min dès qu’une requête réussit. La limite journalière réglée dans Ether a son propre message. Après un redémarrage, la pause en cours est conservée, mais le palier repart de 15 min.
+Les connecteurs torrent, XDCC, FTP/SFTP, aMule et slskd sont désactivés par défaut. Les **priorités** permettent de préférer Usenet ou BitTorrent et de limiter le recours aux débrideurs. La **recherche automatique** prépare l’index sans télécharger ni débrider les fichiers ; les addons distants peuvent effectuer leurs propres appels. Pour les séries, l’indexation initiale couvre S01E01, pas une saison complète. [Priorités](docs/pse/QUICK_SOURCES.fr.md) · [Index et limites](docs/pse/RELEASE_LIBRARY.fr.md).
 
 <a id="nav-applications-compatibles"></a>
 <a id="applications"></a>
 
-## Applications
+## Applications compatibles
 
-| Accès | Exemples de clients |
+| Accès | Exemples et particularités |
 | --- | --- |
-| Plex | Applications Plex, Plexamp et Kodi avec PM4K. |
-| Jellyfin / Emby | Infuse, Swiftfin, Findroid, Streamyfin et clients TV compatibles. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
-| Silo | Clients Silo sur ordinateur, mobile et TV. |
-| Stremio | Extension personnelle ; adresse HTTPS nécessaire. Deux liens au choix par profil : avec les catalogues (Films, Séries et une rangée par collection des bibliothèques Remix accordées) ou uniquement les fichiers (lecture seule). Affichage (Direct, Compact, Détaillé) et nombre de versions par qualité (4K, 1080p, 720p) réglables par lien : le flux Auto puis les meilleures releases classées de chaque qualité. |
-| Nuvio | Liaison par spectateur (Profil › Connexion et appareils › Nuvio) : connexion par code, choix du profil Nuvio, reprise et historique synchronisés dans les deux sens (Nuvio → Ether toutes les 5 minutes, réglable ; Ether → Nuvio à l'arrêt d'une lecture ou d'un « vu »), installation du lien Stremio du spectateur dans Nuvio en un clic. L'addon déclare aussi les ressources Stremio `player` et `library` pour Nuvio TV 1.2.0-beta.2 ou plus. L'historique d'un compte est conservé entièrement : le contrôle parental ne s'applique qu'à la lecture, pas à l'import. |
-| WebDAV | Infuse, VLC, Kodi et rclone. |
-| IPTV / réseau local | M3U, XMLTV, Xtream et DLNA, selon les accès activés. |
-| Subsonic | Symfonium, Feishin, Supersonic, DSub et autres clients compatibles. |
+| **Plex** | Applications Plex, Plexamp et Kodi avec PM4K. |
+| **Jellyfin / Emby** | Infuse, Swiftfin, Findroid, Streamyfin et clients TV compatibles. Emby for TV 2.x sur Apple TV non pris en charge. |
+| **Silo** | Clients ordinateur, mobile et TV. |
+| **Stremio** | Extension personnelle HTTPS, avec catalogues ou fichiers seuls ; choix des versions et qualités. |
+| **Nuvio** | Liaison par spectateur, installation du lien Stremio, reprise et historique synchronisés dans les deux sens. |
+| **WebDAV** | Infuse, VLC, Kodi et rclone. |
+| **IPTV / réseau local** | M3U, XMLTV, Xtream et DLNA, selon les accès activés. |
+| **Subsonic** | Symfonium, Feishin, Supersonic, DSub et autres clients musicaux compatibles. |
 
-Activez les accès dans **Console → Applications**. Chaque spectateur retrouve ses liens et accès personnels dans **Votre compte**. Les fonctions disponibles dépendent du client.
+Activez les accès dans **Console → Applications**. Chaque spectateur retrouve ses liens dans **Votre compte**. Les fonctions et l’affichage dépendent du client. [Compatibilité et réglages Stremio/Nuvio](docs/pse/FEATURES.fr.md#applications-compatibles).
 
 <a id="nav-demarrer"></a>
 <a id="demarrer"></a>
+<a id="démarrer"></a>
 
-## Démarrer
+## Installation rapide
 
-1. Installez l’image publique `ghcr.io/aerya/ether-remix:latest` avec le [Compose du guide](docs/pse/GUIDE.fr.md#installation). Les volumes `/config` et `/cache` doivent être persistants.
-2. Ouvrez `http://<hôte>:32400/ether/` et suivez l’assistant. Le port se règle avec `ETHER_PORT`.
-3. Ajoutez vos comptes et fournisseurs dans **Remix → Sources**, puis choisissez vos langues et votre qualité dans **Lecture**.
-4. Activez la recherche automatique dans **Indexation** si vous souhaitez préparer le catalogue à l’avance. Consultez les résultats dans **Releases**.
-5. Activez vos applications et connectez vos spectateurs. Pour les clients Subsonic à jeton, créez un accès musical dans **Contenus → Musique → Clients musicaux**.
+1. Installez `ghcr.io/remix-media/ether-remix:latest` avec le [Compose du guide](docs/pse/GUIDE.fr.md#installation). Rendez `/config` et `/cache` persistants.
+2. Ouvrez `http://<hôte>:32400/ether/` et suivez l’assistant. Le port est configurable avec `ETHER_PORT`.
+3. Dans **Remix → Sources**, ajoutez vos comptes et fournisseurs ; réglez langues, qualité et priorités dans **Lecture**.
+4. Si souhaité, activez **Rechercher automatiquement des releases** dans **Indexation**, puis consultez **Releases**. Sa désactivation conserve l’index et son usage à la lecture.
+5. Activez les applications et connectez vos spectateurs. Pour Subsonic à jeton : **Contenus → Musique → Clients musicaux**. Le mode **Expert** affiche les réglages supplémentaires ; **Diagnostic** aide à comprendre une lecture impossible.
 
-Pour migrer depuis Ether, sauvegardez `/config`, arrêtez l’ancien serveur et réutilisez ses volumes. Utilisez HTTPS pour les accès distants. Les sources torrent et XDCC peuvent télécharger sur disque ; FTP/SFTP propose aussi la lecture distante sans copie complète. Consultez leur guide avant activation.
+Pour migrer depuis Ether, sauvegardez `/config`, arrêtez l’ancien serveur et réutilisez ses volumes. Utilisez HTTPS pour les accès distants. L’ancienne image `ghcr.io/aerya/ether-remix:latest` reste maintenue par un miroir : les installations existantes peuvent la conserver. [Migration Docker](docs/pse/DOCKER-MIGRATION.fr.md).
 
 <a id="nav-documentation"></a>
 <a id="documentation"></a>
 
-## Documentation
+## Documentation par besoin
 
-| Besoin | Guide |
+| Besoin | Guides |
 | --- | --- |
-| Installation et configuration | [Guide utilisateur](docs/pse/GUIDE.fr.md) |
-| Catalogue, filtres et priorités | [Catalogue](docs/pse/CATALOGUE.fr.md) |
-| Références, conservation et épisodes indexés | [Index des releases](docs/pse/RELEASE_LIBRARY.fr.md) |
-| Bibliothèques, accueil et partage | [Dispositions](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees) |
-| Import StreamFusion Reborn | [StreamFusion](docs/pse/STREAMFUSION.fr.md) |
-| Annonces de releases FR (pre, bêta) | [Pre](docs/pse/PRE.fr.md) |
-| Disponibilités SeerrCatalog | [SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
-| AllDebrid, MediaFlow et proxys | [Réseau](docs/alldebrid-mediaflow.md) |
-| Sous-titres et traduction | [SubMaker](docs/pse/SUBMAKER.fr.md) |
-| Sources facultatives | [Torrent](docs/pse/TORRENT.fr.md) · [XDCC](docs/pse/XDCC.fr.md) · [FTP/SFTP](docs/pse/FTP.fr.md) |
-| Musique locale et comptes iBroadcast | [Médias locaux](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
+| Installation, console et médias locaux | [Guide utilisateur](docs/pse/GUIDE.fr.md) · [Dossiers et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
+| Fonctions, bibliothèques, partage et clients | [Fonctionnalités détaillées](docs/pse/FEATURES.fr.md) |
+| Catalogue, recherche et priorités | [Catalogue](docs/pse/CATALOGUE.fr.md) · [Index des releases](docs/pse/RELEASE_LIBRARY.fr.md) · [Priorités](docs/pse/QUICK_SOURCES.fr.md) |
+| Enrichissement du catalogue | [StreamFusion](docs/pse/STREAMFUSION.fr.md) · [SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) · [Pre](docs/pse/PRE.fr.md) |
+| Téléchargement et sources distantes | [Torrent](docs/pse/TORRENT.fr.md) · [Seedstrem](docs/pse/SEEDSTREM.fr.md) · [XDCC](docs/pse/XDCC.fr.md) · [FTP/SFTP](docs/pse/FTP.fr.md) · [aMule/slskd](docs/pse/PEER.fr.md) |
+| Musique, playlists et découverte | [Sources audio](docs/pse/AUDIO-SOURCES.fr.md) · [Playlists/AudioMuse](docs/pse/MUSIC-FLOWS.fr.md) · [Digarr](docs/pse/DIGARR.fr.md) |
+| Réseau et sous-titres | [AllDebrid/MediaFlow/proxys](docs/alldebrid-mediaflow.md) · [SubMaker](docs/pse/SUBMAKER.fr.md) |
 
-Les nouveautés détaillées sont présentées dans la console. Les guides décrivent les réglages et leurs limites ; ce README présente les usages principaux.
+Les nouveautés détaillées sont dans la console. Les guides conservent les réglages, prérequis et limites de chaque fonction.
 
 <a id="nav-origine-et-licence"></a>
+<a id="origine-et-licence"></a>
 
-## Origine et licence
+## Origine et contribution
 
 Ether-Remix est un fork d’[Ether](https://github.com/braedonsaunders/ether) de Braedon Saunders, sous **GPL-3.0**.
 

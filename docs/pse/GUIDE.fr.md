@@ -59,7 +59,7 @@ L’image Docker est publique. Aucune connexion à GHCR ni aucun jeton GitHub ne
 # compose.yaml — à déployer via Dockge-Enhanced
 services:
   pse:
-    image: ghcr.io/aerya/ether-remix:latest
+    image: ghcr.io/remix-media/ether-remix:latest
     container_name: accent
     restart: unless-stopped
     network_mode: host            # découverte Plex sur le réseau local (GDM) et UPnP
