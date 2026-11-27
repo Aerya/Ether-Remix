@@ -181,3 +181,36 @@ func TestSetupPreservesLatestFiltersAndRejectsAnObsoletePreview(t *testing.T) {
 		t.Fatal("latest filters lost")
 	}
 }
+
+func TestSetupUnderstandsEnvironmentToggleAliasesWithoutPinning(t *testing.T) {
+	for _, alias := range []string{"true", "1", "oui", "YES", " on "} {
+		t.Run(alias, func(t *testing.T) {
+			t.Setenv("PSE_FRENCH", alias)
+			t.Setenv("PSE_PLAYABLE", "1")
+			t.Setenv("PSE_PREDB", "oui")
+			h, applied, stored := newHandler(t)
+			code, state := do(t, h, "GET", "/setup", "")
+			if code != 200 {
+				t.Fatal(code)
+			}
+			for _, raw := range state["fields"].([]any) {
+				field := raw.(map[string]any)
+				if field["key"] == "PSE_FRENCH" && field["value"] != "on" {
+					t.Fatalf("alias not enabled: %v", field)
+				}
+			}
+			warnings := setupBody(t, state["warnings"])
+			if !strings.Contains(warnings, "catalogue-intersection") || !strings.Contains(warnings, "announcements") {
+				t.Fatal("missing interactions for enabled aliases")
+			}
+			p := setupReview(t, h, map[string]any{"PSE_FRENCH": "on"})
+			if len(p["changes"].([]any)) != 0 {
+				t.Fatal("unchanged alias treated as a change")
+			}
+			code, _ = do(t, h, "POST", "/setup/apply", setupApplyBody(t, p))
+			if code != 200 || *applied != 0 || len(stored()) != 0 {
+				t.Fatal("unchanged environment pinned")
+			}
+		})
+	}
+}

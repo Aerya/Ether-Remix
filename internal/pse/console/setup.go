@@ -61,13 +61,22 @@ func setupLabel(key string) Text {
 }
 
 func setupEffective(key string, overrides map[string]string) string {
-	if v, ok := overrides[key]; ok {
-		return v
+	fd := fieldByKey[key]
+	v, ok := overrides[key]
+	if !ok {
+		v, ok = pseenv.Env(key)
 	}
-	if v, ok := pseenv.Env(key); ok {
-		return v
+	if !ok {
+		v = fd.Default
 	}
-	return fieldByKey[key].Default
+	// Environment aliases accepted by the runtime must look enabled in the
+	// wizard too, without manufacturing an override for an unchanged value.
+	if fd.Kind == KindToggle {
+		if normalized, err := validate(fd, strings.TrimSpace(v), nil); err == nil {
+			return normalized
+		}
+	}
+	return v
 }
 
 func digest(v any) string {
