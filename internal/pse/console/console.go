@@ -394,6 +394,9 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	if out, ok, err := validateFTP(fd.Key, v); ok {
 		return out, err
 	}
+	if out, ok, err := validateAlko(fd.Key, v); ok {
+		return out, err
+	}
 	key := fd.Key
 	if strings.HasPrefix(key, "PSE_TORRENT2_") || strings.HasPrefix(key, "PSE_TORRENT3_") {
 		key = "PSE_TORRENT_" + key[len("PSE_TORRENT2_"):] // mêmes règles que le client principal

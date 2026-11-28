@@ -113,6 +113,16 @@ export const setupSources: SetupSource[] = [
     usages: ["stream"],
   },
   {
+    id: "alko",
+    label: ["Alkodiques (API StreamFusion)", "Alkodiques (StreamFusion API)"],
+    help: [
+      "Fichiers AllDebrid déjà vérifiés de votre StreamFusion, lus par son API ; un seul déblocage de lien par lecture.",
+      "Already verified AllDebrid files from your StreamFusion, read through its API; a single link unlock per playback.",
+    ],
+    href: "/remix/sources?source=alko",
+    usages: ["stream"],
+  },
+  {
     id: "torrent",
     label: ["Client BitTorrent direct", "Direct BitTorrent client"],
     help: [

@@ -30,6 +30,11 @@ func (sfrBackend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 	}
 	// PSE-HOOK: sequential source scope — see docs/pse/FORK.fr.md.
 	if core.QuickSource(ctx) == "alko" {
+		if releasedb.AlkoPostgresIgnored() {
+			// Source Alkodiques par l'API active : mêmes fichiers, servis par
+			// la ligne remix-alko (miroir local) ; le chemin PostgreSQL est ignoré.
+			return nil, nil
+		}
 		return releasedb.SearchSFRAlko(ctx, releasedb.LoadSFRSettings(), req)
 	}
 	return releasedb.SearchSFR(ctx, releasedb.LoadSFRSettings(), req)

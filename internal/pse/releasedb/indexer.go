@@ -39,13 +39,15 @@ type Settings struct {
 	Types []core.MediaType
 	// SFR : import depuis une base StreamFusion Reborn (sfr.go).
 	SFR SFRSettings
+	// Alko : source Alkodiques par l'API de StreamFusion (alko_publish.go).
+	Alko bool
 	// PreDB : index des annonces de releases (predb.go).
 	PreDB PreDBSettings
 }
 
 // LoadSettings lit la configuration depuis l'environnement.
 func LoadSettings() Settings {
-	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}, SFR: LoadSFRSettings(), PreDB: LoadPreDBSettings()}
+	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}, SFR: LoadSFRSettings(), Alko: AlkoAPIEnabled(), PreDB: LoadPreDBSettings()}
 	switch strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_INDEXER"))) {
 	case "on", "1", "true", "yes", "oui":
 		s.Enabled = true
@@ -246,6 +248,9 @@ func (s *Service) activeSourceIDs() []string {
 	}
 	if s.d.Settings.SFR.Enabled {
 		ids = append(ids, SFRSourceID)
+	}
+	if s.d.Settings.Alko {
+		ids = append(ids, AlkoSourceID)
 	}
 	if s.d.Settings.PreDB.Active() {
 		ids = append(ids, PreDBSourceID)

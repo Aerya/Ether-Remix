@@ -23,8 +23,9 @@ func (a *App) releaseLibrary() releasedb.Library {
 		Indexers any
 		SFR      any
 		FTP      any
+		Alko     string `json:",omitempty"` // vide (donc absent) tant que la source est désactivée : la signature d'avant reste valable
 		XDCC     any
-	}{peerIndexers(ftpIndexers(xdccIndexers(cfg.Indexers))), releasedb.LoadSFRSettings(), ftp.LoadSettings(), xdcc.LoadSettings()})
+	}{peerIndexers(ftpIndexers(alkoIndexers(xdccIndexers(cfg.Indexers)))), releasedb.LoadSFRSettings(), ftp.LoadSettings(), pseAlkoIdentity(), xdcc.LoadSettings()})
 	sum := sha256.Sum256(raw)
 	return releasedb.Library{Accept: a.acceptReference, Store: releasedb.NewStore(a.db), Signature: hex.EncodeToString(sum[:]),
 		Seal: func(s string) (string, error) { return a.cfg.Seal("pse-release-library", []byte(s)) },

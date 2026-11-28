@@ -118,8 +118,10 @@ func (s *Service) sfrImportAlko(ctx context.Context, p *pgxSFR, every time.Durat
 	}
 }
 
-func sfrAlkoLanguage(name string) bool {
-	info := releaseparse.Parse(name)
+func sfrAlkoLanguage(name string) bool { return alkoLanguageInfo(name, releaseparse.Parse(name)) }
+
+// alkoLanguageInfo : audio français, MULTi ou VOSTFR, ou sous-titres français.
+func alkoLanguageInfo(name string, info core.ReleaseInfo) bool {
 	langs := releaseLanguages(name, info.Languages)
 	return slices.Contains(info.SubtitleLanguages, "french") || slices.Contains(langs, "french") || slices.Contains(langs, "multi") || slices.Contains(langs, "vostfr")
 }

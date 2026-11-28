@@ -36,7 +36,7 @@ func (a *App) installAddon(ctx context.Context, in plugins.AddonInstall) (plugin
 // addonIndexers expands the indexer list for the running search manager
 // (adapters.ExpandAddonIndexers).
 func (a *App) addonIndexers(ctx context.Context, rows []config.Indexer) []config.Indexer {
-	return peerIndexers(ftpIndexers(xdccIndexers(sfrIndexers(adapters.ExpandAddonIndexers(ctx, a.pluginManager(), rows))))) // PSE-HOOK: sources XDCC et FTP / SFTP — voir docs/pse/FORK.fr.md
+	return peerIndexers(ftpIndexers(alkoIndexers(xdccIndexers(sfrIndexers(adapters.ExpandAddonIndexers(ctx, a.pluginManager(), rows)))))) // PSE-HOOK: sources XDCC, FTP / SFTP et Alkodiques (API) — voir docs/pse/FORK.fr.md
 }
 
 // migrateLegacyStremio moves the add-on roles entered by link outside the

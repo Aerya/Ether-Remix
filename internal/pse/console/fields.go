@@ -174,6 +174,7 @@ var Features = communityFields([]Feature{
 	peerFeature("amule"),
 	peerFeature("slskd"),
 	ftpFeature(),
+	alkoFeature(),
 	{
 		ID:          "playable",
 		Title:       tx("Catalogue « lisible uniquement »", "“Playable only” catalogue"),

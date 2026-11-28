@@ -15,6 +15,8 @@ func init() {
 		"pse_xdcc_tasks", // tâches XDCC : paquets Grabscher, sans clé de titre
 		// source FTP / SFTP : fichiers du serveur et copies, sans clé de titre
 		"pse_ftp_files", "pse_ftp_downloads",
+		// source Alkodiques (API StreamFusion) : miroir des fichiers vérifiés, clés TMDB sans clé de titre
+		"pse_alko_files", "pse_alko_checked",
 		// « à suivre » de Continuer à regarder : recalculé depuis l'historique, sans référence propre
 		"pse_continue_next", "pse_continue_next_",
 	)

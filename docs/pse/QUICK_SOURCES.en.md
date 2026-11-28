@@ -6,7 +6,7 @@ Under **Remix → Playback → Priorities**, enable **Quick setup**, which is of
 
 | Source | Existing configuration |
 | --- | --- |
-| StreamFusion Reborn — Alkodiques only | PostgreSQL under Sources → Stremio and an enabled AllDebrid account. Only verified `sfr-alko:` files: no ordinary torrents, magnets or cache discovery. |
+| StreamFusion Reborn — Alkodiques only | The Alkodiques (StreamFusion API) source or, failing that, PostgreSQL under Sources → Stremio, and an enabled AllDebrid account. Only verified `sfr-alko:` files: no ordinary torrents, magnets or cache discovery. |
 | Usenet | Enabled NNTP providers and Usenet indexers. |
 | BitTorrent — Ether-Remix remote client | Native torrent client and BitTorrent indexers. Shared directories, path mappings, quotas and download limits still apply. |
 | BitTorrent — Seedstrem | Explicitly select the installed instance from the Stremio addons. Playback links remain HTTP and use Seedstrem’s remote client. |

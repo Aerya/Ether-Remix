@@ -402,22 +402,45 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		}
 		found[target{key, typ}]++
 	}
-	if err := s.st.Save(ctx, batch, now); err != nil {
+	touched := make([]core.RatingKey, 0, len(found))
+	for t := range found {
+		touched = append(touched, t.key)
+	}
+	if err := publishBatch(ctx, s.st, s.d.Remember, now, batch, references, touched); err != nil {
 		return 0, err
 	}
-	for key, rs := range references {
-		s.d.Remember(ctx, key, rs)
+	return len(batch), nil
+}
+
+// publishBatch enregistre des releases importées, retient leurs références
+// chiffrées puis recalcule les titres touchés. Commun à l'import SFR et à la
+// source Alkodiques (alko_publish.go).
+func publishBatch(ctx context.Context, st *Store, remember func(context.Context, core.RatingKey, []core.Release), now time.Time,
+	batch []Release, references map[core.RatingKey][]core.Release, touched []core.RatingKey) error {
+	if err := st.Save(ctx, batch, now); err != nil {
+		return err
 	}
-	p := Playable()
-	for t := range found {
-		// Imported metadata alone must not postpone a real source search.
-		if p.Enabled {
-			if err := s.st.RefreshPlayable(ctx, t.key, p); err != nil {
-				return 0, err
-			}
+	if remember != nil {
+		for key, rs := range references {
+			remember(ctx, key, rs)
 		}
 	}
-	return len(batch), nil
+	return refreshPlayable(ctx, st, touched)
+}
+
+// refreshPlayable recalcule les titres touchés. Une métadonnée importée ne doit
+// pas retarder une vraie recherche de source.
+func refreshPlayable(ctx context.Context, st *Store, keys []core.RatingKey) error {
+	p := Playable()
+	if !p.Enabled {
+		return nil
+	}
+	for _, k := range keys {
+		if err := st.RefreshPlayable(ctx, k, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sfrForget retire les releases importées quand la base ou le choix des
@@ -460,6 +483,10 @@ func (s *Service) sfrForget(ctx context.Context) error {
 	}
 	return nil
 }
+
+// sfrAlkoPostgres : lire les Alkodiques par PostgreSQL. Ignoré quand la source
+// API est active et son miroir rempli (mêmes fichiers, lus par internal/pse/alko).
+func sfrAlkoPostgres(p *pgxSFR) bool { return p.alkoAvailable && !AlkoPostgresIgnored() }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
@@ -646,7 +673,9 @@ func (s *Service) sfrCycle(ctx context.Context, cfg SFRSettings) error {
 		}
 		s.d.Logger.Warn("pse streamfusion catch-up failed", "err", err)
 	}
-	if p, ok := reader.(*pgxSFR); ok && p.alkoAvailable {
+	// Source Alkodiques par l'API active : mêmes fichiers (mêmes playback_id),
+	// lus par internal/pse/alko ; ce chemin PostgreSQL est ignoré.
+	if p, ok := reader.(*pgxSFR); ok && sfrAlkoPostgres(p) {
 		if err := s.sfrImportAlko(ctx, p, cfg.Every); err != nil {
 			return err
 		}

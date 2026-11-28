@@ -77,6 +77,7 @@ type pseRuntime struct {
 	peers     psePeerState
 	xdcc      pseXdccState // source XDCC (PSE_XDCC)
 	ftp       pseFTPState  // source FTP / SFTP (PSE_FTP)
+	alko      pseAlkoState // source Alkodiques par l'API (PSE_ALKO)
 	nuvioOnce sync.Once
 	nuvio     *nuvio.Service // liaison Nuvio par spectateur
 }
@@ -196,6 +197,7 @@ func (rt *pseRuntime) apply(a *App) {
 	rt.reloadXdcc(a)
 	rt.reloadPeers(a)
 	rt.reloadFTP(a)
+	rt.reloadAlko(a)
 	rt.reloadMusic(a)
 	a.reapplyAddonIndexers()
 	a.pseLangExemptChanged()
@@ -244,7 +246,7 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		},
 		Sources: func() []console.Option {
 			var out []console.Option
-			for _, ix := range peerIndexers(ftpIndexers(xdccIndexers(a.cfg.Get().Indexers))) {
+			for _, ix := range peerIndexers(ftpIndexers(alkoIndexers(xdccIndexers(a.cfg.Get().Indexers)))) {
 				if ix.ID == "" {
 					continue
 				}
@@ -254,6 +256,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 				}
 				if ix.ID == ftpSourceID {
 					out = append(out, console.Option{Value: ix.ID, Label: console.Text{FR: "FTP / SFTP", EN: "FTP / SFTP"}})
+					continue
+				}
+				if ix.ID == alkoSourceID {
+					out = append(out, console.Option{Value: ix.ID, Label: console.Text{FR: releasedb.AlkoIndexerName, EN: releasedb.AlkoIndexerName}})
 					continue
 				}
 				name := ix.Name
@@ -373,6 +379,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 			a.pseFTPAPI(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/alko/") {
+			a.pseAlkoAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/music/access" {
 			a.pseMusicAccess(w, r)
 			return
@@ -482,6 +492,7 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 	out["torrent"] = a.pseTorrentStatus(ctx)
 	out["xdcc"] = a.pseXdccStatus(ctx)
 	out["ftp"] = a.pseFTPStatus(ctx)
+	out["alko"] = a.pseAlkoStatus(ctx)
 	return out
 }
 

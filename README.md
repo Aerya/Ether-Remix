@@ -62,6 +62,7 @@ Les sources de catalogue décrivent les contenus ; une source de lecture fournit
 | **Debrid / Usenet** | Lecture à la demande avec vos comptes et fournisseurs ; priorités, quotas et solutions de repli configurables. |
 | **Prowlarr, Jackett, NZBHydra2 / addons Stremio** | Recherche de releases et, selon l’addon, accès aux flux. Une voie de lecture compatible reste nécessaire. Un seul proxy par addon couvre requêtes et lecture. |
 | **StreamFusion Reborn / SeerrCatalog / Pre** | Import ou enrichissement du catalogue et des références. SeerrCatalog nécessite son service externe ; Pre, en bêta, fournit des annonces, pas des liens de lecture. |
+| **Alkodiques (API StreamFusion)** | Fichiers AllDebrid déjà vérifiés de votre StreamFusion, lus par son API en lecture seule (copie locale tenue à jour, tous les épisodes des titres du catalogue, un seul déblocage de lien). Compte AllDebrid et clé de lecture StreamFusion requis. Facultatif. [Guide](docs/pse/ALKODIQUES.fr.md). |
 | **Client torrent / Seedstrem / XDCC Grabscher** | Téléchargement sur disque ; Seedstrem et Grabscher nécessitent leurs services externes. Sources facultatives. |
 | **FTP / SFTP** | Lecture distante possible sans copie complète, avec cache ; serveur et accès requis. Facultatif. |
 | **aMule / Soulseek (slskd)** | Recherche vidéo et musicale, transferts manuels ou à la lecture ; lecture après réception complète. Services externes et dossier partagé requis. |

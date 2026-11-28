@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/stremio"
 )
 
@@ -51,6 +52,9 @@ func quickIndexerSelected(ix config.Indexer, source, seedstremID string) bool {
 	}
 	switch source {
 	case "alko":
+		if releasedb.AlkoPostgresIgnored() { // source Alkodiques par l'API : miroir local à la place du chemin PostgreSQL
+			return ix.ID == alkoSourceID
+		}
 		return ix.ID == sfrSearchID
 	case "usenet":
 		return !ix.IsStremio() && !ix.IsAddon() && !ix.IsTorrent()
