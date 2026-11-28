@@ -30,6 +30,7 @@ const CATEGORIES = [
   ["amule", "aMule", "aMule"],
   ["slskd", "Soulseek (slskd)", "Soulseek (slskd)"],
   ["ftp", "FTP / SFTP", "FTP / SFTP"],
+  ["alko", "Alkodiques (API StreamFusion)", "Alkodiques (StreamFusion API)"],
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
@@ -39,7 +40,18 @@ const GROUPS = [
   {
     fr: "Films, séries et animés",
     en: "Movies, shows and anime",
-    ids: ["stremio", "debrid", "usenet", "indexeurs", "torrent", "xdcc", "ftp", "amule", "slskd"],
+    ids: [
+      "stremio",
+      "alko",
+      "debrid",
+      "usenet",
+      "indexeurs",
+      "torrent",
+      "xdcc",
+      "ftp",
+      "amule",
+      "slskd",
+    ],
   },
   { fr: "Musique", en: "Music", ids: ["musique"] },
   { fr: "Fichiers et télévision", en: "Files and TV", ids: ["local", "iptv"] },
@@ -55,6 +67,7 @@ export function RemixSources({
   slskd,
   xdcc,
   ftp,
+  alko,
 }: {
   simple?: boolean;
   music: ReactNode;
@@ -64,6 +77,7 @@ export function RemixSources({
   slskd?: ReactNode;
   xdcc?: ReactNode;
   ftp?: ReactNode;
+  alko?: ReactNode;
 }) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
@@ -183,7 +197,7 @@ export function RemixSources({
               ? [L("Musique", "Music")]
               : category === "iptv"
                 ? [L("Télévision en direct", "Live TV")]
-                : ["xdcc", "ftp", "amule", "slskd"].includes(category)
+                : ["xdcc", "ftp", "alko", "amule", "slskd"].includes(category)
                   ? [L("Films", "Movies"), L("Séries (épisodes SxxEyy)", "Shows (SxxEyy episodes)")]
                   : [
                       L("Films", "Movies"),
@@ -335,6 +349,7 @@ export function RemixSources({
         {category === "slskd" ? slskd : null}
         {category === "xdcc" ? xdcc : null}
         {category === "ftp" ? ftp : null}
+        {category === "alko" ? alko : null}
         {category === "musique" ? <>{music}</> : null}
         {category === "local" ? (
           <>

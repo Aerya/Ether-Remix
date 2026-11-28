@@ -62,6 +62,7 @@ Catalogue sources describe content; playback sources provide access to it. Choos
 | **Debrid / Usenet** | On-demand playback with your accounts and providers; configurable priorities, quotas and fallbacks. |
 | **Prowlarr, Jackett, NZBHydra2 / Stremio addons** | Release searches and, depending on the addon, stream access. A compatible playback route is still required. One proxy per addon covers requests and playback. |
 | **StreamFusion Reborn / SeerrCatalog / Pre** | Catalogue and reference imports or enrichment. SeerrCatalog requires its external service; Pre, in beta, supplies announcements, not playback links. |
+| **Alkodiques (StreamFusion API)** | Already verified AllDebrid files from your StreamFusion, read through its read-only API (local copy kept up to date, every episode of catalogue titles, a single link unlock). Requires an AllDebrid account and StreamFusion's read key. Optional. [Guide, in French](docs/pse/ALKODIQUES.fr.md). |
 | **Torrent client / Seedstrem / XDCC Grabscher** | Downloads to disk; Seedstrem and Grabscher require their external services. Optional sources. |
 | **FTP / SFTP** | Remote playback without a full copy is possible, with caching; requires a server and credentials. Optional. |
 | **aMule / Soulseek (slskd)** | Video/music search, manual or on-playback transfers; playback after the download finishes. External services and a shared directory required. |

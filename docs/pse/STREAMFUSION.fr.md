@@ -57,6 +57,8 @@ L’option trackers privés s’applique aussi à cette recherche. Les candidats
 
 ## Fichiers Alkodiques déjà vérifiés
 
+> **Recommandé : l'API.** Les Alkodiques se lisent désormais par l'API de StreamFusion, sans compte PostgreSQL ni droit sur `alko_integration` : voir [Alkodiques par l'API](ALKODIQUES.fr.md) (source *Alkodiques (API StreamFusion)*, tous les épisodes, copie locale tenue à jour par le journal des modifications). Quand elle est activée, la lecture PostgreSQL décrite ci-dessous est ignorée : mêmes fichiers, mêmes identifiants. Sans elle, ce qui suit reste valable.
+
 Remix détecte les tables optionnelles `alko_integration.files` et `alko_integration.source_links`. Pour un compte PostgreSQL dédié, accordez uniquement ces lectures, après l’installation d’Alkodiques dans SFR :
 
 ```sql

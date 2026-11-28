@@ -36,6 +36,7 @@ import { SfrHelp } from "./SfrHelp";
 import { SeerrCatalogHelp } from "./SeerrCatalogHelp";
 import { TorrentStatus } from "./TorrentStatus";
 import { XdccStatus } from "./XdccStatus";
+import { AlkoStatus } from "./AlkoStatus";
 import { FtpStatus } from "./FtpStatus";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
@@ -418,6 +419,7 @@ function PseSettings() {
               slskd={current.features.filter((f) => f.id === "slskd").map((f) => renderFeature(f))}
               xdcc={current.features.filter((f) => f.id === "xdcc").map((f) => renderFeature(f))}
               ftp={current.features.filter((f) => f.id === "ftp").map((f) => renderFeature(f))}
+              alko={current.features.filter((f) => f.id === "alko").map((f) => renderFeature(f))}
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
@@ -785,6 +787,7 @@ function FeatureSection({
         {feature.id === "amule" || feature.id === "slskd" ? <PeerStatus kind={feature.id} /> : null}
         {feature.id === "xdcc" ? <XdccStatus status={feature.status} /> : null}
         {feature.id === "ftp" ? <FtpStatus status={feature.status} /> : null}
+        {feature.id === "alko" ? <AlkoStatus status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? (
           <>

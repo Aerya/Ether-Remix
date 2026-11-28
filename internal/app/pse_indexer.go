@@ -28,6 +28,7 @@ func (a *App) buildPSEIndexer() {
 	a.startPSEXdcc()
 	a.startPSEPeers()
 	a.startPSEFTP()
+	a.startPSEAlko()
 	if a.indexers != nil {
 		a.indexers.SetSearchAdmission(func(ctx context.Context, req core.SearchRequest, rs []core.Release) []core.Release {
 			req = releasedb.CheckSeriesIdentity(ctx, a.db, req)
@@ -82,9 +83,9 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 			}
 			a.rememberReleases(ctx, &core.Title{Key: key}, rs)
 		},
-		Config: func() config.Config { // sources XDCC et FTP comprises, si actives
+		Config: func() config.Config { // sources XDCC, FTP et Alkodiques comprises, si actives
 			c := a.cfg.Read()
-			c.Indexers = peerIndexers(ftpIndexers(xdccIndexers(c.Indexers)))
+			c.Indexers = peerIndexers(ftpIndexers(alkoIndexers(xdccIndexers(c.Indexers))))
 			return c
 		},
 		Resolve: func(ctx context.Context, info core.ReleaseInfo) (core.Title, bool) {

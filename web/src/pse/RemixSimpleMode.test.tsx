@@ -286,6 +286,7 @@ it("la page Sources du mode simple masque les catégories réservées aux expert
       .map((t) => t.textContent),
   ).toEqual([
     "Stremio",
+    "Alkodiques (API StreamFusion)",
     "Debrid",
     "Fournisseurs Usenet",
     "Streaming musical",

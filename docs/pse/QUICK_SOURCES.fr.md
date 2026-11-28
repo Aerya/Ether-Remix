@@ -6,7 +6,7 @@ Dans **Remix → Lecture → Priorités**, activez **Configuration rapide**, dé
 
 | Source | Configuration réutilisée |
 | --- | --- |
-| StreamFusion Reborn — Alkodiques uniquement | Base PostgreSQL dans Sources → Stremio et compte AllDebrid actif. Uniquement les fichiers `sfr-alko:` vérifiés, jamais les torrents ordinaires, magnets ou recherches de cache. |
+| StreamFusion Reborn — Alkodiques uniquement | Source [Alkodiques (API StreamFusion)](ALKODIQUES.fr.md) ou, à défaut, base PostgreSQL dans Sources → Stremio, et compte AllDebrid actif. Uniquement les fichiers `sfr-alko:` vérifiés, jamais les torrents ordinaires, magnets ou recherches de cache. |
 | Usenet | Fournisseurs NNTP et indexeurs Usenet activés. |
 | BitTorrent — client distant Ether-Remix | Client torrent natif et indexeurs BitTorrent. Le dossier partagé, les correspondances de chemins, quotas et limites de téléchargement restent nécessaires. |
 | BitTorrent — Seedstrem | Choisir explicitement l’instance déjà installée parmi les addons Stremio. Les liens de lecture restent HTTP et utilisent le client distant de Seedstrem. |

@@ -154,6 +154,9 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			if ix.ID == ftpSourceID { // PSE-HOOK: source FTP / SFTP — voir docs/pse/FORK.fr.md
 				return ftpBackend{a}, nil
 			}
+			if ix.ID == alkoSourceID { // PSE-HOOK: source Alkodiques (API) — voir docs/pse/FORK.fr.md
+				return alkoBackend{a}, nil
+			}
 			if ix.IsStremio() {
 				return a.addons.Backend(ix)
 			}

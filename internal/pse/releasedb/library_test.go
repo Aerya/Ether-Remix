@@ -124,3 +124,48 @@ func TestIndexReferencesIgnoreLegacySwitch(t *testing.T) {
 		})
 	}
 }
+
+// La purge des références périmées ne tourne qu'une fois par libraryRetentionEvery
+// et par base : un Save par titre ne doit pas balayer toute la table à chaque fois.
+func TestLibraryRetentionThrottled(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Now()
+	l := Library{Store: NewStore(db), Signature: "s", Now: func() time.Time { return now }, Seal: func(s string) (string, error) { return s, nil }}
+	expired := func(id string) {
+		t.Helper()
+		old := now.Add(-100 * 24 * time.Hour).Unix()
+		if _, err := db.Exec(`INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires) VALUES(7,?,'src','s','p',?,?,?)`, id, old, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pse_release_library WHERE title_key=7`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	save := func(id string) {
+		t.Helper()
+		if err := l.Save(ctx, core.MovieKey(1), []core.Release{{ID: id, Name: "Film.2020.FRENCH.1080p", Protocol: core.ProtocolHTTP}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expired("a")
+	save("one") // première purge de cette base : due
+	if count() != 0 {
+		t.Fatal("référence périmée non purgée au premier Save")
+	}
+	expired("b")
+	save("two") // moins de dix minutes plus tard : pas de balayage
+	if count() != 1 {
+		t.Fatal("la purge a tourné à chaque Save")
+	}
+	now = now.Add(libraryRetentionEvery + time.Minute)
+	save("three")
+	if count() != 0 {
+		t.Fatal("référence périmée non purgée après l'intervalle")
+	}
+}

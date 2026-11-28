@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-24-guided-setup",
+    id: "2026-11-27-alko-api",
     version: "current",
+    date: "2026-11-27",
+    title: ["Alkodiques par l’API de StreamFusion", "Alkodiques through the StreamFusion API"],
+    items: [
+      [
+        "Nouvelle source Sources → Alkodiques (API StreamFusion), désactivée par défaut : Remix lit les fichiers AllDebrid vérifiés de votre StreamFusion par son API en lecture seule (clé de la page /admin/alko-lecture), sans accès à PostgreSQL. Il garde une copie locale, tenue à jour par le journal des modifications, et la publie pour les titres de votre catalogue, tous les épisodes compris.",
+        "New source Sources → Alkodiques (StreamFusion API), off by default: Remix reads your StreamFusion’s verified AllDebrid files through its read-only API (key from the /admin/alko-lecture page), with no PostgreSQL access. It keeps a local copy, updated from the change journal, and publishes it for the titles in your catalogue, every episode included.",
+      ],
+      [
+        "La recherche à la lecture lit cette copie, sans appel réseau, et un seul déblocage de lien AllDebrid suffit. Le filtre FR / MULTi / VOSTFR sur le nom du fichier se règle. La clé et les liens sont chiffrés ou masqués, et jamais écrits dans les journaux. Quand la source est active, la lecture PostgreSQL des Alkodiques est ignorée.",
+        "Playback search reads that copy, with no network call, and a single AllDebrid link unlock is enough. The FR / MULTi / VOSTFR filter on the file name is configurable. The key and links are encrypted or masked, and never written to logs. When the source is active, the PostgreSQL reading of Alkodiques is ignored.",
+      ],
+      [
+        "La lecture complète du catalogue (380 000 fichiers) est 7 fois plus rapide : environ 1,4 s par page de 1 000 fichiers au lieu de 10 à 19 s, soit une dizaine de minutes au lieu de deux heures (quelques minutes de plus quand le catalogue « lisible uniquement » est activé). La purge des références périmées ne balaie plus toute la bibliothèque à chaque titre, et le nettoyage des anciennes lignes PostgreSQL ainsi que le rafraîchissement des observations se font par petites tranches, sans bloquer l’écriture dans la base.",
+        "The full catalogue read (380,000 files) is 7 times faster: about 1.4 s per page of 1,000 files instead of 10 to 19 s, around ten minutes instead of two hours. Purging expired references no longer sweeps the whole library for every title, and cleaning up the old PostgreSQL rows and refreshing observations are done in small slices, without blocking writes to the database.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-24-guided-setup",
+    version: "0.2.37-remix.158.1",
     date: "2026-11-27",
     title: [
       "Un assistant pour composer votre configuration",

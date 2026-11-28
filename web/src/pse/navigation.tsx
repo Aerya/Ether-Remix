@@ -18,6 +18,7 @@ export const REMIX_TABS = [
       "amule",
       "slskd",
       "ftp",
+      "alko",
     ],
   },
   {
@@ -244,6 +245,7 @@ export function sourcesHref(tab = "debrid", search = "") {
             "amule",
             "slskd",
             "ftp",
+            "alko",
           ].includes(tab)
         ? tab
         : "debrid",

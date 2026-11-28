@@ -3,6 +3,8 @@ package releasedb
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -37,6 +39,24 @@ type Library struct {
 	Now       func() time.Time
 }
 
+// libraryRetentionEvery espace deux purges des références périmées d'une base.
+const libraryRetentionEvery = 10 * time.Minute
+
+// libraryRetentionAt retient, par base, l'heure de la dernière purge.
+var libraryRetentionAt sync.Map // *sql.DB -> *atomic.Int64 (secondes Unix)
+
+// retentionDue dit si la purge est due, et la réserve à l'appelant : un seul
+// des Save simultanés la fait.
+func (l Library) retentionDue(now time.Time) bool {
+	v, _ := libraryRetentionAt.LoadOrStore(l.Store.db, new(atomic.Int64))
+	at := v.(*atomic.Int64)
+	last, n := at.Load(), now.Unix()
+	if last != 0 && n >= last && n-last < int64(libraryRetentionEvery/time.Second) {
+		return false
+	}
+	return at.CompareAndSwap(last, n)
+}
+
 func (l Library) now() time.Time {
 	if l.Now != nil {
 		return l.Now()
@@ -68,9 +88,13 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 		return err
 	}
 	defer tx.Rollback()
-	// Bound retention even when no maintenance worker is active.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM pse_release_library WHERE last_seen<? AND expires<=?`, now.Add(-60*24*time.Hour).Unix(), now.Unix()); err != nil {
-		return err
+	// Bound retention even when no maintenance worker is active (au plus une
+	// fois par libraryRetentionEvery : le balayage lit toutes les références
+	// expirées, il ne doit pas être refait à chaque titre d'une lecture complète).
+	if l.retentionDue(now) {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM pse_release_library WHERE last_seen<? AND expires<=?`, now.Add(-60*24*time.Hour).Unix(), now.Unix()); err != nil {
+			return err
+		}
 	}
 	for _, r := range rs {
 		if releaseparse.ReferenceReason(r) != "" {
